@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { CONFIG } from './config.js'
 import { createOutputParser, type AgentEvent } from './agent-output-parser.js'
 import type { RunnerRuntimeEvent, SessionEvent, PermissionSuggestion } from '../shared/message-types.js'
+import { normalizeSdkEnvelopeMessage } from '../shared/transcript-normalizer.js'
 import { createLogger, shortId } from './logger.js'
 import { appendSessionRuntimeLog, appendSessionTransportLog } from './transport-logs.js'
 export type { AgentEvent } from './agent-output-parser.js'
@@ -71,17 +72,30 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
         state: event.state,
         ...(event.sessionId ? { sessionId: event.sessionId } : {}),
       }
-    case 'sdk.message':
+    case 'sdk.message': {
+      const payloadType = typeof event.payload === 'object' && event.payload && 'type' in event.payload
+        ? (event.payload as { type?: unknown }).type
+        : undefined
+      const parsed = normalizeSdkEnvelopeMessage(event.payload) ?? event.parsed
+      if ((payloadType === 'assistant' || payloadType === 'user') && !parsed) {
+        logger.warn('runner:normalize:missing-parsed', {
+          runId: shortId(runId),
+          sessionId: shortId(event.sessionId),
+          payloadType,
+          sequence: event.sequence,
+        })
+      }
       return {
         type: 'session.sdk.message',
         runId,
         payload: event.payload,
-        ...(event.parsed ? { parsed: event.parsed } : {}),
+        ...(parsed ? { parsed } : {}),
         ...(event.livePreview ? { livePreview: event.livePreview } : {}),
         receivedAt: event.receivedAt,
         sequence: event.sequence,
         ...(event.sessionId ? { sessionId: event.sessionId } : {}),
       }
+    }
     case 'sdk.control.requested':
       return {
         type: 'session.sdk.control.requested',

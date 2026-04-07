@@ -8,11 +8,9 @@ import type {
   RunnerRuntimeEvent,
   RuntimeEnvelopeBase,
   SdkTransportEvent,
-  SessionMessage,
 } from '../../shared/message-types.js'
 import {
   clearTranscriptLivePreviewState,
-  normalizeSdkEnvelopeMessage,
   reduceTranscriptLivePreviewState,
 } from '../../shared/transcript-normalizer.js'
 import { logAgent } from './logger.js'
@@ -197,10 +195,6 @@ function createScopedLivePreviewClear(state: {
     ...(state.receivedAt !== undefined ? { receivedAt: state.receivedAt } : {}),
     ...(state.sequence !== undefined ? { sequence: state.sequence } : {}),
   }
-}
-
-function toParsedSessionMessage(message: SDKMessage): SessionMessage | undefined {
-  return normalizeSdkEnvelopeMessage(message) ?? undefined
 }
 
 function normalizePermissionRequest(request: SDKControlRequest): PendingInteraction | null {
@@ -915,16 +909,13 @@ function handleSdkMessage(message: SDKMessage) {
         ...envelope,
       })
     : undefined
-  const parsedMessage = normalizedMessage.type === 'assistant' || normalizedMessage.type === 'user'
-    ? toParsedSessionMessage(normalizedMessage)
-    : undefined
 
   if (livePreview) {
     livePreviewState = livePreview
   }
 
   let livePreviewClear
-  if (parsedMessage && livePreviewState.scopeKey) {
+  if ((normalizedMessage.type === 'assistant' || normalizedMessage.type === 'user') && livePreviewState.scopeKey) {
     livePreviewClear = createScopedLivePreviewClear({
       scopeKey: livePreviewState.scopeKey,
       sessionId: currentSessionId,
@@ -942,7 +933,6 @@ function handleSdkMessage(message: SDKMessage) {
   writeRuntimeEvent({
     type: 'sdk.message',
     payload: normalizedMessage,
-    ...(parsedMessage ? { parsed: parsedMessage } : {}),
     ...(livePreview ?? livePreviewClear ? { livePreview: livePreview ?? livePreviewClear } : {}),
     ...envelope,
   })

@@ -26,8 +26,6 @@ import { buildDisplayItems, buildTranscriptAtom } from '../../../shared/transcri
 import {
   getTranscriptMessageId,
   getTranscriptParentMessageId,
-  normalizeSdkEnvelopeMessage,
-  normalizeStoredTranscriptMessage,
 } from '../../../shared/transcript-normalizer.js'
 import { createDebugLogger } from '../lib/debug.js'
 
@@ -94,7 +92,7 @@ function redactUrl(url: URL): string {
 }
 
 function getTimelineMessageFromEvent(event: Extract<SessionEvent, { type: 'session.sdk.message' }>): SessionMessage | null {
-  return event.parsed ?? normalizeSdkEnvelopeMessage(event.payload)
+  return event.parsed ?? null
 }
 
 function isMatchingOptimisticUserMessage(message: HistoryMessage, candidate: SessionMessage, timestamp: number): boolean {
@@ -858,7 +856,7 @@ export const useSessionStore = defineStore('session', () => {
         return false
       }
       const data = await res.json() as SessionMessagesResponse
-      const messages = (data.messages || []).map((m: unknown) => normalizeStoredTranscriptMessage(m))
+      const messages = (data.messages || []).filter((message): message is SessionMessage => Boolean(message && typeof message === 'object'))
       if (options.prepend) {
         historyMessages.value = [...messages, ...historyMessages.value]
       } else {

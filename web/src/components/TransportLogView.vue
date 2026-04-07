@@ -303,7 +303,7 @@ onBeforeUnmount(() => {
           >
             <option value="" disabled>选择 session</option>
             <option v-for="item in sortedSessions" :key="item.id" :value="item.id">
-              {{ formatSessionActivity(item.updatedAt) }}  {{ item.title }}
+              {{ formatSessionActivity(item.updatedAt) }}  {{ item.id }}  {{ item.title }}
             </option>
           </select>
           <div class="inline-flex rounded border border-gray-300 bg-white p-0.5 text-[11px]">

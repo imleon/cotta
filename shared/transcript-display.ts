@@ -17,6 +17,7 @@ import {
   getTranscriptAssistantModel,
   getTranscriptAssistantUsage,
   getTranscriptMessageId,
+  getTranscriptRawMessage,
   getTranscriptSemanticKind,
   getTranscriptStopReason,
   getTranscriptToolResultIds,
@@ -45,6 +46,13 @@ function makeAtomId(message: TranscriptMessage, options: BuildTranscriptAtomOpti
   return getTranscriptMessageId(message)
     ?? (options.localId && options.localId.trim())
     ?? `${options.source}-${options.sequence ?? 'noseq'}-${options.sourceIndex}`
+}
+
+function getAssistantResponseId(message: SessionMessage): string | null {
+  const rawMessage = getTranscriptRawMessage(message)
+  return rawMessage && typeof rawMessage.id === 'string' && rawMessage.id
+    ? rawMessage.id
+    : null
 }
 
 function getLinkage(message: TranscriptMessage): TranscriptLinkage {
@@ -246,6 +254,22 @@ function createFragments(message: SessionMessage, options: { mode: 'default' | '
   return fragments
 }
 
+function getUserDisplayKind(message: SessionMessage): UserDisplayItem['displayKind'] {
+  const content = message.content.trim()
+  if (content.includes('<command-name>') || content.includes('<bash-input>')) {
+    return 'command_input'
+  }
+  if (
+    content.includes('<local-command-stdout>')
+    || content.includes('<local-command-stderr>')
+    || content.includes('<bash-stdout>')
+    || content.includes('<bash-stderr>')
+  ) {
+    return 'command_output'
+  }
+  return 'default'
+}
+
 function createUserDisplayItem(atom: TranscriptAtom): UserDisplayItem {
   return {
     kind: 'user',
@@ -254,6 +278,7 @@ function createUserDisplayItem(atom: TranscriptAtom): UserDisplayItem {
     timestamp: atom.order.timestamp,
     atomIds: [atom.id],
     message: atom.message,
+    displayKind: getUserDisplayKind(atom.message),
   }
 }
 
@@ -281,7 +306,14 @@ function createAssistantDisplayItem(
   const atomIds = atoms.map((atom) => atom.id)
   const fragments: DisplayFragment[] = []
 
-  for (const atom of atoms) {
+  const orderedAtoms = atoms.slice().sort((left, right) => {
+    const leftThinking = left.semanticKind === 'thinking' || isTranscriptRedactedThinkingMessage(left.message)
+    const rightThinking = right.semanticKind === 'thinking' || isTranscriptRedactedThinkingMessage(right.message)
+    if (leftThinking !== rightThinking) return leftThinking ? -1 : 1
+    return left.order.sourceIndex - right.order.sourceIndex
+  })
+
+  for (const atom of orderedAtoms) {
     fragments.push(...createFragments(atom.message, { mode }))
   }
   for (const atom of attachedToolResultAtoms) {
@@ -462,7 +494,7 @@ export function orderAtomsForTimeline(atoms: TranscriptAtom[], options: BuildDis
     .filter((atom) => !shouldHideMessage(atom.message, mode))
 }
 
-function attachToolResults(atoms: TranscriptAtom[], lookups: TranscriptLookup): {
+function deriveAttachedToolResultPolicy(atoms: TranscriptAtom[], lookups: TranscriptLookup): {
   attachedResultAtomsByOwnerId: Map<string, TranscriptAtom[]>
   attachedResultAtomIds: Set<string>
 } {
@@ -491,6 +523,27 @@ function attachToolResults(atoms: TranscriptAtom[], lookups: TranscriptLookup): 
   }
 }
 
+function isAssistantResponseFragmentAtom(atom: TranscriptAtom): boolean {
+  if (atom.role !== 'assistant') return false
+  if (atom.semanticKind !== 'assistant' && atom.semanticKind !== 'thinking') return false
+  if (atom.linkage.toolUseIds.length > 0) return false
+  if (atom.linkage.toolResultForIds.length > 0) return false
+  return true
+}
+
+function canMergeAssistantSiblingAtoms(group: TranscriptAtom[], candidate: TranscriptAtom): boolean {
+  const first = group[0]
+  if (!first) return false
+  if (!isAssistantResponseFragmentAtom(first) || !isAssistantResponseFragmentAtom(candidate)) return false
+
+  const firstResponseId = getAssistantResponseId(first.message)
+  const candidateResponseId = getAssistantResponseId(candidate.message)
+  if (!firstResponseId || !candidateResponseId) return false
+  if (firstResponseId !== candidateResponseId) return false
+
+  return getTranscriptStopReason(first.message) == null && getTranscriptStopReason(candidate.message) == null
+}
+
 function canGroupToolUseAtoms(group: TranscriptAtom[], candidate: TranscriptAtom): boolean {
   const first = group[0]
   if (!first) return false
@@ -506,7 +559,7 @@ function canGroupToolUseAtoms(group: TranscriptAtom[], candidate: TranscriptAtom
   return true
 }
 
-function applyGroupedToolUses(
+function buildPrimaryDisplayItems(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
   lookups: TranscriptLookup,
@@ -540,6 +593,19 @@ function applyGroupedToolUses(
       continue
     }
 
+    const assistantSiblings = [atom]
+    let assistantCursor = index + 1
+    while (assistantCursor < atoms.length && canMergeAssistantSiblingAtoms(assistantSiblings, atoms[assistantCursor]!)) {
+      assistantSiblings.push(atoms[assistantCursor]!)
+      assistantCursor += 1
+    }
+
+    if (assistantSiblings.length >= 2) {
+      items.push(createAssistantDisplayItem(assistantSiblings, mode, attachedResultAtomsByOwnerId.get(atom.id) || []))
+      index = assistantCursor - 1
+      continue
+    }
+
     const group = [atom]
     let cursor = index + 1
     while (cursor < atoms.length && canGroupToolUseAtoms(group, atoms[cursor]!)) {
@@ -564,16 +630,9 @@ function applyDisplayPoliciesAndTransforms(
   mode: 'default' | 'transcript',
 ): DisplayItem[] {
   const lookups = buildTranscriptLookups(atoms)
-  const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = attachToolResults(atoms, lookups)
-  const groupedItems = applyGroupedToolUses(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
+  const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = deriveAttachedToolResultPolicy(atoms, lookups)
+  const groupedItems = buildPrimaryDisplayItems(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
   return collapseLowSignalTools(groupedItems)
-}
-
-export function buildBaseDisplayItems(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {
-  const mode = options.mode ?? 'default'
-  const lookups = buildTranscriptLookups(atoms)
-  const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = attachToolResults(atoms, lookups)
-  return applyGroupedToolUses(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
 }
 
 function isCollapsibleToolItem(item: DisplayItem): item is AssistantDisplayItem | GroupedToolUseDisplayItem {

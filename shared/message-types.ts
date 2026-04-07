@@ -112,6 +112,7 @@ export interface UserDisplayItem {
   timestamp: number
   atomIds: string[]
   message: SessionMessage
+  displayKind?: 'default' | 'command_input' | 'command_output'
 }
 
 export interface AssistantDisplayItem {

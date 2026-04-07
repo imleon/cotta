@@ -19,11 +19,6 @@ export interface SessionSummary {
   updatedAt: number
 }
 
-export interface TranscriptVisibilityPolicy {
-  defaultHidden: boolean
-  transcriptOnly: boolean
-}
-
 export interface TranscriptLinkage {
   messageId: string | null
   toolUseIds: string[]
@@ -41,7 +36,6 @@ export interface TranscriptAtom {
   message: SessionMessage
   role: SessionMessage['role']
   semanticKind: TranscriptSemanticKind
-  visibility: TranscriptVisibilityPolicy
   linkage: TranscriptLinkage
   assistant: {
     stopReason?: string | null
@@ -49,7 +43,6 @@ export interface TranscriptAtom {
     usage?: TranscriptAssistantUsage | null
   }
   meta: {
-    isMeta: boolean
     optimistic?: boolean
     localId?: string
     raw?: unknown
@@ -193,6 +186,16 @@ export interface SummaryDisplayItem {
   anchorMessage: SessionMessage
 }
 
+export interface SystemDisplayItem {
+  kind: 'system'
+  id: string
+  key: string
+  timestamp: number
+  atomIds: string[]
+  message: SessionMessage
+  content: string
+}
+
 export type TimelineOverlayKind = 'streaming_text' | 'streaming_thinking' | 'streaming_tool_use' | 'streaming_progress'
 
 export interface TimelineOverlayAnchor {
@@ -234,6 +237,7 @@ export type DisplayItem =
   | GroupedToolUseDisplayItem
   | CollapsedToolBatchDisplayItem
   | SummaryDisplayItem
+  | SystemDisplayItem
 
 
 export type ChannelType = 'web' | 'lark' | 'discord'

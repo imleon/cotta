@@ -575,8 +575,9 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
       const limit = parseInt(c.req.query('limit') || '100', 10)
       const cursorRaw = c.req.query('cursor')
       const follow = c.req.query('follow') === '1'
+      const full = c.req.query('full') === '1'
       const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
-      const page = await readSessionTransportLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow)
+      const page = await readSessionTransportLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow, full)
       return c.json(page)
     } catch (err) {
       logger.error('http:transport-logs:error', {
@@ -594,8 +595,9 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
       const limit = parseInt(c.req.query('limit') || '100', 10)
       const cursorRaw = c.req.query('cursor')
       const follow = c.req.query('follow') === '1'
+      const full = c.req.query('full') === '1'
       const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
-      const page = await readSessionRuntimeLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow)
+      const page = await readSessionRuntimeLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow, full)
       return c.json(page)
     } catch (err) {
       logger.error('http:runtime-logs:error', {
@@ -613,8 +615,9 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
       const limit = parseInt(c.req.query('limit') || '100', 10)
       const cursorRaw = c.req.query('cursor')
       const follow = c.req.query('follow') === '1'
+      const full = c.req.query('full') === '1'
       const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
-      const page = await readSessionChannelLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow)
+      const page = await readSessionChannelLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow, full)
       return c.json(page)
     } catch (err) {
       logger.error('http:channel-logs:error', {

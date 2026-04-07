@@ -203,6 +203,12 @@ const liveButtonLabel = computed(() => {
   return 'PAUSED'
 })
 
+function isNearBottom(): boolean {
+  const container = scrollContainer.value
+  if (!container) return true
+  return container.scrollHeight - container.scrollTop - container.clientHeight <= 120
+}
+
 async function scrollToBottom() {
   await nextTick()
   const container = scrollContainer.value
@@ -213,26 +219,14 @@ async function scrollToBottom() {
 async function handleScroll() {
   const container = scrollContainer.value
   if (!container || container.scrollTop > 120) return
-  if (logView.selectedLogTab === 'transport') {
-    if (!logView.transportLogHasMore || logView.transportLogLoading) return
-  } else if (logView.selectedLogTab === 'runtime') {
-    if (!logView.runtimeLogHasMore || logView.runtimeLogLoading) return
-  } else if (logView.selectedLogTab === 'channel') {
-    if (!logView.channelLogHasMore || logView.channelLogLoading) return
-  } else {
-    if (!logView.persistentLogHasMore || logView.persistentLogLoading) return
-  }
+  if (logView.selectedLogTab !== 'persistent') return
+  if (!logView.persistentLogHasMore || logView.persistentLogLoading) return
 
+  logView.pauseSelectedLogFollow()
   preservingOlderScroll.value = true
   const previousHeight = container.scrollHeight
   const previousTop = container.scrollTop
-  const loaded = logView.selectedLogTab === 'transport'
-    ? await logView.loadOlderTransportLogs()
-    : logView.selectedLogTab === 'runtime'
-      ? await logView.loadOlderRuntimeLogs()
-      : logView.selectedLogTab === 'channel'
-        ? await logView.loadOlderChannelLogs()
-        : await logView.loadOlderPersistentLogs()
+  const loaded = await logView.loadOlderPersistentLogs()
   if (!loaded) {
     preservingOlderScroll.value = false
     return
@@ -263,7 +257,7 @@ watch(() => activeItems.value.length, async (next, prev) => {
     await scrollToBottom()
     return
   }
-  if (logView.transportLogLive && next > prev) {
+  if (logView.transportLogLive && next > prev && isNearBottom()) {
     await scrollToBottom()
   }
 })

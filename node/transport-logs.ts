@@ -335,6 +335,7 @@ export async function readSessionTransportLogs(
   cursor?: number | null,
   limit: number = DEFAULT_TRANSPORT_PAGE_SIZE,
   follow: boolean = false,
+  full: boolean = false,
 ): Promise<SessionTransportLogPage> {
   const safeSessionId = sanitizeSessionId(sessionId)
   if (!safeSessionId) {
@@ -350,7 +351,7 @@ export async function readSessionTransportLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  return paginateLogLines(content, cursor, safeLimit, follow, parseTransportLogLine)
+  return paginateLogLines(content, full ? 0 : cursor, safeLimit, follow, parseTransportLogLine)
 }
 
 export async function readSessionRuntimeLogs(
@@ -358,6 +359,7 @@ export async function readSessionRuntimeLogs(
   cursor?: number | null,
   limit: number = DEFAULT_RUNTIME_PAGE_SIZE,
   follow: boolean = false,
+  full: boolean = false,
 ): Promise<SessionRuntimeLogPage> {
   const safeSessionId = sanitizeSessionId(sessionId)
   if (!safeSessionId) {
@@ -373,7 +375,7 @@ export async function readSessionRuntimeLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  return paginateLogLines(content, cursor, safeLimit, follow, parseRuntimeLogLine)
+  return paginateLogLines(content, full ? 0 : cursor, safeLimit, follow, parseRuntimeLogLine)
 }
 
 export async function readSessionChannelLogs(
@@ -381,6 +383,7 @@ export async function readSessionChannelLogs(
   cursor?: number | null,
   limit: number = DEFAULT_CHANNEL_PAGE_SIZE,
   follow: boolean = false,
+  full: boolean = false,
 ): Promise<SessionChannelLogPage> {
   const safeSessionId = sanitizeSessionId(sessionId)
   if (!safeSessionId) {
@@ -395,5 +398,5 @@ export async function readSessionChannelLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  return paginateLogLines(content, cursor, safeLimit, follow, parseChannelLogLine)
+  return paginateLogLines(content, full ? 0 : cursor, safeLimit, follow, parseChannelLogLine)
 }

@@ -40,6 +40,8 @@ type StructuredLogTab = 'transport' | 'runtime' | 'channel'
 
 const logger = createDebugLogger('log-view-store')
 const SESSION_LIST_REFRESH_INTERVAL_MS = 3000
+const DEFAULT_LOG_PAGE_SIZE = 100
+const FULL_LOG_PAGE_SIZE = 200
 
 function shortId(value?: string | null): string | undefined {
   return value ? value.slice(0, 8) : undefined
@@ -116,6 +118,11 @@ export const useLogViewStore = defineStore('log-view', () => {
     persistentLogFollowing.value = false
   }
 
+  function pauseSelectedLogFollow() {
+    if (selectedLogTab.value !== 'persistent') return
+    stopPersistentFollow()
+  }
+
   function stopSessionListRefresh() {
     if (sessionListRefreshTimer !== null) {
       window.clearTimeout(sessionListRefreshTimer)
@@ -171,7 +178,8 @@ export const useLogViewStore = defineStore('log-view', () => {
     transportLogRefreshing.value = !options.append
     try {
       const params = new URLSearchParams()
-      params.set('limit', '100')
+      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
+      if (!options.follow) params.set('full', '1')
       if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
       if (options.follow) params.set('follow', '1')
       const res = await apiFetch(`/api/sessions/${sessionId}/transport-logs?${params.toString()}`)
@@ -193,8 +201,8 @@ export const useLogViewStore = defineStore('log-view', () => {
       } else {
         transportLog.value = items
       }
-      transportLogHasMore.value = Boolean(data.hasMore)
-      transportLogCursor.value = typeof data.nextCursor === 'number' ? data.nextCursor : null
+      transportLogHasMore.value = false
+      transportLogCursor.value = null
       logger.info('transport:load:success', {
         sessionId: shortId(sessionId),
         count: items.length,
@@ -223,7 +231,8 @@ export const useLogViewStore = defineStore('log-view', () => {
     runtimeLogRefreshing.value = !options.append
     try {
       const params = new URLSearchParams()
-      params.set('limit', '100')
+      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
+      if (!options.follow) params.set('full', '1')
       if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
       if (options.follow) params.set('follow', '1')
       const res = await apiFetch(`/api/sessions/${sessionId}/runtime-logs?${params.toString()}`)
@@ -245,8 +254,8 @@ export const useLogViewStore = defineStore('log-view', () => {
       } else {
         runtimeLog.value = items
       }
-      runtimeLogHasMore.value = Boolean(data.hasMore)
-      runtimeLogCursor.value = typeof data.nextCursor === 'number' ? data.nextCursor : null
+      runtimeLogHasMore.value = false
+      runtimeLogCursor.value = null
       logger.info('runtime:load:success', {
         sessionId: shortId(sessionId),
         count: items.length,
@@ -275,7 +284,8 @@ export const useLogViewStore = defineStore('log-view', () => {
     channelLogRefreshing.value = !options.append
     try {
       const params = new URLSearchParams()
-      params.set('limit', '100')
+      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
+      if (!options.follow) params.set('full', '1')
       if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
       if (options.follow) params.set('follow', '1')
       const res = await apiFetch(`/api/sessions/${sessionId}/channel-logs?${params.toString()}`)
@@ -297,8 +307,8 @@ export const useLogViewStore = defineStore('log-view', () => {
       } else {
         channelLog.value = items
       }
-      channelLogHasMore.value = Boolean(data.hasMore)
-      channelLogCursor.value = typeof data.nextCursor === 'number' ? data.nextCursor : null
+      channelLogHasMore.value = false
+      channelLogCursor.value = null
       logger.info('channel:load:success', {
         sessionId: shortId(sessionId),
         count: items.length,
@@ -327,8 +337,9 @@ export const useLogViewStore = defineStore('log-view', () => {
     persistentLogRefreshing.value = !options.append
     try {
       const params = new URLSearchParams()
-      params.set('limit', '100')
+      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
       params.set('kind', persistentLogKind.value)
+      if (!options.follow) params.set('full', '1')
       if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
       if (options.follow) params.set('follow', '1')
       const res = await apiFetch(`/api/sessions/${sessionId}/persistent-logs?${params.toString()}`)
@@ -453,18 +464,15 @@ export const useLogViewStore = defineStore('log-view', () => {
   }
 
   async function loadOlderTransportLogs() {
-    if (!selectedSessionId.value || !transportLogHasMore.value || transportLogCursor.value === null) return false
-    return loadTransportLogs(selectedSessionId.value, { cursor: transportLogCursor.value, append: true })
+    return false
   }
 
   async function loadOlderRuntimeLogs() {
-    if (!selectedSessionId.value || !runtimeLogHasMore.value || runtimeLogCursor.value === null) return false
-    return loadRuntimeLogs(selectedSessionId.value, { cursor: runtimeLogCursor.value, append: true })
+    return false
   }
 
   async function loadOlderChannelLogs() {
-    if (!selectedSessionId.value || !channelLogHasMore.value || channelLogCursor.value === null) return false
-    return loadChannelLogs(selectedSessionId.value, { cursor: channelLogCursor.value, append: true })
+    return false
   }
 
   async function loadOlderPersistentLogs() {
@@ -621,6 +629,7 @@ export const useLogViewStore = defineStore('log-view', () => {
     loadOlderRuntimeLogs,
     loadOlderChannelLogs,
     loadOlderPersistentLogs,
+    pauseSelectedLogFollow,
     stopTransportFollow,
     stopRuntimeFollow,
     stopChannelFollow,

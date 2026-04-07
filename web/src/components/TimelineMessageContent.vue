@@ -4,6 +4,7 @@ import TimelineCollapsedToolBatchCard from './TimelineCollapsedToolBatchCard.vue
 import TimelineGroupedToolUseCard from './TimelineGroupedToolUseCard.vue'
 import TimelineLivePreviewCard from './TimelineLivePreviewCard.vue'
 import TimelineSummaryCard from './TimelineSummaryCard.vue'
+import TimelineSystemCard from './TimelineSystemCard.vue'
 import TimelineUserCard from './TimelineUserCard.vue'
 import type { TimelineItem } from '../stores/session'
 
@@ -19,6 +20,10 @@ defineProps<{
 
   <template v-else-if="item.kind === 'summary'">
     <TimelineSummaryCard :item="item" />
+  </template>
+
+  <template v-else-if="item.kind === 'system'">
+    <TimelineSystemCard :item="item" />
   </template>
 
   <template v-else-if="item.kind === 'grouped_tool_use'">

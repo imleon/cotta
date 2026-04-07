@@ -7,10 +7,10 @@ import type {
   GroupedToolUseDisplayItem,
   SessionMessage,
   SummaryDisplayItem,
+  SystemDisplayItem,
   TranscriptAtom,
   TranscriptLinkage,
   TranscriptLookup,
-  TranscriptVisibilityPolicy,
   UserDisplayItem,
 } from './message-types.js'
 import {
@@ -22,6 +22,7 @@ import {
   getTranscriptStopReason,
   getTranscriptToolResultIds,
   getTranscriptToolUseIds,
+  isRenderableSystemTranscriptMessage,
   isTranscriptMetaMessage,
   isTranscriptRedactedThinkingMessage,
   isTranscriptSummaryMessage,
@@ -46,23 +47,6 @@ function makeAtomId(message: TranscriptMessage, options: BuildTranscriptAtomOpti
   return getTranscriptMessageId(message)
     ?? (options.localId && options.localId.trim())
     ?? `${options.source}-${options.sequence ?? 'noseq'}-${options.sourceIndex}`
-}
-
-function getVisibility(message: TranscriptMessage): TranscriptVisibilityPolicy {
-  const semanticKind = getTranscriptSemanticKind(message)
-  if (isTranscriptMetaMessage(message)) {
-    return { defaultHidden: true, transcriptOnly: false }
-  }
-  if (isTranscriptSummaryMessage(message)) {
-    return { defaultHidden: true, transcriptOnly: false }
-  }
-  if (isTranscriptRedactedThinkingMessage(message)) {
-    return { defaultHidden: true, transcriptOnly: true }
-  }
-  if (semanticKind === 'thinking') {
-    return { defaultHidden: false, transcriptOnly: false }
-  }
-  return { defaultHidden: false, transcriptOnly: false }
 }
 
 function getLinkage(message: TranscriptMessage): TranscriptLinkage {
@@ -104,7 +88,6 @@ export function buildTranscriptAtom(message: SessionMessage, options: BuildTrans
     message,
     role: message.role,
     semanticKind: getTranscriptSemanticKind(message),
-    visibility: getVisibility(message),
     linkage: getLinkage(message),
     assistant: {
       stopReason: getTranscriptStopReason(message),
@@ -112,7 +95,6 @@ export function buildTranscriptAtom(message: SessionMessage, options: BuildTrans
       usage: getTranscriptAssistantUsage(message),
     },
     meta: {
-      isMeta: isTranscriptMetaMessage(message),
       ...(options.optimistic ? { optimistic: true } : {}),
       ...(options.localId ? { localId: options.localId } : {}),
       raw: message.raw,
@@ -291,6 +273,18 @@ function createSummaryDisplayItem(atom: TranscriptAtom, mode: 'default' | 'trans
   }
 }
 
+function createSystemDisplayItem(atom: TranscriptAtom): SystemDisplayItem {
+  return {
+    kind: 'system',
+    id: atom.id,
+    key: atom.id,
+    timestamp: atom.order.timestamp,
+    atomIds: [atom.id],
+    message: atom.message,
+    content: atom.message.content,
+  }
+}
+
 function createAssistantDisplayItem(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
@@ -456,10 +450,28 @@ export function buildTranscriptLookups(atoms: TranscriptAtom[]): TranscriptLooku
   }
 }
 
-function shouldHideAtom(atom: TranscriptAtom, mode: 'default' | 'transcript'): boolean {
+function shouldHideMetaMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
+  return mode !== 'transcript' && isTranscriptMetaMessage(message)
+}
+
+function shouldHideSystemMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
   if (mode === 'transcript') return false
-  if (atom.visibility.transcriptOnly) return true
-  return atom.visibility.defaultHidden
+  return !isRenderableSystemTranscriptMessage(message.raw)
+}
+
+function shouldHideSummaryMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
+  return mode !== 'transcript' && isTranscriptSummaryMessage(message)
+}
+
+function shouldHideThinkingMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
+  return mode !== 'transcript' && isTranscriptRedactedThinkingMessage(message)
+}
+
+function shouldHideMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
+  return shouldHideMetaMessage(message, mode)
+    || shouldHideSystemMessage(message, mode)
+    || shouldHideSummaryMessage(message, mode)
+    || shouldHideThinkingMessage(message, mode)
 }
 
 export function orderAtomsForTimeline(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): TranscriptAtom[] {
@@ -467,7 +479,7 @@ export function orderAtomsForTimeline(atoms: TranscriptAtom[], options: BuildDis
   return atoms
     .slice()
     .sort(compareAtoms)
-    .filter((atom) => !shouldHideAtom(atom, mode))
+    .filter((atom) => !shouldHideMessage(atom.message, mode))
 }
 
 function attachToolResults(atoms: TranscriptAtom[], lookups: TranscriptLookup): {
@@ -514,10 +526,13 @@ function canGroupToolUseAtoms(group: TranscriptAtom[], candidate: TranscriptAtom
   return true
 }
 
-export function buildBaseDisplayItems(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {
-  const mode = options.mode ?? 'default'
-  const lookups = buildTranscriptLookups(atoms)
-  const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = attachToolResults(atoms, lookups)
+function applyGroupedToolUses(
+  atoms: TranscriptAtom[],
+  mode: 'default' | 'transcript',
+  lookups: TranscriptLookup,
+  attachedResultAtomsByOwnerId: Map<string, TranscriptAtom[]>,
+  attachedResultAtomIds: Set<string>,
+): DisplayItem[] {
   const items: DisplayItem[] = []
 
   for (let index = 0; index < atoms.length; index += 1) {
@@ -527,6 +542,11 @@ export function buildBaseDisplayItems(atoms: TranscriptAtom[], options: BuildDis
 
     if (atom.semanticKind === 'summary') {
       items.push(createSummaryDisplayItem(atom, mode))
+      continue
+    }
+
+    if (atom.semanticKind === 'system') {
+      items.push(createSystemDisplayItem(atom))
       continue
     }
 
@@ -564,6 +584,23 @@ export function buildBaseDisplayItems(atoms: TranscriptAtom[], options: BuildDis
   return items
 }
 
+function applyDisplayPoliciesAndTransforms(
+  atoms: TranscriptAtom[],
+  mode: 'default' | 'transcript',
+): DisplayItem[] {
+  const lookups = buildTranscriptLookups(atoms)
+  const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = attachToolResults(atoms, lookups)
+  const groupedItems = applyGroupedToolUses(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
+  return collapseLowSignalTools(groupedItems)
+}
+
+export function buildBaseDisplayItems(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {
+  const mode = options.mode ?? 'default'
+  const lookups = buildTranscriptLookups(atoms)
+  const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = attachToolResults(atoms, lookups)
+  return applyGroupedToolUses(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
+}
+
 function isCollapsibleToolItem(item: DisplayItem): item is AssistantDisplayItem | GroupedToolUseDisplayItem {
   if (item.kind === 'grouped_tool_use') {
     return item.toolUses.every((tool) => isLowSignalToolName(tool.name))
@@ -577,7 +614,7 @@ function isCollapsibleToolItem(item: DisplayItem): item is AssistantDisplayItem 
   return false
 }
 
-export function collapseToolBatchDisplayItems(items: DisplayItem[]): DisplayItem[] {
+export function collapseLowSignalTools(items: DisplayItem[]): DisplayItem[] {
   const collapsed: DisplayItem[] = []
 
   for (let index = 0; index < items.length; index += 1) {
@@ -609,6 +646,5 @@ export function collapseToolBatchDisplayItems(items: DisplayItem[]): DisplayItem
 export function buildDisplayItems(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {
   const mode = options.mode ?? 'default'
   const orderedAtoms = orderAtomsForTimeline(atoms, { mode })
-  const baseItems = buildBaseDisplayItems(orderedAtoms, { mode })
-  return collapseToolBatchDisplayItems(baseItems)
+  return applyDisplayPoliciesAndTransforms(orderedAtoms, mode)
 }

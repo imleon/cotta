@@ -6,7 +6,9 @@ import type { SDKSessionInfo, SessionMessage as SDKSessionMessage } from '@anthr
 import type { SessionMessage, SessionSummary } from '../shared/message-types.js'
 import {
   extractTimestamp,
+  isRenderableSystemTranscriptMessage,
   normalizeStoredTranscriptMessage,
+  normalizeSystemTranscriptMessage,
   normalizeTranscriptMessage,
 } from '../shared/transcript-normalizer.js'
 
@@ -27,7 +29,13 @@ function toSessionInfo(session: SDKSessionInfo): SessionSummary {
   }
 }
 
-function toSessionMessage(message: SDKSessionMessage): SessionMessage {
+function toSessionMessage(message: SDKSessionMessage): SessionMessage | null {
+  if (message.type === 'system') {
+    return isRenderableSystemTranscriptMessage(message)
+      ? normalizeSystemTranscriptMessage(message)
+      : null
+  }
+
   return normalizeTranscriptMessage(
     message.type,
     message.message,
@@ -70,9 +78,12 @@ async function readAllMessages(sessionId: string): Promise<SessionMessage[]> {
     dir: CONFIG.workspacePath,
     limit: 10_000_000,
     offset: 0,
+    includeSystemMessages: true,
   })
 
-  return messages.map((message) => toSessionMessage(message))
+  return messages
+    .map((message) => toSessionMessage(message))
+    .filter((message): message is SessionMessage => message !== null)
 }
 
 export async function getMessagesPage(sessionId: string, options: { limit?: number; before?: string | null } = {}): Promise<SessionMessagePage> {

@@ -53,6 +53,7 @@ interface SessionMessagesResponse {
 }
 
 const AUTH_TOKEN_STORAGE_KEY = 'cotta-auth-token'
+const DEFAULT_HISTORY_PAGE_SIZE = 100
 const logger = createDebugLogger('session-store')
 const EVENT_LOG_INTERVAL = 20
 const OPTIMISTIC_USER_MATCH_WINDOW_MS = 30_000
@@ -285,7 +286,7 @@ export const useSessionStore = defineStore('session', () => {
           sequence: event.sequence,
         })
       })
-      .filter((atom): atom is TranscriptAtom => atom !== null && !atom.meta.isMeta)
+      .filter((atom): atom is TranscriptAtom => atom !== null && atom.semanticKind !== 'meta')
   )
   const defaultTimelineItems = computed<DisplayItem[]>(() =>
     buildDisplayItems([...historyAtoms.value, ...liveAtoms.value], { mode: 'default' })
@@ -843,7 +844,7 @@ export const useSessionStore = defineStore('session', () => {
     })
     try {
       const params = new URLSearchParams()
-      params.set('limit', '50')
+      params.set('limit', String(DEFAULT_HISTORY_PAGE_SIZE))
       if (options.before) params.set('before', options.before)
       const res = await apiFetch(`/api/sessions/${id}/messages?${params.toString()}`)
       if (!res.ok) {

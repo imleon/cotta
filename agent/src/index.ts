@@ -258,6 +258,163 @@ function normalizeElicitationRequest(request: SDKControlRequest): PendingInterac
   }
 }
 
+type AskUserQuestionSingleSelect = {
+  field: string
+  prompt: string
+  description?: string
+  options: Array<{ value: string; label: string }>
+  defaultValue?: string
+  questions: Record<string, unknown>[]
+}
+
+function normalizeQuestionOption(option: unknown): { value: string; label: string } | null {
+  if (typeof option === 'string' && option.trim().length > 0) {
+    return { value: option, label: option }
+  }
+
+  const record = asRecord(option)
+  if (!record) return null
+
+  const value = getString(record.value) || getString(record.id) || getString(record.key) || getString(record.label) || getString(record.text) || getString(record.title)
+  if (!value) return null
+
+  return {
+    value,
+    label: getString(record.label) || getString(record.text) || getString(record.title) || value,
+  }
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined
+}
+
+function getBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function parseAskUserQuestionSingleSelect(input: Record<string, unknown>): AskUserQuestionSingleSelect | null {
+  const questions = Array.isArray(input.questions) ? input.questions : null
+  if (!questions || questions.length !== 1) return null
+
+  const question = asRecord(questions[0])
+  if (!question) return null
+
+  const type = getString(question.type)?.toLowerCase()
+  const format = getString(question.format)?.toLowerCase()
+  const questionType = getString(question.questionType)?.toLowerCase()
+  const multiSelect = getBoolean(question.multiSelect) ?? getBoolean(question.multiple) ?? false
+  const optionsSource = Array.isArray(question.options)
+    ? question.options
+    : Array.isArray(question.choices)
+      ? question.choices
+      : Array.isArray(question.enum)
+        ? question.enum
+        : null
+  const options = (optionsSource || []).map(normalizeQuestionOption).filter((option): option is { value: string; label: string } => Boolean(option))
+
+  const isSingleSelect = !multiSelect && (
+    type === 'single_select'
+    || type === 'radio'
+    || questionType === 'single_select'
+    || questionType === 'radio'
+    || format === 'enum'
+    || options.length > 0
+  )
+
+  if (!isSingleSelect || options.length === 0) return null
+
+  const field = getString(question.name) || getString(question.key) || getString(question.id) || 'value'
+  const prompt = getString(question.question) || getString(question.title) || getString(question.label) || 'Question required'
+
+  return {
+    field,
+    prompt,
+    description: getString(question.description) || getString(question.hint) || getString(question.helpText),
+    options,
+    defaultValue: getString(question.defaultValue) || getString(question.default) || getString(question.value),
+    questions: questions.filter((item): item is Record<string, unknown> => Boolean(asRecord(item))).map((item) => item as Record<string, unknown>),
+  }
+}
+
+function buildAskUserQuestionElicitationRequest(toolName: string, toolInput: Record<string, unknown>, options: {
+  toolUseID: string
+  title?: string
+  description?: string
+}): ElicitationRequest | null {
+  if (toolName !== 'AskUserQuestion') return null
+  const parsedQuestion = parseAskUserQuestionSingleSelect(toolInput)
+  if (!parsedQuestion) return null
+
+  return {
+    elicitationId: options.toolUseID,
+    serverName: toolName,
+    message: options.description || options.title || parsedQuestion.prompt,
+    requestedSchema: {
+      type: 'object',
+      properties: {
+        answers: {
+          type: 'object',
+          properties: {
+            [parsedQuestion.prompt]: {
+              type: 'string',
+              title: parsedQuestion.prompt,
+              ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
+              enum: parsedQuestion.options.map((option) => option.value),
+              ...(parsedQuestion.defaultValue ? { default: parsedQuestion.defaultValue } : {}),
+            },
+          },
+          required: [parsedQuestion.prompt],
+        },
+      },
+      required: ['answers'],
+    },
+  }
+}
+
+type AskUserQuestionAnswerContent = {
+  answers?: Record<string, unknown>
+}
+
+function mapElicitationResultToPermissionResult(
+  request: { toolUseID: string; originalInput: Record<string, unknown>; questionText?: string },
+  response: ElicitationResult
+): PermissionResult {
+  if (response.action === 'accept') {
+    const elicitationContent = response.content as unknown as AskUserQuestionAnswerContent | undefined
+    const answersRecord = elicitationContent?.answers && typeof elicitationContent.answers === 'object' && !Array.isArray(elicitationContent.answers)
+      ? elicitationContent.answers
+      : undefined
+    const answerValue = request.questionText && answersRecord
+      ? answersRecord[request.questionText]
+      : undefined
+    const answers = request.questionText && (typeof answerValue === 'string' || typeof answerValue === 'number' || typeof answerValue === 'boolean')
+      ? { [request.questionText]: String(answerValue) }
+      : {}
+
+    return {
+      behavior: 'allow',
+      updatedInput: {
+        ...request.originalInput,
+        answers,
+      },
+      toolUseID: request.toolUseID,
+      decisionClassification: 'user_temporary',
+    }
+  }
+
+  const message = response.action === 'cancel'
+    ? 'User cancelled the question.'
+    : 'User declined to answer the question.'
+
+  return {
+    behavior: 'deny',
+    message,
+    interrupt: true,
+    toolUseID: request.toolUseID,
+    decisionClassification: 'user_reject',
+  }
+}
+
 type PermissionRequest = {
   permissionId: string
   toolName: string
@@ -274,6 +431,7 @@ type PermissionRequest = {
 type PermissionResponse = {
   decision: 'approve' | 'deny'
   selectedSuggestion?: PermissionSuggestion | null
+  content?: Record<string, ElicitationContentValue>
 }
 
 type ElicitationContentValue = string | number | boolean | string[]
@@ -354,12 +512,13 @@ function getPermissionResult(request: PermissionRequest, response: PermissionRes
     }
   }
 
+  const updatedInput = response.content ?? {}
   const selectedRaw = response.selectedSuggestion?.raw
   if (selectedRaw && typeof selectedRaw === 'object' && 'type' in selectedRaw) {
     const permissionUpdate = selectedRaw as PermissionUpdate
     return {
       behavior: 'allow',
-      updatedInput: {},
+      updatedInput,
       updatedPermissions: [permissionUpdate],
       toolUseID: request.permissionId,
       decisionClassification: permissionUpdate.destination === 'session' ? 'user_permanent' : 'user_temporary',
@@ -368,7 +527,7 @@ function getPermissionResult(request: PermissionRequest, response: PermissionRes
 
   return {
     behavior: 'allow',
-    updatedInput: {},
+    updatedInput,
     toolUseID: request.permissionId,
     decisionClassification: 'user_temporary',
   }
@@ -432,6 +591,7 @@ function handleCommand(command: RunnerCommand) {
         ...maybeTransportPayload({
           decision: command.decision,
           ...(command.selectedSuggestion !== undefined ? { selectedSuggestion: command.selectedSuggestion } : {}),
+          ...(command.content ? { content: command.content } : {}),
         }),
         ...nextEnvelope(currentSessionId),
       })
@@ -441,6 +601,7 @@ function handleCommand(command: RunnerCommand) {
         resolve({
           decision: command.decision,
           ...(command.selectedSuggestion !== undefined ? { selectedSuggestion: command.selectedSuggestion } : {}),
+          ...(command.content ? { content: command.content as Record<string, ElicitationContentValue> } : {}),
         })
       }
       break
@@ -819,6 +980,23 @@ async function main(): Promise<void> {
   try {
     const canUseTool: CanUseTool = async (toolName, toolInput, options) => {
       const permissionId = options.toolUseID || randomUUID()
+      const elicitationRequest = buildAskUserQuestionElicitationRequest(toolName, toolInput, {
+        toolUseID: permissionId,
+        title: options.title,
+        description: options.description,
+      })
+      if (elicitationRequest) {
+        const parsedQuestion = parseAskUserQuestionSingleSelect(toolInput)
+        const elicitationResult = await waitForElicitation(elicitationRequest, options.signal)
+        return mapElicitationResultToPermissionResult(
+          {
+            toolUseID: permissionId,
+            originalInput: toolInput,
+            questionText: parsedQuestion?.prompt,
+          },
+          elicitationResult,
+        )
+      }
       return waitForPermission(
         {
           permissionId,

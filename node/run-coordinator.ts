@@ -140,14 +140,14 @@ export class RunCoordinator {
     return true
   }
 
-  respondToPermission(runId: string, permissionId: string, decision: PermissionDecision, selectedSuggestion?: PermissionSuggestion | null): boolean {
+  respondToPermission(runId: string, permissionId: string, decision: PermissionDecision, selectedSuggestion?: PermissionSuggestion | null, content?: Record<string, string | number | boolean | string[]>): boolean {
     const record = this.runs.get(runId)
     if (!record?.handle) return false
-    record.handle.respondToPermission(permissionId, decision, selectedSuggestion)
+    record.handle.respondToPermission(permissionId, decision, selectedSuggestion, content)
     return true
   }
 
-  respondToElicitation(runId: string, requestId: string, action: ElicitationAction, content?: Record<string, string | number | boolean | string[]>): boolean {
+  respondToElicitation(runId: string, requestId: string, action: ElicitationAction, content?: Record<string, unknown>): boolean {
     const record = this.runs.get(runId)
     if (!record?.handle) return false
     record.handle.respondToElicitation(requestId, {

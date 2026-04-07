@@ -437,7 +437,7 @@ export type RunnerAgentInput = {
 export type RunnerCommand =
   | { type: 'run.start'; input: RunnerAgentInput }
   | { type: 'run.cancel' }
-  | { type: 'interaction.permission.respond'; permissionId: string; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null }
+  | { type: 'interaction.permission.respond'; permissionId: string; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> }
   | { type: 'interaction.elicitation.respond'; requestId: string; response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } }
 
 export type RunnerRuntimeEvent =

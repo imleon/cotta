@@ -905,7 +905,11 @@ export const useSessionStore = defineStore('session', () => {
     })
   }
 
-  function respondToPermission(decision: 'approve' | 'deny', selectedSuggestion?: PermissionSuggestion | null) {
+  function respondToPermission(
+    decision: 'approve' | 'deny',
+    selectedSuggestion?: PermissionSuggestion | null,
+    content?: Record<string, string | number | boolean | string[]>
+  ) {
     if (!ws || ws.readyState !== WebSocket.OPEN || !pendingInteraction.value || pendingInteraction.value.kind !== 'permission' || !activeRunId.value) {
       logger.warn('chat:permission:blocked', {
         hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),
@@ -928,11 +932,12 @@ export const useSessionStore = defineStore('session', () => {
         permissionId: pendingInteraction.value.id,
         decision,
         ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
+        ...(content ? { content } : {}),
       })
     )
   }
 
-  function respondToElicitation(response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> }) {
+  function respondToElicitation(response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
     if (!ws || ws.readyState !== WebSocket.OPEN || !pendingInteraction.value || pendingInteraction.value.kind !== 'elicitation' || !activeRunId.value) {
       logger.warn('chat:elicitation:blocked', {
         hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),

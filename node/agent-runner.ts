@@ -27,8 +27,8 @@ export interface AgentRunResult {
 
 export interface AgentRunHandle {
   done: Promise<AgentRunResult>
-  respondToPermission: (permissionId: string, decision: 'approve' | 'deny', selectedSuggestion?: PermissionSuggestion | null) => void
-  respondToElicitation: (requestId: string, response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> }) => void
+  respondToPermission: (permissionId: string, decision: 'approve' | 'deny', selectedSuggestion?: PermissionSuggestion | null, content?: Record<string, string | number | boolean | string[]>) => void
+  respondToElicitation: (requestId: string, response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) => void
   cancel: () => void
 }
 
@@ -247,12 +247,13 @@ export function createAgentRun(input: AgentInput, onEvent: AgentEventHandler, si
 
   return {
     done,
-    respondToPermission(permissionId, decision, selectedSuggestion) {
+    respondToPermission(permissionId, decision, selectedSuggestion, content) {
       writeCommand(child, {
         type: 'interaction.permission.respond',
         permissionId,
         decision,
         ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
+        ...(content ? { content } : {}),
       })
     },
     respondToElicitation(requestId, response) {

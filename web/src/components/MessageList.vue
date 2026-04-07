@@ -7,12 +7,27 @@ import { useSessionStore } from '../stores/session'
 import {
   stringifyStructuredValue,
 } from '../../../shared/transcript-normalizer.js'
-import type { PendingPermissionInteraction } from '../../../shared/message-types.js'
+import type { PendingElicitationInteraction, PendingPermissionInteraction } from '../../../shared/message-types.js'
 import type { TimelineItem } from '../stores/session'
+
+type QuestionOption = {
+  value: string
+  label: string
+}
+
+type AskUserQuestionSingleSelect = {
+  field: string
+  prompt: string
+  description?: string
+  options: QuestionOption[]
+  defaultValue?: string
+  questionText: string
+}
 
 const session = useSessionStore()
 const container = ref<HTMLElement>()
 const elicitationInput = ref('')
+const elicitationAnswer = ref('')
 const preservingOlderScroll = ref(false)
 const initialHistoryAutoScrollPending = ref(true)
 const pendingAutoScrollFrame = ref<number | null>(null)
@@ -22,20 +37,25 @@ const visibleTimelineItems = computed(() => session.timeline)
 const pendingPermissionInteraction = computed<PendingPermissionInteraction | null>(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction : null
 )
+const pendingElicitationInteraction = computed<PendingElicitationInteraction | null>(() =>
+  session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction : null
+)
+const askUserQuestion = computed(() => parseAskUserQuestionSingleSelect(pendingElicitationInteraction.value))
 const pendingInteractionTitle = computed(() => {
   const interaction = session.pendingInteraction
   if (!interaction) return 'Pending interaction'
   if (interaction.kind === 'permission') {
     return interaction.title || interaction.displayName || interaction.toolName || 'Pending interaction'
   }
-  return interaction.serverName || 'Pending interaction'
+  return askUserQuestion.value?.prompt || interaction.serverName || 'Pending interaction'
 })
 const pendingInteractionDescription = computed(() => {
   const interaction = session.pendingInteraction
   if (!interaction) return ''
-  return interaction.kind === 'permission'
-    ? interaction.description || ''
-    : interaction.message || ''
+  if (interaction.kind === 'permission') {
+    return interaction.description || ''
+  }
+  return askUserQuestion.value?.description || interaction.message || ''
 })
 const pendingInteractionReason = computed(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction.decisionReason || '' : ''
@@ -46,6 +66,75 @@ const pendingInteractionUrl = computed(() =>
 const pendingInteractionSchema = computed(() =>
   session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction.requestedSchema : undefined
 )
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined
+}
+
+function getBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function normalizeOption(option: unknown): QuestionOption | null {
+  if (typeof option === 'string' && option.trim().length > 0) {
+    return { value: option, label: option }
+  }
+
+  const record = asRecord(option)
+  if (!record) return null
+
+  const value = getString(record.value) || getString(record.id) || getString(record.key) || getString(record.label) || getString(record.text) || getString(record.title)
+  if (!value) return null
+
+  return {
+    value,
+    label: getString(record.label) || getString(record.text) || getString(record.title) || value,
+  }
+}
+
+function parseAskUserQuestionSingleSelect(interaction: PendingElicitationInteraction | null): AskUserQuestionSingleSelect | null {
+  if (!interaction || interaction.serverName !== 'AskUserQuestion') return null
+
+  const schema = asRecord(interaction.requestedSchema)
+  const answersProperty = asRecord(asRecord(schema?.properties)?.answers)
+  const answerProperties = asRecord(answersProperty?.properties)
+  if (!answerProperties) return null
+
+  const [questionText, rawProperty] = Object.entries(answerProperties)[0] || []
+  if (!questionText) return null
+
+  const property = asRecord(rawProperty)
+  if (!property) return null
+
+  const optionValues = Array.isArray(property.enum)
+    ? property.enum.filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
+    : null
+  if (!optionValues || optionValues.length === 0) return null
+
+  const prompt = getString(property.title) || questionText || interaction.message || interaction.serverName
+  if (!prompt) return null
+
+  return {
+    field: 'answers',
+    prompt,
+    description: getString(property.description),
+    options: optionValues.map((value) => ({ value, label: value })),
+    defaultValue: getString(property.default),
+    questionText,
+  }
+}
+
+function getDefaultAnswer(question: AskUserQuestionSingleSelect | null): string {
+  if (!question) return ''
+  const matchedDefault = question.defaultValue && question.options.some((option) => option.value === question.defaultValue)
+    ? question.defaultValue
+    : undefined
+  return matchedDefault || question.options[0]?.value || ''
+}
 
 function itemHasToolUseId(item: TimelineItem, toolUseId: string): boolean {
   if (item.kind === 'assistant') {
@@ -142,8 +231,25 @@ function handleScroll() {
   void maybeLoadOlderHistory()
 }
 
+function submitAskUserQuestion() {
+  if (!askUserQuestion.value) return
+  session.respondToElicitation({
+    action: 'accept',
+    content: {
+      answers: {
+        [askUserQuestion.value.questionText]: elicitationAnswer.value,
+      },
+    },
+  })
+  elicitationAnswer.value = ''
+}
+
 function submitElicitation() {
   if (session.pendingInteraction?.kind !== 'elicitation') return
+  if (askUserQuestion.value) {
+    submitAskUserQuestion()
+    return
+  }
 
   const text = elicitationInput.value.trim()
   if (!text) {
@@ -206,6 +312,7 @@ watch(
   () => session.pendingInteraction?.id,
   () => {
     elicitationInput.value = ''
+    elicitationAnswer.value = getDefaultAnswer(askUserQuestion.value)
   }
 )
 </script>
@@ -271,26 +378,64 @@ watch(
         <TimelinePermissionRequestBlock :interaction="pendingPermissionInteraction" />
       </div>
       <div v-else class="space-y-3">
-        <TimelineCliSubrow muted>
-          <div>当前提供最小闭环输入。可直接填写 JSON；若不是 JSON，将作为 value 字段提交。</div>
-        </TimelineCliSubrow>
-        <TimelineCliSubrow v-if="pendingInteractionSchema" muted>
-          <pre class="whitespace-pre-wrap text-xs text-slate-500">{{ stringifyStructuredValue(pendingInteractionSchema) }}</pre>
-        </TimelineCliSubrow>
-        <TimelineCliSubrow no-prefix>
-          <div class="min-w-0 flex-1 space-y-3">
-            <textarea
-              v-model="elicitationInput"
-              rows="4"
-              class="w-full resize-y rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400"
-              placeholder='{"key":"value"} 或直接输入文本'
-            />
-            <div class="flex gap-3 text-sm">
-              <button class="timeline-cli-button text-slate-700" @click="submitElicitation">Submit</button>
-              <button class="timeline-cli-button" @click="session.respondToElicitation({ action: 'cancel' })">Cancel interaction</button>
+        <template v-if="askUserQuestion">
+          <TimelineCliSubrow no-prefix>
+            <div class="min-w-0 flex-1 space-y-3 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5 text-slate-700">
+                <span class="font-medium text-amber-900">Question required</span>
+                <span class="text-slate-400">·</span>
+                <span class="text-slate-600">{{ askUserQuestion.prompt }}</span>
+              </div>
+              <div v-if="askUserQuestion.description" class="text-[12px] leading-5 text-slate-600">
+                {{ askUserQuestion.description }}
+              </div>
+              <label
+                v-for="option in askUserQuestion.options"
+                :key="`${session.pendingInteraction?.id}-${askUserQuestion.questionText}-${option.value}`"
+                class="flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 text-[12px] leading-5 transition-colors"
+                :class="elicitationAnswer === option.value
+                  ? 'border-amber-300 bg-white/90 text-slate-700'
+                  : 'border-amber-100/80 bg-white/65 text-slate-500 hover:border-amber-200 hover:bg-white/80'"
+              >
+                <input
+                  v-model="elicitationAnswer"
+                  type="radio"
+                  :name="`${session.pendingInteraction?.id}-${askUserQuestion.questionText}`"
+                  class="mt-1"
+                  :value="option.value"
+                >
+                <span class="min-w-0 flex-1 text-slate-700">{{ option.label }}</span>
+              </label>
+              <div class="flex gap-3 text-sm">
+                <button class="timeline-cli-button text-slate-700" @click="submitAskUserQuestion">Submit</button>
+                <button class="timeline-cli-button" @click="session.respondToElicitation({ action: 'decline' })">Decline</button>
+                <button class="timeline-cli-button" @click="session.respondToElicitation({ action: 'cancel' })">Cancel interaction</button>
+              </div>
             </div>
-          </div>
-        </TimelineCliSubrow>
+          </TimelineCliSubrow>
+        </template>
+        <template v-else>
+          <TimelineCliSubrow muted>
+            <div>当前提供最小闭环输入。可直接填写 JSON；若不是 JSON，将作为 value 字段提交。</div>
+          </TimelineCliSubrow>
+          <TimelineCliSubrow v-if="pendingInteractionSchema" muted>
+            <pre class="whitespace-pre-wrap text-xs text-slate-500">{{ stringifyStructuredValue(pendingInteractionSchema) }}</pre>
+          </TimelineCliSubrow>
+          <TimelineCliSubrow no-prefix>
+            <div class="min-w-0 flex-1 space-y-3">
+              <textarea
+                v-model="elicitationInput"
+                rows="4"
+                class="w-full resize-y rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400"
+                placeholder='{"key":"value"} 或直接输入文本'
+              />
+              <div class="flex gap-3 text-sm">
+                <button class="timeline-cli-button text-slate-700" @click="submitElicitation">Submit</button>
+                <button class="timeline-cli-button" @click="session.respondToElicitation({ action: 'cancel' })">Cancel interaction</button>
+              </div>
+            </div>
+          </TimelineCliSubrow>
+        </template>
       </div>
     </div>
 

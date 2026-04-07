@@ -57,8 +57,9 @@ function handlePermission(
   permissionId: string,
   decision: PermissionDecision,
   selectedSuggestion?: PermissionSuggestion | null,
+  content?: Record<string, string | number | boolean | string[]>,
 ) {
-  const ok = coordinator.respondToPermission(runId, permissionId, decision, selectedSuggestion)
+  const ok = coordinator.respondToPermission(runId, permissionId, decision, selectedSuggestion, content)
   if (!ok) {
     sendSessionEvent(ws, { type: 'session.error', runId, error: 'No matching active run for permission response' })
     return
@@ -76,13 +77,17 @@ function handleElicitation(ws: any, coordinator: RunCoordinator, runId: string, 
     requestId,
     action,
     content && typeof content === 'object' && !Array.isArray(content)
-      ? content as Record<string, string | number | boolean | string[]>
+      ? content as Record<string, unknown>
       : undefined,
   )
   if (!ok) {
     sendSessionEvent(ws, { type: 'session.error', runId, error: 'No matching active run for elicitation response' })
     return
   }
+}
+
+function isStructuredResponseContent(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coordinator: RunCoordinator) {
@@ -146,6 +151,10 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
           }
 
           if (data.action === 'permission.respond' && data.runId && typeof data.permissionId === 'string' && (data.decision === 'approve' || data.decision === 'deny')) {
+            if (data.content !== undefined && !isStructuredResponseContent(data.content)) {
+              sendSessionEvent(ws, { type: 'session.error', runId: data.runId, error: 'Permission content must be an object' })
+              return
+            }
             void appendWebChannelLog({
               sessionId: typeof data.sessionId === 'string' ? data.sessionId : undefined,
               runId: data.runId,
@@ -156,6 +165,7 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
                 permissionId: data.permissionId,
                 decision: data.decision,
                 ...(data.selectedSuggestion !== undefined ? { selectedSuggestion: data.selectedSuggestion } : {}),
+                ...(data.content !== undefined ? { content: data.content } : {}),
               },
             })
             handlePermission(
@@ -165,6 +175,7 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
               data.permissionId,
               data.decision,
               data.selectedSuggestion as PermissionSuggestion | null | undefined,
+              data.content as Record<string, string | number | boolean | string[]> | undefined,
             )
             return
           }

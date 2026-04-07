@@ -26,7 +26,6 @@ export interface TranscriptVisibilityPolicy {
 
 export interface TranscriptLinkage {
   messageId: string | null
-  parentId: string | null
   toolUseIds: string[]
   toolResultForIds: string[]
 }
@@ -225,7 +224,6 @@ export interface TranscriptLookup {
   toolUseAtomsByToolUseId: Map<string, TranscriptAtom>
   toolResultAtomsByToolUseId: Map<string, TranscriptAtom>
   atomsByMessageId: Map<string, TranscriptAtom[]>
-  atomsByParentId: Map<string, TranscriptAtom[]>
   siblingToolUseIdsByToolUseId: Map<string, string[]>
   resolvedToolUseIds: Set<string>
 }

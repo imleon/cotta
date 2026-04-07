@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import type { TimelineItem } from '../stores/session'
 import {
   getTranscriptMessageId,
-  getTranscriptParentMessageId,
 } from '../../../shared/transcript-normalizer.js'
 import type {
   AssistantDisplayItem,
@@ -102,7 +101,17 @@ const rowStatus = computed(() => {
 const debugMeta = computed(() => {
   const message = getAnchorMessage(props.item)
   if (!message) return ''
-  return `uuid=${getTranscriptMessageId(message) || 'unknown'} parent=${getTranscriptParentMessageId(message) || 'none'}${rowStatus.value === 'streaming' ? ' · streaming' : ''}`
+  const toolUseIds = (message.blocks || [])
+    .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
+  const toolResultForIds = (message.blocks || [])
+    .flatMap((block) => block.type === 'tool_result' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
+
+  return [
+    `uuid=${getTranscriptMessageId(message) || 'unknown'}`,
+    toolUseIds.length ? `toolUse=${toolUseIds.join(',')}` : '',
+    toolResultForIds.length ? `toolResultFor=${toolResultForIds.join(',')}` : '',
+    rowStatus.value === 'streaming' ? 'streaming' : '',
+  ].filter(Boolean).join(' · ')
 })
 </script>
 

@@ -18,7 +18,6 @@ import {
   getTranscriptAssistantModel,
   getTranscriptAssistantUsage,
   getTranscriptMessageId,
-  getTranscriptParentMessageId,
   getTranscriptSemanticKind,
   getTranscriptStopReason,
   getTranscriptToolResultIds,
@@ -69,7 +68,6 @@ function getVisibility(message: TranscriptMessage): TranscriptVisibilityPolicy {
 function getLinkage(message: TranscriptMessage): TranscriptLinkage {
   return {
     messageId: getTranscriptMessageId(message),
-    parentId: getTranscriptParentMessageId(message),
     toolUseIds: getTranscriptToolUseIds(message),
     toolResultForIds: getTranscriptToolResultIds(message),
   }
@@ -154,7 +152,12 @@ function getToolUseNames(atom: TranscriptAtom): string[] {
 }
 
 function getAtomGroupingScope(atom: TranscriptAtom): string {
-  return atom.linkage.parentId
+  const raw = atom.message.raw
+  const parentToolUseId = raw && typeof raw === 'object' && 'parent_tool_use_id' in raw && typeof (raw as Record<string, unknown>).parent_tool_use_id === 'string'
+    ? (raw as Record<string, unknown>).parent_tool_use_id as string
+    : null
+
+  return parentToolUseId
     ?? atom.linkage.messageId
     ?? `${atom.source}:${atom.order.sequence ?? 'noseq'}:${atom.order.sourceIndex}`
 }
@@ -417,16 +420,12 @@ export function buildTranscriptLookups(atoms: TranscriptAtom[]): TranscriptLooku
   const toolUseAtomsByToolUseId = new Map<string, TranscriptAtom>()
   const toolResultAtomsByToolUseId = new Map<string, TranscriptAtom>()
   const atomsByMessageId = new Map<string, TranscriptAtom[]>()
-  const atomsByParentId = new Map<string, TranscriptAtom[]>()
   const siblingToolUseIdsByToolUseId = new Map<string, string[]>()
   const resolvedToolUseIds = new Set<string>()
 
   for (const atom of atoms) {
     if (atom.linkage.messageId) {
       atomsByMessageId.set(atom.linkage.messageId, [...(atomsByMessageId.get(atom.linkage.messageId) || []), atom])
-    }
-    if (atom.linkage.parentId) {
-      atomsByParentId.set(atom.linkage.parentId, [...(atomsByParentId.get(atom.linkage.parentId) || []), atom])
     }
 
     for (const toolUseId of atom.linkage.toolUseIds) {
@@ -452,7 +451,6 @@ export function buildTranscriptLookups(atoms: TranscriptAtom[]): TranscriptLooku
     toolUseAtomsByToolUseId,
     toolResultAtomsByToolUseId,
     atomsByMessageId,
-    atomsByParentId,
     siblingToolUseIdsByToolUseId,
     resolvedToolUseIds,
   }

@@ -683,13 +683,6 @@ export function getTranscriptMessageId(message: TranscriptMessage | null | undef
   return typeof raw.uuid === 'string' && raw.uuid ? raw.uuid : null
 }
 
-export function getTranscriptParentMessageId(message: TranscriptMessage | null | undefined): string | null {
-  const raw = getTranscriptRawRecord(message)
-  if (!raw) return null
-  if (typeof raw.parentUuid === 'string' && raw.parentUuid) return raw.parentUuid
-  return raw.parentUuid === null ? null : null
-}
-
 export function getTranscriptStopReason(message: TranscriptMessage | null | undefined): string | null {
   const rawMessage = getTranscriptRawMessage(message)
   if (!rawMessage) return null

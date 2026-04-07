@@ -25,7 +25,6 @@ import {
 import { buildDisplayItems, buildTranscriptAtom } from '../../../shared/transcript-display.js'
 import {
   getTranscriptMessageId,
-  getTranscriptParentMessageId,
 } from '../../../shared/transcript-normalizer.js'
 import { createDebugLogger } from '../lib/debug.js'
 
@@ -133,11 +132,12 @@ function clearLivePreviewEntriesForMessage(entries: LivePreviewMapEntry[], messa
   if (!message || message.role !== 'assistant') return entries
 
   const messageId = getTranscriptMessageId(message)
-  const parentMessageId = getTranscriptParentMessageId(message)
+  const toolUseIds = (message.blocks || [])
+    .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
 
   return entries.filter(({ preview }) => {
     if (messageId && preview.messageId === messageId) return false
-    if (parentMessageId && preview.parentToolUseId === parentMessageId) return false
+    if (preview.parentToolUseId && toolUseIds.includes(preview.parentToolUseId)) return false
     return true
   })
 }

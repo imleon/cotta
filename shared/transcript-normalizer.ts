@@ -290,40 +290,6 @@ export function normalizeTranscriptMessage(
   }
 }
 
-export function isRenderableSystemTranscriptMessage(payload: unknown): boolean {
-  const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
-  const subtype = typeof record.subtype === 'string' ? record.subtype : ''
-  const rawMessage = record.message
-
-  if (subtype && subtype !== 'init') return true
-  if (typeof rawMessage === 'string' && rawMessage.trim().length > 0) return true
-  if (rawMessage && typeof rawMessage === 'object') {
-    const blocks = normalizeContentBlocks(rawMessage)
-    return blocks.some((block) => block.type !== 'unknown')
-  }
-  return false
-}
-
-export function normalizeSystemTranscriptMessage(payload: unknown): TranscriptMessage {
-  const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
-  const rawMessage = record.message
-  const blocks = normalizeContentBlocks(rawMessage)
-  const explicitSubtype = typeof record.subtype === 'string' && record.subtype ? record.subtype : 'system'
-  const fallbackContent = stringifyStructuredValue(rawMessage ?? payload) || `[system] ${explicitSubtype}`
-  const content = blocks.length > 0
-    ? stringifyMessageContent(rawMessage, blocks)
-    : fallbackContent
-  const timestamp = extractTimestamp(payload) ?? extractTimestamp(rawMessage)
-
-  return {
-    role: 'system',
-    content,
-    ...(timestamp !== undefined ? { timestamp } : {}),
-    blocks,
-    raw: payload,
-  }
-}
-
 export function normalizeStoredTranscriptBlocks(payload: unknown): TranscriptBlock[] | undefined {
   if (!Array.isArray(payload)) return undefined
 
@@ -690,7 +656,7 @@ export function clearTranscriptLivePreviewState(): TranscriptLivePreviewState {
 }
 
 
-export type TranscriptSemanticKind = 'user' | 'assistant' | 'system' | 'tool_result' | 'thinking' | 'meta' | 'summary' | 'unknown'
+export type TranscriptSemanticKind = 'user' | 'assistant' | 'tool_result' | 'thinking' | 'meta' | 'summary' | 'unknown'
 
 export interface TranscriptAssistantUsage {
   inputTokens?: number | null
@@ -803,6 +769,5 @@ export function getTranscriptSemanticKind(message: TranscriptMessage | null | un
 
   if (message.role === 'user') return 'user'
   if (message.role === 'assistant') return 'assistant'
-  if (message.role === 'system') return 'system'
   return 'unknown'
 }

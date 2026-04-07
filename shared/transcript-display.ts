@@ -7,7 +7,6 @@ import type {
   GroupedToolUseDisplayItem,
   SessionMessage,
   SummaryDisplayItem,
-  SystemDisplayItem,
   TranscriptAtom,
   TranscriptLinkage,
   TranscriptLookup,
@@ -22,7 +21,6 @@ import {
   getTranscriptStopReason,
   getTranscriptToolResultIds,
   getTranscriptToolUseIds,
-  isRenderableSystemTranscriptMessage,
   isTranscriptMetaMessage,
   isTranscriptRedactedThinkingMessage,
   isTranscriptSummaryMessage,
@@ -273,18 +271,6 @@ function createSummaryDisplayItem(atom: TranscriptAtom, mode: 'default' | 'trans
   }
 }
 
-function createSystemDisplayItem(atom: TranscriptAtom): SystemDisplayItem {
-  return {
-    kind: 'system',
-    id: atom.id,
-    key: atom.id,
-    timestamp: atom.order.timestamp,
-    atomIds: [atom.id],
-    message: atom.message,
-    content: atom.message.content,
-  }
-}
-
 function createAssistantDisplayItem(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
@@ -454,11 +440,6 @@ function shouldHideMetaMessage(message: TranscriptMessage, mode: 'default' | 'tr
   return mode !== 'transcript' && isTranscriptMetaMessage(message)
 }
 
-function shouldHideSystemMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
-  if (mode === 'transcript') return false
-  return !isRenderableSystemTranscriptMessage(message.raw)
-}
-
 function shouldHideSummaryMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
   return mode !== 'transcript' && isTranscriptSummaryMessage(message)
 }
@@ -469,7 +450,6 @@ function shouldHideThinkingMessage(message: TranscriptMessage, mode: 'default' |
 
 function shouldHideMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
   return shouldHideMetaMessage(message, mode)
-    || shouldHideSystemMessage(message, mode)
     || shouldHideSummaryMessage(message, mode)
     || shouldHideThinkingMessage(message, mode)
 }
@@ -542,11 +522,6 @@ function applyGroupedToolUses(
 
     if (atom.semanticKind === 'summary') {
       items.push(createSummaryDisplayItem(atom, mode))
-      continue
-    }
-
-    if (atom.semanticKind === 'system') {
-      items.push(createSystemDisplayItem(atom))
       continue
     }
 

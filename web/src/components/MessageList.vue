@@ -322,7 +322,7 @@ watch(
 </script>
 
 <template>
-  <div ref="container" class="flex-1 overflow-y-auto bg-slate-50/70 px-6 py-6 space-y-3" @scroll="handleScroll">
+  <div ref="container" class="flex-1 overflow-y-auto bg-slate-50/70 px-3 py-4 md:px-6 md:py-6 space-y-3" @scroll="handleScroll">
 
     <div
       v-if="session.historyMessagesLoadingOlder"

@@ -7,12 +7,13 @@ import type {
   RunnerCommand,
   RunnerRuntimeEvent,
   RuntimeEnvelopeBase,
+  SessionStreamEvent,
   SdkTransportEvent,
+  StreamEventEnvelope,
+  StreamEventNormalized,
+  StreamEventScope,
+  StreamEventType,
 } from '../../shared/message-types.js'
-import {
-  clearTranscriptLivePreviewState,
-  reduceTranscriptLivePreviewState,
-} from '../../shared/transcript-normalizer.js'
 import { logAgent } from './logger.js'
 
 const OUTPUT_START = '---OUTPUT_START---'
@@ -109,91 +110,81 @@ function getStreamIndex(message: SDKMessage): number | null {
   return 'index' in message.event && typeof message.event.index === 'number' ? message.event.index : null
 }
 
-function accumulateStreamEvent(message: SDKMessage, state: StreamAccumulatorState): SDKMessage {
-  if (message.type !== 'stream_event') return message
-  const scopeKey = getStreamScopeKey(message)
-  const index = getStreamIndex(message)
-  if (!scopeKey || index == null) return message
-  if (message.event.type !== 'content_block_delta') return message
-
-  if (message.event.delta.type === 'text_delta') {
-    const key = `${scopeKey}:${index}`
-    const next = `${state.textByScopeAndIndex.get(key) || ''}${message.event.delta.text}`
-    state.textByScopeAndIndex.set(key, next)
-    return {
-      ...message,
-      event: {
-        ...message.event,
-        delta: {
-          ...message.event.delta,
-          text: next,
-        },
-      },
-    }
-  }
-
-  if (message.event.delta.type === 'thinking_delta') {
-    const key = `${scopeKey}:${index}`
-    const next = `${state.thinkingByScopeAndIndex.get(key) || ''}${message.event.delta.thinking}`
-    state.thinkingByScopeAndIndex.set(key, next)
-    return {
-      ...message,
-      event: {
-        ...message.event,
-        delta: {
-          ...message.event.delta,
-          thinking: next,
-        },
-      },
-    }
-  }
-
-  if (message.event.delta.type === 'input_json_delta') {
-    const key = `${scopeKey}:${index}`
-    const next = `${state.toolInputByScopeAndIndex.get(key) || ''}${message.event.delta.partial_json}`
-    state.toolInputByScopeAndIndex.set(key, next)
-    return {
-      ...message,
-      event: {
-        ...message.event,
-        delta: {
-          ...message.event.delta,
-          partial_json: next,
-        },
-      },
-    }
-  }
-
-  return message
+function getStreamMessageId(message: SDKMessage): string | undefined {
+  if (message.type !== 'stream_event') return undefined
+  if (message.event.type !== 'message_start') return undefined
+  const eventMessage = message.event.message
+  return eventMessage && typeof eventMessage === 'object' && 'id' in eventMessage && typeof eventMessage.id === 'string'
+    ? eventMessage.id
+    : undefined
 }
 
-function clearAccumulatedStreamScope(message: SDKMessage, state: StreamAccumulatorState): void {
+function normalizeStreamEvent(message: SDKMessage, envelope: StreamEventEnvelope): SessionStreamEvent | null {
+  if (message.type !== 'stream_event') return null
   const scopeKey = getStreamScopeKey(message)
-  if (!scopeKey) return
-  for (const map of [state.textByScopeAndIndex, state.thinkingByScopeAndIndex, state.toolInputByScopeAndIndex]) {
-    for (const key of [...map.keys()]) {
-      if (key.startsWith(`${scopeKey}:`)) map.delete(key)
+  if (!scopeKey) return null
+  const eventType = message.event.type as StreamEventType
+  const scope: StreamEventScope = {
+    scopeKey,
+    ...(typeof message.parent_tool_use_id === 'string' || message.parent_tool_use_id === null ? { parentToolUseId: message.parent_tool_use_id as string | null } : {}),
+    ...(getStreamIndex(message) != null ? { index: getStreamIndex(message) as number } : {}),
+    ...(getStreamMessageId(message) ? { messageId: getStreamMessageId(message) } : {}),
+  }
+
+  let normalized: StreamEventNormalized | undefined
+  if (eventType === 'content_block_start') {
+    const startEvent = message.event
+    if ('content_block' in startEvent) {
+      const block = startEvent.content_block
+      if (block?.type === 'text') {
+        normalized = { blockKind: 'text', text: typeof block.text === 'string' ? block.text : '' }
+      } else if (block?.type === 'thinking') {
+        normalized = { blockKind: 'thinking', thinking: typeof block.thinking === 'string' ? block.thinking : '', redacted: false }
+      } else if (block?.type === 'redacted_thinking') {
+        normalized = { blockKind: 'thinking', redacted: true }
+      } else if (block?.type === 'tool_use') {
+        normalized = {
+          blockKind: 'tool_use',
+          toolName: typeof block.name === 'string' ? block.name : 'unknown_tool',
+          toolUseId: typeof block.id === 'string' ? block.id : undefined,
+          partialJson: typeof block.input === 'string' ? block.input : undefined,
+        }
+      }
+    }
+  } else if (eventType === 'content_block_delta') {
+    const deltaEvent = message.event
+    if ('delta' in deltaEvent) {
+      const delta = deltaEvent.delta as unknown as Record<string, unknown>
+      const deltaType = typeof delta.type === 'string' ? delta.type : null
+      if (deltaType === 'text_delta') {
+        normalized = {
+          blockKind: 'text',
+          deltaKind: 'text_delta',
+          text: typeof delta.text === 'string' ? delta.text : '',
+        }
+      } else if (deltaType === 'thinking_delta') {
+        normalized = {
+          blockKind: 'thinking',
+          deltaKind: 'thinking_delta',
+          thinking: typeof delta.thinking === 'string' ? delta.thinking : '',
+        }
+      } else if (deltaType === 'input_json_delta') {
+        normalized = {
+          blockKind: 'tool_use',
+          deltaKind: 'input_json_delta',
+          partialJson: typeof delta.partial_json === 'string' ? delta.partial_json : '',
+        }
+      }
     }
   }
-}
 
-function createScopedLivePreviewClear(state: {
-  scopeKey?: string
-  sessionId?: string
-  parentToolUseId?: string | null
-  messageId?: string
-  receivedAt?: number
-  sequence?: number
-}) {
-  if (!state.scopeKey) return undefined
   return {
-    ...clearTranscriptLivePreviewState(),
-    scopeKey: state.scopeKey,
-    ...(state.sessionId !== undefined ? { sessionId: state.sessionId } : {}),
-    ...(state.parentToolUseId !== undefined ? { parentToolUseId: state.parentToolUseId } : {}),
-    ...(state.messageId !== undefined ? { messageId: state.messageId } : {}),
-    ...(state.receivedAt !== undefined ? { receivedAt: state.receivedAt } : {}),
-    ...(state.sequence !== undefined ? { sequence: state.sequence } : {}),
+    type: 'session.sdk.stream_event',
+    ...envelope,
+    scope,
+    event: { type: eventType },
+    ...(normalized ? { normalized } : {}),
+    raw: message,
   }
 }
 
@@ -562,8 +553,6 @@ let activeQuery: Query | null = null
 let currentSessionId: string | undefined
 let cancelRequested = false
 let sdkMessageCount = 0
-let livePreviewState = clearTranscriptLivePreviewState()
-let streamAccumulatorState = createStreamAccumulatorState()
 
 function handleCommand(command: RunnerCommand) {
   switch (command.type) {
@@ -874,22 +863,20 @@ function handleSdkMessage(message: SDKMessage) {
     })
   }
 
-  const normalizedMessage = accumulateStreamEvent(message, streamAccumulatorState)
-
   writeTransportEvent({
     direction: 'outbound',
     eventName: 'message',
-    sdkType: normalizedMessage.type,
-    sdkSubtype: 'subtype' in normalizedMessage && typeof normalizedMessage.subtype === 'string' ? normalizedMessage.subtype : undefined,
-    payloadSummary: summarizeSdkMessage(normalizedMessage),
-    ...maybeTransportPayload(normalizedMessage),
+    sdkType: message.type,
+    sdkSubtype: 'subtype' in message && typeof message.subtype === 'string' ? message.subtype : undefined,
+    payloadSummary: summarizeSdkMessage(message),
+    ...maybeTransportPayload(message),
     ...nextEnvelope(currentSessionId),
   })
 
-  if (normalizedMessage.type === 'system' && normalizedMessage.subtype === 'session_state_changed') {
+  if (message.type === 'system' && message.subtype === 'session_state_changed') {
     writeRuntimeEvent({
       type: 'run.state_changed',
-      state: normalizedMessage.state === 'running' || normalizedMessage.state === 'requires_action' || normalizedMessage.state === 'idle' ? normalizedMessage.state : 'idle',
+      state: message.state === 'running' || message.state === 'requires_action' || message.state === 'idle' ? message.state : 'idle',
       ...(currentSessionId ? { sessionId: currentSessionId } : {}),
     })
   }
@@ -897,43 +884,32 @@ function handleSdkMessage(message: SDKMessage) {
   if (sdkMessageCount === 1 || sdkMessageCount % EVENT_LOG_INTERVAL === 0) {
     logAgent('debug', 'agent:query:event', {
       count: sdkMessageCount,
-      type: normalizedMessage.type,
+      type: message.type,
       sessionId: currentSessionId?.slice(0, 8),
     })
   }
 
   const envelope = nextEnvelope(currentSessionId)
-  const livePreview = normalizedMessage.type === 'stream_event'
-    ? reduceTranscriptLivePreviewState(livePreviewState, {
-        ...normalizedMessage,
-        ...envelope,
-      })
-    : undefined
-
-  if (livePreview) {
-    livePreviewState = livePreview
-  }
-
-  let livePreviewClear
-  if ((normalizedMessage.type === 'assistant' || normalizedMessage.type === 'user') && livePreviewState.scopeKey) {
-    livePreviewClear = createScopedLivePreviewClear({
-      scopeKey: livePreviewState.scopeKey,
+  if (message.type === 'stream_event') {
+    const streamEvent = normalizeStreamEvent(message, {
+      runId: '',
       sessionId: currentSessionId,
-      parentToolUseId: livePreviewState.parentToolUseId,
-      messageId: livePreviewState.messageId,
       receivedAt: envelope.receivedAt,
       sequence: envelope.sequence,
     })
-    livePreviewState = clearTranscriptLivePreviewState()
-  }
-  if (normalizedMessage.type === 'assistant' || normalizedMessage.type === 'user' || (normalizedMessage.type === 'stream_event' && normalizedMessage.event.type === 'message_stop')) {
-    clearAccumulatedStreamScope(normalizedMessage, streamAccumulatorState)
+    if (streamEvent) {
+      writeRuntimeEvent({
+        type: 'sdk.stream_event',
+        event: streamEvent,
+        ...envelope,
+      })
+    }
+    return
   }
 
   writeRuntimeEvent({
     type: 'sdk.message',
-    payload: normalizedMessage,
-    ...(livePreview ?? livePreviewClear ? { livePreview: livePreview ?? livePreviewClear } : {}),
+    payload: message,
     ...envelope,
   })
 }
@@ -957,8 +933,6 @@ async function main(): Promise<void> {
   cancelRequested = false
   eventSequence = 0
   sdkMessageCount = 0
-  livePreviewState = clearTranscriptLivePreviewState()
-  streamAccumulatorState = createStreamAccumulatorState()
 
   logAgent('info', 'agent:run:start', {
     promptLength: input.prompt.length,
@@ -1011,6 +985,7 @@ async function main(): Promise<void> {
       cwd: input.workspacePath,
       ...(input.model ? { model: input.model } : {}),
       allowedTools,
+      includePartialMessages: true,
       permissionMode: 'default',
       canUseTool,
       onElicitation: waitForElicitation,

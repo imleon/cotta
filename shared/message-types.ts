@@ -1,11 +1,133 @@
-import type { SDKMessage, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk'
+import type { SDKControlRequest, SDKMessage, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk'
 import type {
   TranscriptAssistantUsage,
   TranscriptBlock,
-  TranscriptLivePreviewState,
   TranscriptMessage,
   TranscriptSemanticKind,
 } from './transcript-normalizer.js'
+
+export interface StreamEventEnvelope {
+  runId: string
+  sessionId?: string
+  receivedAt: number
+  sequence: number
+}
+
+export interface StreamEventScope {
+  scopeKey: string
+  messageId?: string
+  parentToolUseId?: string | null
+  index?: number
+}
+
+export type StreamEventType =
+  | 'message_start'
+  | 'message_delta'
+  | 'message_stop'
+  | 'content_block_start'
+  | 'content_block_delta'
+  | 'content_block_stop'
+
+export type StreamBlockKind = 'text' | 'thinking' | 'tool_use'
+export type StreamDeltaKind = 'text_delta' | 'thinking_delta' | 'input_json_delta'
+
+export interface StreamEventNormalized {
+  blockKind?: StreamBlockKind
+  deltaKind?: StreamDeltaKind
+  text?: string
+  thinking?: string
+  partialJson?: string
+  toolName?: string
+  toolUseId?: string
+  redacted?: boolean
+}
+
+export interface SessionStreamEvent {
+  type: 'session.sdk.stream_event'
+  runId: string
+  sessionId?: string
+  receivedAt: number
+  sequence: number
+  scope: StreamEventScope
+  event: {
+    type: StreamEventType
+  }
+  normalized?: StreamEventNormalized
+  raw?: unknown
+}
+
+export type StreamPreviewPhase = 'idle' | 'thinking' | 'responding' | 'tool-input' | 'complete'
+
+export interface StreamPreviewTextBlock {
+  kind: 'text'
+  index: number
+  text: string
+}
+
+export interface StreamPreviewThinkingBlock {
+  kind: 'thinking'
+  index: number
+  text: string
+  redacted?: boolean
+}
+
+export interface StreamPreviewToolUseBlock {
+  kind: 'tool_use'
+  index: number
+  name: string
+  toolUseId?: string
+  inputText: string
+}
+
+export type StreamPreviewBlock =
+  | StreamPreviewTextBlock
+  | StreamPreviewThinkingBlock
+  | StreamPreviewToolUseBlock
+
+export interface StreamPreviewState {
+  scope: StreamEventScope
+  phase: StreamPreviewPhase
+  active: boolean
+  blocks: StreamPreviewBlock[]
+  receivedAt?: number
+  sequence?: number
+}
+
+export interface StreamDisplayTextBlock {
+  kind: 'text'
+  index: number
+  shownText: string
+  targetText: string
+}
+
+export interface StreamDisplayThinkingBlock {
+  kind: 'thinking'
+  index: number
+  shownText: string
+  targetText: string
+  redacted?: boolean
+}
+
+export interface StreamDisplayToolUseBlock {
+  kind: 'tool_use'
+  index: number
+  name: string
+  toolUseId?: string
+  shownInput: string
+  targetInput: string
+}
+
+export type StreamDisplayBlock =
+  | StreamDisplayTextBlock
+  | StreamDisplayThinkingBlock
+  | StreamDisplayToolUseBlock
+
+export interface StreamDisplayState {
+  scope: StreamEventScope
+  phase: StreamPreviewPhase
+  active: boolean
+  blocks: StreamDisplayBlock[]
+}
 
 export type SessionRunState = 'idle' | 'queued' | 'running' | 'requires_action' | 'completed' | 'failed' | 'cancelled'
 export type SessionLifecycleState = SessionRunState
@@ -229,12 +351,7 @@ export interface TimelineLivePreviewItem {
   id: string
   key: string
   timestamp: number
-  preview: TranscriptLivePreviewState
-}
-
-export interface LivePreviewMapEntry {
-  scopeKey: string
-  preview: TranscriptLivePreviewState
+  preview: StreamDisplayState
 }
 
 export interface HiddenDebugAtomItem {
@@ -475,7 +592,8 @@ export type RunnerRuntimeEvent =
   | { type: 'run.completed'; messageCount: number; sessionId?: string }
   | { type: 'run.failed'; error: string; stack?: string; sessionId?: string }
   | { type: 'run.cancelled'; sessionId?: string }
-  | ({ type: 'sdk.message'; payload: SDKMessage; parsed?: SessionMessage; livePreview?: TranscriptLivePreviewState } & RuntimeEnvelopeBase)
+  | ({ type: 'sdk.message'; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)
+  | ({ type: 'sdk.stream_event'; event: SessionStreamEvent } & RuntimeEnvelopeBase)
   | ({ type: 'sdk.control.requested'; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'sdk.control.resolved'; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
   | { type: 'sdk.transport'; event: SdkTransportEvent }
@@ -487,7 +605,8 @@ export type SessionEvent =
   | { type: 'session.run.completed'; runId: string; sessionId?: string; exitCode?: number | null; error?: string }
   | { type: 'session.run.failed'; runId?: string; sessionId?: string; error: string }
   | { type: 'session.run.cancelled'; runId: string; sessionId?: string }
-  | ({ type: 'session.sdk.message'; runId: string; payload: SDKMessage; parsed?: SessionMessage; livePreview?: TranscriptLivePreviewState } & RuntimeEnvelopeBase)
+  | ({ type: 'session.sdk.message'; runId: string; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)
+  | ({ type: 'session.sdk.stream_event'; runId: string; event: SessionStreamEvent } & RuntimeEnvelopeBase)
   | ({ type: 'session.sdk.control.requested'; runId: string; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.sdk.control.resolved'; runId: string; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
   | { type: 'session.sdk.transport'; runId: string; event: SdkTransportEvent }

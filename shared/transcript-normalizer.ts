@@ -1,4 +1,190 @@
 import type { SDKAssistantMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type {
+  StreamDisplayBlock,
+  StreamDisplayState,
+  SessionStreamEvent,
+  StreamPreviewBlock,
+  StreamPreviewState,
+} from './message-types.js'
+
+export function reduceStreamPreviewEvent(
+  current: StreamPreviewState | null,
+  event: SessionStreamEvent,
+): StreamPreviewState {
+  const currentState: StreamPreviewState = current ?? {
+    scope: event.scope,
+    phase: 'idle',
+    active: false,
+    blocks: [],
+  }
+
+  const next: StreamPreviewState = {
+    ...currentState,
+    scope: event.scope,
+    receivedAt: event.receivedAt,
+    sequence: event.sequence,
+  }
+
+  const upsertBlock = (nextBlock: StreamPreviewBlock) => {
+    const index = next.blocks.findIndex((block) => block.index === nextBlock.index && block.kind === nextBlock.kind)
+    next.blocks = index === -1
+      ? [...next.blocks, nextBlock].sort((left, right) => left.index - right.index)
+      : next.blocks.map((block, blockIndex) => (blockIndex === index ? nextBlock : block))
+  }
+
+  switch (event.event.type) {
+    case 'message_start':
+      next.phase = 'responding'
+      next.active = true
+      return next
+    case 'message_delta':
+      next.phase = 'responding'
+      next.active = true
+      return next
+    case 'message_stop':
+      return {
+        ...next,
+        phase: 'complete',
+        active: false,
+      }
+    case 'content_block_start': {
+      next.active = true
+      if (event.normalized?.blockKind === 'text') {
+        next.phase = 'responding'
+        upsertBlock({ kind: 'text', index: event.scope.index ?? 0, text: event.normalized.text ?? '' })
+      } else if (event.normalized?.blockKind === 'thinking') {
+        next.phase = 'thinking'
+        upsertBlock({ kind: 'thinking', index: event.scope.index ?? 0, text: event.normalized.thinking ?? '', redacted: event.normalized.redacted })
+      } else if (event.normalized?.blockKind === 'tool_use') {
+        next.phase = 'tool-input'
+        upsertBlock({
+          kind: 'tool_use',
+          index: event.scope.index ?? 0,
+          name: event.normalized.toolName ?? 'unknown_tool',
+          toolUseId: event.normalized.toolUseId,
+          inputText: event.normalized.partialJson ?? '',
+        })
+      }
+      return next
+    }
+    case 'content_block_delta': {
+      next.active = true
+      const index = event.scope.index ?? 0
+      if (event.normalized?.deltaKind === 'text_delta') {
+        next.phase = 'responding'
+        const existing = next.blocks.find((block) => block.kind === 'text' && block.index === index)
+        upsertBlock({ kind: 'text', index, text: `${existing && existing.kind === 'text' ? existing.text : ''}${event.normalized.text ?? ''}` })
+      } else if (event.normalized?.deltaKind === 'thinking_delta') {
+        next.phase = 'thinking'
+        const existing = next.blocks.find((block) => block.kind === 'thinking' && block.index === index)
+        upsertBlock({ kind: 'thinking', index, text: `${existing && existing.kind === 'thinking' ? existing.text : ''}${event.normalized.thinking ?? ''}`, redacted: false })
+      } else if (event.normalized?.deltaKind === 'input_json_delta') {
+        next.phase = 'tool-input'
+        const existing = next.blocks.find((block) => block.kind === 'tool_use' && block.index === index)
+        upsertBlock({
+          kind: 'tool_use',
+          index,
+          name: existing && existing.kind === 'tool_use' ? existing.name : (event.normalized.toolName ?? 'unknown_tool'),
+          toolUseId: existing && existing.kind === 'tool_use' ? existing.toolUseId : event.normalized.toolUseId,
+          inputText: `${existing && existing.kind === 'tool_use' ? existing.inputText : ''}${event.normalized.partialJson ?? ''}`,
+        })
+      }
+      return next
+    }
+    case 'content_block_stop':
+    default:
+      return next
+  }
+}
+
+export function createStreamDisplayState(preview: StreamPreviewState): StreamDisplayState {
+  const blocks: StreamDisplayBlock[] = preview.blocks.map((block) => {
+    if (block.kind === 'text') {
+      return {
+        kind: 'text',
+        index: block.index,
+        shownText: '',
+        targetText: block.text,
+      }
+    }
+    if (block.kind === 'thinking') {
+      return {
+        kind: 'thinking',
+        index: block.index,
+        shownText: '',
+        targetText: block.redacted ? '' : block.text,
+        redacted: block.redacted,
+      }
+    }
+    return {
+      kind: 'tool_use',
+      index: block.index,
+      name: block.name,
+      toolUseId: block.toolUseId,
+      shownInput: '',
+      targetInput: block.inputText,
+    }
+  })
+
+  return {
+    scope: preview.scope,
+    phase: preview.phase,
+    active: preview.active,
+    blocks,
+  }
+}
+
+export function advanceStreamDisplayState(
+  current: StreamDisplayState | null,
+  preview: StreamPreviewState,
+): StreamDisplayState {
+  const currentState = current ?? createStreamDisplayState(preview)
+  const nextBlocks: StreamDisplayBlock[] = preview.blocks.map((block) => {
+    const existing = currentState.blocks.find((item) => item.kind === block.kind && item.index === block.index)
+    if (block.kind === 'text') {
+      const shown = existing && existing.kind === 'text' ? existing.shownText : ''
+      const target = block.text
+      const advanceBy = Math.max(1, Math.ceil((target.length - shown.length) / 6))
+      return {
+        kind: 'text',
+        index: block.index,
+        shownText: shown.length >= target.length ? target : target.slice(0, shown.length + advanceBy),
+        targetText: target,
+      }
+    }
+    if (block.kind === 'thinking') {
+      const shown = existing && existing.kind === 'thinking' ? existing.shownText : ''
+      const target = block.redacted ? '' : block.text
+      const advanceBy = Math.max(1, Math.ceil((target.length - shown.length) / 8))
+      return {
+        kind: 'thinking',
+        index: block.index,
+        shownText: shown.length >= target.length ? target : target.slice(0, shown.length + advanceBy),
+        targetText: target,
+        redacted: block.redacted,
+      }
+    }
+    const shown = existing && existing.kind === 'tool_use' ? existing.shownInput : ''
+    const target = block.inputText
+    const advanceBy = Math.max(1, Math.ceil((target.length - shown.length) / 4))
+    return {
+      kind: 'tool_use',
+      index: block.index,
+      name: block.name,
+      toolUseId: block.toolUseId,
+      shownInput: shown.length >= target.length ? target : target.slice(0, shown.length + advanceBy),
+      targetInput: target,
+    }
+  })
+
+  return {
+    scope: preview.scope,
+    phase: preview.phase,
+    active: preview.active,
+    blocks: nextBlocks,
+  }
+}
+
 
 export interface TranscriptBlock {
   type: 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'unknown'
@@ -23,46 +209,6 @@ export interface TranscriptStructuredContent {
   thinkingText: string
   toolCalls: Array<{ name: string; toolUseId?: string }>
   toolResults: Array<{ toolUseId?: string; output: string }>
-}
-
-export type TranscriptLivePreviewPhase = 'idle' | 'thinking' | 'responding' | 'tool-input' | 'complete'
-
-export interface TranscriptLivePreviewTextBlock {
-  kind: 'text'
-  index: number
-  text: string
-}
-
-export interface TranscriptLivePreviewThinkingBlock {
-  kind: 'thinking'
-  index: number
-  text: string
-  redacted?: boolean
-}
-
-export interface TranscriptLivePreviewToolUseBlock {
-  kind: 'tool_use'
-  index: number
-  name: string
-  toolUseId?: string
-  inputText: string
-}
-
-export type TranscriptLivePreviewBlock =
-  | TranscriptLivePreviewTextBlock
-  | TranscriptLivePreviewThinkingBlock
-  | TranscriptLivePreviewToolUseBlock
-
-export interface TranscriptLivePreviewState {
-  phase: TranscriptLivePreviewPhase
-  active: boolean
-  scopeKey?: string
-  receivedAt?: number
-  sequence?: number
-  sessionId?: string
-  parentToolUseId?: string | null
-  messageId?: string
-  blocks: TranscriptLivePreviewBlock[]
 }
 
 export function stringifyStructuredValue(value: unknown): string {
@@ -412,248 +558,6 @@ function getStreamEventIndex(payload: unknown): number | null {
   return typeof event?.index === 'number' ? event.index : null
 }
 
-function getLivePreviewScopeKey(payload: unknown): string {
-  const record = asRecord(payload)
-  const sessionId = typeof record?.sessionId === 'string'
-    ? record.sessionId
-    : typeof record?.session_id === 'string'
-      ? record.session_id
-      : 'unknown-session'
-  const parentToolUseId = typeof record?.parent_tool_use_id === 'string'
-    ? record.parent_tool_use_id
-    : record?.parent_tool_use_id === null
-      ? 'root'
-      : 'root'
-  return `${sessionId}:${parentToolUseId}`
-}
-
-function getScopeMessageId(payload: unknown): string | undefined {
-  const event = getStreamEvent(payload)
-  const message = asRecord(event?.message)
-  return typeof message?.id === 'string' ? message.id : undefined
-}
-
-function upsertLivePreviewBlock(
-  blocks: TranscriptLivePreviewBlock[],
-  nextBlock: TranscriptLivePreviewBlock,
-): TranscriptLivePreviewBlock[] {
-  const index = blocks.findIndex((block) => block.index === nextBlock.index && block.kind === nextBlock.kind)
-  if (index === -1) return [...blocks, nextBlock].sort((left, right) => left.index - right.index)
-  return blocks.map((block, blockIndex) => (blockIndex === index ? nextBlock : block))
-}
-
-function getToolUseIdFromBlock(block: Record<string, unknown> | null): string | undefined {
-  if (!block) return undefined
-  if (typeof block.id === 'string' && block.id) return block.id
-  if (typeof block.tool_use_id === 'string' && block.tool_use_id) return block.tool_use_id
-  if (typeof block.toolUseId === 'string' && block.toolUseId) return block.toolUseId
-  return undefined
-}
-
-function getToolUseNameFromBlock(block: Record<string, unknown> | null): string {
-  if (!block) return 'unknown_tool'
-  return typeof block.name === 'string' && block.name ? block.name : 'unknown_tool'
-}
-
-export function createTranscriptLivePreviewState(): TranscriptLivePreviewState {
-  return {
-    phase: 'idle',
-    active: false,
-    blocks: [],
-  }
-}
-
-export function normalizeStreamEventSnapshot(payload: unknown): TranscriptLivePreviewState | null {
-  const record = asRecord(payload)
-  if (!record || record.type !== 'stream_event') return null
-
-  const event = getStreamEvent(record)
-  if (!event || typeof event.type !== 'string') return null
-
-  const base: TranscriptLivePreviewState = {
-    phase: 'idle',
-    active: true,
-    scopeKey: getLivePreviewScopeKey(record),
-    ...(typeof record.receivedAt === 'number' ? { receivedAt: record.receivedAt } : {}),
-    ...(typeof record.sequence === 'number' ? { sequence: record.sequence } : {}),
-    ...(typeof record.sessionId === 'string' ? { sessionId: record.sessionId } : {}),
-    ...(typeof record.parent_tool_use_id === 'string' || record.parent_tool_use_id === null ? { parentToolUseId: record.parent_tool_use_id as string | null } : {}),
-    blocks: [],
-  }
-
-  if (event.type === 'message_start') {
-    const message = asRecord(event.message)
-    return {
-      ...base,
-      phase: 'responding',
-      ...(typeof message?.id === 'string' ? { messageId: message.id } : {}),
-    }
-  }
-
-  if (event.type === 'message_stop') {
-    return {
-      ...base,
-      phase: 'complete',
-      active: false,
-    }
-  }
-
-  if (event.type === 'message_delta') {
-    return {
-      ...base,
-      phase: 'responding',
-    }
-  }
-
-  if (event.type === 'content_block_stop') {
-    return base
-  }
-
-  if (event.type === 'content_block_start') {
-    const block = asRecord(event.content_block)
-    const index = getStreamEventIndex(record)
-    if (index == null || !block || typeof block.type !== 'string') return base
-
-    if (block.type === 'text') {
-      return {
-        ...base,
-        phase: 'responding',
-        blocks: [{ kind: 'text', index, text: typeof block.text === 'string' ? block.text : '' }],
-      }
-    }
-
-    if (block.type === 'thinking') {
-      return {
-        ...base,
-        phase: 'thinking',
-        blocks: [{ kind: 'thinking', index, text: typeof block.thinking === 'string' ? block.thinking : '', redacted: false }],
-      }
-    }
-
-    if (block.type === 'redacted_thinking') {
-      return {
-        ...base,
-        phase: 'thinking',
-        blocks: [{ kind: 'thinking', index, text: '', redacted: true }],
-      }
-    }
-
-    if (block.type === 'tool_use') {
-      return {
-        ...base,
-        phase: 'tool-input',
-        blocks: [{
-          kind: 'tool_use',
-          index,
-          name: getToolUseNameFromBlock(block),
-          toolUseId: getToolUseIdFromBlock(block),
-          inputText: typeof block.input === 'string' ? block.input : stringifyStructuredValue(block.input),
-        }],
-      }
-    }
-
-    return base
-  }
-
-  if (event.type === 'content_block_delta') {
-    const delta = asRecord(event.delta)
-    const index = getStreamEventIndex(record)
-    if (index == null || !delta || typeof delta.type !== 'string') return base
-
-    if (delta.type === 'text_delta') {
-      return {
-        ...base,
-        phase: 'responding',
-        blocks: [{ kind: 'text', index, text: typeof delta.text === 'string' ? delta.text : '' }],
-      }
-    }
-
-    if (delta.type === 'thinking_delta') {
-      return {
-        ...base,
-        phase: 'thinking',
-        blocks: [{ kind: 'thinking', index, text: typeof delta.thinking === 'string' ? delta.thinking : '', redacted: false }],
-      }
-    }
-
-    if (delta.type === 'input_json_delta') {
-      return {
-        ...base,
-        phase: 'tool-input',
-        blocks: [{ kind: 'tool_use', index, name: 'unknown_tool', inputText: typeof delta.partial_json === 'string' ? delta.partial_json : '' }],
-      }
-    }
-  }
-
-  return base
-}
-
-export function reduceTranscriptLivePreviewState(
-  current: TranscriptLivePreviewState,
-  payload: unknown,
-): TranscriptLivePreviewState {
-  const snapshot = normalizeStreamEventSnapshot(payload)
-  if (!snapshot) return current
-
-  const currentScopeKey = current.scopeKey
-  const snapshotScopeKey = snapshot.scopeKey
-  const shouldResetForScope = Boolean(
-    current.active
-      && currentScopeKey
-      && snapshotScopeKey
-      && currentScopeKey !== snapshotScopeKey
-      && snapshot.phase === 'responding'
-      && snapshot.blocks.length === 0
-  )
-
-  const currentState = shouldResetForScope ? createTranscriptLivePreviewState() : current
-  const next: TranscriptLivePreviewState = {
-    ...currentState,
-    phase: snapshot.phase === 'idle' ? currentState.phase : snapshot.phase,
-    active: snapshot.active,
-    blocks: currentState.blocks,
-    ...(snapshot.scopeKey !== undefined ? { scopeKey: snapshot.scopeKey } : {}),
-    ...(snapshot.receivedAt !== undefined ? { receivedAt: snapshot.receivedAt } : {}),
-    ...(snapshot.sequence !== undefined ? { sequence: snapshot.sequence } : {}),
-    ...(snapshot.sessionId !== undefined ? { sessionId: snapshot.sessionId } : {}),
-    ...(snapshot.parentToolUseId !== undefined ? { parentToolUseId: snapshot.parentToolUseId } : {}),
-    ...(snapshot.messageId !== undefined ? { messageId: snapshot.messageId } : {}),
-  }
-
-  if (snapshot.phase === 'complete') {
-    return {
-      ...createTranscriptLivePreviewState(),
-      ...(snapshot.scopeKey !== undefined ? { scopeKey: snapshot.scopeKey } : {}),
-      ...(snapshot.receivedAt !== undefined ? { receivedAt: snapshot.receivedAt } : {}),
-      ...(snapshot.sequence !== undefined ? { sequence: snapshot.sequence } : {}),
-      ...(snapshot.sessionId !== undefined ? { sessionId: snapshot.sessionId } : {}),
-    }
-  }
-
-  let blocks = next.blocks
-  for (const block of snapshot.blocks) {
-    if (block.kind === 'tool_use' && block.name === 'unknown_tool') {
-      const existing = blocks.find((item) => item.kind === 'tool_use' && item.index === block.index)
-      if (existing && existing.kind === 'tool_use') {
-        blocks = upsertLivePreviewBlock(blocks, {
-          ...existing,
-          inputText: block.inputText,
-        })
-        continue
-      }
-    }
-    blocks = upsertLivePreviewBlock(blocks, block)
-  }
-
-  return {
-    ...next,
-    blocks,
-  }
-}
-
-export function clearTranscriptLivePreviewState(): TranscriptLivePreviewState {
-  return createTranscriptLivePreviewState()
-}
 
 
 export type TranscriptSemanticKind = 'user' | 'assistant' | 'tool_result' | 'thinking' | 'meta' | 'summary' | 'unknown'

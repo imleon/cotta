@@ -35,6 +35,7 @@ export interface AgentRunHandle {
 
 export type ServerEvent =
   | Extract<SessionEvent, { type: 'session.sdk.message' }>
+  | Extract<SessionEvent, { type: 'session.sdk.stream_event' }>
   | Extract<SessionEvent, { type: 'session.sdk.control.requested' }>
   | Extract<SessionEvent, { type: 'session.sdk.control.resolved' }>
   | Extract<SessionEvent, { type: 'session.sdk.transport' }>
@@ -57,6 +58,7 @@ function isRunnerRuntimeEvent(value: unknown): value is RunnerRuntimeEvent {
     record.type === 'run.failed' ||
     record.type === 'run.cancelled' ||
     record.type === 'sdk.message' ||
+    record.type === 'sdk.stream_event' ||
     record.type === 'sdk.control.requested' ||
     record.type === 'sdk.control.resolved' ||
     record.type === 'sdk.transport'
@@ -90,12 +92,20 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
         runId,
         payload: event.payload,
         ...(parsed ? { parsed } : {}),
-        ...(event.livePreview ? { livePreview: event.livePreview } : {}),
         receivedAt: event.receivedAt,
         sequence: event.sequence,
         ...(event.sessionId ? { sessionId: event.sessionId } : {}),
       }
     }
+    case 'sdk.stream_event':
+      return {
+        type: 'session.sdk.stream_event',
+        runId,
+        event: event.event,
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
     case 'sdk.control.requested':
       return {
         type: 'session.sdk.control.requested',

@@ -5,14 +5,16 @@ import type {
   CollapsedToolBatchDisplayItem,
   DisplayItem,
   GroupedToolUseDisplayItem,
-  LivePreviewMapEntry,
   PendingInteraction,
   PermissionSuggestion,
   SessionEvent,
   SessionMessage,
   SessionMessageBlock,
   SessionRunState,
+  SessionStreamEvent,
   SessionSummary,
+  StreamDisplayState,
+  StreamPreviewState,
   TimelineLivePreviewItem,
   TimelineRenderableItem,
   TranscriptAtom,
@@ -20,7 +22,6 @@ import type {
 import {
   getSdkMessageLayer,
   isBusinessSdkMessage,
-  isLivePreviewSdkMessage,
 } from '../../../shared/message-types.js'
 import {
   getHiddenAtomsForDebug,
@@ -28,6 +29,9 @@ import {
   buildTranscriptAtom,
 } from '../../../shared/transcript-display.js'
 import {
+  advanceStreamDisplayState,
+  createStreamDisplayState,
+  reduceStreamPreviewEvent,
   getTranscriptMessageId,
 } from '../../../shared/transcript-normalizer.js'
 import { createDebugLogger } from '../lib/debug.js'
@@ -106,48 +110,46 @@ function isMatchingOptimisticUserMessage(message: HistoryMessage, candidate: Ses
   return Math.abs(messageTimestamp - timestamp) <= OPTIMISTIC_USER_MATCH_WINDOW_MS
 }
 
-function getLivePreviewScopeKey(preview: { scopeKey?: string; sessionId?: string; parentToolUseId?: string | null }): string {
-  if (preview.scopeKey) return preview.scopeKey
-  const sessionId = preview.sessionId || 'unknown-session'
-  const parentToolUseId = preview.parentToolUseId ?? 'root'
-  return `${sessionId}:${parentToolUseId}`
+function getStreamScopeKey(event: SessionStreamEvent): string {
+  return event.scope.scopeKey
 }
 
-function clearLivePreviewEntryByScope(
-  entries: LivePreviewMapEntry[],
-  preview: { scopeKey?: string; sessionId?: string; parentToolUseId?: string | null }
-): LivePreviewMapEntry[] {
-  const scopeKey = getLivePreviewScopeKey(preview)
-  return entries.filter((entry) => entry.scopeKey !== scopeKey)
+function clearStreamStateByMessageId(
+  previewStates: Record<string, StreamPreviewState>,
+  displayStates: Record<string, StreamDisplayState>,
+  messageId?: string | null,
+): { previewStates: Record<string, StreamPreviewState>; displayStates: Record<string, StreamDisplayState> } {
+  if (!messageId) return { previewStates, displayStates }
+  const nextPreview = { ...previewStates }
+  const nextDisplay = { ...displayStates }
+  for (const scopeKey of Object.keys(previewStates)) {
+    if (previewStates[scopeKey]?.scope.messageId === messageId) {
+      delete nextPreview[scopeKey]
+      delete nextDisplay[scopeKey]
+      break
+    }
+  }
+  return { previewStates: nextPreview, displayStates: nextDisplay }
 }
 
-function upsertLivePreviewEntry(entries: LivePreviewMapEntry[], preview: LivePreviewMapEntry['preview']): LivePreviewMapEntry[] {
-  const scopeKey = getLivePreviewScopeKey(preview)
-  const nextEntry: LivePreviewMapEntry = { scopeKey, preview }
-  const index = entries.findIndex((entry) => entry.scopeKey === scopeKey)
-  if (index === -1) return [...entries, nextEntry]
-  return entries.map((entry, entryIndex) => (entryIndex === index ? nextEntry : entry))
+function clearStreamStateByParentToolUseIds(
+  previewStates: Record<string, StreamPreviewState>,
+  displayStates: Record<string, StreamDisplayState>,
+  toolUseIds: string[],
+): { previewStates: Record<string, StreamPreviewState>; displayStates: Record<string, StreamDisplayState> } {
+  if (!toolUseIds.length) return { previewStates, displayStates }
+  const nextPreview = { ...previewStates }
+  const nextDisplay = { ...displayStates }
+  for (const [scopeKey, state] of Object.entries(previewStates)) {
+    if (state?.scope.parentToolUseId && toolUseIds.includes(state.scope.parentToolUseId)) {
+      delete nextPreview[scopeKey]
+      delete nextDisplay[scopeKey]
+    }
+  }
+  return { previewStates: nextPreview, displayStates: nextDisplay }
 }
 
-function pruneLivePreviewEntries(entries: LivePreviewMapEntry[]): LivePreviewMapEntry[] {
-  return entries.filter(({ preview }) => preview.active || preview.blocks.length > 0)
-}
-
-function clearLivePreviewEntriesForMessage(entries: LivePreviewMapEntry[], message: SessionMessage | null): LivePreviewMapEntry[] {
-  if (!message || message.role !== 'assistant') return entries
-
-  const messageId = getTranscriptMessageId(message)
-  const toolUseIds = (message.blocks || [])
-    .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
-
-  return entries.filter(({ preview }) => {
-    if (messageId && preview.messageId === messageId) return false
-    if (preview.parentToolUseId && toolUseIds.includes(preview.parentToolUseId)) return false
-    return true
-  })
-}
-
-function getLivePreviewOverlayKind(preview: LivePreviewMapEntry['preview']): TimelineLivePreviewItem['overlayKind'] {
+function getLivePreviewOverlayKind(preview: StreamPreviewState): TimelineLivePreviewItem['overlayKind'] {
   switch (preview.phase) {
     case 'thinking':
       return 'streaming_thinking'
@@ -257,7 +259,9 @@ export const useSessionStore = defineStore('session', () => {
   const activeRunId = ref<string | null>(null)
   const pendingInteraction = ref<PendingInteraction | null>(null)
   const eventLog = ref<Array<Extract<SessionEvent, { type: 'session.sdk.message' }>>>([])
-  const livePreviewEntries = ref<LivePreviewMapEntry[]>([])
+  const streamPreviewStates = ref<Record<string, StreamPreviewState>>({})
+  const streamDisplayStates = ref<Record<string, StreamDisplayState>>({})
+  let streamAnimationFrame: number | null = null
 
   const isLoading = computed(() => ['queued', 'running', 'requires_action'].includes(runState.value))
   const hasAuthToken = computed(() => authToken.value.trim().length > 0)
@@ -330,27 +334,34 @@ export const useSessionStore = defineStore('session', () => {
       }))
   )
   const livePreviewItems = computed<TimelineLivePreviewItem[]>(() =>
-    livePreviewEntries.value
-      .filter(({ preview }) => preview.active && preview.blocks.length > 0)
+    Object.values(streamDisplayStates.value)
+      .filter((preview) => preview.active && preview.blocks.length > 0)
       .slice()
       .sort((left, right) => {
-        const leftTimestamp = left.preview.receivedAt ?? 0
-        const rightTimestamp = right.preview.receivedAt ?? 0
+        const leftTimestamp = streamPreviewStates.value[left.scope.scopeKey]?.receivedAt ?? 0
+        const rightTimestamp = streamPreviewStates.value[right.scope.scopeKey]?.receivedAt ?? 0
         if (leftTimestamp !== rightTimestamp) return leftTimestamp - rightTimestamp
-        return (left.preview.sequence ?? 0) - (right.preview.sequence ?? 0)
+        const leftSequence = streamPreviewStates.value[left.scope.scopeKey]?.sequence ?? 0
+        const rightSequence = streamPreviewStates.value[right.scope.scopeKey]?.sequence ?? 0
+        return leftSequence - rightSequence
       })
-      .map(({ preview }) => ({
+      .map((preview) => ({
         kind: 'live_preview',
         layer: 'overlay',
-        overlayKind: getLivePreviewOverlayKind(preview),
+        overlayKind: getLivePreviewOverlayKind(streamPreviewStates.value[preview.scope.scopeKey] || {
+          scope: preview.scope,
+          phase: preview.phase,
+          active: preview.active,
+          blocks: [],
+        }),
         anchor: {
-          scopeKey: preview.scopeKey || 'unknown',
-          ...(preview.messageId ? { messageId: preview.messageId } : {}),
-          ...(preview.parentToolUseId !== undefined ? { parentToolUseId: preview.parentToolUseId } : {}),
+          scopeKey: preview.scope.scopeKey || 'unknown',
+          ...(preview.scope.messageId ? { messageId: preview.scope.messageId } : {}),
+          ...(preview.scope.parentToolUseId !== undefined ? { parentToolUseId: preview.scope.parentToolUseId } : {}),
         },
-        id: `live-preview-${preview.scopeKey || 'unknown'}`,
-        key: `live-preview-${preview.scopeKey || 'unknown'}`,
-        timestamp: preview.receivedAt ?? Date.now(),
+        id: `live-preview-${preview.scope.scopeKey || 'unknown'}`,
+        key: `live-preview-${preview.scope.scopeKey || 'unknown'}`,
+        timestamp: streamPreviewStates.value[preview.scope.scopeKey]?.receivedAt ?? Date.now(),
         preview,
       }))
   )
@@ -397,7 +408,12 @@ export const useSessionStore = defineStore('session', () => {
     activeRunId.value = null
     awaitingRunStart = false
     pendingInteraction.value = null
-    livePreviewEntries.value = []
+    streamPreviewStates.value = {}
+    streamDisplayStates.value = {}
+    if (streamAnimationFrame !== null) {
+      window.clearTimeout(streamAnimationFrame)
+      streamAnimationFrame = null
+    }
     runState.value = nextState
   }
 
@@ -476,37 +492,31 @@ export const useSessionStore = defineStore('session', () => {
     const timelineEvent: Extract<SessionEvent, { type: 'session.sdk.message' }> = {
       ...event,
       receivedAt: timelineReceivedAt,
-      ...(event.livePreview
-        ? {
-            livePreview: {
-              ...event.livePreview,
-              receivedAt: clientReceivedAt,
-            },
-          }
-        : {}),
     }
     const layer = getSdkMessageLayer(timelineEvent.payload)
-
-    if (timelineEvent.livePreview) {
-      livePreviewEntries.value = pruneLivePreviewEntries(upsertLivePreviewEntry(livePreviewEntries.value, timelineEvent.livePreview))
-    }
 
     if (layer === 'run-state') {
       syncSessionId(timelineEvent.sessionId)
       return
     }
 
-    if (layer === 'live-preview') {
-      syncSessionId(timelineEvent.sessionId)
-      eventLog.value = [...eventLog.value.slice(-199), timelineEvent]
-      return
-    }
-
     eventLog.value = [...eventLog.value.slice(-199), timelineEvent]
     if (layer === 'business-message') {
-      livePreviewEntries.value = clearLivePreviewEntriesForMessage(livePreviewEntries.value, parsedMessage)
-      if ((timelineEvent.payload.type === 'assistant' || timelineEvent.payload.type === 'user') && timelineEvent.livePreview) {
-        livePreviewEntries.value = clearLivePreviewEntryByScope(livePreviewEntries.value, timelineEvent.livePreview)
+      if (parsedMessage?.role === 'assistant') {
+        const clearedByMessage = clearStreamStateByMessageId(
+          streamPreviewStates.value,
+          streamDisplayStates.value,
+          getTranscriptMessageId(parsedMessage),
+        )
+        const toolUseIds = (parsedMessage.blocks || [])
+          .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
+        const clearedByTools = clearStreamStateByParentToolUseIds(
+          clearedByMessage.previewStates,
+          clearedByMessage.displayStates,
+          toolUseIds,
+        )
+        streamPreviewStates.value = clearedByTools.previewStates
+        streamDisplayStates.value = clearedByTools.displayStates
       }
     }
     syncSessionId(timelineEvent.sessionId)
@@ -528,6 +538,68 @@ export const useSessionStore = defineStore('session', () => {
       sequence: event.event.sequence,
       sessionId: shortId(event.event.sessionId),
     })
+  }
+
+  function scheduleStreamDisplayAdvance() {
+    if (streamAnimationFrame !== null) return
+    streamAnimationFrame = window.setTimeout(() => {
+      streamAnimationFrame = null
+      const nextDisplayStates: Record<string, StreamDisplayState> = {}
+      let changed = false
+      for (const [scopeKey, preview] of Object.entries(streamPreviewStates.value)) {
+        const currentDisplay = streamDisplayStates.value[scopeKey] ?? null
+        const nextDisplay = advanceStreamDisplayState(currentDisplay, preview)
+        nextDisplayStates[scopeKey] = nextDisplay
+        if (JSON.stringify(currentDisplay) !== JSON.stringify(nextDisplay)) {
+          changed = true
+        }
+      }
+      if (changed) {
+        streamDisplayStates.value = nextDisplayStates
+        scheduleStreamDisplayAdvance()
+      }
+    }, 32)
+  }
+
+  function applyStreamEvent(
+    previewStates: Record<string, StreamPreviewState>,
+    displayStates: Record<string, StreamDisplayState>,
+    event: Extract<SessionEvent, { type: 'session.sdk.stream_event' }>,
+  ): { previewStates: Record<string, StreamPreviewState>; displayStates: Record<string, StreamDisplayState> } {
+    syncSessionId(event.sessionId)
+    const scopeKey = getStreamScopeKey(event.event)
+    const clientReceivedAt = Date.now()
+    const eventForPreview: SessionStreamEvent = {
+      ...event.event,
+      receivedAt: clientReceivedAt,
+    }
+    const currentPreview = previewStates[scopeKey] ?? null
+    const nextPreview = reduceStreamPreviewEvent(currentPreview, eventForPreview)
+    const nextPreviewStates = {
+      ...previewStates,
+      [scopeKey]: nextPreview,
+    }
+    const currentDisplay = displayStates[scopeKey] ?? null
+    const nextDisplay = advanceStreamDisplayState(currentDisplay, nextPreview)
+    const nextDisplayStates = {
+      ...displayStates,
+      [scopeKey]: nextDisplay,
+    }
+    if (!nextPreview.active) {
+      const completedDisplay = createStreamDisplayState(nextPreview)
+      nextDisplayStates[scopeKey] = completedDisplay
+      window.setTimeout(() => {
+        const previewSnapshot = { ...streamPreviewStates.value }
+        const displaySnapshot = { ...streamDisplayStates.value }
+        delete previewSnapshot[scopeKey]
+        delete displaySnapshot[scopeKey]
+        streamPreviewStates.value = previewSnapshot
+        streamDisplayStates.value = displaySnapshot
+      }, 120)
+    } else {
+      scheduleStreamDisplayAdvance()
+    }
+    return { previewStates: nextPreviewStates, displayStates: nextDisplayStates }
   }
 
   function applyEvent(event: SessionEvent) {
@@ -568,7 +640,8 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'session.run.completed':
         pendingInteraction.value = null
-        livePreviewEntries.value = []
+        streamPreviewStates.value = {}
+        streamDisplayStates.value = {}
         runState.value = 'completed'
         activeRunId.value = null
         awaitingRunStart = false
@@ -612,6 +685,13 @@ export const useSessionStore = defineStore('session', () => {
       case 'session.sdk.message':
         applySdkMessage(event)
         break
+
+      case 'session.sdk.stream_event': {
+        const next = applyStreamEvent(streamPreviewStates.value, streamDisplayStates.value, event)
+        streamPreviewStates.value = next.previewStates
+        streamDisplayStates.value = next.displayStates
+        break
+      }
 
       case 'session.sdk.transport':
         applyTransportEvent(event)
@@ -844,7 +924,12 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoadingOlder.value = false
     historyMessagesBeforeCursor.value = null
     eventLog.value = []
-    livePreviewEntries.value = []
+    streamPreviewStates.value = {}
+    streamDisplayStates.value = {}
+    if (streamAnimationFrame !== null) {
+      window.clearTimeout(streamAnimationFrame)
+      streamAnimationFrame = null
+    }
     observedEventCount = 0
     optimisticMessageCount = 0
     clearRunState('idle')
@@ -861,7 +946,12 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoadingOlder.value = false
     historyMessagesBeforeCursor.value = null
     eventLog.value = []
-    livePreviewEntries.value = []
+    streamPreviewStates.value = {}
+    streamDisplayStates.value = {}
+    if (streamAnimationFrame !== null) {
+      window.clearTimeout(streamAnimationFrame)
+      streamAnimationFrame = null
+    }
     observedEventCount = 0
     optimisticMessageCount = 0
     clearRunState('idle')
@@ -903,10 +993,12 @@ export const useSessionStore = defineStore('session', () => {
       } else {
         historyMessages.value = messages
         eventLog.value = eventLog.value.filter((event) => {
-          if (!event.sessionId || event.sessionId !== id) return true
-          return !isBusinessSdkMessage(event.payload) && !isLivePreviewSdkMessage(event.payload)
+          if ('sessionId' in event && event.sessionId && event.sessionId !== id) return true
+          if (event.type !== 'session.sdk.message') return false
+          return !isBusinessSdkMessage(event.payload)
         })
-        livePreviewEntries.value = []
+        streamPreviewStates.value = {}
+        streamDisplayStates.value = {}
       }
       historyMessagesHasMore.value = Boolean(data.hasMore)
       historyMessagesBeforeCursor.value = typeof data.nextBefore === 'string' && data.nextBefore ? data.nextBefore : null
@@ -1051,7 +1143,8 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesBeforeCursor.value = null
     sessions.value = []
     eventLog.value = []
-    livePreviewEntries.value = []
+    streamPreviewStates.value = {}
+    streamDisplayStates.value = {}
     observedEventCount = 0
     optimisticMessageCount = 0
     clearRunState('idle')
@@ -1066,8 +1159,10 @@ export const useSessionStore = defineStore('session', () => {
     historyMessages,
     historyAtoms,
     liveAtoms,
-    livePreviewEntries,
+    streamPreviewStates,
+    streamDisplayStates,
     livePreviewItems,
+    debugTimelineVisible,
     historyMessagesHasMore,
     historyMessagesLoading,
     historyMessagesLoadingOlder,
@@ -1086,7 +1181,6 @@ export const useSessionStore = defineStore('session', () => {
     activeRunId,
     pendingInteraction,
     observabilityEvents,
-    debugTimelineVisible,
     eventLog,
     isAwaitingApproval,
     isAwaitingInteraction,

@@ -48,7 +48,7 @@ const overlayLabel = computed(() => {
 const combinedPreviewText = computed(() =>
   props.item.preview.blocks
     .filter((block) => block.kind === 'text' || block.kind === 'thinking')
-    .map((block) => block.text)
+    .map((block) => block.kind === 'text' ? block.shownText : block.shownText)
     .filter(Boolean)
     .join('\n\n')
 )
@@ -62,13 +62,14 @@ const combinedPreviewText = computed(() =>
     </div>
     <div v-for="block in item.preview.blocks" :key="`${item.key}-preview-${block.kind}-${block.index}`" class="space-y-2">
       <TimelineCliSubrow v-if="block.kind === 'text'" muted>
-        <div class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(block.text)" />
+        <div class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(block.shownText)" />
       </TimelineCliSubrow>
       <TimelineCliSubrow v-else-if="block.kind === 'thinking'" muted>
-        <div class="italic">∴ Thinking</div>
+        <div v-if="block.redacted" class="italic">∴ Thinking</div>
+        <div v-else class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(block.shownText)" />
       </TimelineCliSubrow>
       <TimelineCliSubrow v-else muted>
-        <div>{{ block.name }}<span v-if="block.inputText">({{ block.inputText.trim().replace(/\s+/g, ' ').slice(0, 72) }}{{ block.inputText.trim().replace(/\s+/g, ' ').length > 72 ? '…' : '' }})</span></div>
+        <div>{{ block.name }}<span v-if="block.shownInput">({{ block.shownInput.trim().replace(/\s+/g, ' ').slice(0, 72) }}{{ block.shownInput.trim().replace(/\s+/g, ' ').length > 72 ? '…' : '' }})</span></div>
       </TimelineCliSubrow>
     </div>
     <TimelineCliSubrow v-if="combinedPreviewText && item.preview.blocks.every((block) => block.kind !== 'text')" muted>

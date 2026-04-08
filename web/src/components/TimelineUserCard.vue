@@ -15,6 +15,9 @@ const props = defineProps<{
   item: UserDisplayItem
 }>()
 
+const COMMAND_INPUT_TAGS = ['command-name', 'command-message', 'bash-input'] as const
+const COMMAND_OUTPUT_TAGS = ['local-command-stdout', 'local-command-stderr', 'bash-stdout', 'bash-stderr'] as const
+
 function extractTag(content: string, tagName: string): string | null {
   const match = content.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`))
   return match ? match[1]!.trim() : null
@@ -25,19 +28,22 @@ function sanitizeCommandOutput(content: string): string {
 }
 
 function getCommandInputSummary(content: string): string {
-  const commandName = extractTag(content, 'command-name')
-  const commandMessage = extractTag(content, 'command-message')
-  const bashInput = extractTag(content, 'bash-input')
+  const values = COMMAND_INPUT_TAGS
+    .map((tag) => extractTag(content, tag))
+    .filter((value): value is string => Boolean(value))
+
+  const commandName = values[0] ?? null
+  const commandMessage = values[1] ?? null
+  const bashInput = values[2] ?? null
   if (commandName && commandMessage) return `${commandName} · ${commandMessage}`
   return commandName || bashInput || commandMessage || content
 }
 
 function getCommandOutput(content: string): string {
-  const localStdout = extractTag(content, 'local-command-stdout')
-  const localStderr = extractTag(content, 'local-command-stderr')
-  const bashStdout = extractTag(content, 'bash-stdout')
-  const bashStderr = extractTag(content, 'bash-stderr')
-  const output = [bashStdout, bashStderr, localStdout, localStderr].filter(Boolean).join('\n') || content
+  const output = COMMAND_OUTPUT_TAGS
+    .map((tag) => extractTag(content, tag))
+    .filter(Boolean)
+    .join('\n') || content
   return sanitizeCommandOutput(output)
 }
 

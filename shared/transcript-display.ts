@@ -256,15 +256,10 @@ function createFragments(message: SessionMessage, options: { mode: 'default' | '
 
 function getUserDisplayKind(message: SessionMessage): UserDisplayItem['displayKind'] {
   const content = message.content.trim()
-  if (content.includes('<command-name>') || content.includes('<bash-input>')) {
+  if (/^<(command|bash)-[^>]+>/.test(content)) {
     return 'command_input'
   }
-  if (
-    content.includes('<local-command-stdout>')
-    || content.includes('<local-command-stderr>')
-    || content.includes('<bash-stdout>')
-    || content.includes('<bash-stderr>')
-  ) {
+  if (/^<(local-command|bash)-(stdout|stderr)>/.test(content)) {
     return 'command_output'
   }
   return 'default'

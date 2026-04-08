@@ -632,13 +632,11 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
     const startedAt = Date.now()
     try {
       const id = c.req.param('id')
-      const kind = c.req.query('kind')
       const limit = parseInt(c.req.query('limit') || '100', 10)
       const cursorRaw = c.req.query('cursor')
       const follow = c.req.query('follow') === '1'
       const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
-      const normalizedKind = kind === 'runtime' || kind === 'channel' ? kind : 'transport'
-      const page = await readSessionPersistentLogs(id, normalizedKind, Number.isFinite(cursor) ? cursor : null, limit, follow)
+      const page = await readSessionPersistentLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow)
       return c.json(page)
     } catch (err) {
       logger.error('http:persistent-logs:error', {

@@ -4,7 +4,7 @@ import DOMPurify from 'dompurify'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
 import type { SummaryDisplayItem } from '../../../shared/message-types.js'
 
-defineProps<{
+const props = defineProps<{
   item: SummaryDisplayItem
 }>()
 
@@ -18,6 +18,14 @@ function renderMarkdown(content: string): string {
 
 <template>
   <TimelineCliSubrow muted>
-    <div class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(item.content)" />
+    <div
+      v-if="props.item.summaryType === 'compact'"
+      class="whitespace-pre-wrap text-sm leading-6 text-slate-500"
+    >{{ props.item.content }}</div>
+    <div
+      v-else
+      class="markdown-body prose prose-sm max-w-none text-slate-500"
+      v-html="renderMarkdown(props.item.content)"
+    />
   </TimelineCliSubrow>
 </template>

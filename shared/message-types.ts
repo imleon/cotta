@@ -369,6 +369,7 @@ export interface SessionTransportLogPage {
 
 export interface SessionPersistentLogEntry {
   cursor: number
+  loggedAt: number | null
   line: string
 }
 

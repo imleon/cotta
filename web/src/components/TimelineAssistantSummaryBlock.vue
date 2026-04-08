@@ -18,6 +18,6 @@ function renderMarkdown(content: string): string {
 
 <template>
   <TimelineCliSubrow muted>
-    <div class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(props.fragment.text)" />
+    <div class="whitespace-pre-wrap text-sm leading-6 text-slate-500">{{ props.fragment.text }}</div>
   </TimelineCliSubrow>
 </template>

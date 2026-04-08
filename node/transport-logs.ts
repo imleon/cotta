@@ -183,7 +183,9 @@ function paginateLogLines<T>(
   return {
     items,
     hasMore: follow ? false : start > 0,
-    nextCursor: items.length > 0 ? endExclusive : boundedCursor ?? total,
+    nextCursor: follow
+      ? (items.length > 0 ? endExclusive : boundedCursor ?? total)
+      : (items.length > 0 ? start : boundedCursor ?? total),
   }
 }
 
@@ -301,16 +303,40 @@ function parseChannelLogLine(line: string, cursor: number): SessionChannelLogEnt
   }
 }
 
+function extractPersistentLogTimestamp(line: string): number | null {
+  try {
+    const parsed = JSON.parse(line)
+    if (!parsed || typeof parsed !== 'object') return null
+    const record = parsed as Record<string, unknown>
+    const snapshot = record.snapshot && typeof record.snapshot === 'object'
+      ? record.snapshot as Record<string, unknown>
+      : null
+    const candidate = record.timestamp
+      ?? record.createdAt
+      ?? record.created_at
+      ?? record.time
+      ?? snapshot?.timestamp
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate
+    if (typeof candidate === 'string') {
+      const value = Date.parse(candidate)
+      return Number.isNaN(value) ? null : value
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 function readPersistentLogLine(line: string, cursor: number): SessionPersistentLogEntry {
   return {
     cursor,
+    loggedAt: extractPersistentLogTimestamp(line),
     line,
   }
 }
 
 export async function readSessionPersistentLogs(
   sessionId: string,
-  kind: LogFileKind,
   cursor?: number | null,
   limit: number = DEFAULT_TRANSPORT_PAGE_SIZE,
   follow: boolean = false,

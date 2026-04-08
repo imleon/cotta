@@ -174,9 +174,19 @@ function getPersistentRecord(line: string): Record<string, unknown> | null {
   }
 }
 
-function getPersistentTimestamp(line: string): string {
-  const record = getPersistentRecord(line)
-  const candidate = typeof record?.timestamp === 'string' ? Date.parse(record.timestamp) : null
+function getPersistentTimestamp(item: { loggedAt: number | null; line: string }): string {
+  if (typeof item.loggedAt === 'number' && Number.isFinite(item.loggedAt)) {
+    return formatTimestamp(item.loggedAt)
+  }
+  const record = getPersistentRecord(item.line)
+  const snapshot = record?.snapshot && typeof record.snapshot === 'object'
+    ? record.snapshot as Record<string, unknown>
+    : null
+  const candidate = typeof record?.timestamp === 'string'
+    ? Date.parse(record.timestamp)
+    : typeof snapshot?.timestamp === 'string'
+      ? Date.parse(snapshot.timestamp)
+      : null
   return typeof candidate === 'number' && Number.isFinite(candidate) ? formatTimestamp(candidate) : '-'
 }
 
@@ -500,10 +510,10 @@ onBeforeUnmount(() => {
             </div>
             <div
               v-for="item in persistentItems"
-              :key="`persistent-${logView.persistentLogKind}-${item.cursor}`"
+              :key="`persistent-${item.cursor}`"
               class="grid grid-cols-[28ch_20ch_minmax(36ch,1fr)] gap-3 border-b border-gray-100 px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0 hover:bg-gray-50"
             >
-              <div class="shrink-0 whitespace-nowrap text-gray-500">{{ getPersistentTimestamp(item.line) }}</div>
+              <div class="shrink-0 whitespace-nowrap text-gray-500">{{ getPersistentTimestamp(item) }}</div>
               <div class="truncate text-gray-600">{{ getPersistentType(item.line) }}</div>
               <details class="rounded border border-gray-200 bg-gray-50/70 px-2 py-1">
                 <summary class="cursor-pointer text-gray-600 hover:text-gray-800">Formatted JSON</summary>

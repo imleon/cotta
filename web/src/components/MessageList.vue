@@ -31,7 +31,10 @@ const elicitationAnswer = ref('')
 const preservingOlderScroll = ref(false)
 const initialHistoryAutoScrollPending = ref(true)
 const pendingAutoScrollFrame = ref<number | null>(null)
-const debugMetaVisible = ref(false)
+const debugMetaVisible = computed({
+  get: () => session.debugTimelineVisible,
+  set: (value: boolean) => session.setDebugTimelineVisible(value),
+})
 const observabilityItems = computed(() => session.observabilityEvents.slice().reverse())
 const visibleTimelineItems = computed(() => session.timeline)
 const pendingPermissionInteraction = computed<PendingPermissionInteraction | null>(() =>
@@ -280,6 +283,7 @@ function submitElicitation() {
   elicitationInput.value = ''
 }
 
+
 watch(
   () => session.currentSessionId,
   () => {
@@ -337,14 +341,6 @@ watch(
       </div>
     </div>
 
-    <div class="mb-1 flex items-center justify-end">
-      <button
-        class="timeline-cli-button"
-        @click="debugMetaVisible = !debugMetaVisible"
-      >
-        {{ debugMetaVisible ? 'Hide debug' : 'Show debug' }}
-      </button>
-    </div>
 
     <TimelineRow
       v-for="item in visibleTimelineItems"

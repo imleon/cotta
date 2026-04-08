@@ -49,9 +49,26 @@ export interface TranscriptAtom {
   }
 }
 
+export interface DebugAtomMeta {
+  atomId: string
+  uuid: string | null
+  responseId?: string | null
+  role: SessionMessage['role']
+  semanticKind: TranscriptSemanticKind
+  order: {
+    timestamp: number
+    sequence?: number
+    sourceIndex: number
+  }
+  source: TranscriptAtom['source']
+  linkage: TranscriptLinkage
+  assistant: TranscriptAtom['assistant']
+}
+
 export interface DisplayFragmentText {
   type: 'text'
   text: string
+  debug?: DebugAtomMeta
 }
 
 export interface DisplayFragmentThinking {
@@ -59,6 +76,7 @@ export interface DisplayFragmentThinking {
   text?: string
   redacted?: boolean
   defaultHidden: boolean
+  debug?: DebugAtomMeta
 }
 
 export interface DisplayFragmentToolUse {
@@ -67,6 +85,7 @@ export interface DisplayFragmentToolUse {
   toolUseId?: string
   input?: unknown
   grouped?: boolean
+  debug?: DebugAtomMeta
 }
 
 export interface ToolResultDisplayMeta {
@@ -83,12 +102,14 @@ export interface DisplayFragmentToolResult {
   attachedToParent?: boolean
   defaultCollapsed?: boolean
   display?: ToolResultDisplayMeta
+  debug?: DebugAtomMeta
 }
 
 export interface DisplayFragmentSummary {
   type: 'summary'
   text: string
   defaultCollapsed: boolean
+  debug?: DebugAtomMeta
 }
 
 export type DisplayFragment =
@@ -103,6 +124,8 @@ export interface DisplayAssistantFooter {
   model?: string | null
   usage?: TranscriptAssistantUsage | null
   executionDurationMs?: number | null
+  completedAt?: number | null
+  deltaMs?: number | null
 }
 
 export interface UserDisplayItem {
@@ -113,6 +136,7 @@ export interface UserDisplayItem {
   atomIds: string[]
   message: SessionMessage
   displayKind?: 'default' | 'command_input' | 'command_output'
+  debug?: DebugAtomMeta
 }
 
 export interface AssistantDisplayItem {
@@ -124,6 +148,7 @@ export interface AssistantDisplayItem {
   messages: SessionMessage[]
   anchorMessage: SessionMessage
   fragments: DisplayFragment[]
+  hiddenAtomIds?: string[]
   footer?: DisplayAssistantFooter
   overlays?: TimelineOverlayItem[]
 }
@@ -134,6 +159,7 @@ export interface GroupedToolUseEntry {
   input?: unknown
   result?: unknown
   resultDisplay?: ToolResultDisplayMeta
+  debug?: DebugAtomMeta
 }
 
 export type DisplayLifecycleStatus = 'streaming' | 'completed' | 'errored'
@@ -211,7 +237,17 @@ export interface LivePreviewMapEntry {
   preview: TranscriptLivePreviewState
 }
 
-export type TimelineRenderableItem = DisplayItem | TimelineLivePreviewItem
+export interface HiddenDebugAtomItem {
+  kind: 'hidden_debug_atom'
+  id: string
+  key: string
+  timestamp: number
+  atomIds: string[]
+  atom: TranscriptAtom
+  reason: 'meta' | 'summary' | 'redacted_thinking'
+}
+
+export type TimelineRenderableItem = DisplayItem | TimelineLivePreviewItem | HiddenDebugAtomItem
 export type TimelineOverlayItem = TimelineLivePreviewItem
 
 export interface TranscriptLookup {

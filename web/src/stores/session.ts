@@ -22,7 +22,11 @@ import {
   isBusinessSdkMessage,
   isLivePreviewSdkMessage,
 } from '../../../shared/message-types.js'
-import { buildDisplayItems, buildTranscriptAtom } from '../../../shared/transcript-display.js'
+import {
+  getHiddenAtomsForDebug,
+  buildDisplayItems,
+  buildTranscriptAtom,
+} from '../../../shared/transcript-display.js'
 import {
   getTranscriptMessageId,
 } from '../../../shared/transcript-normalizer.js'
@@ -264,6 +268,7 @@ export const useSessionStore = defineStore('session', () => {
     if (getSdkMessageLayer(event.payload) !== 'debug-observability') return false
     return !(event.payload?.type === 'system' && event.payload?.subtype === 'init')
   }))
+  const debugTimelineVisible = ref(false)
   const historyAtoms = computed<TranscriptAtom[]>(() =>
     historyMessages.value.map((message, index) => buildTranscriptAtom(message, {
       source: 'history',
@@ -289,7 +294,40 @@ export const useSessionStore = defineStore('session', () => {
       .filter((atom): atom is TranscriptAtom => atom !== null && atom.semanticKind !== 'meta')
   )
   const defaultTimelineItems = computed<DisplayItem[]>(() =>
-    buildDisplayItems([...historyAtoms.value, ...liveAtoms.value], { mode: 'default' })
+    buildDisplayItems([...historyAtoms.value, ...liveAtoms.value], {
+      mode: 'default',
+      includeHiddenAtoms: false,
+    })
+  )
+  const attachedHiddenAtomIds = computed<Set<string>>(() => {
+    const ids = new Set<string>()
+    for (const item of defaultTimelineItems.value) {
+      if (item.kind === 'assistant' && item.hiddenAtomIds?.length) {
+        for (const atomId of item.hiddenAtomIds) ids.add(atomId)
+      }
+    }
+    return ids
+  })
+  const hiddenTimelineItems = computed<TimelineRenderableItem[]>(() =>
+    getHiddenAtomsForDebug([...historyAtoms.value, ...liveAtoms.value], {
+      mode: 'default',
+      includeHiddenAtoms: true,
+    })
+      .filter((atom) => !attachedHiddenAtomIds.value.has(atom.id))
+      .filter((atom) => atom.semanticKind !== 'thinking' || Boolean(atom.assistant.stopReason))
+      .map((atom) => ({
+        kind: 'hidden_debug_atom' as const,
+        id: `hidden-${atom.id}`,
+        key: `hidden-${atom.id}`,
+        timestamp: atom.order.timestamp,
+        atomIds: [atom.id],
+        atom,
+        reason: atom.semanticKind === 'meta'
+          ? 'meta'
+          : atom.semanticKind === 'summary'
+            ? 'summary'
+            : 'redacted_thinking',
+      }))
   )
   const livePreviewItems = computed<TimelineLivePreviewItem[]>(() =>
     livePreviewEntries.value
@@ -317,12 +355,14 @@ export const useSessionStore = defineStore('session', () => {
       }))
   )
   const timeline = computed<TimelineRenderableItem[]>(() => {
+    const visibleItems = defaultTimelineItems.value
+    const debugOnlyHiddenItems = debugTimelineVisible.value ? hiddenTimelineItems.value : []
     const { items: itemsWithOverlays, unattachedOverlays } = attachOverlaysToDisplayItems(
-      defaultTimelineItems.value,
+      visibleItems,
       livePreviewItems.value,
     )
 
-    return [...itemsWithOverlays, ...unattachedOverlays]
+    return [...itemsWithOverlays, ...debugOnlyHiddenItems, ...unattachedOverlays]
       .slice()
       .sort((left, right) => {
         if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp
@@ -1017,6 +1057,10 @@ export const useSessionStore = defineStore('session', () => {
     clearRunState('idle')
   }
 
+  function setDebugTimelineVisible(visible: boolean) {
+    debugTimelineVisible.value = visible
+  }
+
   return {
     timeline,
     historyMessages,
@@ -1042,6 +1086,7 @@ export const useSessionStore = defineStore('session', () => {
     activeRunId,
     pendingInteraction,
     observabilityEvents,
+    debugTimelineVisible,
     eventLog,
     isAwaitingApproval,
     isAwaitingInteraction,
@@ -1054,6 +1099,7 @@ export const useSessionStore = defineStore('session', () => {
     selectSession,
     loadOlderSessionMessages,
     initialize,
+    setDebugTimelineVisible,
     setAuthToken,
     clearAuthToken,
   }

@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useSessionStore } from '../stores/session'
 
 const session = useSessionStore()
 const input = ref('')
+const debugMetaVisible = computed({
+  get: () => session.debugTimelineVisible,
+  set: (value: boolean) => session.setDebugTimelineVisible(value),
+})
 
 function send() {
   const text = input.value.trim()
@@ -22,7 +26,7 @@ function onKeydown(e: KeyboardEvent) {
 
 <template>
   <div class="p-4 bg-white">
-    <div class="max-w-4xl mx-auto flex gap-3">
+    <div class="max-w-4xl mx-auto flex gap-3 items-start">
       <textarea
         v-model="input"
         @keydown="onKeydown"
@@ -31,13 +35,21 @@ function onKeydown(e: KeyboardEvent) {
         rows="1"
         class="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50"
       />
-      <button
-        @click="send"
-        :disabled="!input.trim() || session.hasActiveRun || !session.isConnected || session.isAwaitingInteraction"
-        class="px-5 py-3 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      >
-        Send
-      </button>
+      <div class="flex flex-col items-end gap-2">
+        <button
+          @click="send"
+          :disabled="!input.trim() || session.hasActiveRun || !session.isConnected || session.isAwaitingInteraction"
+          class="px-5 py-3 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Send
+        </button>
+        <button
+          class="timeline-cli-button"
+          @click="debugMetaVisible = !debugMetaVisible"
+        >
+          {{ debugMetaVisible ? 'Hide debug' : 'Show debug' }}
+        </button>
+      </div>
     </div>
     <div v-if="session.authRequired && !session.hasAuthToken" class="text-center text-xs text-amber-600 mt-2">
       Waiting for access token...

@@ -9,8 +9,9 @@ const props = defineProps<{
 }>()
 
 const expanded = ref(true)
-const label = computed(() => 'Thinking')
-const thinkingText = computed(() => props.fragment.text || '')
+const isRedacted = computed(() => Boolean(props.fragment.redacted))
+const label = computed(() => isRedacted.value ? 'Redacted thinking' : 'Thinking')
+const thinkingText = computed(() => props.fragment.redacted ? '' : (props.fragment.text || ''))
 
 function renderMarkdown(content: string): string {
   const html = marked.parse(content, { async: false }) as string

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import TimelineAssistantFooter from './TimelineAssistantFooter.vue'
+import TimelineAssistantFooterLine from './TimelineAssistantFooterLine.vue'
+import TimelineAssistantScopeUsageDebug from './TimelineAssistantScopeUsageDebug.vue'
 import TimelineAssistantSummaryBlock from './TimelineAssistantSummaryBlock.vue'
 import TimelineAssistantTextBlock from './TimelineAssistantTextBlock.vue'
 import TimelineAssistantThinkingBlock from './TimelineAssistantThinkingBlock.vue'
 import TimelineAssistantToolResultBlock from './TimelineAssistantToolResultBlock.vue'
 import TimelineAssistantToolUseBlock from './TimelineAssistantToolUseBlock.vue'
+import TimelineAtomDebugMeta from './TimelineAtomDebugMeta.vue'
 import TimelineLivePreviewCard from './TimelineLivePreviewCard.vue'
 import type { AssistantDisplayItem, DisplayFragment, DisplayFragmentToolResult } from '../../../shared/message-types.js'
 import {
@@ -15,8 +17,10 @@ import {
 const props = withDefaults(defineProps<{
   item: AssistantDisplayItem
   hideFooter?: boolean
+  showDebugMeta?: boolean
 }>(), {
   hideFooter: false,
+  showDebugMeta: false,
 })
 
 function shouldRenderFragment(fragment: DisplayFragment): boolean {
@@ -119,8 +123,10 @@ const shouldIndentFooterForTool = computed(() => visibleFragments.value[0]?.type
         />
         <TimelineAssistantThinkingBlock v-else-if="fragment.type === 'thinking'" :fragment="fragment" />
         <TimelineAssistantSummaryBlock v-else :fragment="fragment" />
+        <TimelineAtomDebugMeta v-if="showDebugMeta" :debug="fragment.debug" />
       </div>
     </template>
-    <TimelineAssistantFooter v-if="!hideFooter" :message="item.anchorMessage" :footer="item.footer" :indent-for-tool="shouldIndentFooterForTool" />
+    <TimelineAssistantFooterLine :message="item.anchorMessage" :footer="item.footer" :indent-for-tool="shouldIndentFooterForTool" />
+    <TimelineAssistantScopeUsageDebug v-if="showDebugMeta" :messages="item.messages" />
   </div>
 </template>

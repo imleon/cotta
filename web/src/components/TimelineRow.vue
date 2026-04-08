@@ -1,9 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { TimelineItem } from '../stores/session'
-import {
-  getTranscriptMessageId,
-} from '../../../shared/transcript-normalizer.js'
 import type {
   AssistantDisplayItem,
   CollapsedToolBatchDisplayItem,
@@ -97,32 +94,13 @@ const rowStatus = computed(() => {
   }
   return 'completed'
 })
-
-const debugMeta = computed(() => {
-  const message = getAnchorMessage(props.item)
-  if (!message) return ''
-  const toolUseIds = (message.blocks || [])
-    .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
-  const toolResultForIds = (message.blocks || [])
-    .flatMap((block) => block.type === 'tool_result' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
-
-  return [
-    `uuid=${getTranscriptMessageId(message) || 'unknown'}`,
-    toolUseIds.length ? `toolUse=${toolUseIds.join(',')}` : '',
-    toolResultForIds.length ? `toolResultFor=${toolResultForIds.join(',')}` : '',
-    rowStatus.value === 'streaming' ? 'streaming' : '',
-  ].filter(Boolean).join(' · ')
-})
 </script>
 
 <template>
   <div :class="['timeline-cli-row', getRowClass(item)]">
     <span :class="getPrefixClass(item)">{{ getPrefix(item) }}</span>
     <div class="timeline-cli-content">
-      <TimelineMessageContent :item="item" />
-      <div v-if="props.showDebugMeta && debugMeta" class="timeline-cli-meta mt-1">
-        {{ debugMeta }}
-      </div>
+      <TimelineMessageContent :item="item" :show-debug-meta="props.showDebugMeta" />
     </div>
   </div>
 </template>

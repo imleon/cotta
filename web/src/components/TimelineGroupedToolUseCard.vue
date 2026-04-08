@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import TimelineAssistantFooter from './TimelineAssistantFooter.vue'
 import TimelineAssistantToolResultBlock from './TimelineAssistantToolResultBlock.vue'
 import TimelineAssistantToolUseBlock from './TimelineAssistantToolUseBlock.vue'
+import TimelineAtomDebugMeta from './TimelineAtomDebugMeta.vue'
 import TimelineLivePreviewCard from './TimelineLivePreviewCard.vue'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
 import type { DisplayFragmentToolUse } from '../../../shared/message-types.js'
@@ -11,8 +11,10 @@ import type { GroupedToolUseDisplayItem, ToolResultDisplayMeta } from '../../../
 const props = withDefaults(defineProps<{
   item: GroupedToolUseDisplayItem
   hideFooter?: boolean
+  showDebugMeta?: boolean
 }>(), {
   hideFooter: false,
+  showDebugMeta: false,
 })
 
 const expanded = ref(props.item.status === 'streaming')
@@ -51,7 +53,6 @@ function toggleToolResult(toolIndex: number, resultDisplay?: ToolResultDisplayMe
   setToolResultExpanded(toolIndex, !getToolResultExpanded(toolIndex, resultDisplay))
 }
 
-const footerMessage = computed(() => props.item.anchorMessage)
 const toggleLabel = computed(() => (expanded.value ? 'collapse' : 'expand'))
 </script>
 
@@ -73,6 +74,7 @@ const toggleLabel = computed(() => (expanded.value ? 'collapse' : 'expand'))
           :trailing-toggle-label="getToolResultToggleLabel(toolIndex, tool.resultDisplay)"
           @toggle="toggleToolResult(toolIndex, tool.resultDisplay)"
         />
+        <TimelineAtomDebugMeta v-if="showDebugMeta" :debug="tool.debug" />
         <TimelineAssistantToolResultBlock
           v-if="tool.result !== undefined"
           :output="tool.result"
@@ -91,5 +93,4 @@ const toggleLabel = computed(() => (expanded.value ? 'collapse' : 'expand'))
       </div>
     </TimelineCliSubrow>
   </div>
-  <TimelineAssistantFooter v-if="!hideFooter" :message="footerMessage" :footer="item.footer" indent-for-tool />
 </template>

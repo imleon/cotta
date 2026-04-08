@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import TimelineAssistantCard from './TimelineAssistantCard.vue'
-import TimelineAssistantFooter from './TimelineAssistantFooter.vue'
 import TimelineGroupedToolUseCard from './TimelineGroupedToolUseCard.vue'
 import TimelineLivePreviewCard from './TimelineLivePreviewCard.vue'
 import type { CollapsedToolBatchDisplayItem } from '../../../shared/message-types.js'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   item: CollapsedToolBatchDisplayItem
-}>()
+  showDebugMeta?: boolean
+}>(), {
+  showDebugMeta: false,
+})
 
 const expanded = ref(props.item.status === 'streaming')
 
@@ -21,7 +23,6 @@ watch(
   },
 )
 
-const footerMessage = computed(() => props.item.anchorMessage)
 const totalOps = computed(() => props.item.summary.readCount + props.item.summary.searchCount + props.item.summary.listCount + props.item.summary.bashCount)
 const toggleLabel = computed(() => (expanded.value ? 'Collapse' : 'Expand'))
 </script>
@@ -49,10 +50,9 @@ const toggleLabel = computed(() => (expanded.value ? 'Collapse' : 'Expand'))
     </div>
     <div v-if="expanded" class="space-y-3">
       <template v-for="child in item.items" :key="child.key">
-        <TimelineGroupedToolUseCard v-if="child.kind === 'grouped_tool_use'" :item="child" hide-footer />
-        <TimelineAssistantCard v-else :item="child" hide-footer />
+        <TimelineGroupedToolUseCard v-if="child.kind === 'grouped_tool_use'" :item="child" hide-footer :show-debug-meta="showDebugMeta" />
+        <TimelineAssistantCard v-else :item="child" hide-footer :show-debug-meta="showDebugMeta" />
       </template>
     </div>
   </div>
-  <TimelineAssistantFooter :message="footerMessage" :footer="item.footer" />
 </template>

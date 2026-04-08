@@ -31,6 +31,7 @@ import {
 
 export interface BuildDisplayItemsOptions {
   mode?: 'default' | 'transcript'
+  includeHiddenAtoms?: boolean
 }
 
 export interface BuildTranscriptAtomOptions {
@@ -73,6 +74,32 @@ function getAssistantFooter(message: SessionMessage, executionDurationMs?: numbe
     model,
     usage,
     executionDurationMs: executionDurationMs ?? null,
+  }
+}
+
+function withFooterTiming<T extends { footer?: DisplayAssistantFooter; timestamp: number }>(item: T, previousTimestamp?: number | null): T {
+  const baseFooter = item.footer ?? {}
+  return {
+    ...item,
+    footer: {
+      ...baseFooter,
+      completedAt: item.timestamp,
+      deltaMs: typeof previousTimestamp === 'number' ? Math.max(0, item.timestamp - previousTimestamp) : null,
+    },
+  }
+}
+
+function getDebugAtomMeta(atom: TranscriptAtom) {
+  return {
+    atomId: atom.id,
+    uuid: atom.linkage.messageId,
+    responseId: getAssistantResponseId(atom.message),
+    role: atom.role,
+    semanticKind: atom.semanticKind,
+    order: atom.order,
+    source: atom.source,
+    linkage: atom.linkage,
+    assistant: atom.assistant,
   }
 }
 
@@ -191,22 +218,31 @@ function stringifyStructuredContent(value: unknown): string {
   }
 }
 
-function createFragments(message: SessionMessage, options: { mode: 'default' | 'transcript'; attachToolResultsToParent?: boolean } = { mode: 'default' }): DisplayFragment[] {
+function createFragments(
+  atom: TranscriptAtom,
+  options: { mode: 'default' | 'transcript'; attachToolResultsToParent?: boolean } = { mode: 'default' },
+): DisplayFragment[] {
+  const message = atom.message
   const structured = extractStructuredContentFromBlocks(message.blocks || [])
+  const debug = getDebugAtomMeta(atom)
   const fragments: DisplayFragment[] = []
 
   for (const block of message.blocks || []) {
     if (block.type === 'text' && block.text) {
-      fragments.push({ type: 'text', text: block.text })
+      fragments.push({ type: 'text', text: block.text, debug })
       continue
     }
 
     if (block.type === 'thinking') {
+      if (isTranscriptRedactedThinkingMessage(message)) {
+        continue
+      }
       fragments.push({
         type: 'thinking',
         text: block.text,
         redacted: false,
         defaultHidden: false,
+        debug,
       })
       continue
     }
@@ -217,6 +253,7 @@ function createFragments(message: SessionMessage, options: { mode: 'default' | '
         name: block.name || 'unknown_tool',
         toolUseId: block.toolUseId,
         input: block.input,
+        debug,
       })
       continue
     }
@@ -231,16 +268,17 @@ function createFragments(message: SessionMessage, options: { mode: 'default' | '
         attachedToParent,
         defaultCollapsed: options.mode !== 'transcript' && !display.defaultExpanded,
         display,
+        debug,
       })
     }
   }
 
-  if (fragments.length === 0 && message.content) {
-    fragments.push({ type: 'text', text: message.content })
-  }
-
   if (isTranscriptRedactedThinkingMessage(message) && fragments.length === 0) {
     return fragments
+  }
+
+  if (fragments.length === 0 && message.content) {
+    fragments.push({ type: 'text', text: message.content, debug })
   }
 
   if (isTranscriptSummaryMessage(message) && structured.answerText) {
@@ -248,6 +286,7 @@ function createFragments(message: SessionMessage, options: { mode: 'default' | '
       type: 'summary',
       text: structured.answerText,
       defaultCollapsed: options.mode !== 'transcript',
+      debug,
     })
   }
 
@@ -274,6 +313,7 @@ function createUserDisplayItem(atom: TranscriptAtom): UserDisplayItem {
     atomIds: [atom.id],
     message: atom.message,
     displayKind: getUserDisplayKind(atom.message),
+    debug: getDebugAtomMeta(atom),
   }
 }
 
@@ -309,12 +349,16 @@ function createAssistantDisplayItem(
   })
 
   for (const atom of orderedAtoms) {
-    fragments.push(...createFragments(atom.message, { mode }))
+    fragments.push(...createFragments(atom, { mode }))
   }
   for (const atom of attachedToolResultAtoms) {
     atomIds.push(atom.id)
-    fragments.push(...createFragments(atom.message, { mode, attachToolResultsToParent: true }))
+    fragments.push(...createFragments(atom, { mode, attachToolResultsToParent: true }))
   }
+
+  const hiddenAtomIds = atoms
+    .filter((atom) => isTranscriptRedactedThinkingMessage(atom.message))
+    .map((atom) => atom.id)
 
   return {
     kind: 'assistant',
@@ -325,6 +369,7 @@ function createAssistantDisplayItem(
     messages: atoms.map((atom) => atom.message),
     anchorMessage: anchor,
     fragments,
+    ...(hiddenAtomIds.length ? { hiddenAtomIds } : {}),
     footer: getAssistantFooter(anchor),
   }
 }
@@ -346,6 +391,7 @@ function createGroupedToolUseDisplayItem(
         input: block.input,
         result,
         resultDisplay: result !== undefined ? getToolResultDisplayMeta(result, true) : undefined,
+        debug: getDebugAtomMeta(atom),
       }
     })
   )
@@ -481,12 +527,41 @@ function shouldHideMessage(message: TranscriptMessage, mode: 'default' | 'transc
     || shouldHideThinkingMessage(message, mode)
 }
 
+function shouldOmitFromAssembly(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
+  return shouldHideMetaMessage(message, mode)
+    || shouldHideSummaryMessage(message, mode)
+}
+
+function orderAtomsForAssembly(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): TranscriptAtom[] {
+  const mode = options.mode ?? 'default'
+  return atoms
+    .slice()
+    .sort(compareAtoms)
+    .filter((atom) => !shouldOmitFromAssembly(atom.message, mode))
+}
+
 export function orderAtomsForTimeline(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): TranscriptAtom[] {
   const mode = options.mode ?? 'default'
   return atoms
     .slice()
     .sort(compareAtoms)
-    .filter((atom) => !shouldHideMessage(atom.message, mode))
+    .filter((atom) => options.includeHiddenAtoms || !shouldHideMessage(atom.message, mode))
+}
+
+function getHiddenReason(message: TranscriptMessage): 'meta' | 'summary' | 'redacted_thinking' | null {
+  if (isTranscriptMetaMessage(message)) return 'meta'
+  if (isTranscriptSummaryMessage(message)) return 'summary'
+  if (isTranscriptRedactedThinkingMessage(message)) return 'redacted_thinking'
+  return null
+}
+
+export function getHiddenAtomsForDebug(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): TranscriptAtom[] {
+  const mode = options.mode ?? 'default'
+  if (!options.includeHiddenAtoms) return []
+  return atoms
+    .slice()
+    .sort(compareAtoms)
+    .filter((atom) => getHiddenReason(atom.message) !== null && shouldHideMessage(atom.message, mode))
 }
 
 function deriveAttachedToolResultPolicy(atoms: TranscriptAtom[], lookups: TranscriptLookup): {
@@ -554,6 +629,102 @@ function canGroupToolUseAtoms(group: TranscriptAtom[], candidate: TranscriptAtom
   return true
 }
 
+function isAssistantResponseScopedAtom(atom: TranscriptAtom): boolean {
+  return atom.role === 'assistant'
+}
+
+function isTerminalBoundaryMessage(atom: TranscriptAtom): boolean {
+  if (atom.role !== 'assistant') return false
+  return getTranscriptStopReason(atom.message) != null
+}
+
+function isBridgeMessage(atom: TranscriptAtom): boolean {
+  if (atom.role === 'assistant') return true
+
+  if (atom.role === 'user') {
+    const hasToolResult = atom.message.blocks?.some((block) => block.type === 'tool_result')
+    if (hasToolResult) return true
+
+    const content = atom.message.content.trim()
+    return content.includes('<local-command-stdout>')
+      || content.includes('<local-command-stderr>')
+      || content.includes('<bash-stdout>')
+      || content.includes('<bash-stderr>')
+      || content.includes('<tool_result>')
+  }
+
+  const raw = atom.message.raw
+  if (raw && typeof raw === 'object') {
+    const type = typeof (raw as Record<string, unknown>).type === 'string'
+      ? (raw as Record<string, unknown>).type as string
+      : null
+    return type === 'system' || type === 'file-history-snapshot' || type === 'progress' || type === 'queue-operation' || type === 'last-prompt'
+  }
+
+  return false
+}
+
+function isTailBridgeMessage(atom: TranscriptAtom): boolean {
+  if (atom.role === 'assistant') return false
+  const raw = atom.message.raw
+  if (raw && typeof raw === 'object') {
+    const type = typeof (raw as Record<string, unknown>).type === 'string'
+      ? (raw as Record<string, unknown>).type as string
+      : null
+    return type === 'system' || type === 'file-history-snapshot' || type === 'progress' || type === 'queue-operation' || type === 'last-prompt'
+  }
+  return false
+}
+
+function buildAssistantResponseGroups(atoms: TranscriptAtom[]): TranscriptAtom[][] {
+  const groups: TranscriptAtom[][] = []
+  let index = 0
+
+  while (index < atoms.length) {
+    const atom = atoms[index]!
+    const responseId = atom.role === 'assistant' ? getAssistantResponseId(atom.message) : null
+
+    if (!isAssistantResponseScopedAtom(atom) || !responseId) {
+      groups.push([atom])
+      index += 1
+      continue
+    }
+
+    const group: TranscriptAtom[] = []
+    let seenTerminal = false
+    let currentIndex = index
+    let currentResponseId = responseId
+
+    while (currentIndex < atoms.length) {
+      const current = atoms[currentIndex]!
+      const nextResponseId = current.role === 'assistant' ? getAssistantResponseId(current.message) : null
+
+      if (seenTerminal) {
+        if (!isTailBridgeMessage(current)) {
+          break
+        }
+      } else if (current.role === 'assistant' && nextResponseId && nextResponseId !== currentResponseId) {
+        currentResponseId = nextResponseId
+      } else if (currentIndex !== index && !isBridgeMessage(current)) {
+        break
+      }
+
+      group.push(current)
+
+      if (isTerminalBoundaryMessage(current)) {
+        seenTerminal = true
+      }
+
+      currentIndex += 1
+    }
+
+    groups.push(group)
+    index = currentIndex
+  }
+
+  return groups
+}
+
 function buildPrimaryDisplayItems(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
@@ -562,9 +733,11 @@ function buildPrimaryDisplayItems(
   attachedResultAtomIds: Set<string>,
 ): DisplayItem[] {
   const items: DisplayItem[] = []
+  const responseGroups = buildAssistantResponseGroups(atoms)
+  let previousVisibleTimestamp: number | null = null
 
-  for (let index = 0; index < atoms.length; index += 1) {
-    const atom = atoms[index]!
+  for (const group of responseGroups) {
+    const atom = group[0]!
 
     if (attachedResultAtomIds.has(atom.id)) continue
 
@@ -574,47 +747,38 @@ function buildPrimaryDisplayItems(
     }
 
     if (atom.semanticKind === 'user') {
-      items.push(createUserDisplayItem(atom))
+      const item = createUserDisplayItem(atom)
+      items.push(item)
+      previousVisibleTimestamp = item.timestamp
       continue
     }
 
     if (atom.semanticKind === 'tool_result') {
-      items.push(createAssistantDisplayItem([atom], mode))
+      const item = createAssistantDisplayItem([atom], mode)
+      if (item.fragments.length > 0) {
+        const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
+        items.push(timed)
+        previousVisibleTimestamp = timed.timestamp
+      }
       continue
     }
 
     if (atom.role !== 'assistant') {
-      items.push(createAssistantDisplayItem([atom], mode))
+      const item = createAssistantDisplayItem([atom], mode)
+      if (item.fragments.length > 0) {
+        const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
+        items.push(timed)
+        previousVisibleTimestamp = timed.timestamp
+      }
       continue
     }
 
-    const assistantSiblings = [atom]
-    let assistantCursor = index + 1
-    while (assistantCursor < atoms.length && canMergeAssistantSiblingAtoms(assistantSiblings, atoms[assistantCursor]!)) {
-      assistantSiblings.push(atoms[assistantCursor]!)
-      assistantCursor += 1
+    const item = createAssistantDisplayItem(group, mode, attachedResultAtomsByOwnerId.get(atom.id) || [])
+    if (item.fragments.length > 0) {
+      const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
+      items.push(timed)
+      previousVisibleTimestamp = timed.timestamp
     }
-
-    if (assistantSiblings.length >= 2) {
-      items.push(createAssistantDisplayItem(assistantSiblings, mode, attachedResultAtomsByOwnerId.get(atom.id) || []))
-      index = assistantCursor - 1
-      continue
-    }
-
-    const group = [atom]
-    let cursor = index + 1
-    while (cursor < atoms.length && canGroupToolUseAtoms(group, atoms[cursor]!)) {
-      group.push(atoms[cursor]!)
-      cursor += 1
-    }
-
-    if (group.length >= 2) {
-      items.push(createGroupedToolUseDisplayItem(group, lookups))
-      index = cursor - 1
-      continue
-    }
-
-    items.push(createAssistantDisplayItem([atom], mode, attachedResultAtomsByOwnerId.get(atom.id) || []))
   }
 
   return items
@@ -626,8 +790,7 @@ function applyDisplayPoliciesAndTransforms(
 ): DisplayItem[] {
   const lookups = buildTranscriptLookups(atoms)
   const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = deriveAttachedToolResultPolicy(atoms, lookups)
-  const groupedItems = buildPrimaryDisplayItems(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
-  return collapseLowSignalTools(groupedItems)
+  return buildPrimaryDisplayItems(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
 }
 
 function isCollapsibleToolItem(item: DisplayItem): item is AssistantDisplayItem | GroupedToolUseDisplayItem {
@@ -674,6 +837,6 @@ export function collapseLowSignalTools(items: DisplayItem[]): DisplayItem[] {
 
 export function buildDisplayItems(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {
   const mode = options.mode ?? 'default'
-  const orderedAtoms = orderAtomsForTimeline(atoms, { mode })
+  const orderedAtoms = orderAtomsForAssembly(atoms, { mode, includeHiddenAtoms: options.includeHiddenAtoms })
   return applyDisplayPoliciesAndTransforms(orderedAtoms, mode)
 }

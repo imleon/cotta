@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { UserDisplayItem } from '../../../shared/message-types.js'
+import TimelineAtomDebugMeta from './TimelineAtomDebugMeta.vue'
 
 type AnsiSegment = {
   text: string
@@ -13,6 +14,7 @@ type AnsiLine = AnsiSegment[]
 
 const props = defineProps<{
   item: UserDisplayItem
+  showDebugMeta?: boolean
 }>()
 
 const COMMAND_INPUT_TAGS = ['command-name', 'command-message', 'bash-input'] as const
@@ -141,26 +143,80 @@ function getAnsiSegmentClass(segment: AnsiSegment): string {
   ].filter(Boolean).join(' ')
 }
 
+function getCompactModel(model?: string | null): string {
+  if (!model) return '-'
+  const parts = model.split('/')
+  return parts[parts.length - 1] || model
+}
+
+function formatTimestamp(timestamp: number): string {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return String(timestamp)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+}
+
+function formatDebug(debug?: UserDisplayItem['debug']): string {
+  if (!debug) return ''
+  const usage = debug.assistant?.usage
+  return [
+    `uuid=${debug.uuid || 'unknown'}`,
+    `role=${debug.role}`,
+    `kind=${debug.semanticKind}`,
+    `time=${formatTimestamp(debug.order.timestamp)}`,
+    debug.order.sequence !== undefined ? `seq=${debug.order.sequence}` : '',
+    `idx=${debug.order.sourceIndex}`,
+    `src=${debug.source}`,
+    debug.assistant?.stopReason ? `stop=${debug.assistant.stopReason}` : 'stop=-',
+    `model=${getCompactModel(debug.assistant?.model)}`,
+    usage ? `usage in=${usage.inputTokens ?? '-'} out=${usage.outputTokens ?? '-'} read=${usage.cacheReadTokens ?? '-'} write=${usage.cacheWriteTokens ?? '-'}` : 'usage=-',
+    debug.linkage.toolUseIds.length ? `toolUse=${debug.linkage.toolUseIds.join(',')}` : 'toolUse=-',
+    debug.linkage.toolResultForIds.length ? `toolResultFor=${debug.linkage.toolResultForIds.join(',')}` : 'toolResultFor=-',
+  ].filter(Boolean).join(' · ')
+}
+
+function formatFooterTimestamp(timestamp?: number | null): string {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return '-'
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '-'
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+}
+
 const commandOutputLines = computed(() => parseAnsiOutput(getCommandOutput(props.item.message.content)))
 </script>
 
 <template>
-  <div v-if="item.displayKind === 'command_input'" class="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-700">
-    <span class="font-medium text-slate-900">Command</span>
-    <span class="text-slate-400"> · </span>
-    <span>{{ getCommandInputSummary(item.message.content) }}</span>
-  </div>
-  <div v-else-if="item.displayKind === 'command_output'" class="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm leading-6">
-    <div v-for="(line, lineIndex) in commandOutputLines" :key="`${item.id}-line-${lineIndex}`" class="whitespace-pre-wrap break-words">
-      <template v-if="line.length > 0">
-        <span
-          v-for="(segment, segmentIndex) in line"
-          :key="`${item.id}-line-${lineIndex}-segment-${segmentIndex}`"
-          :class="getAnsiSegmentClass(segment)"
-        >{{ segment.text }}</span>
-      </template>
-      <span v-else>&nbsp;</span>
+  <div class="space-y-1.5">
+    <div v-if="item.displayKind === 'command_input'" class="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-700">
+      <span class="font-medium text-slate-900">Command</span>
+      <span class="text-slate-400"> · </span>
+      <span>{{ getCommandInputSummary(item.message.content) }}</span>
     </div>
+    <div v-else-if="item.displayKind === 'command_output'" class="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm leading-6">
+      <div v-for="(line, lineIndex) in commandOutputLines" :key="`${item.id}-line-${lineIndex}`" class="whitespace-pre-wrap break-words">
+        <template v-if="line.length > 0">
+          <span
+            v-for="(segment, segmentIndex) in line"
+            :key="`${item.id}-line-${lineIndex}-segment-${segmentIndex}`"
+            :class="getAnsiSegmentClass(segment)"
+          >{{ segment.text }}</span>
+        </template>
+        <span v-else>&nbsp;</span>
+      </div>
+    </div>
+    <div v-else class="whitespace-pre-wrap text-[15px] leading-7 text-slate-900">{{ item.message.content }}</div>
+    <div class="text-[11px] leading-4 text-slate-400">{{ formatFooterTimestamp(item.timestamp) }}</div>
+    <div v-if="showDebugMeta && item.debug" class="timeline-cli-meta">{{ formatDebug(item.debug) }}</div>
   </div>
-  <div v-else class="whitespace-pre-wrap text-[15px] leading-7 text-slate-900">{{ item.message.content }}</div>
 </template>

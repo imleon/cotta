@@ -503,20 +503,37 @@ export const useSessionStore = defineStore('session', () => {
     eventLog.value = [...eventLog.value.slice(-199), timelineEvent]
     if (layer === 'business-message') {
       if (parsedMessage?.role === 'assistant') {
-        const clearedByMessage = clearStreamStateByMessageId(
-          streamPreviewStates.value,
-          streamDisplayStates.value,
-          getTranscriptMessageId(parsedMessage),
-        )
         const toolUseIds = (parsedMessage.blocks || [])
           .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
-        const clearedByTools = clearStreamStateByParentToolUseIds(
-          clearedByMessage.previewStates,
-          clearedByMessage.displayStates,
-          toolUseIds,
-        )
-        streamPreviewStates.value = clearedByTools.previewStates
-        streamDisplayStates.value = clearedByTools.displayStates
+        const scopeKeysToComplete = Object.entries(streamPreviewStates.value)
+          .filter(([, state]) => {
+            if (state.scope.messageId && state.scope.messageId === getTranscriptMessageId(parsedMessage)) return true
+            if (state.scope.parentToolUseId && toolUseIds.includes(state.scope.parentToolUseId)) return true
+            return false
+          })
+          .map(([scopeKey]) => scopeKey)
+        for (const scopeKey of scopeKeysToComplete) {
+          const preview = streamPreviewStates.value[scopeKey]
+          if (!preview) continue
+          streamDisplayStates.value = {
+            ...streamDisplayStates.value,
+            [scopeKey]: createStreamDisplayState(preview),
+          }
+        }
+        window.setTimeout(() => {
+          const clearedByMessage = clearStreamStateByMessageId(
+            streamPreviewStates.value,
+            streamDisplayStates.value,
+            getTranscriptMessageId(parsedMessage),
+          )
+          const clearedByTools = clearStreamStateByParentToolUseIds(
+            clearedByMessage.previewStates,
+            clearedByMessage.displayStates,
+            toolUseIds,
+          )
+          streamPreviewStates.value = clearedByTools.previewStates
+          streamDisplayStates.value = clearedByTools.displayStates
+        }, 180)
       }
     }
     syncSessionId(timelineEvent.sessionId)

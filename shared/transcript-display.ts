@@ -64,11 +64,19 @@ function getLinkage(message: TranscriptMessage): TranscriptLinkage {
   }
 }
 
-function getAssistantFooter(message: SessionMessage, executionDurationMs?: number | null): DisplayAssistantFooter | undefined {
-  const stopReason = getTranscriptStopReason(message)
-  const model = getTranscriptAssistantModel(message)
-  const usage = getTranscriptAssistantUsage(message)
-  if (!stopReason && !model && !usage && executionDurationMs == null) return undefined
+function getAssistantFooter(messages: SessionMessage[], executionDurationMs?: number | null): DisplayAssistantFooter | undefined {
+  const source = [...messages].reverse().find((message) => {
+    const stopReason = getTranscriptStopReason(message)
+    const usage = getTranscriptAssistantUsage(message)
+    const model = getTranscriptAssistantModel(message)
+    return Boolean(stopReason) || Boolean(usage) || Boolean(model)
+  }) ?? messages[messages.length - 1] ?? messages[0]
+
+  if (!source && executionDurationMs == null) return undefined
+
+  const stopReason = source ? getTranscriptStopReason(source) : null
+  const model = source ? getTranscriptAssistantModel(source) : null
+  const usage = source ? getTranscriptAssistantUsage(source) : null
   return {
     stopReason,
     model,
@@ -78,11 +86,13 @@ function getAssistantFooter(message: SessionMessage, executionDurationMs?: numbe
 }
 
 function withFooterTiming<T extends { footer?: DisplayAssistantFooter; timestamp: number }>(item: T, previousTimestamp?: number | null): T {
-  const baseFooter = item.footer ?? {}
+  if (!item.footer) {
+    return item
+  }
   return {
     ...item,
     footer: {
-      ...baseFooter,
+      ...item.footer,
       completedAt: item.timestamp,
       deltaMs: typeof previousTimestamp === 'number' ? Math.max(0, item.timestamp - previousTimestamp) : null,
     },
@@ -370,7 +380,7 @@ function createAssistantDisplayItem(
     anchorMessage: anchor,
     fragments,
     ...(hiddenAtomIds.length ? { hiddenAtomIds } : {}),
-    footer: getAssistantFooter(anchor),
+    footer: getAssistantFooter(atoms.map((atom) => atom.message)),
   }
 }
 
@@ -409,7 +419,7 @@ function createGroupedToolUseDisplayItem(
     toolName: toolUses[0]?.name || 'unknown_tool',
     toolUses,
     anchorMessage: first.message,
-    footer: getAssistantFooter(first.message),
+    footer: getAssistantFooter(group.map((atom) => atom.message)),
     status,
   }
 }
@@ -464,7 +474,7 @@ function createCollapsedToolBatchDisplayItem(
     summary,
     items,
     anchorMessage: first.anchorMessage,
-    footer: getAssistantFooter(first.anchorMessage),
+    footer: getAssistantFooter(items.flatMap((item) => item.kind === 'grouped_tool_use' ? [item.anchorMessage] : item.messages)),
     status,
   }
 }

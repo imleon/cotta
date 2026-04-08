@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { SessionMessage } from '../stores/session'
 import type { DisplayAssistantFooter } from '../../../shared/message-types.js'
 import {
@@ -56,7 +57,7 @@ function formatPair(left?: number | null, right?: number | null, prefix: string 
   return `${prefix}${l}/${r}`
 }
 
-const footerText = (() => {
+const footerText = computed(() => {
   const usage = props.footer?.usage ?? getTranscriptAssistantUsage(props.message)
   const stopReason = props.footer?.stopReason ?? getTranscriptStopReason(props.message) ?? '-'
   const model = getCompactModel(props.footer?.model ?? getTranscriptAssistantModel(props.message))
@@ -70,7 +71,7 @@ const footerText = (() => {
     `RW ${formatPair(usage?.cacheReadTokens, usage?.cacheWriteTokens)}`,
     model,
   ].join(' · ')
-})()
+})
 </script>
 
 <template>

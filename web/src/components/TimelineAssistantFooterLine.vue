@@ -75,5 +75,5 @@ const footerText = computed(() => {
 </script>
 
 <template>
-  <div :class="['text-[11px] leading-4 text-slate-400', props.indentForTool ? 'pl-7' : '']">{{ footerText }}</div>
+  <div :class="['text-[11px] leading-4 text-[var(--tt-text-subtle)]', props.indentForTool ? 'pl-7' : '']">{{ footerText }}</div>
 </template>

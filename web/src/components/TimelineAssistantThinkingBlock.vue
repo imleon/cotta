@@ -23,7 +23,7 @@ function renderMarkdown(content: string): string {
 
 <template>
   <div class="space-y-2">
-    <div class="flex items-center gap-2 text-slate-700">
+    <div class="flex items-center gap-2 text-[var(--tt-text-muted)]">
       <span>{{ label }}</span>
       <button class="timeline-cli-button" @click="expanded = !expanded">{{ expanded ? 'hide' : 'show' }}</button>
     </div>
@@ -32,8 +32,8 @@ function renderMarkdown(content: string): string {
       class="flex items-start gap-3"
     >
       <span class="timeline-cli-subprefix">⎿</span>
-      <div class="min-w-0 flex-1 rounded-xl border border-slate-200/70 bg-slate-50/80 px-3 py-2">
-        <div class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(thinkingText)" />
+      <div class="min-w-0 flex-1 rounded-xl border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-3 py-2">
+        <div class="markdown-body prose prose-sm max-w-none text-[var(--tt-text-subtle)]" v-html="renderMarkdown(thinkingText)" />
       </div>
     </div>
   </div>

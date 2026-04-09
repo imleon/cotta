@@ -16,5 +16,5 @@ function renderMarkdown(content: string): string {
 </script>
 
 <template>
-  <div class="markdown-body prose prose-sm max-w-none text-slate-900" v-html="renderMarkdown(props.fragment.text)" />
+  <div class="markdown-body prose prose-sm max-w-none text-[var(--tt-text)]" v-html="renderMarkdown(props.fragment.text)" />
 </template>

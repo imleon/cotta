@@ -64,10 +64,10 @@ function isRedactedThinkingMessage(message: SessionMessage): boolean {
 
 function getNodeClass(message: SessionMessage): string {
   return message.role === 'user'
-    ? 'bg-blue-600 text-white'
+    ? 'bg-[var(--tt-primary)] text-white'
     : message.role === 'system'
-      ? 'border border-red-200 bg-red-50 text-red-700'
-      : 'border border-gray-200 bg-white shadow-sm'
+      ? 'border border-[color:color-mix(in_srgb,var(--tt-danger)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-danger)_10%,white)] text-[var(--tt-danger)]'
+      : 'border border-[var(--tt-border)] bg-[var(--tt-card)] shadow-sm'
 }
 
 function getNodeType(message: SessionMessage): string {
@@ -84,7 +84,7 @@ function getNodeType(message: SessionMessage): string {
 
     <div
       v-if="isRedactedThinkingMessage(message)"
-      class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600"
+      class="rounded-lg border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-3 py-2 text-sm text-[var(--tt-text-muted)]"
     >
       redacted_thinking
     </div>
@@ -102,34 +102,34 @@ function getNodeType(message: SessionMessage): string {
         />
         <div
           v-else-if="block.type === 'tool_use'"
-          class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800"
+          class="rounded-lg border border-[color:color-mix(in_srgb,var(--tt-primary)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_12%,white)] px-3 py-2 text-sm text-[var(--tt-primary-strong)]"
         >
           <div class="font-medium">Tool: {{ block.name || 'unknown_tool' }}</div>
           <pre
             v-if="block.input"
-            class="mt-2 whitespace-pre-wrap text-xs text-blue-900"
+            class="mt-2 whitespace-pre-wrap text-xs text-[var(--tt-accent)]"
           >{{ stringifyStructuredValue(block.input) }}</pre>
         </div>
         <div
           v-else-if="block.type === 'tool_result'"
-          class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700"
+          class="rounded-lg border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-3 py-2 text-sm text-[var(--tt-text-muted)]"
         >
           <div class="font-medium">Tool result</div>
           <pre
             v-if="block.output"
-            class="mt-2 whitespace-pre-wrap text-xs text-gray-800"
+            class="mt-2 whitespace-pre-wrap text-xs text-[var(--tt-accent)]"
           >{{ stringifyStructuredValue(block.output) }}</pre>
         </div>
         <div
           v-else-if="block.type === 'thinking'"
-          class="rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-sm text-purple-800"
+          class="rounded-lg border border-[color:color-mix(in_srgb,var(--tt-coral)_34%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_14%,white)] px-3 py-2 text-sm text-[var(--tt-primary-strong)]"
         >
           <div class="font-medium">Thinking</div>
-          <pre class="mt-2 whitespace-pre-wrap text-xs text-purple-900">{{ block.text }}</pre>
+          <pre class="mt-2 whitespace-pre-wrap text-xs text-[var(--tt-accent)]">{{ block.text }}</pre>
         </div>
         <div
           v-else
-          class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700"
+          class="rounded-lg border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-3 py-2 text-sm text-[var(--tt-text-muted)]"
         >
           <div class="font-medium">Unknown block</div>
           <pre class="mt-2 whitespace-pre-wrap text-xs text-gray-800">{{ stringifyStructuredValue(block.raw) }}</pre>

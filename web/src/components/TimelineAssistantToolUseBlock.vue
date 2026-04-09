@@ -50,7 +50,7 @@ const pendingPermissionInteraction = computed<PendingPermissionInteraction | nul
 
 <template>
   <div class="space-y-2">
-    <div class="flex items-start gap-3 text-slate-900">
+    <div class="flex items-start gap-3 text-[var(--tt-text)]">
       <span :class="statusDotClass">●</span>
       <span class="min-w-0 flex-1">
         <span>{{ toolLabel }}</span>

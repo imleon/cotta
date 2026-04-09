@@ -79,15 +79,15 @@ function formatSessionActivity(timestamp?: number): string {
 
 function getDirectionClass(direction: string): string {
   return direction === 'inbound'
-    ? 'border-[color:color-mix(in_srgb,var(--tt-success)_35%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_12%,white)] text-[var(--tt-success)]'
-    : 'border-[color:color-mix(in_srgb,var(--tt-accent)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_12%,white)] text-[var(--tt-accent)]'
+    ? 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
+    : 'border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_7%,white)] text-[var(--tt-accent)]'
 }
 
 function getEventTagClass(eventName: string): string {
-  if (eventName === 'message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_14%,white)] text-[var(--tt-primary-strong)]'
-  if (eventName.startsWith('query.')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_30%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_14%,white)] text-[var(--tt-warning)]'
-  if (eventName.startsWith('control.')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_34%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_18%,white)] text-[var(--tt-primary-strong)]'
-  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_70%,white)] text-[var(--tt-text-muted)]'
+  if (eventName === 'message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
+  if (eventName.startsWith('query.')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
+  if (eventName.startsWith('control.')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
+  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)] text-[var(--tt-text-muted)]'
 }
 
 function getRowClass(eventName: string): string {
@@ -97,11 +97,11 @@ function getRowClass(eventName: string): string {
 }
 
 function getRuntimeTypeClass(type: string): string {
-  if (type.startsWith('run.')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_30%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_14%,white)] text-[var(--tt-warning)]'
-  if (type.startsWith('sdk.control.')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_34%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_18%,white)] text-[var(--tt-primary-strong)]'
-  if (type === 'sdk.message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_14%,white)] text-[var(--tt-primary-strong)]'
-  if (type === 'sdk.transport') return 'border-[color:color-mix(in_srgb,var(--tt-success)_35%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_12%,white)] text-[var(--tt-success)]'
-  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_70%,white)] text-[var(--tt-text-muted)]'
+  if (type.startsWith('run.')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
+  if (type.startsWith('sdk.control.')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
+  if (type === 'sdk.message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
+  if (type === 'sdk.transport') return 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
+  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)] text-[var(--tt-text-muted)]'
 }
 
 function getRuntimeRowClass(type: string): string {
@@ -152,16 +152,16 @@ function getRuntimePayload(item: { event: Record<string, unknown> }): unknown {
 }
 
 function getChannelDirectionClass(direction: string): string {
-  if (direction === 'inbound') return 'border-[color:color-mix(in_srgb,var(--tt-success)_35%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_12%,white)] text-[var(--tt-success)]'
-  if (direction === 'outbound') return 'border-[color:color-mix(in_srgb,var(--tt-accent)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_12%,white)] text-[var(--tt-accent)]'
-  return 'border-[color:color-mix(in_srgb,var(--tt-warning)_30%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_14%,white)] text-[var(--tt-warning)]'
+  if (direction === 'inbound') return 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
+  if (direction === 'outbound') return 'border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_7%,white)] text-[var(--tt-accent)]'
+  return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
 }
 
 function getChannelEventClass(eventName: string): string {
-  if (eventName.includes('message')) return 'border-[color:color-mix(in_srgb,var(--tt-primary)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_14%,white)] text-[var(--tt-primary-strong)]'
-  if (eventName.includes('permission') || eventName.includes('elicitation') || eventName.includes('card-action')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_34%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_18%,white)] text-[var(--tt-primary-strong)]'
-  if (eventName.includes('run')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_30%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_14%,white)] text-[var(--tt-warning)]'
-  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_70%,white)] text-[var(--tt-text-muted)]'
+  if (eventName.includes('message')) return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
+  if (eventName.includes('permission') || eventName.includes('elicitation') || eventName.includes('card-action')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
+  if (eventName.includes('run')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
+  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)] text-[var(--tt-text-muted)]'
 }
 
 function getChannelPayload(item: { event: Record<string, unknown> }): unknown {

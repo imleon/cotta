@@ -25,7 +25,7 @@ function onKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="border-t border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_90%,white)] px-3 py-3 backdrop-blur-sm md:px-4 md:py-4">
+  <div class="border-t border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_92%,var(--tt-surface-soft))] px-3 py-3 backdrop-blur-sm md:px-4 md:py-4">
     <div class="max-w-4xl mx-auto flex flex-col gap-3 sm:flex-row sm:items-start">
       <textarea
         v-model="input"

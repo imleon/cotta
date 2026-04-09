@@ -6,6 +6,7 @@ import InputBar from './components/InputBar.vue'
 import TransportLogView from './components/TransportLogView.vue'
 import StaticMetadataView from './components/StaticMetadataView.vue'
 import ConfigureSessionBindingView from './components/ConfigureSessionBindingView.vue'
+import logoUrl from './lib/logo.png'
 import { useSessionStore } from './stores/session'
 
 const session = useSessionStore()
@@ -64,7 +65,7 @@ onMounted(() => {
 
     <template v-else>
       <div class="flex h-full flex-col">
-        <header class="border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_92%,white)] backdrop-blur-sm">
+        <header class="border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_90%,var(--tt-surface-soft))] backdrop-blur-sm">
           <div class="flex items-center justify-between gap-3 px-3 py-3 md:px-5 md:py-4 xl:px-6">
             <div class="flex min-w-0 items-center gap-3 md:gap-5">
               <button
@@ -75,13 +76,17 @@ onMounted(() => {
                 Sessions
               </button>
               <div class="flex min-w-0 items-center gap-3">
-                <div class="hidden h-9 w-9 items-center justify-center rounded-2xl bg-[var(--tt-accent)] text-sm font-semibold text-white shadow-sm md:flex">C</div>
                 <div class="min-w-0">
-                  <h1 class="truncate text-base font-semibold tracking-tight text-[var(--tt-accent)] md:text-lg">Cotta</h1>
-                  <p class="hidden text-[11px] text-[var(--tt-text-subtle)] md:block">Inspect SDK-native interactions</p>
+                  <img
+                    :src="logoUrl"
+                    alt="Cotta"
+                    class="hidden h-10 w-auto object-contain md:block"
+                  >
+                  <div class="md:hidden text-base font-semibold tracking-tight text-[var(--tt-accent)]">Cotta</div>
+                  <p class="hidden text-[11px] text-[var(--tt-text-subtle)] md:block">Cotta Grinds with Claude. You Enjoy Your Coffee.</p>
                 </div>
               </div>
-              <div class="flex items-center gap-2 overflow-x-auto rounded-2xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+              <div class="flex items-center gap-2 overflow-x-auto rounded-2xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_82%,white)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <button
                   class="rounded-xl px-4 py-2 text-sm font-medium transition-colors"
                   :class="activeView === 'session' ? 'bg-[var(--tt-card)] text-[var(--tt-accent)] shadow-sm ring-1 ring-[var(--tt-border)]' : 'text-[var(--tt-text-subtle)] hover:text-[var(--tt-accent)]'"
@@ -134,17 +139,17 @@ onMounted(() => {
               @click="closeSessionDrawer"
             />
 
-            <aside class="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] -translate-x-full border-r border-[color:color-mix(in_srgb,var(--tt-accent)_24%,white)] bg-[var(--tt-accent)] text-white shadow-2xl transition-transform md:static md:z-auto md:w-72 md:max-w-none md:translate-x-0 md:flex md:flex-col md:shadow-none"
+            <aside class="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] -translate-x-full border-r border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_96%,white)] text-[var(--tt-text)] shadow-2xl transition-transform md:static md:z-auto md:w-72 md:max-w-none md:translate-x-0 md:flex md:flex-col md:shadow-none"
               :class="sessionDrawerOpen ? 'translate-x-0' : ''"
             >
-              <div class="flex items-center justify-between border-b border-white/10 px-4 py-3 md:hidden">
-                <span class="text-sm font-medium text-[color:color-mix(in_srgb,var(--tt-surface)_90%,white)]">Sessions</span>
-                <button class="rounded-lg border border-white/15 px-2 py-1 text-xs text-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)]" @click="closeSessionDrawer">Close</button>
+              <div class="flex items-center justify-between border-b border-[var(--tt-border)] px-4 py-3 md:hidden">
+                <span class="text-sm font-medium text-[var(--tt-accent)]">Sessions</span>
+                <button class="rounded-lg border border-[var(--tt-border)] bg-white/80 px-2 py-1 text-xs text-[var(--tt-text-muted)]" @click="closeSessionDrawer">Close</button>
               </div>
               <SessionList class="flex-1 overflow-y-auto" :on-select="closeSessionDrawer" />
             </aside>
 
-            <section class="flex-1 flex flex-col min-w-0 bg-[color:color-mix(in_srgb,var(--tt-card)_78%,white)] backdrop-blur-[1px] md:border-l md:border-[var(--tt-border)]">
+            <section class="flex-1 flex flex-col min-w-0 bg-[color:color-mix(in_srgb,var(--tt-card)_86%,white)] backdrop-blur-[1px] md:border-l md:border-[var(--tt-border)]">
               <MessageList class="flex-1 overflow-y-auto" />
               <InputBar class="border-t border-[var(--tt-border)]" />
             </section>

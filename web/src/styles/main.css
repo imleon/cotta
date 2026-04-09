@@ -1,5 +1,31 @@
 @import 'tailwindcss';
 
+:root {
+  --tt-primary: #C75B39;
+  --tt-primary-strong: #B74F31;
+  --tt-accent: #2C3E50;
+  --tt-accent-soft: #405468;
+  --tt-surface: #F0DCC8;
+  --tt-surface-soft: #F7EEE5;
+  --tt-surface-strong: #E8D1BC;
+  --tt-card: #FFF9F4;
+  --tt-card-muted: #F6E7DA;
+  --tt-border: #DFC2AE;
+  --tt-border-strong: #CCAA93;
+  --tt-coral: #E8A87C;
+  --tt-text: #2C3E50;
+  --tt-text-muted: #6D625A;
+  --tt-text-subtle: #8B7B70;
+  --tt-success: #8C6A46;
+  --tt-warning: #D5895B;
+  --tt-danger: #B85A44;
+}
+
+body {
+  background: var(--tt-surface-soft);
+  color: var(--tt-text);
+}
+
 @keyframes timeline-cli-pulse {
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }
@@ -7,23 +33,28 @@
 
 @layer components {
   .timeline-cli-row {
-    @apply flex items-start gap-3 rounded-[18px] border px-4 py-3 text-[14px] leading-6 text-slate-900 shadow-[0_1px_2px_rgba(15,23,42,0.04)];
+    @apply flex items-start gap-3 rounded-[18px] border px-4 py-3 text-[14px] leading-6 shadow-[0_1px_2px_rgba(44,62,80,0.08)];
+    color: var(--tt-text);
   }
 
   .timeline-cli-card {
-    @apply border-slate-200/70 bg-white/96;
+    border-color: var(--tt-border);
+    background: color-mix(in srgb, var(--tt-card) 94%, white);
   }
 
   .timeline-cli-card-user {
-    @apply border-sky-200/55 bg-sky-50/58;
+    border-color: color-mix(in srgb, var(--tt-primary) 38%, white);
+    background: color-mix(in srgb, var(--tt-primary) 12%, white);
   }
 
   .timeline-cli-card-assistant {
-    @apply border-slate-200/70 bg-white/96;
+    border-color: var(--tt-border);
+    background: color-mix(in srgb, var(--tt-card) 94%, white);
   }
 
   .timeline-cli-card-preview {
-    @apply border-sky-200/45 bg-sky-50/38;
+    border-color: color-mix(in srgb, var(--tt-coral) 46%, white);
+    background: color-mix(in srgb, var(--tt-coral) 20%, white);
   }
 
   .timeline-cli-prefix {
@@ -31,11 +62,11 @@
   }
 
   .timeline-cli-prefix-user {
-    @apply text-slate-800;
+    color: var(--tt-primary-strong);
   }
 
   .timeline-cli-prefix-assistant {
-    @apply text-slate-500;
+    color: var(--tt-text-subtle);
   }
 
   .timeline-cli-prefix-hidden {
@@ -47,27 +78,37 @@
   }
 
   .timeline-cli-content {
-    @apply min-w-0 flex-1 text-slate-900;
+    @apply min-w-0 flex-1;
+    color: var(--tt-text);
   }
 
   .timeline-cli-subrow {
-    @apply ml-7 flex items-start gap-3 text-[12px] leading-5 text-slate-600;
+    @apply ml-7 flex items-start gap-3 text-[12px] leading-5;
+    color: var(--tt-text-muted);
   }
 
   .timeline-cli-subprefix {
-    @apply w-4 shrink-0 text-center text-slate-400;
+    @apply w-4 shrink-0 text-center;
+    color: var(--tt-text-subtle);
   }
 
   .timeline-cli-button {
-    @apply text-[12px] text-slate-500 underline underline-offset-2 transition-colors hover:text-sky-700;
+    @apply text-[12px] underline underline-offset-2 transition-colors;
+    color: var(--tt-text-muted);
+  }
+
+  .timeline-cli-button:hover {
+    color: var(--tt-primary-strong);
   }
 
   .timeline-cli-meta {
-    @apply text-[11px] leading-4 text-slate-400;
+    @apply text-[11px] leading-4;
+    color: var(--tt-text-subtle);
   }
 
   .timeline-cli-footer {
-    @apply text-[11px] leading-4 text-slate-400;
+    @apply text-[11px] leading-4;
+    color: var(--tt-text-subtle);
   }
 
   .timeline-cli-footer-tool {
@@ -80,31 +121,32 @@
 
   .timeline-cli-dot-streaming {
     animation: timeline-cli-pulse 1.1s ease-in-out infinite;
-    @apply text-sky-600;
+    color: var(--tt-primary);
   }
 
   .timeline-cli-dot-completed {
-    @apply text-emerald-600;
+    color: var(--tt-success);
   }
 
   .timeline-cli-dot-errored {
-    @apply text-rose-600;
+    color: var(--tt-danger);
   }
 }
 
 /* Markdown content styles */
-.markdown-body h1 { @apply mb-2 text-base font-semibold text-slate-900; }
-.markdown-body h2 { @apply mb-2 text-[15px] font-semibold text-slate-900; }
-.markdown-body h3 { @apply mb-1 text-[14px] font-medium text-slate-800; }
-.markdown-body p { @apply mb-2 leading-6 text-slate-700; }
-.markdown-body pre { @apply mb-2 overflow-x-auto rounded-md border border-slate-800/80 bg-slate-800 px-3 py-2 text-slate-100; }
-.markdown-body code { @apply rounded bg-slate-100 px-1 py-0.5 text-[12px] text-slate-700; }
+.markdown-body h1 { @apply mb-2 text-base font-semibold; color: var(--tt-accent); }
+.markdown-body h2 { @apply mb-2 text-[15px] font-semibold; color: var(--tt-accent); }
+.markdown-body h3 { @apply mb-1 text-[14px] font-medium; color: color-mix(in srgb, var(--tt-accent) 88%, white); }
+.markdown-body p { @apply mb-2 leading-6; color: var(--tt-text-muted); }
+.markdown-body pre { @apply mb-2 overflow-x-auto rounded-md border px-3 py-2 text-[13px]; border-color: color-mix(in srgb, var(--tt-accent) 26%, white); background: var(--tt-accent); color: #f8f4ef; }
+.markdown-body code { @apply rounded px-1 py-0.5 text-[12px]; background: color-mix(in srgb, var(--tt-surface) 72%, white); color: var(--tt-accent); }
 .markdown-body pre code { @apply bg-transparent p-0 text-inherit; }
-.markdown-body ul { @apply mb-2 list-disc pl-5 text-slate-700; }
-.markdown-body ol { @apply mb-2 list-decimal pl-5 text-slate-700; }
+.markdown-body ul { @apply mb-2 list-disc pl-5; color: var(--tt-text-muted); }
+.markdown-body ol { @apply mb-2 list-decimal pl-5; color: var(--tt-text-muted); }
 .markdown-body li { @apply mb-0.5; }
-.markdown-body blockquote { @apply mb-2 border-l-2 border-slate-300 pl-3 italic text-slate-600; }
-.markdown-body a { @apply text-sky-700 hover:text-sky-800 hover:underline; }
-.markdown-body table { @apply mb-2 w-full border-collapse text-[12px] text-slate-700; }
-.markdown-body th, .markdown-body td { @apply border border-slate-300 px-2 py-1 text-left; }
-.markdown-body th { @apply bg-slate-100 font-medium text-slate-800; }
+.markdown-body blockquote { @apply mb-2 border-l-2 pl-3 italic; border-color: var(--tt-coral); color: var(--tt-text-subtle); }
+.markdown-body a { color: var(--tt-primary-strong); }
+.markdown-body a:hover { color: var(--tt-primary); text-decoration: underline; }
+.markdown-body table { @apply mb-2 w-full border-collapse text-[12px]; color: var(--tt-text-muted); }
+.markdown-body th, .markdown-body td { @apply border px-2 py-1 text-left; border-color: var(--tt-border); }
+.markdown-body th { @apply font-medium; background: color-mix(in srgb, var(--tt-surface) 82%, white); color: var(--tt-accent); }

@@ -1,8 +1,9 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { CONFIG } from './config.js'
-import { createLogger } from './logger.js'
+import { createLogger, shortId } from './logger.js'
 import { appendSessionChannelLog } from './transport-logs.js'
 import { SessionBindingStore } from './session-bindings.js'
+import { SessionControlService } from './session-control-service.js'
 import type {
   ChannelInboundMessage,
   ChannelOutboundMessage,
@@ -27,7 +28,8 @@ let cardActionHandlerInstance: any | null = null
 let wsClientInstance: any | null = null
 let wsClientCardPatched = false
 let wsStartPromise: Promise<void> | null = null
-const bindings = new SessionBindingStore()
+let bindings = new SessionBindingStore()
+let sessionControl: SessionControlService | null = null
 const processedMessageIds = new Map<string, number>()
 const processedActionKeys = new Map<string, number>()
 const larkStreamingStates = new Map<string, LarkStreamingState>()
@@ -53,7 +55,19 @@ type LarkOutboundDelivery = {
 type LarkInteractionCommand =
   | { type: 'permission'; runId: string; interactionId: string; decision: 'approve' | 'deny' }
   | { type: 'elicitation'; runId: string; interactionId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> }
-  | { type: 'invalid'; scope: 'permission' | 'elicitation'; reason: string }
+  | { type: 'session'; action: 'current' | 'clear' | 'new' | 'use'; sessionId?: string }
+  | { type: 'invalid'; scope: 'permission' | 'elicitation' | 'session'; reason: string }
+
+function getSessionControl(coordinator: RunCoordinator): SessionControlService {
+  if (sessionControl) return sessionControl
+  sessionControl = new SessionControlService(bindings, coordinator)
+  return sessionControl
+}
+
+export function configureLarkSessionControl(sharedBindings: SessionBindingStore, control?: SessionControlService): void {
+  bindings = sharedBindings
+  sessionControl = control ?? null
+}
 
 function hasLarkCredentials(): boolean {
   return Boolean(CONFIG.lark.appId && CONFIG.lark.appSecret)
@@ -148,6 +162,30 @@ function parseLarkInteractionCommand(text: string): LarkInteractionCommand | nul
     }
   }
 
+  const sessionCurrentMatch = trimmed.match(/^\/session\s+current$/)
+  if (sessionCurrentMatch) {
+    return { type: 'session', action: 'current' }
+  }
+
+  const sessionClearMatch = trimmed.match(/^\/session\s+clear$/)
+  if (sessionClearMatch) {
+    return { type: 'session', action: 'clear' }
+  }
+
+  const sessionNewMatch = trimmed.match(/^\/session\s+new$/)
+  if (sessionNewMatch) {
+    return { type: 'session', action: 'new' }
+  }
+
+  const sessionUseMatch = trimmed.match(/^\/session\s+use\s+(\S+)$/)
+  if (sessionUseMatch) {
+    return {
+      type: 'session',
+      action: 'use',
+      sessionId: sessionUseMatch[1],
+    }
+  }
+
   if (trimmed.startsWith('/permission')) {
     return {
       type: 'invalid',
@@ -161,6 +199,14 @@ function parseLarkInteractionCommand(text: string): LarkInteractionCommand | nul
       type: 'invalid',
       scope: 'elicitation',
       reason: 'use /elicitation <runId> <interactionId> accept <json|text> | decline | cancel',
+    }
+  }
+
+  if (trimmed.startsWith('/session')) {
+    return {
+      type: 'invalid',
+      scope: 'session',
+      reason: 'use /session current | /session use <sessionId> | /session clear | /session new',
     }
   }
 
@@ -280,9 +326,54 @@ async function appendLarkChannelLog(params: {
   }, params.runId)
 }
 
-async function handleInteractionCommand(coordinator: RunCoordinator, conversationKey: string, command: LarkInteractionCommand): Promise<void> {
+async function handleInteractionCommand(
+  coordinator: RunCoordinator,
+  control: SessionControlService,
+  conversationKey: string,
+  command: LarkInteractionCommand,
+): Promise<void> {
   if (command.type === 'invalid') {
     await sendLarkTextMessage(conversationKey, `Invalid ${command.scope} command: ${command.reason}`)
+    return
+  }
+
+  if (command.type === 'session') {
+    const ref = { channel: 'lark' as const, conversationKey }
+    if (command.action === 'current') {
+      const status = await control.getBindingStatus(ref)
+      const binding = status.binding
+      const session = status.session
+      const activeRun = status.activeRun
+      const lines = [
+        `Conversation: ${conversationKey}`,
+        binding
+          ? `Bound session: ${binding.sessionId}`
+          : 'Bound session: none',
+        session?.title ? `Session title: ${session.title}` : '',
+        activeRun ? `Active run: ${activeRun.runId} (${activeRun.state})` : 'Active run: none',
+      ].filter(Boolean)
+      await sendLarkTextMessage(conversationKey, lines.join('\n'))
+      return
+    }
+
+    if (command.action === 'clear' || command.action === 'new') {
+      await control.clearBinding(ref)
+      await sendLarkTextMessage(
+        conversationKey,
+        command.action === 'new'
+          ? 'Cleared current binding. The next message will start a new session.'
+          : 'Cleared current session binding.',
+      )
+      return
+    }
+
+    const status = await control.bindToSession(ref, command.sessionId ?? '')
+    await sendLarkTextMessage(
+      conversationKey,
+      status.binding
+        ? `Bound this chat to session ${status.binding.sessionId}${status.session?.title ? ` (${status.session.title})` : ''}.`
+        : 'Failed to bind this chat to the requested session.',
+    )
     return
   }
 
@@ -597,17 +688,30 @@ async function handleLarkMessageEvent(coordinator: RunCoordinator, data: any): P
     return
   }
 
+  const control = getSessionControl(coordinator)
   const interactionCommand = parseLarkInteractionCommand(text)
   if (interactionCommand) {
-    await handleInteractionCommand(coordinator, conversationKey, interactionCommand)
+    await handleInteractionCommand(coordinator, control, conversationKey, interactionCommand)
     return
   }
 
-  const inbound = toLarkInboundMessage({
+  const currentBinding = await control.getBindingStatus({ channel: 'lark', conversationKey })
+  const resolvedSessionId = currentBinding.binding?.sessionId
+  const inbound = control.resolveInboundMessage(
+    toLarkInboundMessage({
+      conversationKey,
+      text,
+      ...(userKey ? { userKey } : {}),
+      ...(platformMessageId ? { platformMessageId } : {}),
+    }),
+    resolvedSessionId,
+  )
+  logger.info('lark:message:session-resolved', {
     conversationKey,
-    text,
-    ...(userKey ? { userKey } : {}),
-    ...(platformMessageId ? { platformMessageId } : {}),
+    platformMessageId,
+    bindingSessionId: shortId(currentBinding.binding?.sessionId),
+    explicitSessionId: shortId(undefined),
+    finalSessionId: shortId(inbound.sessionId),
   })
   const run = await coordinator.startRun(inbound)
   await appendLarkChannelLog({
@@ -1119,7 +1223,17 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
         }]
       }
       return []
-    case 'session.run.completed':
+    case 'session.run.completed': {
+      const finalized = buildAssistantFinalizeDelivery(record)
+      if (finalized.length > 0) return finalized
+      return [{
+        conversationKey: record.conversationKey,
+        text: 'Run completed, but no renderable assistant message was produced for Lark delivery.',
+        runId: record.runId,
+        ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+        mode: 'fallback',
+      }]
+    }
     case 'session.run.cancelled':
       return buildAssistantFinalizeDelivery(record)
     case 'session.run.failed': {

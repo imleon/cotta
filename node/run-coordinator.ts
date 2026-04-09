@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { createAgentRun, type AgentRunHandle, type ServerEvent } from './agent-runner.js'
 import { CONFIG } from './config.js'
+import { createLogger, shortId } from './logger.js'
 import { TaskQueue } from './queue.js'
 import { SessionBindingStore } from './session-bindings.js'
 import type {
@@ -29,6 +30,8 @@ export type RunRecord = {
 
 export type CoordinatorSubscriber = (event: SessionEvent, record: RunRecord) => void
 
+const logger = createLogger('run-coordinator')
+
 export class RunCoordinator {
   private readonly queue = new TaskQueue(CONFIG.maxConcurrentAgents)
   private readonly bindings = new SessionBindingStore()
@@ -50,6 +53,13 @@ export class RunCoordinator {
   async startRun(message: ChannelInboundMessage): Promise<RunRecord> {
     const existingBinding = await this.bindings.get(message)
     const sessionId = message.sessionId ?? existingBinding?.sessionId
+    logger.info('run:start:session-resolved', {
+      channel: message.channel,
+      conversationKey: message.conversationKey,
+      explicitSessionId: shortId(message.sessionId),
+      bindingSessionId: shortId(existingBinding?.sessionId),
+      finalSessionId: shortId(sessionId),
+    })
     const runId = randomUUID()
     const abortController = new AbortController()
     const record: RunRecord = {

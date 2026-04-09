@@ -13,8 +13,12 @@ export interface StreamEventEnvelope {
   sequence: number
 }
 
+export type StreamEventAnchorKind = 'message' | 'tool_use' | 'ephemeral'
+
 export interface StreamEventScope {
   scopeKey: string
+  anchorKind: StreamEventAnchorKind
+  anchorId: string
   messageId?: string
   parentToolUseId?: string | null
   index?: number
@@ -84,49 +88,64 @@ export type StreamPreviewBlock =
   | StreamPreviewThinkingBlock
   | StreamPreviewToolUseBlock
 
+export type StreamPreviewStatus = 'active' | 'awaiting-materialization' | 'finalized'
+
 export interface StreamPreviewState {
   scope: StreamEventScope
   phase: StreamPreviewPhase
+  status: StreamPreviewStatus
   active: boolean
   blocks: StreamPreviewBlock[]
   receivedAt?: number
   sequence?: number
 }
 
-export interface StreamDisplayTextBlock {
+export interface StreamAnimationCursorBlock {
+  kind: StreamPreviewBlock['kind']
+  index: number
+  visibleChars: number
+}
+
+export interface StreamAnimationCursor {
+  scope: StreamEventScope
+  phase: StreamPreviewPhase
+  status: StreamPreviewStatus
+  active: boolean
+  blocks: StreamAnimationCursorBlock[]
+}
+
+export interface StreamRenderedPreviewTextBlock {
   kind: 'text'
   index: number
   shownText: string
-  targetText: string
 }
 
-export interface StreamDisplayThinkingBlock {
+export interface StreamRenderedPreviewThinkingBlock {
   kind: 'thinking'
   index: number
   shownText: string
-  targetText: string
   redacted?: boolean
 }
 
-export interface StreamDisplayToolUseBlock {
+export interface StreamRenderedPreviewToolUseBlock {
   kind: 'tool_use'
   index: number
   name: string
   toolUseId?: string
   shownInput: string
-  targetInput: string
 }
 
-export type StreamDisplayBlock =
-  | StreamDisplayTextBlock
-  | StreamDisplayThinkingBlock
-  | StreamDisplayToolUseBlock
+export type StreamRenderedPreviewBlock =
+  | StreamRenderedPreviewTextBlock
+  | StreamRenderedPreviewThinkingBlock
+  | StreamRenderedPreviewToolUseBlock
 
-export interface StreamDisplayState {
+export interface StreamRenderedPreviewState {
   scope: StreamEventScope
   phase: StreamPreviewPhase
+  status: StreamPreviewStatus
   active: boolean
-  blocks: StreamDisplayBlock[]
+  blocks: StreamRenderedPreviewBlock[]
 }
 
 export type SessionRunState = 'idle' | 'queued' | 'running' | 'requires_action' | 'completed' | 'failed' | 'cancelled'
@@ -339,6 +358,8 @@ export type TimelineOverlayKind = 'streaming_text' | 'streaming_thinking' | 'str
 
 export interface TimelineOverlayAnchor {
   scopeKey: string
+  anchorKind: StreamEventAnchorKind
+  anchorId: string
   messageId?: string
   parentToolUseId?: string | null
 }
@@ -351,7 +372,7 @@ export interface TimelineLivePreviewItem {
   id: string
   key: string
   timestamp: number
-  preview: StreamDisplayState
+  preview: StreamRenderedPreviewState
 }
 
 export interface HiddenDebugAtomItem {
@@ -411,6 +432,19 @@ export interface SessionBinding extends ChannelConversationRef {
   lastRunId?: string
   activeInteractionId?: string
   lastInboundPlatformMessageId?: string
+}
+
+export interface ActiveRunSummary {
+  runId: string
+  state: SessionRunState
+  sessionId?: string
+}
+
+export interface SessionBindingStatus {
+  ref: ChannelConversationRef
+  binding: SessionBinding | null
+  session: SessionSummary | null
+  activeRun: ActiveRunSummary | null
 }
 
 export type LarkDeliveryMode = 'cardkit' | 'interactive' | 'text'

@@ -45,6 +45,12 @@ export class SessionBindingStore {
     await writeFile(SESSION_BINDINGS_PATH, `${JSON.stringify({ bindings: [...this.bindings.values()] })}\n`, 'utf-8')
   }
 
+  async list(channel?: ChannelConversationRef['channel']): Promise<SessionBinding[]> {
+    await this.ready
+    const values = [...this.bindings.values()]
+    return typeof channel === 'string' ? values.filter((binding) => binding.channel === channel) : values
+  }
+
   async get(ref: ChannelConversationRef): Promise<SessionBinding | null> {
     await this.ready
     return this.bindings.get(keyFor(ref)) ?? null
@@ -55,6 +61,15 @@ export class SessionBindingStore {
     this.bindings.set(keyFor(binding), binding)
     await this.persist()
     return binding
+  }
+
+  async delete(ref: ChannelConversationRef): Promise<boolean> {
+    await this.ready
+    const deleted = this.bindings.delete(keyFor(ref))
+    if (deleted) {
+      await this.persist()
+    }
+    return deleted
   }
 
   async bindSession(ref: ChannelConversationRef, sessionId: string, extras: BindingExtras = {}): Promise<SessionBinding> {

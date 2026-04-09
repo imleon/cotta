@@ -10,6 +10,8 @@ import { createWebSocketHandler } from './channels-web-adapter.js'
 import { createLarkOutboundMessage, deliverLarkSessionEvent, invokeLarkCardAction, invokeLarkEvent, sendLarkTextMessage } from './lark-adapter.js'
 import { CONFIG } from './config.js'
 import { RunCoordinator } from './run-coordinator.js'
+import { SessionBindingStore } from './session-bindings.js'
+import { SessionControlService } from './session-control-service.js'
 import type { StaticMetadataSnapshot, StaticMetadataTreeNode } from '../shared/message-types.js'
 import { listAllSessions, getMessagesPage } from './sessions.js'
 import { appendSessionChannelLog, readSessionChannelLogs, readSessionPersistentLogs, readSessionRuntimeLogs, readSessionTransportLogs } from './transport-logs.js'
@@ -18,6 +20,8 @@ import { buildSdkExportTree, mapTree, overlayNodeValues } from './sdk-type-tree.
 
 const logger = createLogger('web')
 export const coordinator = new RunCoordinator()
+export const sessionBindings = new SessionBindingStore()
+export const sessionControl = new SessionControlService(sessionBindings, coordinator)
 
 coordinator.subscribe('lark-outbound-observer', (event, record) => {
   void deliverLarkSessionEvent(event, record)
@@ -534,6 +538,91 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
         durationMs: Date.now() - startedAt,
       })
       return c.json({ sessions: [], error: String(err) })
+    }
+  })
+
+  app.get('/api/channels/:channel/conversations/:conversationKey/binding', async (c) => {
+    try {
+      const channel = c.req.param('channel')
+      const conversationKey = c.req.param('conversationKey')
+      if (channel !== 'lark' && channel !== 'web' && channel !== 'discord') {
+        return c.json({ error: 'Unsupported channel' }, 400)
+      }
+      const status = await sessionControl.getBindingStatus({ channel, conversationKey })
+      return c.json(status)
+    } catch (error) {
+      logger.error('http:binding:get:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return c.json({ error: 'Failed to load binding status' }, 500)
+    }
+  })
+
+  app.put('/api/channels/:channel/conversations/:conversationKey/binding', async (c) => {
+    try {
+      const channel = c.req.param('channel')
+      const conversationKey = c.req.param('conversationKey')
+      if (channel !== 'lark' && channel !== 'web' && channel !== 'discord') {
+        return c.json({ error: 'Unsupported channel' }, 400)
+      }
+      const body = await c.req.json()
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (!sessionId) {
+        return c.json({ error: 'sessionId is required' }, 400)
+      }
+      const status = await sessionControl.bindToSession({ channel, conversationKey }, sessionId)
+      return c.json(status)
+    } catch (error) {
+      logger.error('http:binding:put:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return c.json({ error: 'Failed to update binding' }, 500)
+    }
+  })
+
+  app.delete('/api/channels/:channel/conversations/:conversationKey/binding', async (c) => {
+    try {
+      const channel = c.req.param('channel')
+      const conversationKey = c.req.param('conversationKey')
+      if (channel !== 'lark' && channel !== 'web' && channel !== 'discord') {
+        return c.json({ error: 'Unsupported channel' }, 400)
+      }
+      const status = await sessionControl.clearBinding({ channel, conversationKey })
+      return c.json(status)
+    } catch (error) {
+      logger.error('http:binding:delete:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return c.json({ error: 'Failed to clear binding' }, 500)
+    }
+  })
+
+  app.get('/api/channels/:channel/bindings', async (c) => {
+    try {
+      const channel = c.req.param('channel')
+      if (channel !== 'lark' && channel !== 'web' && channel !== 'discord') {
+        return c.json({ error: 'Unsupported channel' }, 400)
+      }
+      const bindings = await sessionControl.listBindings(channel)
+      return c.json({ bindings })
+    } catch (error) {
+      logger.error('http:bindings:list:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return c.json({ bindings: [], error: 'Failed to list bindings' }, 500)
+    }
+  })
+
+  app.get('/api/session-candidates', async (c) => {
+    try {
+      const limit = parseInt(c.req.query('limit') || '20', 10)
+      const sessions = await sessionControl.listCandidateSessions(limit)
+      return c.json({ sessions })
+    } catch (error) {
+      logger.error('http:session-candidates:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return c.json({ sessions: [], error: 'Failed to list candidate sessions' }, 500)
     }
   })
 

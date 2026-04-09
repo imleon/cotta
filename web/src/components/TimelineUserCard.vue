@@ -50,17 +50,17 @@ function getCommandOutput(content: string): string {
 }
 
 function getColorClass(codes: number[]): string | undefined {
-  if (codes.includes(31)) return 'text-rose-700'
-  if (codes.includes(32)) return 'text-emerald-700'
-  if (codes.includes(33)) return 'text-amber-700'
+  if (codes.includes(31)) return 'text-[var(--tt-danger)]'
+  if (codes.includes(32)) return 'text-[var(--tt-success)]'
+  if (codes.includes(33)) return 'text-[var(--tt-warning)]'
 
   const color256Index = codes.findIndex((code, index) => code === 38 && codes[index + 1] === 5)
   const color256 = color256Index >= 0 ? codes[color256Index + 2] : undefined
   switch (color256) {
     case 220:
-      return 'text-amber-500'
+      return 'text-[var(--tt-coral)]'
     case 246:
-      return 'text-slate-400'
+      return 'text-[var(--tt-text-subtle)]'
     default:
       return undefined
   }
@@ -138,7 +138,7 @@ function parseAnsiOutput(content: string): AnsiLine[] {
 function getAnsiSegmentClass(segment: AnsiSegment): string {
   return [
     segment.bold ? 'font-semibold' : '',
-    segment.dim ? 'text-slate-500' : 'text-slate-700',
+    segment.dim ? 'text-[var(--tt-text-subtle)]' : 'text-[var(--tt-text-muted)]',
     segment.colorClass || '',
   ].filter(Boolean).join(' ')
 }
@@ -198,12 +198,12 @@ const commandOutputLines = computed(() => parseAnsiOutput(getCommandOutput(props
 
 <template>
   <div class="space-y-1.5">
-    <div v-if="item.displayKind === 'command_input'" class="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-700">
-      <span class="font-medium text-slate-900">Command</span>
-      <span class="text-slate-400"> · </span>
+    <div v-if="item.displayKind === 'command_input'" class="rounded-lg border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-3 py-2 text-sm text-[var(--tt-text-muted)]">
+      <span class="font-medium text-[var(--tt-accent)]">Command</span>
+      <span class="text-[var(--tt-text-subtle)]"> · </span>
       <span>{{ getCommandInputSummary(item.message.content) }}</span>
     </div>
-    <div v-else-if="item.displayKind === 'command_output'" class="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm leading-6">
+    <div v-else-if="item.displayKind === 'command_output'" class="rounded-lg border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-3 py-2 text-sm leading-6">
       <div v-for="(line, lineIndex) in commandOutputLines" :key="`${item.id}-line-${lineIndex}`" class="whitespace-pre-wrap break-words">
         <template v-if="line.length > 0">
           <span
@@ -215,8 +215,8 @@ const commandOutputLines = computed(() => parseAnsiOutput(getCommandOutput(props
         <span v-else>&nbsp;</span>
       </div>
     </div>
-    <div v-else class="whitespace-pre-wrap text-[15px] leading-7 text-slate-900">{{ item.message.content }}</div>
-    <div class="text-[11px] leading-4 text-slate-400">{{ formatFooterTimestamp(item.timestamp) }}</div>
+    <div v-else class="whitespace-pre-wrap text-[15px] leading-7 text-[var(--tt-text)]">{{ item.message.content }}</div>
+    <div class="text-[11px] leading-4 text-[var(--tt-text-subtle)]">{{ formatFooterTimestamp(item.timestamp) }}</div>
     <div v-if="showDebugMeta && item.debug" class="timeline-cli-meta">{{ formatDebug(item.debug) }}</div>
   </div>
 </template>

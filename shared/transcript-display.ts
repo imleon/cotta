@@ -18,6 +18,7 @@ import {
   getTranscriptAssistantUsage,
   getTranscriptMessageId,
   getTranscriptRawMessage,
+  getTranscriptResponseId,
   getTranscriptSemanticKind,
   getTranscriptStopReason,
   getTranscriptToolResultIds,
@@ -47,13 +48,6 @@ function makeAtomId(message: TranscriptMessage, options: BuildTranscriptAtomOpti
   return getTranscriptMessageId(message)
     ?? (options.localId && options.localId.trim())
     ?? `${options.source}-${options.sequence ?? 'noseq'}-${options.sourceIndex}`
-}
-
-function getAssistantResponseId(message: SessionMessage): string | null {
-  const rawMessage = getTranscriptRawMessage(message)
-  return rawMessage && typeof rawMessage.id === 'string' && rawMessage.id
-    ? rawMessage.id
-    : null
 }
 
 function getLinkage(message: TranscriptMessage): TranscriptLinkage {
@@ -103,7 +97,7 @@ function getDebugAtomMeta(atom: TranscriptAtom) {
   return {
     atomId: atom.id,
     uuid: atom.linkage.messageId,
-    responseId: getAssistantResponseId(atom.message),
+    responseId: getTranscriptResponseId(atom.message),
     role: atom.role,
     semanticKind: atom.semanticKind,
     order: atom.order,
@@ -616,8 +610,8 @@ function canMergeAssistantSiblingAtoms(group: TranscriptAtom[], candidate: Trans
   if (!first) return false
   if (!isAssistantResponseFragmentAtom(first) || !isAssistantResponseFragmentAtom(candidate)) return false
 
-  const firstResponseId = getAssistantResponseId(first.message)
-  const candidateResponseId = getAssistantResponseId(candidate.message)
+  const firstResponseId = getTranscriptResponseId(first.message)
+  const candidateResponseId = getTranscriptResponseId(candidate.message)
   if (!firstResponseId || !candidateResponseId) return false
   if (firstResponseId !== candidateResponseId) return false
 
@@ -641,6 +635,33 @@ function canGroupToolUseAtoms(group: TranscriptAtom[], candidate: TranscriptAtom
 
 function isAssistantResponseScopedAtom(atom: TranscriptAtom): boolean {
   return atom.role === 'assistant'
+}
+
+function isThinkingLikeAtom(atom: TranscriptAtom): boolean {
+  return atom.semanticKind === 'thinking' || isTranscriptRedactedThinkingMessage(atom.message)
+}
+
+function comparableAssistantMessageWithoutContent(message: SessionMessage): string | null {
+  const rawMessage = getTranscriptRawMessage(message)
+  if (!rawMessage) return null
+  const comparable = { ...rawMessage }
+  delete comparable.content
+  return JSON.stringify(comparable)
+}
+
+function canKeepTerminalAssistantSiblingsTogether(left: TranscriptAtom, right: TranscriptAtom): boolean {
+  if (left.role !== 'assistant' || right.role !== 'assistant') return false
+
+  const leftResponseId = getTranscriptResponseId(left.message)
+  const rightResponseId = getTranscriptResponseId(right.message)
+  if (!leftResponseId || !rightResponseId || leftResponseId !== rightResponseId) return false
+  if (!isThinkingLikeAtom(left) && !isThinkingLikeAtom(right)) return false
+
+  const leftComparable = comparableAssistantMessageWithoutContent(left.message)
+  const rightComparable = comparableAssistantMessageWithoutContent(right.message)
+  if (!leftComparable || !rightComparable) return false
+
+  return leftComparable === rightComparable
 }
 
 function isTerminalBoundaryMessage(atom: TranscriptAtom): boolean {
@@ -692,7 +713,7 @@ function buildAssistantResponseGroups(atoms: TranscriptAtom[]): TranscriptAtom[]
 
   while (index < atoms.length) {
     const atom = atoms[index]!
-    const responseId = atom.role === 'assistant' ? getAssistantResponseId(atom.message) : null
+    const responseId = atom.role === 'assistant' ? getTranscriptResponseId(atom.message) : null
 
     if (!isAssistantResponseScopedAtom(atom) || !responseId) {
       groups.push([atom])
@@ -707,10 +728,12 @@ function buildAssistantResponseGroups(atoms: TranscriptAtom[]): TranscriptAtom[]
 
     while (currentIndex < atoms.length) {
       const current = atoms[currentIndex]!
-      const nextResponseId = current.role === 'assistant' ? getAssistantResponseId(current.message) : null
+      const nextResponseId = current.role === 'assistant' ? getTranscriptResponseId(current.message) : null
 
       if (seenTerminal) {
-        if (!isTailBridgeMessage(current)) {
+        if (current.role === 'assistant' && canKeepTerminalAssistantSiblingsTogether(group[group.length - 1]!, current)) {
+          // Keep terminal assistant siblings with matching response envelope together.
+        } else if (!isTailBridgeMessage(current)) {
           break
         }
       } else if (current.role === 'assistant' && nextResponseId && nextResponseId !== currentResponseId) {

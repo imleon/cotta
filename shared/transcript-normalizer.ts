@@ -1,7 +1,9 @@
 import type { SDKAssistantMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
-  StreamDisplayBlock,
-  StreamDisplayState,
+  StreamAnimationCursor,
+  StreamAnimationCursorBlock,
+  StreamRenderedPreviewBlock,
+  StreamRenderedPreviewState,
   SessionStreamEvent,
   StreamPreviewBlock,
   StreamPreviewState,
@@ -14,13 +16,32 @@ export function reduceStreamPreviewEvent(
   const currentState: StreamPreviewState = current ?? {
     scope: event.scope,
     phase: 'idle',
+    status: 'active',
     active: false,
     blocks: [],
   }
 
+  if (
+    currentState.sequence !== undefined
+    && event.sequence <= currentState.sequence
+  ) {
+    return currentState
+  }
+
+  const nextScope = {
+    ...currentState.scope,
+    ...event.scope,
+    scopeKey: event.scope.scopeKey,
+    anchorKind: event.scope.anchorKind,
+    anchorId: event.scope.anchorId,
+    ...(event.scope.messageId ? { messageId: event.scope.messageId } : {}),
+    ...(event.scope.parentToolUseId !== undefined ? { parentToolUseId: event.scope.parentToolUseId } : {}),
+    ...(event.scope.index !== undefined ? { index: event.scope.index } : {}),
+  }
+
   const next: StreamPreviewState = {
     ...currentState,
-    scope: event.scope,
+    scope: nextScope,
     receivedAt: event.receivedAt,
     sequence: event.sequence,
   }
@@ -35,20 +56,24 @@ export function reduceStreamPreviewEvent(
   switch (event.event.type) {
     case 'message_start':
       next.phase = 'responding'
+      next.status = 'active'
       next.active = true
       return next
     case 'message_delta':
       next.phase = 'responding'
+      next.status = 'active'
       next.active = true
       return next
     case 'message_stop':
       return {
         ...next,
         phase: 'complete',
+        status: 'awaiting-materialization',
         active: false,
       }
     case 'content_block_start': {
       next.active = true
+      next.status = 'active'
       if (event.normalized?.blockKind === 'text') {
         next.phase = 'responding'
         upsertBlock({ kind: 'text', index: event.scope.index ?? 0, text: event.normalized.text ?? '' })
@@ -97,91 +122,133 @@ export function reduceStreamPreviewEvent(
   }
 }
 
-export function createStreamDisplayState(preview: StreamPreviewState): StreamDisplayState {
-  const blocks: StreamDisplayBlock[] = preview.blocks.map((block) => {
-    if (block.kind === 'text') {
-      return {
-        kind: 'text',
-        index: block.index,
-        shownText: '',
-        targetText: block.text,
-      }
-    }
-    if (block.kind === 'thinking') {
-      return {
-        kind: 'thinking',
-        index: block.index,
-        shownText: '',
-        targetText: block.redacted ? '' : block.text,
-        redacted: block.redacted,
-      }
-    }
+function getStreamPreviewBlockText(block: StreamPreviewBlock): string {
+  if (block.kind === 'text') return block.text
+  if (block.kind === 'thinking') return block.redacted ? '' : block.text
+  return block.inputText
+}
+
+function getStreamAnimationStep(block: StreamPreviewBlock, remaining: number): number {
+  if (block.kind === 'text') return Math.max(1, Math.ceil(remaining / 6))
+  if (block.kind === 'thinking') return Math.max(1, Math.ceil(remaining / 8))
+  return Math.max(1, Math.ceil(remaining / 4))
+}
+
+function renderStreamPreviewBlock(
+  block: StreamPreviewBlock,
+  visibleChars: number,
+): StreamRenderedPreviewBlock {
+  const target = getStreamPreviewBlockText(block)
+  const clampedVisibleChars = Math.max(0, Math.min(visibleChars, target.length))
+  if (block.kind === 'text') {
     return {
-      kind: 'tool_use',
+      kind: 'text',
       index: block.index,
-      name: block.name,
-      toolUseId: block.toolUseId,
-      shownInput: '',
-      targetInput: block.inputText,
+      shownText: target.slice(0, clampedVisibleChars),
     }
-  })
+  }
+  if (block.kind === 'thinking') {
+    return {
+      kind: 'thinking',
+      index: block.index,
+      shownText: target.slice(0, clampedVisibleChars),
+      redacted: block.redacted,
+    }
+  }
+  return {
+    kind: 'tool_use',
+    index: block.index,
+    name: block.name,
+    toolUseId: block.toolUseId,
+    shownInput: target.slice(0, clampedVisibleChars),
+  }
+}
+
+export function createStreamAnimationCursor(preview: StreamPreviewState): StreamAnimationCursor {
+  const blocks: StreamAnimationCursorBlock[] = preview.blocks.map((block) => ({
+    kind: block.kind,
+    index: block.index,
+    visibleChars: preview.active ? 0 : getStreamPreviewBlockText(block).length,
+  }))
 
   return {
     scope: preview.scope,
     phase: preview.phase,
+    status: preview.status,
     active: preview.active,
     blocks,
   }
 }
 
-export function advanceStreamDisplayState(
-  current: StreamDisplayState | null,
+export function advanceStreamAnimationCursor(
+  current: StreamAnimationCursor | null,
   preview: StreamPreviewState,
-): StreamDisplayState {
-  const currentState = current ?? createStreamDisplayState(preview)
-  const nextBlocks: StreamDisplayBlock[] = preview.blocks.map((block) => {
-    const existing = currentState.blocks.find((item) => item.kind === block.kind && item.index === block.index)
-    if (block.kind === 'text') {
-      const shown = existing && existing.kind === 'text' ? existing.shownText : ''
-      const target = block.text
-      const advanceBy = Math.max(1, Math.ceil((target.length - shown.length) / 6))
+): { cursor: StreamAnimationCursor; changed: boolean; done: boolean } {
+  const currentCursor = current ?? createStreamAnimationCursor(preview)
+  let changed = false
+  let done = true
+
+  const blocks: StreamAnimationCursorBlock[] = preview.blocks.map((block) => {
+    const existing = currentCursor.blocks.find((item) => item.kind === block.kind && item.index === block.index)
+    const targetLength = getStreamPreviewBlockText(block).length
+    const currentVisible = existing?.visibleChars ?? (preview.active ? 0 : targetLength)
+
+    if (!preview.active) {
+      if (currentVisible !== targetLength) changed = true
       return {
-        kind: 'text',
+        kind: block.kind,
         index: block.index,
-        shownText: shown.length >= target.length ? target : target.slice(0, shown.length + advanceBy),
-        targetText: target,
+        visibleChars: targetLength,
       }
     }
-    if (block.kind === 'thinking') {
-      const shown = existing && existing.kind === 'thinking' ? existing.shownText : ''
-      const target = block.redacted ? '' : block.text
-      const advanceBy = Math.max(1, Math.ceil((target.length - shown.length) / 8))
+
+    if (currentVisible < targetLength) {
+      const nextVisible = Math.min(targetLength, currentVisible + getStreamAnimationStep(block, targetLength - currentVisible))
+      if (nextVisible !== currentVisible) changed = true
+      if (nextVisible < targetLength) done = false
       return {
-        kind: 'thinking',
+        kind: block.kind,
         index: block.index,
-        shownText: shown.length >= target.length ? target : target.slice(0, shown.length + advanceBy),
-        targetText: target,
-        redacted: block.redacted,
+        visibleChars: nextVisible,
       }
     }
-    const shown = existing && existing.kind === 'tool_use' ? existing.shownInput : ''
-    const target = block.inputText
-    const advanceBy = Math.max(1, Math.ceil((target.length - shown.length) / 4))
+
     return {
-      kind: 'tool_use',
+      kind: block.kind,
       index: block.index,
-      name: block.name,
-      toolUseId: block.toolUseId,
-      shownInput: shown.length >= target.length ? target : target.slice(0, shown.length + advanceBy),
-      targetInput: target,
+      visibleChars: currentVisible,
     }
   })
 
+  if (!preview.active) done = true
+
+  return {
+    cursor: {
+      scope: preview.scope,
+      phase: preview.phase,
+      status: preview.status,
+      active: preview.active,
+      blocks,
+    },
+    changed,
+    done,
+  }
+}
+
+export function renderStreamPreviewState(
+  preview: StreamPreviewState,
+  cursor: StreamAnimationCursor | null,
+): StreamRenderedPreviewState {
+  const currentCursor = cursor ?? createStreamAnimationCursor(preview)
   return {
     scope: preview.scope,
     phase: preview.phase,
+    status: preview.status,
     active: preview.active,
-    blocks: nextBlocks,
+    blocks: preview.blocks.map((block) => {
+      const cursorBlock = currentCursor.blocks.find((item) => item.kind === block.kind && item.index === block.index)
+      return renderStreamPreviewBlock(block, cursorBlock?.visibleChars ?? 0)
+    }),
   }
 }
 
@@ -585,6 +652,12 @@ export function getTranscriptMessageId(message: TranscriptMessage | null | undef
   const raw = getTranscriptRawRecord(message)
   if (!raw) return null
   return typeof raw.uuid === 'string' && raw.uuid ? raw.uuid : null
+}
+
+export function getTranscriptResponseId(message: TranscriptMessage | null | undefined): string | null {
+  const rawMessage = getTranscriptRawMessage(message)
+  if (!rawMessage) return null
+  return typeof rawMessage.id === 'string' && rawMessage.id ? rawMessage.id : null
 }
 
 export function getTranscriptStopReason(message: TranscriptMessage | null | undefined): string | null {

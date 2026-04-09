@@ -20,6 +20,7 @@ const OUTPUT_START = '---OUTPUT_START---'
 const OUTPUT_END = '---OUTPUT_END---'
 const EVENT_LOG_INTERVAL = 20
 let eventSequence = 0
+let activeStreamMessageIds = new Map<string, string>()
 
 function nextEnvelope(sessionId?: string): RuntimeEnvelopeBase {
   eventSequence += 1
@@ -94,15 +95,65 @@ function maybeTransportPayload(payload: unknown): { payload?: unknown } {
   return shouldIncludeTransportPayload() ? { payload } : {}
 }
 
-function getStreamScopeKey(message: SDKMessage): string | null {
+function getStreamParentToolUseId(message: SDKMessage): string | null | undefined {
+  if (message.type !== 'stream_event' || !('parent_tool_use_id' in message)) return undefined
+  return typeof message.parent_tool_use_id === 'string' || message.parent_tool_use_id === null
+    ? message.parent_tool_use_id as string | null
+    : undefined
+}
+
+function getStreamScopedMessageId(message: SDKMessage): string | undefined {
+  if (message.type !== 'stream_event') return undefined
+  const directMessageId = getStreamMessageId(message)
+  if (directMessageId) {
+    const sessionId = extractSessionId(message) || currentSessionId || 'unknown-session'
+    activeStreamMessageIds.set(sessionId, directMessageId)
+    return directMessageId
+  }
+  const sessionId = extractSessionId(message) || currentSessionId || 'unknown-session'
+  const scopedMessageId = activeStreamMessageIds.get(sessionId)
+  if (message.event.type === 'message_stop') {
+    activeStreamMessageIds.delete(sessionId)
+  }
+  return scopedMessageId
+}
+
+function buildStreamScope(message: SDKMessage, envelope: StreamEventEnvelope): StreamEventScope | null {
   if (message.type !== 'stream_event') return null
   const sessionId = extractSessionId(message) || currentSessionId || 'unknown-session'
-  const parentToolUseId = 'parent_tool_use_id' in message && typeof message.parent_tool_use_id === 'string'
-    ? message.parent_tool_use_id
-    : 'parent_tool_use_id' in message && message.parent_tool_use_id === null
-      ? 'root'
-      : 'root'
-  return `${sessionId}:${parentToolUseId}`
+  const messageId = getStreamScopedMessageId(message)
+  const parentToolUseId = getStreamParentToolUseId(message)
+  const index = getStreamIndex(message)
+
+  if (messageId) {
+    return {
+      scopeKey: `${sessionId}:message:${messageId}`,
+      anchorKind: 'message',
+      anchorId: messageId,
+      messageId,
+      ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
+      ...(index != null ? { index } : {}),
+    }
+  }
+
+  if (typeof parentToolUseId === 'string') {
+    return {
+      scopeKey: `${sessionId}:tool_use:${parentToolUseId}`,
+      anchorKind: 'tool_use',
+      anchorId: parentToolUseId,
+      parentToolUseId,
+      ...(index != null ? { index } : {}),
+    }
+  }
+
+  const ephemeralId = `${sessionId}:ephemeral:${envelope.sequence}`
+  return {
+    scopeKey: ephemeralId,
+    anchorKind: 'ephemeral',
+    anchorId: ephemeralId,
+    ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
+    ...(index != null ? { index } : {}),
+  }
 }
 
 function getStreamIndex(message: SDKMessage): number | null {
@@ -112,8 +163,7 @@ function getStreamIndex(message: SDKMessage): number | null {
 
 function getStreamMessageId(message: SDKMessage): string | undefined {
   if (message.type !== 'stream_event') return undefined
-  if (message.event.type !== 'message_start') return undefined
-  const eventMessage = message.event.message
+  const eventMessage = 'message' in message.event ? message.event.message : undefined
   return eventMessage && typeof eventMessage === 'object' && 'id' in eventMessage && typeof eventMessage.id === 'string'
     ? eventMessage.id
     : undefined
@@ -121,15 +171,9 @@ function getStreamMessageId(message: SDKMessage): string | undefined {
 
 function normalizeStreamEvent(message: SDKMessage, envelope: StreamEventEnvelope): SessionStreamEvent | null {
   if (message.type !== 'stream_event') return null
-  const scopeKey = getStreamScopeKey(message)
-  if (!scopeKey) return null
+  const scope = buildStreamScope(message, envelope)
+  if (!scope) return null
   const eventType = message.event.type as StreamEventType
-  const scope: StreamEventScope = {
-    scopeKey,
-    ...(typeof message.parent_tool_use_id === 'string' || message.parent_tool_use_id === null ? { parentToolUseId: message.parent_tool_use_id as string | null } : {}),
-    ...(getStreamIndex(message) != null ? { index: getStreamIndex(message) as number } : {}),
-    ...(getStreamMessageId(message) ? { messageId: getStreamMessageId(message) } : {}),
-  }
 
   let normalized: StreamEventNormalized | undefined
   if (eventType === 'content_block_start') {
@@ -932,6 +976,7 @@ async function main(): Promise<void> {
   currentSessionId = input.sessionId
   cancelRequested = false
   eventSequence = 0
+  activeStreamMessageIds = new Map<string, string>()
   sdkMessageCount = 0
 
   logAgent('info', 'agent:run:start', {

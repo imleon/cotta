@@ -7,13 +7,14 @@ import type {
   GroupedToolUseDisplayItem,
   PendingInteraction,
   PermissionSuggestion,
+  SessionBindingStatus,
   SessionEvent,
   SessionMessage,
   SessionMessageBlock,
   SessionRunState,
   SessionStreamEvent,
   SessionSummary,
-  StreamDisplayState,
+  StreamAnimationCursor,
   StreamPreviewState,
   TimelineLivePreviewItem,
   TimelineRenderableItem,
@@ -29,10 +30,13 @@ import {
   buildTranscriptAtom,
 } from '../../../shared/transcript-display.js'
 import {
-  advanceStreamDisplayState,
-  createStreamDisplayState,
+  advanceStreamAnimationCursor,
+  createStreamAnimationCursor,
   reduceStreamPreviewEvent,
+  renderStreamPreviewState,
   getTranscriptMessageId,
+  getTranscriptResponseId,
+  getTranscriptStopReason,
 } from '../../../shared/transcript-normalizer.js'
 import { createDebugLogger } from '../lib/debug.js'
 
@@ -58,6 +62,17 @@ interface SessionMessagesResponse {
   messages?: unknown[]
   hasMore?: boolean
   nextBefore?: string | null
+}
+
+interface SessionBindingStatusResponse {
+  ref?: SessionBindingStatus['ref']
+  binding?: SessionBindingStatus['binding']
+  session?: SessionBindingStatus['session']
+  activeRun?: SessionBindingStatus['activeRun']
+}
+
+interface SessionBindingsListResponse {
+  bindings?: SessionBindingStatusResponse[]
 }
 
 const AUTH_TOKEN_STORAGE_KEY = 'cotta-auth-token'
@@ -114,39 +129,59 @@ function getStreamScopeKey(event: SessionStreamEvent): string {
   return event.scope.scopeKey
 }
 
-function clearStreamStateByMessageId(
-  previewStates: Record<string, StreamPreviewState>,
-  displayStates: Record<string, StreamDisplayState>,
-  messageId?: string | null,
-): { previewStates: Record<string, StreamPreviewState>; displayStates: Record<string, StreamDisplayState> } {
-  if (!messageId) return { previewStates, displayStates }
-  const nextPreview = { ...previewStates }
-  const nextDisplay = { ...displayStates }
-  for (const scopeKey of Object.keys(previewStates)) {
-    if (previewStates[scopeKey]?.scope.messageId === messageId) {
-      delete nextPreview[scopeKey]
-      delete nextDisplay[scopeKey]
-      break
-    }
+function finalizeStreamPreviewState(preview: StreamPreviewState): StreamPreviewState {
+  return {
+    ...preview,
+    status: 'finalized',
+    active: false,
   }
-  return { previewStates: nextPreview, displayStates: nextDisplay }
 }
 
-function clearStreamStateByParentToolUseIds(
+function markStreamPreviewsMaterialized(
   previewStates: Record<string, StreamPreviewState>,
-  displayStates: Record<string, StreamDisplayState>,
-  toolUseIds: string[],
-): { previewStates: Record<string, StreamPreviewState>; displayStates: Record<string, StreamDisplayState> } {
-  if (!toolUseIds.length) return { previewStates, displayStates }
-  const nextPreview = { ...previewStates }
-  const nextDisplay = { ...displayStates }
-  for (const [scopeKey, state] of Object.entries(previewStates)) {
-    if (state?.scope.parentToolUseId && toolUseIds.includes(state.scope.parentToolUseId)) {
-      delete nextPreview[scopeKey]
-      delete nextDisplay[scopeKey]
-    }
+  animationCursors: Record<string, StreamAnimationCursor>,
+  responseId: string | null,
+  toolUseIds: Set<string>,
+): { previewStates: Record<string, StreamPreviewState>; animationCursors: Record<string, StreamAnimationCursor> } {
+  let changed = false
+  const nextPreviewStates = { ...previewStates }
+  const nextAnimationCursors = { ...animationCursors }
+
+  for (const [scopeKey, preview] of Object.entries(previewStates)) {
+    const matchesMessage = Boolean(responseId && preview.scope.messageId === responseId)
+    const matchesTool = Boolean(preview.scope.parentToolUseId && toolUseIds.has(preview.scope.parentToolUseId))
+    if (!matchesMessage && !matchesTool) continue
+    if (preview.status === 'finalized') continue
+
+    const finalizedPreview = finalizeStreamPreviewState(preview)
+    nextPreviewStates[scopeKey] = finalizedPreview
+    nextAnimationCursors[scopeKey] = createStreamAnimationCursor(finalizedPreview)
+    changed = true
   }
-  return { previewStates: nextPreview, displayStates: nextDisplay }
+
+  return changed
+    ? { previewStates: nextPreviewStates, animationCursors: nextAnimationCursors }
+    : { previewStates, animationCursors }
+}
+
+function sweepFinalizedStreamPreviews(
+  previewStates: Record<string, StreamPreviewState>,
+  animationCursors: Record<string, StreamAnimationCursor>,
+): { previewStates: Record<string, StreamPreviewState>; animationCursors: Record<string, StreamAnimationCursor>; removed: boolean } {
+  let removed = false
+  const nextPreviewStates = { ...previewStates }
+  const nextAnimationCursors = { ...animationCursors }
+  for (const [scopeKey, preview] of Object.entries(previewStates)) {
+    if (preview.status !== 'finalized') continue
+    delete nextPreviewStates[scopeKey]
+    delete nextAnimationCursors[scopeKey]
+    removed = true
+  }
+  return {
+    previewStates: removed ? nextPreviewStates : previewStates,
+    animationCursors: removed ? nextAnimationCursors : animationCursors,
+    removed,
+  }
 }
 
 function getLivePreviewOverlayKind(preview: StreamPreviewState): TimelineLivePreviewItem['overlayKind'] {
@@ -158,7 +193,7 @@ function getLivePreviewOverlayKind(preview: StreamPreviewState): TimelineLivePre
     case 'responding':
       return 'streaming_text'
     default:
-      return 'streaming_progress'
+      return preview.status === 'awaiting-materialization' ? 'streaming_text' : 'streaming_progress'
   }
 }
 
@@ -182,12 +217,20 @@ function shouldAttachOverlayToItem(
   item: AssistantDisplayItem | GroupedToolUseDisplayItem | CollapsedToolBatchDisplayItem,
   overlay: TimelineLivePreviewItem,
 ): boolean {
+  if (overlay.anchor.anchorKind === 'tool_use') {
+    return getDisplayItemToolUseIds(item).includes(overlay.anchor.anchorId)
+  }
+
+  if (overlay.anchor.anchorKind === 'message') {
+    return getTranscriptResponseId(item.anchorMessage) === overlay.anchor.anchorId
+  }
+
   if (overlay.anchor.parentToolUseId) {
     return getDisplayItemToolUseIds(item).includes(overlay.anchor.parentToolUseId)
   }
 
   if (overlay.anchor.messageId) {
-    return getTranscriptMessageId(item.anchorMessage) === overlay.anchor.messageId
+    return getTranscriptResponseId(item.anchorMessage) === overlay.anchor.messageId
   }
 
   return false
@@ -198,12 +241,12 @@ function getOverlayHostPriority(
   overlay: TimelineLivePreviewItem,
 ): number {
   if (!shouldAttachOverlayToItem(item, overlay)) return -1
-  if (overlay.anchor.parentToolUseId) {
+  if (overlay.anchor.anchorKind === 'tool_use' || overlay.anchor.parentToolUseId) {
     if (item.kind === 'grouped_tool_use') return 3
     if (item.kind === 'collapsed_tool_batch') return 2
     return 1
   }
-  if (overlay.anchor.messageId) {
+  if (overlay.anchor.anchorKind === 'message' || overlay.anchor.messageId) {
     if (item.kind === 'assistant') return 3
     if (item.kind === 'grouped_tool_use') return 2
     if (item.kind === 'collapsed_tool_batch') return 1
@@ -258,16 +301,24 @@ export const useSessionStore = defineStore('session', () => {
   const authChecked = ref(false)
   const activeRunId = ref<string | null>(null)
   const pendingInteraction = ref<PendingInteraction | null>(null)
+  const bindingChannel = ref<'lark' | 'web' | 'discord'>('lark')
+  const bindingConversationKey = ref('')
+  const bindingStatus = ref<SessionBindingStatus | null>(null)
+  const bindingCandidates = ref<SessionSummary[]>([])
+  const bindingList = ref<SessionBindingStatus[]>([])
+  const bindingLoading = ref(false)
+  const bindingError = ref('')
+  const bindingTargetSessionId = ref('')
   const eventLog = ref<Array<Extract<SessionEvent, { type: 'session.sdk.message' }>>>([])
   const streamPreviewStates = ref<Record<string, StreamPreviewState>>({})
-  const streamDisplayStates = ref<Record<string, StreamDisplayState>>({})
-  let streamAnimationFrame: number | null = null
+  const streamAnimationCursors = ref<Record<string, StreamAnimationCursor>>({})
 
   const isLoading = computed(() => ['queued', 'running', 'requires_action'].includes(runState.value))
   const hasAuthToken = computed(() => authToken.value.trim().length > 0)
   const isAwaitingApproval = computed(() => pendingInteraction.value?.kind === 'permission' && pendingInteraction.value?.status === 'pending')
   const isAwaitingInteraction = computed(() => pendingInteraction.value?.status === 'pending')
   const hasActiveRun = computed(() => awaitingRunStart || activeRunId.value !== null)
+  const bindingSummary = computed(() => bindingStatus.value?.binding?.sessionId || '未绑定')
   const observabilityEvents = computed(() => eventLog.value.filter((event) => {
     if (getSdkMessageLayer(event.payload) !== 'debug-observability') return false
     return !(event.payload?.type === 'system' && event.payload?.subtype === 'init')
@@ -282,12 +333,31 @@ export const useSessionStore = defineStore('session', () => {
       ...(message.localId ? { localId: message.localId } : {}),
     }))
   )
+  const liveAssistantResponseIdsCoveredByPreview = computed<Set<string>>(() => {
+    const ids = new Set<string>()
+    for (const preview of Object.values(streamPreviewStates.value)) {
+      if (!preview.active) continue
+      if (preview.phase !== 'thinking' && preview.phase !== 'responding') continue
+      if (preview.scope.anchorKind !== 'message') continue
+      ids.add(preview.scope.anchorId)
+    }
+    return ids
+  })
   const liveAtoms = computed<TranscriptAtom[]>(() =>
     eventLog.value
       .filter((event) => isBusinessSdkMessage(event.payload))
       .map((event, index) => {
         const message = getTimelineMessageFromEvent(event)
         if (!message) return null
+        const responseId = getTranscriptResponseId(message)
+        if (
+          message.role === 'assistant'
+          && responseId
+          && liveAssistantResponseIdsCoveredByPreview.value.has(responseId)
+          && getTranscriptStopReason(message) == null
+        ) {
+          return null
+        }
         return buildTranscriptAtom(message, {
           source: 'live',
           sourceIndex: index,
@@ -297,6 +367,9 @@ export const useSessionStore = defineStore('session', () => {
       })
       .filter((atom): atom is TranscriptAtom => atom !== null && atom.semanticKind !== 'meta')
   )
+
+
+
   const defaultTimelineItems = computed<DisplayItem[]>(() =>
     buildDisplayItems([...historyAtoms.value, ...liveAtoms.value], {
       mode: 'default',
@@ -334,35 +407,32 @@ export const useSessionStore = defineStore('session', () => {
       }))
   )
   const livePreviewItems = computed<TimelineLivePreviewItem[]>(() =>
-    Object.values(streamDisplayStates.value)
-      .filter((preview) => preview.active && preview.blocks.length > 0)
+    Object.entries(streamPreviewStates.value)
+      .filter(([, preview]) => preview.status !== 'finalized' && preview.blocks.length > 0)
       .slice()
-      .sort((left, right) => {
-        const leftTimestamp = streamPreviewStates.value[left.scope.scopeKey]?.receivedAt ?? 0
-        const rightTimestamp = streamPreviewStates.value[right.scope.scopeKey]?.receivedAt ?? 0
+      .sort(([, left], [, right]) => {
+        const leftTimestamp = left.receivedAt ?? 0
+        const rightTimestamp = right.receivedAt ?? 0
         if (leftTimestamp !== rightTimestamp) return leftTimestamp - rightTimestamp
-        const leftSequence = streamPreviewStates.value[left.scope.scopeKey]?.sequence ?? 0
-        const rightSequence = streamPreviewStates.value[right.scope.scopeKey]?.sequence ?? 0
+        const leftSequence = left.sequence ?? 0
+        const rightSequence = right.sequence ?? 0
         return leftSequence - rightSequence
       })
-      .map((preview) => ({
+      .map(([scopeKey, preview]) => ({
         kind: 'live_preview',
         layer: 'overlay',
-        overlayKind: getLivePreviewOverlayKind(streamPreviewStates.value[preview.scope.scopeKey] || {
-          scope: preview.scope,
-          phase: preview.phase,
-          active: preview.active,
-          blocks: [],
-        }),
+        overlayKind: getLivePreviewOverlayKind(preview),
         anchor: {
           scopeKey: preview.scope.scopeKey || 'unknown',
+          anchorKind: preview.scope.anchorKind,
+          anchorId: preview.scope.anchorId,
           ...(preview.scope.messageId ? { messageId: preview.scope.messageId } : {}),
           ...(preview.scope.parentToolUseId !== undefined ? { parentToolUseId: preview.scope.parentToolUseId } : {}),
         },
         id: `live-preview-${preview.scope.scopeKey || 'unknown'}`,
         key: `live-preview-${preview.scope.scopeKey || 'unknown'}`,
-        timestamp: streamPreviewStates.value[preview.scope.scopeKey]?.receivedAt ?? Date.now(),
-        preview,
+        timestamp: preview.receivedAt ?? Date.now(),
+        preview: renderStreamPreviewState(preview, streamAnimationCursors.value[scopeKey] ?? null),
       }))
   )
   const timeline = computed<TimelineRenderableItem[]>(() => {
@@ -372,8 +442,17 @@ export const useSessionStore = defineStore('session', () => {
       visibleItems,
       livePreviewItems.value,
     )
+    const lastVisibleTimestamp = itemsWithOverlays.length > 0
+      ? Math.max(...itemsWithOverlays.map((item) => item.timestamp))
+      : null
+    const positionedUnattachedOverlays = lastVisibleTimestamp === null
+      ? unattachedOverlays
+      : unattachedOverlays.map((overlay, index) => ({
+          ...overlay,
+          timestamp: Math.max(overlay.timestamp, lastVisibleTimestamp + index + 1),
+        }))
 
-    return [...itemsWithOverlays, ...debugOnlyHiddenItems, ...unattachedOverlays]
+    return [...itemsWithOverlays, ...debugOnlyHiddenItems, ...positionedUnattachedOverlays]
       .slice()
       .sort((left, right) => {
         if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp
@@ -385,6 +464,71 @@ export const useSessionStore = defineStore('session', () => {
   let awaitingRunStart = false
   let observedEventCount = 0
   let optimisticMessageCount = 0
+  let streamAnimationFrame: number | null = null
+  let streamSweepTimer: number | null = null
+  let streamFinalizeTimers: Record<string, number> = {}
+
+  function scheduleFinalizedPreviewSweep(delayMs: number = 180) {
+    if (streamSweepTimer !== null) {
+      window.clearTimeout(streamSweepTimer)
+    }
+    streamSweepTimer = window.setTimeout(() => {
+      streamSweepTimer = null
+      const swept = sweepFinalizedStreamPreviews(
+        streamPreviewStates.value,
+        streamAnimationCursors.value,
+      )
+      if (!swept.removed) return
+      streamPreviewStates.value = swept.previewStates
+      streamAnimationCursors.value = swept.animationCursors
+    }, delayMs)
+  }
+
+  function clearStreamTimers() {
+    if (streamAnimationFrame !== null) {
+      window.clearTimeout(streamAnimationFrame)
+      streamAnimationFrame = null
+    }
+    if (streamSweepTimer !== null) {
+      window.clearTimeout(streamSweepTimer)
+      streamSweepTimer = null
+    }
+    for (const timer of Object.values(streamFinalizeTimers)) {
+      window.clearTimeout(timer)
+    }
+    streamFinalizeTimers = {}
+  }
+
+  function scheduleStreamFinalize(scopeKey: string, delayMs: number = 400) {
+    const existingTimer = streamFinalizeTimers[scopeKey]
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer)
+    }
+    streamFinalizeTimers = {
+      ...streamFinalizeTimers,
+      [scopeKey]: window.setTimeout(() => {
+        const { [scopeKey]: _timerId, ...restTimers } = streamFinalizeTimers
+        streamFinalizeTimers = restTimers
+
+        const latestPreview = streamPreviewStates.value[scopeKey]
+        if (!latestPreview || latestPreview.status === 'finalized') {
+          scheduleFinalizedPreviewSweep(0)
+          return
+        }
+
+        const finalizedPreview = finalizeStreamPreviewState(latestPreview)
+        streamPreviewStates.value = {
+          ...streamPreviewStates.value,
+          [scopeKey]: finalizedPreview,
+        }
+        streamAnimationCursors.value = {
+          ...streamAnimationCursors.value,
+          [scopeKey]: createStreamAnimationCursor(finalizedPreview),
+        }
+        scheduleFinalizedPreviewSweep(0)
+      }, delayMs),
+    }
+  }
 
   function persistAuthToken(token: string) {
     authToken.value = token.trim()
@@ -409,11 +553,8 @@ export const useSessionStore = defineStore('session', () => {
     awaitingRunStart = false
     pendingInteraction.value = null
     streamPreviewStates.value = {}
-    streamDisplayStates.value = {}
-    if (streamAnimationFrame !== null) {
-      window.clearTimeout(streamAnimationFrame)
-      streamAnimationFrame = null
-    }
+    streamAnimationCursors.value = {}
+    clearStreamTimers()
     runState.value = nextState
   }
 
@@ -505,35 +646,17 @@ export const useSessionStore = defineStore('session', () => {
       if (parsedMessage?.role === 'assistant') {
         const toolUseIds = (parsedMessage.blocks || [])
           .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
-        const scopeKeysToComplete = Object.entries(streamPreviewStates.value)
-          .filter(([, state]) => {
-            if (state.scope.messageId && state.scope.messageId === getTranscriptMessageId(parsedMessage)) return true
-            if (state.scope.parentToolUseId && toolUseIds.includes(state.scope.parentToolUseId)) return true
-            return false
-          })
-          .map(([scopeKey]) => scopeKey)
-        for (const scopeKey of scopeKeysToComplete) {
-          const preview = streamPreviewStates.value[scopeKey]
-          if (!preview) continue
-          streamDisplayStates.value = {
-            ...streamDisplayStates.value,
-            [scopeKey]: createStreamDisplayState(preview),
-          }
-        }
-        window.setTimeout(() => {
-          const clearedByMessage = clearStreamStateByMessageId(
-            streamPreviewStates.value,
-            streamDisplayStates.value,
-            getTranscriptMessageId(parsedMessage),
-          )
-          const clearedByTools = clearStreamStateByParentToolUseIds(
-            clearedByMessage.previewStates,
-            clearedByMessage.displayStates,
-            toolUseIds,
-          )
-          streamPreviewStates.value = clearedByTools.previewStates
-          streamDisplayStates.value = clearedByTools.displayStates
-        }, 180)
+        const responseId = getTranscriptResponseId(parsedMessage)
+        const toolUseIdSet = new Set(toolUseIds)
+        const materialized = markStreamPreviewsMaterialized(
+          streamPreviewStates.value,
+          streamAnimationCursors.value,
+          responseId,
+          toolUseIdSet,
+        )
+        streamPreviewStates.value = materialized.previewStates
+        streamAnimationCursors.value = materialized.animationCursors
+        scheduleFinalizedPreviewSweep()
       }
     }
     syncSessionId(timelineEvent.sessionId)
@@ -561,18 +684,20 @@ export const useSessionStore = defineStore('session', () => {
     if (streamAnimationFrame !== null) return
     streamAnimationFrame = window.setTimeout(() => {
       streamAnimationFrame = null
-      const nextDisplayStates: Record<string, StreamDisplayState> = {}
+      const nextAnimationCursors: Record<string, StreamAnimationCursor> = {}
+      let shouldContinue = false
       let changed = false
       for (const [scopeKey, preview] of Object.entries(streamPreviewStates.value)) {
-        const currentDisplay = streamDisplayStates.value[scopeKey] ?? null
-        const nextDisplay = advanceStreamDisplayState(currentDisplay, preview)
-        nextDisplayStates[scopeKey] = nextDisplay
-        if (JSON.stringify(currentDisplay) !== JSON.stringify(nextDisplay)) {
-          changed = true
-        }
+        const currentCursor = streamAnimationCursors.value[scopeKey] ?? null
+        const { cursor, changed: cursorChanged, done } = advanceStreamAnimationCursor(currentCursor, preview)
+        nextAnimationCursors[scopeKey] = cursor
+        changed = changed || cursorChanged || currentCursor === null
+        shouldContinue = shouldContinue || (preview.active && !done)
       }
       if (changed) {
-        streamDisplayStates.value = nextDisplayStates
+        streamAnimationCursors.value = nextAnimationCursors
+      }
+      if (shouldContinue) {
         scheduleStreamDisplayAdvance()
       }
     }, 32)
@@ -580,43 +705,44 @@ export const useSessionStore = defineStore('session', () => {
 
   function applyStreamEvent(
     previewStates: Record<string, StreamPreviewState>,
-    displayStates: Record<string, StreamDisplayState>,
+    animationCursors: Record<string, StreamAnimationCursor>,
     event: Extract<SessionEvent, { type: 'session.sdk.stream_event' }>,
-  ): { previewStates: Record<string, StreamPreviewState>; displayStates: Record<string, StreamDisplayState> } {
+  ): { previewStates: Record<string, StreamPreviewState>; animationCursors: Record<string, StreamAnimationCursor> } {
     syncSessionId(event.sessionId)
     const scopeKey = getStreamScopeKey(event.event)
-    const clientReceivedAt = Date.now()
-    const eventForPreview: SessionStreamEvent = {
-      ...event.event,
-      receivedAt: clientReceivedAt,
-    }
     const currentPreview = previewStates[scopeKey] ?? null
-    const nextPreview = reduceStreamPreviewEvent(currentPreview, eventForPreview)
+    const nextPreview = reduceStreamPreviewEvent(currentPreview, event.event)
     const nextPreviewStates = {
       ...previewStates,
       [scopeKey]: nextPreview,
     }
-    const currentDisplay = displayStates[scopeKey] ?? null
-    const nextDisplay = advanceStreamDisplayState(currentDisplay, nextPreview)
-    const nextDisplayStates = {
-      ...displayStates,
-      [scopeKey]: nextDisplay,
+    const currentCursor = animationCursors[scopeKey] ?? null
+    const { cursor: nextCursor } = advanceStreamAnimationCursor(currentCursor, nextPreview)
+    const nextAnimationCursors = {
+      ...animationCursors,
+      [scopeKey]: nextCursor,
     }
     if (!nextPreview.active) {
-      const completedDisplay = createStreamDisplayState(nextPreview)
-      nextDisplayStates[scopeKey] = completedDisplay
-      window.setTimeout(() => {
-        const previewSnapshot = { ...streamPreviewStates.value }
-        const displaySnapshot = { ...streamDisplayStates.value }
-        delete previewSnapshot[scopeKey]
-        delete displaySnapshot[scopeKey]
-        streamPreviewStates.value = previewSnapshot
-        streamDisplayStates.value = displaySnapshot
-      }, 120)
+      nextAnimationCursors[scopeKey] = createStreamAnimationCursor(nextPreview)
+      if (nextPreview.status === 'finalized') {
+        scheduleFinalizedPreviewSweep(0)
+        const swept = sweepFinalizedStreamPreviews(nextPreviewStates, nextAnimationCursors)
+        return {
+          previewStates: swept.previewStates,
+          animationCursors: swept.animationCursors,
+        }
+      }
+      scheduleStreamFinalize(scopeKey)
     } else {
+      const existingFinalizeTimer = streamFinalizeTimers[scopeKey]
+      if (existingFinalizeTimer !== undefined) {
+        window.clearTimeout(existingFinalizeTimer)
+        const { [scopeKey]: _removedTimer, ...restTimers } = streamFinalizeTimers
+        streamFinalizeTimers = restTimers
+      }
       scheduleStreamDisplayAdvance()
     }
-    return { previewStates: nextPreviewStates, displayStates: nextDisplayStates }
+    return { previewStates: nextPreviewStates, animationCursors: nextAnimationCursors }
   }
 
   function applyEvent(event: SessionEvent) {
@@ -658,7 +784,7 @@ export const useSessionStore = defineStore('session', () => {
       case 'session.run.completed':
         pendingInteraction.value = null
         streamPreviewStates.value = {}
-        streamDisplayStates.value = {}
+        streamAnimationCursors.value = {}
         runState.value = 'completed'
         activeRunId.value = null
         awaitingRunStart = false
@@ -704,9 +830,9 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'session.sdk.stream_event': {
-        const next = applyStreamEvent(streamPreviewStates.value, streamDisplayStates.value, event)
+        const next = applyStreamEvent(streamPreviewStates.value, streamAnimationCursors.value, event)
         streamPreviewStates.value = next.previewStates
-        streamDisplayStates.value = next.displayStates
+        streamAnimationCursors.value = next.animationCursors
         break
       }
 
@@ -932,6 +1058,167 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function fetchBindingCandidates(limit: number = 20): Promise<boolean> {
+    try {
+      const res = await apiFetch(`/api/session-candidates?limit=${limit}`)
+      if (!res.ok) return false
+      const data = await res.json()
+      bindingCandidates.value = (data.sessions || []).map((s: any) => normalizeSession(s)).filter((s: SessionSummary) => s.id)
+      return true
+    } catch (error) {
+      logger.error('binding:candidates:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
+  }
+
+  async function fetchBindingList(): Promise<boolean> {
+    bindingLoading.value = true
+    bindingError.value = ''
+    try {
+      const res = await apiFetch(`/api/channels/${bindingChannel.value}/bindings`)
+      if (!res.ok) {
+        bindingError.value = `加载 bindings 列表失败 (${res.status})`
+        return false
+      }
+      const data = await res.json() as SessionBindingsListResponse
+      bindingList.value = (data.bindings || []).map((item) => ({
+        ref: item.ref ?? { channel: bindingChannel.value, conversationKey: '' },
+        binding: item.binding ?? null,
+        session: item.session ?? null,
+        activeRun: item.activeRun ?? null,
+      }))
+      return true
+    } catch (error) {
+      bindingError.value = error instanceof Error ? error.message : String(error)
+      return false
+    } finally {
+      bindingLoading.value = false
+    }
+  }
+
+  async function fetchBindingStatus(): Promise<boolean> {
+    const conversationKey = bindingConversationKey.value.trim()
+    if (!conversationKey) {
+      bindingStatus.value = null
+      bindingError.value = ''
+      return false
+    }
+
+    bindingLoading.value = true
+    bindingError.value = ''
+    try {
+      const res = await apiFetch(`/api/channels/${bindingChannel.value}/conversations/${encodeURIComponent(conversationKey)}/binding`)
+      if (!res.ok) {
+        bindingError.value = `加载 binding 失败 (${res.status})`
+        return false
+      }
+      const data = await res.json() as SessionBindingStatusResponse
+      bindingStatus.value = {
+        ref: data.ref ?? { channel: bindingChannel.value, conversationKey },
+        binding: data.binding ?? null,
+        session: data.session ?? null,
+        activeRun: data.activeRun ?? null,
+      }
+      bindingTargetSessionId.value = bindingStatus.value.binding?.sessionId || ''
+      return true
+    } catch (error) {
+      bindingError.value = error instanceof Error ? error.message : String(error)
+      return false
+    } finally {
+      bindingLoading.value = false
+    }
+  }
+
+  async function bindConversationToSession(sessionId: string): Promise<boolean> {
+    const conversationKey = bindingConversationKey.value.trim()
+    const targetSessionId = sessionId.trim()
+    if (!conversationKey || !targetSessionId) return false
+
+    bindingLoading.value = true
+    bindingError.value = ''
+    try {
+      const res = await apiFetch(`/api/channels/${bindingChannel.value}/conversations/${encodeURIComponent(conversationKey)}/binding`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: targetSessionId }),
+      })
+      if (!res.ok) {
+        bindingError.value = `更新 binding 失败 (${res.status})`
+        return false
+      }
+      const data = await res.json() as SessionBindingStatusResponse
+      bindingStatus.value = {
+        ref: data.ref ?? { channel: bindingChannel.value, conversationKey },
+        binding: data.binding ?? null,
+        session: data.session ?? null,
+        activeRun: data.activeRun ?? null,
+      }
+      bindingTargetSessionId.value = bindingStatus.value.binding?.sessionId || targetSessionId
+      return true
+    } catch (error) {
+      bindingError.value = error instanceof Error ? error.message : String(error)
+      return false
+    } finally {
+      bindingLoading.value = false
+    }
+  }
+
+  async function clearBindingStatus(): Promise<boolean> {
+    const conversationKey = bindingConversationKey.value.trim()
+    if (!conversationKey) return false
+
+    bindingLoading.value = true
+    bindingError.value = ''
+    try {
+      const res = await apiFetch(`/api/channels/${bindingChannel.value}/conversations/${encodeURIComponent(conversationKey)}/binding`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) {
+        bindingError.value = `清除 binding 失败 (${res.status})`
+        return false
+      }
+      const data = await res.json() as SessionBindingStatusResponse
+      bindingStatus.value = {
+        ref: data.ref ?? { channel: bindingChannel.value, conversationKey },
+        binding: data.binding ?? null,
+        session: data.session ?? null,
+        activeRun: data.activeRun ?? null,
+      }
+      bindingTargetSessionId.value = ''
+      return true
+    } catch (error) {
+      bindingError.value = error instanceof Error ? error.message : String(error)
+      return false
+    } finally {
+      bindingLoading.value = false
+    }
+  }
+
+  function setBindingChannel(channel: 'lark' | 'web' | 'discord') {
+    bindingChannel.value = channel
+  }
+
+  function setBindingConversationKey(value: string) {
+    bindingConversationKey.value = value
+  }
+
+  function setBindingTargetSessionId(value: string) {
+    bindingTargetSessionId.value = value
+  }
+
+  function applyBindingCandidate(sessionId: string) {
+    bindingTargetSessionId.value = sessionId
+  }
+
+  function selectBindingEntry(entry: SessionBindingStatus) {
+    bindingChannel.value = entry.ref.channel
+    bindingConversationKey.value = entry.ref.conversationKey
+    bindingStatus.value = entry
+    bindingTargetSessionId.value = entry.binding?.sessionId || ''
+  }
+
   function newChat() {
     logger.info('chat:new')
     currentSessionId.value = null
@@ -942,7 +1229,7 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesBeforeCursor.value = null
     eventLog.value = []
     streamPreviewStates.value = {}
-    streamDisplayStates.value = {}
+    streamAnimationCursors.value = {}
     if (streamAnimationFrame !== null) {
       window.clearTimeout(streamAnimationFrame)
       streamAnimationFrame = null
@@ -964,7 +1251,7 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesBeforeCursor.value = null
     eventLog.value = []
     streamPreviewStates.value = {}
-    streamDisplayStates.value = {}
+    streamAnimationCursors.value = {}
     if (streamAnimationFrame !== null) {
       window.clearTimeout(streamAnimationFrame)
       streamAnimationFrame = null
@@ -1015,7 +1302,7 @@ export const useSessionStore = defineStore('session', () => {
           return !isBusinessSdkMessage(event.payload)
         })
         streamPreviewStates.value = {}
-        streamDisplayStates.value = {}
+        streamAnimationCursors.value = {}
       }
       historyMessagesHasMore.value = Boolean(data.hasMore)
       historyMessagesBeforeCursor.value = typeof data.nextBefore === 'string' && data.nextBefore ? data.nextBefore : null
@@ -1119,12 +1406,16 @@ export const useSessionStore = defineStore('session', () => {
     if (!authRequired.value) {
       connect()
       await fetchSessions()
+      await fetchBindingCandidates()
+      await fetchBindingList()
       return
     }
 
     if (hasAuthToken.value) {
       const ok = await fetchSessions()
       if (ok) {
+        await fetchBindingCandidates()
+        await fetchBindingList()
         connect()
       }
     }
@@ -1138,11 +1429,15 @@ export const useSessionStore = defineStore('session', () => {
     if (!authRequired.value) {
       connect()
       await fetchSessions()
+      await fetchBindingCandidates()
+      await fetchBindingList()
       return
     }
 
     const ok = await fetchSessions()
     if (ok) {
+      await fetchBindingCandidates()
+      await fetchBindingList()
       connect()
     }
   }
@@ -1159,9 +1454,15 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoadingOlder.value = false
     historyMessagesBeforeCursor.value = null
     sessions.value = []
+    bindingStatus.value = null
+    bindingCandidates.value = []
+    bindingList.value = []
+    bindingConversationKey.value = ''
+    bindingTargetSessionId.value = ''
+    bindingError.value = ''
     eventLog.value = []
     streamPreviewStates.value = {}
-    streamDisplayStates.value = {}
+    streamAnimationCursors.value = {}
     observedEventCount = 0
     optimisticMessageCount = 0
     clearRunState('idle')
@@ -1177,7 +1478,7 @@ export const useSessionStore = defineStore('session', () => {
     historyAtoms,
     liveAtoms,
     streamPreviewStates,
-    streamDisplayStates,
+    streamAnimationCursors,
     livePreviewItems,
     debugTimelineVisible,
     historyMessagesHasMore,
@@ -1197,6 +1498,15 @@ export const useSessionStore = defineStore('session', () => {
     hasActiveRun,
     activeRunId,
     pendingInteraction,
+    bindingChannel,
+    bindingConversationKey,
+    bindingStatus,
+    bindingCandidates,
+    bindingList,
+    bindingLoading,
+    bindingError,
+    bindingTargetSessionId,
+    bindingSummary,
     observabilityEvents,
     eventLog,
     isAwaitingApproval,
@@ -1206,6 +1516,16 @@ export const useSessionStore = defineStore('session', () => {
     respondToPermission,
     respondToElicitation,
     fetchSessions,
+    fetchBindingCandidates,
+    fetchBindingList,
+    fetchBindingStatus,
+    bindConversationToSession,
+    clearBindingStatus,
+    setBindingChannel,
+    setBindingConversationKey,
+    setBindingTargetSessionId,
+    applyBindingCandidate,
+    selectBindingEntry,
     newChat,
     selectSession,
     loadOlderSessionMessages,

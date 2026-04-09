@@ -22,13 +22,13 @@ function renderMarkdown(content: string): string {
 const overlayToneClass = computed(() => {
   switch (props.item.overlayKind) {
     case 'streaming_thinking':
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-sky-700'
+      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-accent)]'
     case 'streaming_tool_use':
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-sky-600'
+      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-primary)]'
     case 'streaming_progress':
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-sky-500'
+      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-coral)]'
     default:
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-sky-600'
+      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-primary)]'
   }
 })
 
@@ -56,13 +56,13 @@ const combinedPreviewText = computed(() =>
 
 <template>
   <div class="space-y-2">
-    <div class="flex items-start gap-3 text-slate-900">
+    <div class="flex items-start gap-3 text-[var(--tt-text)]">
       <span :class="overlayToneClass">●</span>
       <span class="font-medium">{{ overlayLabel }}…</span>
     </div>
     <div v-for="block in item.preview.blocks" :key="`${item.key}-preview-${block.kind}-${block.index}`" class="space-y-2">
       <TimelineCliSubrow v-if="block.kind === 'text'" muted>
-        <div class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(block.shownText)" />
+        <div class="markdown-body prose prose-sm max-w-none text-[var(--tt-text-subtle)]" v-html="renderMarkdown(block.shownText)" />
       </TimelineCliSubrow>
       <TimelineCliSubrow v-else-if="block.kind === 'thinking'" muted>
         <div v-if="block.redacted" class="italic">∴ Thinking</div>
@@ -72,7 +72,7 @@ const combinedPreviewText = computed(() =>
         <div>{{ block.name }}<span v-if="block.shownInput">({{ block.shownInput.trim().replace(/\s+/g, ' ').slice(0, 72) }}{{ block.shownInput.trim().replace(/\s+/g, ' ').length > 72 ? '…' : '' }})</span></div>
       </TimelineCliSubrow>
     </div>
-    <TimelineCliSubrow v-if="combinedPreviewText && item.preview.blocks.every((block) => block.kind !== 'text')" muted>
+    <TimelineCliSubrow v-if="combinedPreviewText && item.preview.blocks.every((block) => block.kind !== 'text' && block.kind !== 'thinking')" muted>
       <div class="markdown-body prose prose-sm max-w-none text-slate-500" v-html="renderMarkdown(combinedPreviewText)" />
     </TimelineCliSubrow>
   </div>

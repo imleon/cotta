@@ -24,7 +24,6 @@ const DEDUPE_TTL_MS = 10 * 60 * 1000
 
 let clientInstance: any | null = null
 let dispatcherInstance: any | null = null
-let cardActionHandlerInstance: any | null = null
 let wsClientInstance: any | null = null
 let wsClientCardPatched = false
 let wsStartPromise: Promise<void> | null = null
@@ -50,6 +49,31 @@ type LarkOutboundDelivery = {
   sessionId?: string
   mode?: 'create' | 'stream' | 'finalize' | 'fallback'
   state?: LarkStreamingState
+  preferRawCardFallback?: boolean
+}
+
+function formatPermissionSuggestions(suggestions?: Extract<PendingInteraction, { kind: 'permission' }>['permissionSuggestions']): string[] {
+  if (!suggestions || suggestions.length === 0) return []
+  return suggestions.map((suggestion) => {
+    const label = suggestion.label || suggestion.action
+    const details = [suggestion.description, suggestion.scope].filter(Boolean).join(' · ')
+    return details ? `• **${label}** — ${details}` : `• **${label}**`
+  })
+}
+
+function formatPermissionMetadata(interaction: Extract<PendingInteraction, { kind: 'permission' }>): string[] {
+  return [
+    interaction.decisionReason ? `**Why Claude asked:** ${interaction.decisionReason}` : '',
+    interaction.blockedPath ? `**Path:** ${interaction.blockedPath}` : '',
+    interaction.toolUseId ? `**Tool use:** ${interaction.toolUseId}` : '',
+    interaction.agentId ? `**Agent:** ${interaction.agentId}` : '',
+  ].filter(Boolean)
+}
+
+function getPermissionDecisionFromPayload(payload: unknown): 'approve' | 'deny' | null {
+  if (!payload || typeof payload !== 'object') return null
+  const decision = (payload as Record<string, unknown>).decision
+  return decision === 'approve' || decision === 'deny' ? decision : null
 }
 
 type LarkInteractionCommand =
@@ -253,20 +277,20 @@ function patchLarkWsClientForCardCallbacks(wsClient: any): void {
         }, {})
       : {}
     const frameType = headers.type
+    const payload = data?.payload instanceof Uint8Array ? data.payload : null
 
     if (frameType === 'card') {
-      const payload = data?.payload instanceof Uint8Array ? data.payload : null
       if (payload) {
-        const payloadString = new TextDecoder('utf-8').decode(payload)
-        const messageTypeHeader = data.headers.find((entry: { key?: string }) => entry?.key === 'type')
-        if (messageTypeHeader) {
-          messageTypeHeader.value = 'event'
+        data = {
+          ...data,
+          headers: Array.isArray(data.headers)
+            ? data.headers.map((entry: { key?: string; value?: string }) =>
+                entry?.key === 'type' ? { ...entry, value: 'event' } : entry,
+              )
+            : data.headers,
         }
-        data.payload = new TextEncoder().encode(JSON.stringify({
-          schema: '2.0',
-          header: { event_type: 'card.action.trigger' },
-          event: JSON.parse(payloadString),
-        }))
+      } else {
+        logger.warn('lark:ws:frame:card:missing-payload', { headers })
       }
     }
 
@@ -284,7 +308,11 @@ export async function startLarkLongConnection(coordinator: RunCoordinator): Prom
   }
   if (wsStartPromise) return await wsStartPromise
 
-  logger.info('lark:ws:starting', { hasVerificationToken: Boolean(CONFIG.lark.verificationToken) })
+  logger.info('lark:ws:starting', {
+    hasVerificationToken: Boolean(CONFIG.lark.verificationToken),
+    hasEncryptKey: Boolean(CONFIG.lark.encryptKey),
+    appIdConfigured: Boolean(CONFIG.lark.appId),
+  })
   const startPromise = wsClient.start({
     eventDispatcher: createLarkEventDispatcher(coordinator),
   }).then(() => {
@@ -427,6 +455,78 @@ async function handleInteractionCommand(
 function buildPermissionCard(runId: string, interaction: Extract<PendingInteraction, { kind: 'permission' }>): Lark.InteractiveCard {
   const title = interaction.title || interaction.displayName || interaction.toolName
   const description = interaction.description || 'Claude 需要你的确认后才能继续执行。'
+  const metadataLines = formatPermissionMetadata(interaction)
+  const suggestionLines = formatPermissionSuggestions(interaction.permissionSuggestions)
+
+  const elements: unknown[] = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `**${title}**\n${description}`,
+      },
+    },
+  ]
+
+  if (metadataLines.length > 0) {
+    elements.push({
+      tag: 'note',
+      elements: metadataLines.map((item) => ({
+        tag: 'plain_text',
+        content: item.replace(/\*\*/g, ''),
+      })),
+    })
+  }
+
+  if (suggestionLines.length > 0) {
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `**Suggested action**\n${suggestionLines.join('\n')}`,
+      },
+    })
+  }
+
+  elements.push(
+    {
+      tag: 'hr',
+    },
+    {
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          type: 'primary',
+          text: {
+            tag: 'plain_text',
+            content: 'Approve and continue',
+          },
+          value: {
+            actionType: 'permission',
+            runId,
+            interactionId: interaction.id,
+            decision: 'approve',
+          },
+        },
+        {
+          tag: 'button',
+          type: 'danger',
+          text: {
+            tag: 'plain_text',
+            content: 'Deny request',
+          },
+          value: {
+            actionType: 'permission',
+            runId,
+            interactionId: interaction.id,
+            decision: 'deny',
+          },
+        },
+      ],
+    },
+  )
+
   return {
     config: {
       wide_screen_mode: true,
@@ -436,70 +536,24 @@ function buildPermissionCard(runId: string, interaction: Extract<PendingInteract
       template: 'orange',
       title: {
         tag: 'plain_text',
-        content: `Permission required: ${title}`,
+        content: `Permission required · ${title}`,
       },
     },
-    elements: [
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: description,
-        },
-      },
-      {
-        tag: 'hr',
-      },
-      {
-        tag: 'action',
-        actions: [
-          {
-            tag: 'button',
-            type: 'primary',
-            text: {
-              tag: 'plain_text',
-              content: 'Approve',
-            },
-            value: {
-              actionType: 'permission',
-              runId,
-              interactionId: interaction.id,
-              decision: 'approve',
-            },
-          },
-          {
-            tag: 'button',
-            type: 'danger',
-            text: {
-              tag: 'plain_text',
-              content: 'Deny',
-            },
-            value: {
-              actionType: 'permission',
-              runId,
-              interactionId: interaction.id,
-              decision: 'deny',
-            },
-          },
-        ],
-      },
-    ],
+    elements: elements as unknown as Lark.InteractiveCard['elements'],
   }
 }
 
-function buildPermissionResolvedCard(decision: 'approve' | 'deny', ok: boolean): Lark.InteractiveCard {
+function buildPermissionStatusCard(title: string, message: string, template: 'green' | 'red' | 'grey'): Lark.InteractiveCard {
   return {
     config: {
       wide_screen_mode: true,
       update_multi: false,
     },
     header: {
-      template: ok ? (decision === 'approve' ? 'green' : 'red') : 'grey',
+      template,
       title: {
         tag: 'plain_text',
-        content: ok
-          ? `Permission ${decision}`
-          : 'Permission unavailable',
+        content: title,
       },
     },
     elements: [
@@ -507,13 +561,27 @@ function buildPermissionResolvedCard(decision: 'approve' | 'deny', ok: boolean):
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: ok
-            ? `This permission has been **${decision}**.`
-            : 'No matching active run was found for this permission action.',
+          content: message,
         },
       },
     ],
   }
+}
+
+function buildPermissionResolvedCard(decision: 'approve' | 'deny', ok: boolean): Lark.InteractiveCard {
+  const approved = ok && decision === 'approve'
+  const denied = ok && decision === 'deny'
+  return buildPermissionStatusCard(
+    ok
+      ? (approved ? 'Permission approved' : 'Permission denied')
+      : 'Permission unavailable',
+    ok
+      ? (approved
+          ? 'Claude can continue with this action.'
+          : 'Claude will not continue with this action.')
+      : 'No matching active run was found for this permission action.',
+    approved ? 'green' : denied ? 'red' : 'grey',
+  )
 }
 
 function buildAssistantStreamingCard(params: {
@@ -743,10 +811,74 @@ async function handleLarkCardActionEvent(coordinator: RunCoordinator, data: Lark
       openMessageId: data?.open_message_id,
       actionType,
       decision: data?.action?.value?.decision,
+      source: 'ws',
     },
   })
 
-  return await invokeLarkCardAction(coordinator, data, { source: 'ws' })
+  return await processLarkPermissionAction(coordinator, data)
+}
+
+function wrapLarkCardResponse(card: Lark.InteractiveCard): { card: { type: 'raw'; data: Lark.InteractiveCard } } {
+  return {
+    card: {
+      type: 'raw',
+      data: card,
+    },
+  }
+}
+
+async function processLarkPermissionAction(coordinator: RunCoordinator, data: Lark.InteractiveCardActionEvent): Promise<unknown> {
+  const runId = typeof data?.action?.value?.runId === 'string' ? data.action.value.runId : ''
+  const interactionId = typeof data?.action?.value?.interactionId === 'string' ? data.action.value.interactionId : ''
+  const decision = data?.action?.value?.decision === 'approve' || data?.action?.value?.decision === 'deny'
+    ? data.action.value.decision
+    : null
+  const actionType = typeof data?.action?.value?.actionType === 'string' ? data.action.value.actionType : ''
+  const actionKey = [data?.open_message_id, runId, interactionId, decision ?? 'invalid'].join(':')
+
+  if (actionType !== 'permission' || !runId || !interactionId || !decision) {
+    logger.warn('lark:card-action:invalid', {
+      openMessageId: data?.open_message_id,
+      runId,
+      interactionId,
+      actionType,
+      source: 'ws',
+    })
+    return {
+      toast: {
+        type: 'error',
+        content: 'Invalid permission action.',
+      },
+    }
+  }
+
+  if (isDuplicateAction(actionKey)) {
+    return {
+      toast: {
+        type: 'info',
+        content: 'This permission action was already handled.',
+      },
+    }
+  }
+
+  const ok = coordinator.respondToPermission(runId, interactionId, decision)
+  const resolvedCard = buildPermissionResolvedCard(decision, ok)
+  return {
+    ...(ok
+      ? {
+          toast: {
+            type: 'success',
+            content: decision === 'approve' ? 'Permission approved.' : 'Permission denied.',
+          },
+        }
+      : {
+          toast: {
+            type: 'error',
+            content: 'No matching active run for that permission action.',
+          },
+        }),
+    ...wrapLarkCardResponse(resolvedCard),
+  }
 }
 
 function getLarkDispatcher(coordinator: RunCoordinator): any {
@@ -756,75 +888,10 @@ function getLarkDispatcher(coordinator: RunCoordinator): any {
   return dispatcherInstance
 }
 
-function getLarkCardActionHandler(coordinator: RunCoordinator): any {
-  if (cardActionHandlerInstance) return cardActionHandlerInstance
-
-  cardActionHandlerInstance = new Lark.CardActionHandler({
-    ...(CONFIG.lark.encryptKey ? { encryptKey: CONFIG.lark.encryptKey } : {}),
-    ...(CONFIG.lark.verificationToken ? { verificationToken: CONFIG.lark.verificationToken } : {}),
-  }, async (data: Lark.InteractiveCardActionEvent) => {
-    const runId = typeof data?.action?.value?.runId === 'string' ? data.action.value.runId : ''
-    const interactionId = typeof data?.action?.value?.interactionId === 'string' ? data.action.value.interactionId : ''
-    const decision = data?.action?.value?.decision === 'approve' || data?.action?.value?.decision === 'deny'
-      ? data.action.value.decision
-      : null
-    const actionType = typeof data?.action?.value?.actionType === 'string' ? data.action.value.actionType : ''
-    const actionKey = [data?.open_message_id, runId, interactionId, decision ?? 'invalid'].join(':')
-
-    if (actionType !== 'permission' || !runId || !interactionId || !decision) {
-      logger.warn('lark:card-action:invalid', {
-        openMessageId: data?.open_message_id,
-        runId,
-        interactionId,
-        actionType,
-      })
-      return {
-        toast: {
-          type: 'error',
-          content: 'Invalid permission action.',
-        },
-      }
-    }
-
-    if (isDuplicateAction(actionKey)) {
-      return {
-        toast: {
-          type: 'info',
-          content: 'This permission action was already handled.',
-        },
-      }
-    }
-
-    const ok = coordinator.respondToPermission(runId, interactionId, decision)
-
-    return {
-      toast: {
-        type: ok ? 'success' : 'error',
-        content: ok
-          ? `Permission ${decision} recorded.`
-          : 'No matching active run for that permission action.',
-      },
-      card: buildPermissionResolvedCard(decision, ok),
-    }
-  })
-
-  return cardActionHandlerInstance
-}
-
 export async function invokeLarkEvent(coordinator: RunCoordinator, body: unknown, headers: Record<string, string>): Promise<unknown> {
   const dispatcher = getLarkDispatcher(coordinator)
   const assigned = Object.assign(Object.create({ headers }), body as object)
   return dispatcher.invoke(assigned)
-}
-
-export async function invokeLarkCardAction(
-  coordinator: RunCoordinator,
-  body: unknown,
-  headers: Record<string, string> = {},
-): Promise<unknown> {
-  const handler = getLarkCardActionHandler(coordinator)
-  const assigned = Object.assign(Object.create({ headers }), body as object)
-  return handler.invoke(assigned)
 }
 
 export async function sendLarkTextMessage(conversationKey: string, text: string): Promise<{ delivered: boolean; response?: unknown; error?: string }> {
@@ -1214,6 +1281,7 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
           ...(record.sessionId ? { sessionId: record.sessionId } : {}),
           mode: 'create',
           state: buildPermissionCardKitState(record),
+          preferRawCardFallback: true,
         }]
       }
       return [{
@@ -1226,17 +1294,23 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
     case 'session.interactive.completed':
     case 'session.interactive.cancelled':
     case 'session.control.completed':
-    case 'session.control.cancelled':
+    case 'session.control.cancelled': {
       if (!event.transaction.interaction || event.transaction.interaction.kind !== 'permission') return []
+      const decision = getPermissionDecisionFromPayload(event.payload) ?? 'approve'
+      const ok = event.transaction.interaction.status === 'resolved'
       return [{
         conversationKey: record.conversationKey,
-        text: `Permission resolved: ${event.transaction.interaction.status}`,
-        card: buildPermissionResolvedCard('approve', event.transaction.interaction.status === 'resolved'),
+        text: ok
+          ? `Permission ${decision}`
+          : 'Permission unavailable',
+        card: buildPermissionResolvedCard(decision, ok),
         runId: record.runId,
         ...(record.sessionId ? { sessionId: record.sessionId } : {}),
         mode: 'create',
         state: buildPermissionCardKitState(record),
+        preferRawCardFallback: true,
       }]
+    }
     case 'session.run.completed': {
       const finalized = buildAssistantFinalizeDelivery(record)
       if (finalized.length > 0) return finalized
@@ -1327,6 +1401,32 @@ export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRe
           payload: result,
         })
         if (result.delivered) continue
+        if (delivery.card && delivery.preferRawCardFallback) {
+          const rawFallback = await sendLarkCardMessage(delivery.conversationKey, delivery.card)
+          await appendLarkChannelLog({
+            sessionId: delivery.sessionId,
+            runId: delivery.runId,
+            direction: 'outbound',
+            eventName: 'card.raw.requested',
+            conversationKey: delivery.conversationKey,
+            payloadSummary: 'interactive-card-raw',
+            rawPayload: rawFallback.content,
+            payload: {
+              contentLength: rawFallback.content.length,
+            },
+          })
+          await appendLarkChannelLog({
+            sessionId: delivery.sessionId,
+            runId: delivery.runId,
+            direction: 'outbound',
+            eventName: rawFallback.delivered ? 'message.delivered' : 'message.failed',
+            conversationKey: delivery.conversationKey,
+            payloadSummary: rawFallback.delivered ? 'interactive-card' : (rawFallback.error || 'failed'),
+            rawPayload: rawFallback.responseContent,
+            payload: rawFallback,
+          })
+          if (rawFallback.delivered) continue
+        }
         if (delivery.text) {
           const fallback = await sendLarkTextMessage(delivery.conversationKey, delivery.text)
           await appendLarkChannelLog({

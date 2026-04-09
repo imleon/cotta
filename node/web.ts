@@ -7,7 +7,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { UpgradeWebSocket } from 'hono/ws'
 import { createWebSocketHandler } from './channels-web-adapter.js'
-import { createLarkOutboundMessage, deliverLarkSessionEvent, invokeLarkCardAction, invokeLarkEvent, sendLarkTextMessage } from './lark-adapter.js'
+import { createLarkOutboundMessage, deliverLarkSessionEvent, invokeLarkEvent, sendLarkTextMessage } from './lark-adapter.js'
 import { CONFIG } from './config.js'
 import { RunCoordinator } from './run-coordinator.js'
 import { SessionBindingStore } from './session-bindings.js'
@@ -445,40 +445,6 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
         error: error instanceof Error ? error.message : String(error),
       })
       return c.json({ error: 'Invalid Lark inbound payload' }, 400)
-    }
-  })
-
-  app.post('/api/channels/lark/card-action', async (c) => {
-    try {
-      const body = await c.req.json()
-      const headers = Object.fromEntries(c.req.raw.headers.entries())
-      const bodyRecord = body && typeof body === 'object' ? body as Record<string, unknown> : null
-      const openMessageId = typeof bodyRecord?.open_message_id === 'string' ? bodyRecord.open_message_id : undefined
-      const action = bodyRecord?.action && typeof bodyRecord.action === 'object' ? bodyRecord.action as Record<string, unknown> : null
-      const actionValue = action?.value && typeof action.value === 'object' ? action.value as Record<string, unknown> : null
-      const sessionId = typeof actionValue?.sessionId === 'string' ? actionValue.sessionId : undefined
-      const runId = typeof actionValue?.runId === 'string' ? actionValue.runId : undefined
-      await writeChannelLog({
-        sessionId,
-        runId,
-        channel: 'lark',
-        direction: 'inbound',
-        eventName: 'card-action.received',
-        platformMessageId: openMessageId,
-        payloadSummary: typeof actionValue?.actionType === 'string' ? actionValue.actionType : 'card-action',
-        payload: {
-          openMessageId,
-          actionType: actionValue?.actionType,
-          decision: actionValue?.decision,
-        },
-      })
-      const result = await invokeLarkCardAction(coordinator, body, headers)
-      return c.json(result ?? { ok: true })
-    } catch (error) {
-      logger.error('http:lark:card-action:error', {
-        error: error instanceof Error ? error.message : String(error),
-      })
-      return c.json({ error: 'Invalid Lark card action payload' }, 400)
     }
   })
 

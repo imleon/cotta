@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSessionStore } from '../stores/session'
-import type { DisplayFragmentToolUse, PendingPermissionInteraction } from '../../../shared/message-types.js'
+import type { DisplayFragmentToolUse, PendingElicitationInteraction, PendingPermissionInteraction } from '../../../shared/message-types.js'
 import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
 import TimelineCanUseToolInteractionBlock from './TimelineCanUseToolInteractionBlock.vue'
+import TimelineElicitationInteractionBlock from './TimelineElicitationInteractionBlock.vue'
 
 const props = withDefaults(defineProps<{
   fragment: DisplayFragmentToolUse
@@ -46,6 +47,13 @@ const pendingPermissionInteraction = computed<PendingPermissionInteraction | nul
   if (!interaction.toolUseId || interaction.toolUseId !== props.fragment.toolUseId) return null
   return interaction
 })
+
+const pendingElicitationInteraction = computed<PendingElicitationInteraction | null>(() => {
+  const interaction = session.pendingInteraction
+  if (interaction?.kind !== 'elicitation') return null
+  if (!interaction.toolUseId || interaction.toolUseId !== props.fragment.toolUseId) return null
+  return interaction
+})
 </script>
 
 <template>
@@ -65,6 +73,9 @@ const pendingPermissionInteraction = computed<PendingPermissionInteraction | nul
     </div>
     <div v-if="pendingPermissionInteraction" class="pl-7">
       <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" :fragment="fragment" attached />
+    </div>
+    <div v-if="pendingElicitationInteraction" class="pl-7">
+      <TimelineElicitationInteractionBlock :interaction="pendingElicitationInteraction" attached />
     </div>
   </div>
 </template>

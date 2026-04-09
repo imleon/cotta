@@ -475,17 +475,42 @@ export interface PermissionSuggestion {
 
 export type InteractiveSourceKind = 'control' | 'tool' | 'host'
 
-export interface InteractiveSource {
-  kind: InteractiveSourceKind
-  subtype: string
-  questionField?: string
-  questionText?: string
+export type InteractiveSource =
+  | {
+      kind: 'control'
+      subtype: string
+    }
+  | {
+      kind: 'tool'
+      toolName: string
+      toolUseId?: string
+    }
+  | {
+      kind: 'host'
+      subtype: string
+    }
+
+export interface InteractiveOption {
+  value: string
+  label: string
+}
+
+export interface AskUserQuestionRequestData {
+  field: string
+  prompt: string
+  description?: string
+  options: InteractiveOption[]
+  defaultValue?: string
   rawQuestion?: Record<string, unknown>
+}
+
+export interface AskUserQuestionAnswerContent {
+  answers: Record<string, string>
 }
 
 export interface PendingInteractionBase {
   id: string
-  kind: 'permission' | 'elicitation'
+  kind: 'permission' | 'elicitation' | 'ask_user_question'
   status: 'pending' | 'resolved' | 'cancelled'
   source: InteractiveSource
 }
@@ -506,6 +531,7 @@ export interface PendingPermissionInteraction extends PendingInteractionBase {
 
 export interface PendingElicitationInteraction extends PendingInteractionBase {
   kind: 'elicitation'
+  toolUseId?: string
   serverName: string
   message: string
   mode?: string
@@ -513,7 +539,19 @@ export interface PendingElicitationInteraction extends PendingInteractionBase {
   requestedSchema?: unknown
 }
 
-export type PendingInteraction = PendingPermissionInteraction | PendingElicitationInteraction
+export interface PendingAskUserQuestionInteraction extends PendingInteractionBase {
+  kind: 'ask_user_question'
+  toolName: 'AskUserQuestion'
+  toolUseId?: string
+  field: string
+  prompt: string
+  description?: string
+  options: InteractiveOption[]
+  defaultValue?: string
+  rawQuestion?: Record<string, unknown>
+}
+
+export type PendingInteraction = PendingPermissionInteraction | PendingElicitationInteraction | PendingAskUserQuestionInteraction
 export type InteractiveTransaction = PendingInteraction
 
 export type ControlFamily = 'interactive' | 'command' | 'query' | 'configuration' | 'integration' | 'lifecycle'
@@ -564,6 +602,7 @@ export interface ControlDescriptor {
   blocksRun: boolean
   defaultMode: ControlDefaultMode
   interactionKind?: PendingInteraction['kind']
+  interactionType?: 'permission' | 'sdk_elicitation'
 }
 
 export const DEFAULT_CONTROL_DESCRIPTOR: ControlDescriptor = {
@@ -586,6 +625,7 @@ export const CONTROL_DESCRIPTOR_REGISTRY: Record<string, ControlDescriptor> = {
     blocksRun: true,
     defaultMode: 'interactive',
     interactionKind: 'permission',
+    interactionType: 'permission',
   },
   elicitation: {
     subtype: 'elicitation',
@@ -596,6 +636,7 @@ export const CONTROL_DESCRIPTOR_REGISTRY: Record<string, ControlDescriptor> = {
     blocksRun: true,
     defaultMode: 'interactive',
     interactionKind: 'elicitation',
+    interactionType: 'sdk_elicitation',
   },
   interrupt: {
     subtype: 'interrupt',

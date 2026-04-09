@@ -2,32 +2,17 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
 import TimelineCanUseToolInteractionBlock from './TimelineCanUseToolInteractionBlock.vue'
+import TimelineElicitationInteractionBlock from './TimelineElicitationInteractionBlock.vue'
 import TimelineRow from './TimelineRow.vue'
 import { useSessionStore } from '../stores/session'
 import {
   stringifyStructuredValue,
 } from '../../../shared/transcript-normalizer.js'
-import type { PendingElicitationInteraction, PendingPermissionInteraction } from '../../../shared/message-types.js'
+import type { PendingAskUserQuestionInteraction, PendingElicitationInteraction, PendingPermissionInteraction } from '../../../shared/message-types.js'
 import type { TimelineItem } from '../stores/session'
-
-type QuestionOption = {
-  value: string
-  label: string
-}
-
-type AskUserQuestionSingleSelect = {
-  field: string
-  prompt: string
-  description?: string
-  options: QuestionOption[]
-  defaultValue?: string
-  questionText: string
-}
 
 const session = useSessionStore()
 const container = ref<HTMLElement>()
-const elicitationInput = ref('')
-const elicitationAnswer = ref('')
 const preservingOlderScroll = ref(false)
 const initialHistoryAutoScrollPending = ref(true)
 const pendingAutoScrollFrame = ref<number | null>(null)
@@ -44,14 +29,19 @@ const pendingPermissionInteraction = computed<PendingPermissionInteraction | nul
 const pendingElicitationInteraction = computed<PendingElicitationInteraction | null>(() =>
   session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction : null
 )
-const askUserQuestion = computed(() => parseAskUserQuestionSingleSelect(pendingElicitationInteraction.value))
+const pendingAskUserQuestionInteraction = computed<PendingAskUserQuestionInteraction | null>(() =>
+  session.pendingInteraction?.kind === 'ask_user_question' ? session.pendingInteraction : null
+)
 const pendingInteractionTitle = computed(() => {
   const interaction = session.pendingInteraction
   if (!interaction) return 'Pending interaction'
   if (interaction.kind === 'permission') {
     return interaction.title || interaction.displayName || interaction.toolName || 'Pending interaction'
   }
-  return askUserQuestion.value?.prompt || interaction.serverName || 'Pending interaction'
+  if (interaction.kind === 'ask_user_question') {
+    return interaction.prompt || interaction.toolName || 'Question required'
+  }
+  return interaction.message || interaction.serverName || 'Pending interaction'
 })
 const pendingInteractionDescription = computed(() => {
   const interaction = session.pendingInteraction
@@ -59,7 +49,10 @@ const pendingInteractionDescription = computed(() => {
   if (interaction.kind === 'permission') {
     return interaction.description || ''
   }
-  return askUserQuestion.value?.description || interaction.message || ''
+  if (interaction.kind === 'ask_user_question') {
+    return interaction.description || ''
+  }
+  return interaction.message || ''
 })
 const pendingInteractionReason = computed(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction.decisionReason || '' : ''
@@ -67,76 +60,6 @@ const pendingInteractionReason = computed(() =>
 const pendingInteractionUrl = computed(() =>
   session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction.url : undefined
 )
-const pendingInteractionSchema = computed(() =>
-  session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction.requestedSchema : undefined
-)
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
-}
-
-function getString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value : undefined
-}
-
-function getBoolean(value: unknown): boolean | undefined {
-  return typeof value === 'boolean' ? value : undefined
-}
-
-function normalizeOption(option: unknown): QuestionOption | null {
-  if (typeof option === 'string' && option.trim().length > 0) {
-    return { value: option, label: option }
-  }
-
-  const record = asRecord(option)
-  if (!record) return null
-
-  const value = getString(record.value) || getString(record.id) || getString(record.key) || getString(record.label) || getString(record.text) || getString(record.title)
-  if (!value) return null
-
-  return {
-    value,
-    label: getString(record.label) || getString(record.text) || getString(record.title) || value,
-  }
-}
-
-function parseAskUserQuestionSingleSelect(interaction: PendingElicitationInteraction | null): AskUserQuestionSingleSelect | null {
-  if (!interaction || interaction.source.kind !== 'tool' || interaction.source.subtype !== 'AskUserQuestion') return null
-
-  const schema = asRecord(interaction.requestedSchema)
-  const answersProperty = asRecord(asRecord(schema?.properties)?.answers)
-  const answerProperties = asRecord(answersProperty?.properties)
-  if (!answerProperties) return null
-
-  const field = interaction.source.questionField || Object.keys(answerProperties)[0] || 'value'
-  const property = asRecord(answerProperties[field])
-  if (!property) return null
-
-  const optionValues = Array.isArray(property.enum)
-    ? property.enum.filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
-    : null
-  if (!optionValues || optionValues.length === 0) return null
-
-  const prompt = getString(property.title) || interaction.source.questionText || interaction.message || interaction.serverName
-  if (!prompt) return null
-
-  return {
-    field,
-    prompt,
-    description: getString(property.description),
-    options: optionValues.map((value) => ({ value, label: value })),
-    defaultValue: getString(property.default),
-    questionText: field,
-  }
-}
-
-function getDefaultAnswer(question: AskUserQuestionSingleSelect | null): string {
-  if (!question) return ''
-  const matchedDefault = question.defaultValue && question.options.some((option) => option.value === question.defaultValue)
-    ? question.defaultValue
-    : undefined
-  return matchedDefault || question.options[0]?.value || ''
-}
 
 function itemHasToolUseId(item: TimelineItem, toolUseId: string): boolean {
   if (item.kind === 'assistant') {
@@ -157,19 +80,11 @@ const isPendingPermissionAttached = computed(() => {
   return visibleTimelineItems.value.some((item) => itemHasToolUseId(item, toolUseId))
 })
 
-function formatTimelineTimestamp(timestamp?: number): string {
-  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return 'time=unknown'
-
-  const date = new Date(timestamp)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
-
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
-}
+const isPendingElicitationAttached = computed(() => {
+  const toolUseId = (pendingElicitationInteraction.value?.toolUseId || pendingAskUserQuestionInteraction.value?.toolUseId)
+  if (!toolUseId) return false
+  return visibleTimelineItems.value.some((item) => itemHasToolUseId(item, toolUseId))
+})
 
 function getEventMeta(item: { sequence: number; receivedAt: number }): string {
   return `seq=${item.sequence} time=${item.receivedAt}`
@@ -237,56 +152,6 @@ function handleScroll() {
   void maybeLoadOlderHistory()
 }
 
-function submitAskUserQuestion() {
-  if (!askUserQuestion.value) return
-  session.respondToElicitation({
-    action: 'accept',
-    content: {
-      answers: {
-        [askUserQuestion.value.questionText]: elicitationAnswer.value,
-      },
-    },
-  })
-  elicitationAnswer.value = ''
-}
-
-function submitElicitation() {
-  if (session.pendingInteraction?.kind !== 'elicitation') return
-  if (askUserQuestion.value) {
-    submitAskUserQuestion()
-    return
-  }
-
-  const text = elicitationInput.value.trim()
-  if (!text) {
-    session.respondToElicitation({ action: 'accept', content: {} })
-    return
-  }
-
-  try {
-    const parsed = JSON.parse(text)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('invalid elicitation payload')
-    }
-    const normalized: Record<string, string | number | boolean | string[]> = {}
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        normalized[key] = value
-        continue
-      }
-      if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
-        normalized[key] = value
-      }
-    }
-    session.respondToElicitation({ action: 'accept', content: normalized })
-  } catch {
-    session.respondToElicitation({ action: 'accept', content: { value: text } })
-  }
-
-  elicitationInput.value = ''
-}
-
-
 watch(
   () => session.currentSessionId,
   () => {
@@ -313,14 +178,6 @@ watch(
     scheduleAutoScroll()
   },
   { deep: true },
-)
-
-watch(
-  () => session.pendingInteraction?.id,
-  () => {
-    elicitationInput.value = ''
-    elicitationAnswer.value = getDefaultAnswer(askUserQuestion.value)
-  }
 )
 </script>
 
@@ -352,7 +209,7 @@ watch(
       :show-debug-meta="debugMetaVisible"
     />
 
-    <div v-if="session.pendingInteraction && (!isPendingPermissionAttached || session.pendingInteraction.kind !== 'permission')" class="space-y-3">
+    <div v-if="session.pendingInteraction && ((session.pendingInteraction.kind === 'permission' && !isPendingPermissionAttached) || ((session.pendingInteraction.kind === 'elicitation' || session.pendingInteraction.kind === 'ask_user_question') && !isPendingElicitationAttached))" class="space-y-3">
       <div class="text-slate-900">
         {{ session.pendingInteraction.kind === 'permission' ? 'Permission required' : 'Interaction required' }}
         <span class="text-slate-500"> · {{ pendingInteractionTitle }}</span>
@@ -377,64 +234,7 @@ watch(
         <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" />
       </div>
       <div v-else class="space-y-3">
-        <template v-if="askUserQuestion">
-          <TimelineCliSubrow no-prefix>
-            <div class="min-w-0 flex-1 space-y-3 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
-              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5 text-slate-700">
-                <span class="font-medium text-amber-900">Question required</span>
-                <span class="text-slate-400">·</span>
-                <span class="text-slate-600">{{ askUserQuestion.prompt }}</span>
-              </div>
-              <div v-if="askUserQuestion.description" class="text-[12px] leading-5 text-slate-600">
-                {{ askUserQuestion.description }}
-              </div>
-              <label
-                v-for="option in askUserQuestion.options"
-                :key="`${session.pendingInteraction?.id}-${askUserQuestion.questionText}-${option.value}`"
-                class="flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 text-[12px] leading-5 transition-colors"
-                :class="elicitationAnswer === option.value
-                  ? 'border-amber-300 bg-white/90 text-slate-700'
-                  : 'border-amber-100/80 bg-white/65 text-slate-500 hover:border-amber-200 hover:bg-white/80'"
-              >
-                <input
-                  v-model="elicitationAnswer"
-                  type="radio"
-                  :name="`${session.pendingInteraction?.id}-${askUserQuestion.questionText}`"
-                  class="mt-1"
-                  :value="option.value"
-                >
-                <span class="min-w-0 flex-1 text-slate-700">{{ option.label }}</span>
-              </label>
-              <div class="flex gap-3 text-sm">
-                <button class="timeline-cli-button text-slate-700" @click="submitAskUserQuestion">Submit</button>
-                <button class="timeline-cli-button" @click="session.respondToElicitation({ action: 'decline' })">Decline</button>
-                <button class="timeline-cli-button" @click="session.respondToElicitation({ action: 'cancel' })">Cancel interaction</button>
-              </div>
-            </div>
-          </TimelineCliSubrow>
-        </template>
-        <template v-else>
-          <TimelineCliSubrow muted>
-            <div>当前提供最小闭环输入。可直接填写 JSON；若不是 JSON，将作为 value 字段提交。</div>
-          </TimelineCliSubrow>
-          <TimelineCliSubrow v-if="pendingInteractionSchema" muted>
-            <pre class="whitespace-pre-wrap text-xs text-slate-500">{{ stringifyStructuredValue(pendingInteractionSchema) }}</pre>
-          </TimelineCliSubrow>
-          <TimelineCliSubrow no-prefix>
-            <div class="min-w-0 flex-1 space-y-3">
-              <textarea
-                v-model="elicitationInput"
-                rows="4"
-                class="w-full resize-y rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400"
-                placeholder='{"key":"value"} 或直接输入文本'
-              />
-              <div class="flex gap-3 text-sm">
-                <button class="timeline-cli-button text-slate-700" @click="submitElicitation">Submit</button>
-                <button class="timeline-cli-button" @click="session.respondToElicitation({ action: 'cancel' })">Cancel interaction</button>
-              </div>
-            </div>
-          </TimelineCliSubrow>
-        </template>
+        <TimelineElicitationInteractionBlock v-if="pendingElicitationInteraction || pendingAskUserQuestionInteraction" :interaction="(pendingAskUserQuestionInteraction || pendingElicitationInteraction)!" />
       </div>
     </div>
 

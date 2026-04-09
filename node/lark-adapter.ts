@@ -1068,6 +1068,17 @@ function summarizePermissionInteraction(runId: string, interaction: Extract<Pend
   ].join('\n')
 }
 
+function summarizeAskUserQuestionInteraction(runId: string, interaction: Extract<PendingInteraction, { kind: 'ask_user_question' }>): string {
+  const optionsHint = interaction.options.map((option) => option.label).join(' / ')
+  return [
+    interaction.prompt || 'Question required',
+    optionsHint ? `Options: ${optionsHint}` : '',
+    `Accept: /elicitation ${runId} ${interaction.id} accept {"answers":{"${interaction.field}":"<value>"}}`,
+    `Decline: /elicitation ${runId} ${interaction.id} decline`,
+    `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
+  ].filter(Boolean).join('\n')
+}
+
 function summarizeElicitationInteraction(runId: string, interaction: Extract<PendingInteraction, { kind: 'elicitation' }>): string {
   const schemaHint = interaction.requestedSchema
     ? `\nSchema hint: ${JSON.stringify(interaction.requestedSchema)}`
@@ -1084,6 +1095,9 @@ function summarizeElicitationInteraction(runId: string, interaction: Extract<Pen
 export function summarizeLarkInteraction(runId: string, interaction: PendingInteraction): string {
   if (interaction.kind === 'permission') {
     return summarizePermissionInteraction(runId, interaction)
+  }
+  if (interaction.kind === 'ask_user_question') {
+    return summarizeAskUserQuestionInteraction(runId, interaction)
   }
   return summarizeElicitationInteraction(runId, interaction)
 }

@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { query, type CanUseTool, type ElicitationRequest, type ElicitationResult, type PermissionResult, type PermissionUpdate, type Query, type SDKControlRequest, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  AskUserQuestionRequestData,
   ControlDirection,
   ControlTransaction,
+  InteractiveOption,
   PendingInteraction,
   PermissionSuggestion,
   RunnerAgentInput,
@@ -772,6 +774,7 @@ function normalizeElicitationRequest(request: SDKControlRequest): PendingInterac
       kind: 'control',
       subtype: 'elicitation',
     },
+    toolUseId: typeof payload.elicitation_id === 'string' ? payload.elicitation_id : undefined,
     serverName,
     message: messageText,
     mode: typeof payload.mode === 'string' ? payload.mode : undefined,
@@ -793,10 +796,81 @@ type AskUserQuestionInteractiveMetadata = {
   field: string
   prompt: string
   description?: string
-  options: Array<{ value: string; label: string }>
+  options: InteractiveOption[]
   defaultValue?: string
   rawQuestion?: Record<string, unknown>
 }
+
+function buildAskUserQuestionInteractiveCandidate(toolName: string, toolInput: Record<string, unknown>, options: {
+  toolUseID: string
+  title?: string
+  description?: string
+}): { request: AskUserQuestionRequestData; metadata: AskUserQuestionInteractiveMetadata; toolUseId: string } | null {
+  if (toolName !== 'AskUserQuestion') return null
+  const parsedQuestion = parseAskUserQuestionSingleSelect(toolInput)
+  if (!parsedQuestion) return null
+
+  return {
+    request: {
+      field: parsedQuestion.field,
+      prompt: options.description || options.title || parsedQuestion.prompt,
+      ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
+      options: parsedQuestion.options,
+      ...(parsedQuestion.defaultValue ? { defaultValue: parsedQuestion.defaultValue } : {}),
+      ...(parsedQuestion.questions[0] ? { rawQuestion: parsedQuestion.questions[0] } : {}),
+    },
+    metadata: {
+      field: parsedQuestion.field,
+      prompt: parsedQuestion.prompt,
+      ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
+      options: parsedQuestion.options,
+      ...(parsedQuestion.defaultValue ? { defaultValue: parsedQuestion.defaultValue } : {}),
+      ...(parsedQuestion.questions[0] ? { rawQuestion: parsedQuestion.questions[0] } : {}),
+    },
+    toolUseId: options.toolUseID,
+  }
+}
+
+function buildAskUserQuestionSdkElicitationRequest(candidate: { request: AskUserQuestionRequestData; toolUseId: string }): ElicitationRequest {
+  return {
+    elicitationId: candidate.toolUseId,
+    serverName: 'AskUserQuestion',
+    message: candidate.request.prompt,
+    requestedSchema: {
+      type: 'object',
+      properties: {
+        answers: {
+          type: 'object',
+          properties: {
+            [candidate.request.field]: {
+              type: 'string',
+              title: candidate.request.prompt,
+              ...(candidate.request.description ? { description: candidate.request.description } : {}),
+              enum: candidate.request.options.map((option) => option.value),
+              ...(candidate.request.defaultValue ? { default: candidate.request.defaultValue } : {}),
+            },
+          },
+          required: [candidate.request.field],
+        },
+      },
+      required: ['answers'],
+    },
+  }
+}
+
+function buildSdkElicitationInteractiveRequest(toolName: string, toolInput: Record<string, unknown>, options: {
+  toolUseID: string
+  title?: string
+  description?: string
+}): { request: ElicitationRequest; metadata: AskUserQuestionInteractiveMetadata } | null {
+  const candidate = buildAskUserQuestionInteractiveCandidate(toolName, toolInput, options)
+  if (!candidate) return null
+  return {
+    request: buildAskUserQuestionSdkElicitationRequest(candidate),
+    metadata: candidate.metadata,
+  }
+}
+
 
 function normalizeQuestionOption(option: unknown): { value: string; label: string } | null {
   if (typeof option === 'string' && option.trim().length > 0) {
@@ -867,61 +941,16 @@ function parseAskUserQuestionSingleSelect(input: Record<string, unknown>): AskUs
   }
 }
 
-function buildAskUserQuestionElicitationRequest(toolName: string, toolInput: Record<string, unknown>, options: {
-  toolUseID: string
-  title?: string
-  description?: string
-}): { request: ElicitationRequest; metadata: AskUserQuestionInteractiveMetadata } | null {
-  if (toolName !== 'AskUserQuestion') return null
-  const parsedQuestion = parseAskUserQuestionSingleSelect(toolInput)
-  if (!parsedQuestion) return null
-
-  return {
-    request: {
-      elicitationId: options.toolUseID,
-      serverName: toolName,
-      message: options.description || options.title || parsedQuestion.prompt,
-      requestedSchema: {
-        type: 'object',
-        properties: {
-          answers: {
-            type: 'object',
-            properties: {
-              [parsedQuestion.field]: {
-                type: 'string',
-                title: parsedQuestion.prompt,
-                ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
-                enum: parsedQuestion.options.map((option) => option.value),
-                ...(parsedQuestion.defaultValue ? { default: parsedQuestion.defaultValue } : {}),
-              },
-            },
-            required: [parsedQuestion.field],
-          },
-        },
-        required: ['answers'],
-      },
-    },
-    metadata: {
-      field: parsedQuestion.field,
-      prompt: parsedQuestion.prompt,
-      ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
-      options: parsedQuestion.options,
-      ...(parsedQuestion.defaultValue ? { defaultValue: parsedQuestion.defaultValue } : {}),
-      ...(parsedQuestion.questions[0] ? { rawQuestion: parsedQuestion.questions[0] } : {}),
-    },
-  }
-}
-
-type AskUserQuestionAnswerContent = {
+type AskUserQuestionToolAnswerContent = {
   answers?: Record<string, unknown>
 }
 
-function mapElicitationResultToPermissionResult(
+function mapAskUserQuestionResultToPermissionResult(
   request: { toolUseID: string; originalInput: Record<string, unknown>; questionField?: string },
   response: ElicitationResult
 ): PermissionResult {
   if (response.action === 'accept') {
-    const elicitationContent = response.content as unknown as AskUserQuestionAnswerContent | undefined
+    const elicitationContent = response.content as unknown as AskUserQuestionToolAnswerContent | undefined
     const answersRecord = elicitationContent?.answers && typeof elicitationContent.answers === 'object' && !Array.isArray(elicitationContent.answers)
       ? elicitationContent.answers
       : undefined
@@ -1270,6 +1299,85 @@ async function waitForPermission(request: PermissionRequest, signal: AbortSignal
   return getPermissionResult(request, response)
 }
 
+async function waitForAskUserQuestion(request: AskUserQuestionRequestData, signal: AbortSignal, options: {
+  toolUseId: string
+}): Promise<ElicitationResult> {
+  const interaction: PendingInteraction = {
+    id: options.toolUseId,
+    kind: 'ask_user_question',
+    status: 'pending',
+    source: {
+      kind: 'tool',
+      toolName: 'AskUserQuestion',
+      toolUseId: options.toolUseId,
+    },
+    toolName: 'AskUserQuestion',
+    toolUseId: options.toolUseId,
+    field: request.field,
+    prompt: request.prompt,
+    ...(request.description ? { description: request.description } : {}),
+    options: request.options,
+    ...(request.defaultValue ? { defaultValue: request.defaultValue } : {}),
+    ...(request.rawQuestion ? { rawQuestion: request.rawQuestion } : {}),
+  }
+  const transportRequest = buildAskUserQuestionSdkElicitationRequest({
+    request,
+    toolUseId: options.toolUseId,
+  })
+  emitInteractiveControlRequest({
+    requestId: options.toolUseId,
+    subtype: 'elicitation',
+    interaction,
+    payload: transportRequest,
+    payloadSummary: request.prompt,
+    toolUseId: options.toolUseId,
+  })
+
+  const response = await new Promise<ElicitationResponse>((resolve, reject) => {
+    elicitationWaiters.set(options.toolUseId, resolve)
+    signal.addEventListener(
+      'abort',
+      () => {
+        elicitationWaiters.delete(options.toolUseId)
+        reject(new Error('Elicitation request aborted'))
+      },
+      { once: true }
+    )
+  })
+
+  const resolvedInteraction: PendingInteraction = {
+    ...interaction,
+    status: response.action === 'cancel' ? 'cancelled' : 'resolved',
+  }
+  logAgent('info', 'agent:ask-user-question:resolved', {
+    requestId: options.toolUseId.slice(0, 8),
+    action: response.action,
+    sessionId: currentSessionId?.slice(0, 8),
+  })
+  emitInteractiveControlResponse({
+    requestId: options.toolUseId,
+    subtype: 'elicitation',
+    interaction: resolvedInteraction,
+    response,
+    payloadSummary: response.action,
+    toolUseId: options.toolUseId,
+  })
+
+  if (response.action === 'cancel') {
+    return {
+      action: 'cancel',
+      ...(response.content ? { content: response.content } : {}),
+    }
+  }
+  if (response.action === 'decline') {
+    return { action: 'decline' }
+  }
+  return {
+    action: 'accept',
+    ...(response.content ? { content: response.content } : {}),
+  }
+}
+
 async function waitForElicitation(request: ElicitationRequest, signal: AbortSignal, source?: PendingInteraction['source']): Promise<ElicitationResult> {
   const requestId = request.elicitationId || request.serverName
   const interaction: PendingInteraction = {
@@ -1280,6 +1388,7 @@ async function waitForElicitation(request: ElicitationRequest, signal: AbortSign
       kind: 'control',
       subtype: 'elicitation',
     },
+    ...(request.elicitationId ? { toolUseId: request.elicitationId } : {}),
     serverName: request.serverName,
     message: request.message,
     mode: request.mode,
@@ -1436,26 +1545,22 @@ async function main(): Promise<void> {
   try {
     const canUseTool: CanUseTool = async (toolName, toolInput, options) => {
       const permissionId = options.toolUseID || randomUUID()
-      const elicitationCandidate = buildAskUserQuestionElicitationRequest(toolName, toolInput, {
+      const askUserQuestionCandidate = buildAskUserQuestionInteractiveCandidate(toolName, toolInput, {
         toolUseID: permissionId,
         title: options.title,
         description: options.description,
       })
-      if (elicitationCandidate) {
-        const elicitationResult = await waitForElicitation(elicitationCandidate.request, options.signal, {
-          kind: 'tool',
-          subtype: 'AskUserQuestion',
-          questionField: elicitationCandidate.metadata.field,
-          questionText: elicitationCandidate.metadata.prompt,
-          ...(elicitationCandidate.metadata.rawQuestion ? { rawQuestion: elicitationCandidate.metadata.rawQuestion } : {}),
+      if (askUserQuestionCandidate) {
+        const askUserQuestionResult = await waitForAskUserQuestion(askUserQuestionCandidate.request, options.signal, {
+          toolUseId: permissionId,
         })
-        return mapElicitationResultToPermissionResult(
+        return mapAskUserQuestionResultToPermissionResult(
           {
             toolUseID: permissionId,
             originalInput: toolInput,
-            questionField: elicitationCandidate.metadata.field,
+            questionField: askUserQuestionCandidate.metadata.field,
           },
-          elicitationResult,
+          askUserQuestionResult,
         )
       }
       return waitForPermission(

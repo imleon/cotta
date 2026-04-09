@@ -1393,9 +1393,16 @@ export const useSessionStore = defineStore('session', () => {
     }))
   }
 
-  function respondToInteraction(response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
+  function respondToInteraction(response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } | { kind: 'ask_user_question'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
     if (response.kind === 'permission') {
       respondToPermission(response.decision, response.selectedSuggestion, response.content)
+      return
+    }
+    if (response.kind === 'ask_user_question') {
+      respondToElicitation({
+        action: response.action,
+        ...(response.content ? { content: response.content } : {}),
+      })
       return
     }
     respondToElicitation({

@@ -11,6 +11,11 @@ type ActiveRunState = {
   runId: string
 }
 
+type HostControlRequest =
+  | { subtype: 'interrupt' }
+  | { subtype: 'get_context_usage' }
+  | { subtype: 'mcp_status' }
+
 function sendSocketEvent(ws: any, payload: unknown) {
   try {
     ws.send(JSON.stringify(payload))
@@ -88,6 +93,14 @@ function handleElicitation(ws: any, coordinator: RunCoordinator, runId: string, 
 
 function isStructuredResponseContent(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function handleControlRequest(ws: any, coordinator: RunCoordinator, runId: string, request: HostControlRequest) {
+  const requestId = `${request.subtype}:${Date.now()}`
+  const ok = coordinator.requestControl(runId, requestId, request)
+  if (!ok) {
+    sendSessionEvent(ws, { type: 'session.error', runId, error: `No matching active run for control request: ${request.subtype}` })
+  }
 }
 
 export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coordinator: RunCoordinator) {
@@ -193,6 +206,19 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
               },
             })
             handleElicitation(ws, coordinator, data.runId, data.requestId, data.responseAction, data.content)
+            return
+          }
+
+          if (data.action === 'control.request' && data.runId && (data.subtype === 'interrupt' || data.subtype === 'get_context_usage' || data.subtype === 'mcp_status')) {
+            void appendWebChannelLog({
+              sessionId: typeof data.sessionId === 'string' ? data.sessionId : undefined,
+              runId: data.runId,
+              direction: 'inbound',
+              eventName: 'control.request',
+              payloadSummary: data.subtype,
+              payload: { subtype: data.subtype },
+            })
+            handleControlRequest(ws, coordinator, data.runId, { subtype: data.subtype })
             return
           }
 

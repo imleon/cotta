@@ -1,18 +1,28 @@
 import { randomUUID } from 'node:crypto'
 import { query, type CanUseTool, type ElicitationRequest, type ElicitationResult, type PermissionResult, type PermissionUpdate, type Query, type SDKControlRequest, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  ControlDirection,
+  ControlTransaction,
   PendingInteraction,
   PermissionSuggestion,
   RunnerAgentInput,
   RunnerCommand,
   RunnerRuntimeEvent,
   RuntimeEnvelopeBase,
+  SdkControlCancelEnvelope,
+  SdkControlEnvelope,
+  SdkControlRequestEnvelope,
+  SdkControlResponseEnvelope,
   SessionStreamEvent,
   SdkTransportEvent,
   StreamEventEnvelope,
   StreamEventNormalized,
   StreamEventScope,
   StreamEventType,
+} from '../../shared/message-types.js'
+import {
+  getControlDescriptor,
+  summarizeControlTransaction,
 } from '../../shared/message-types.js'
 import { logAgent } from './logger.js'
 
@@ -94,6 +104,481 @@ function shouldIncludeTransportPayload(): boolean {
 function maybeTransportPayload(payload: unknown): { payload?: unknown } {
   return shouldIncludeTransportPayload() ? { payload } : {}
 }
+
+function createControlTransaction(input: {
+  requestId: string
+  subtype: string
+  direction: ControlDirection
+  status: ControlTransaction['status']
+  interaction?: PendingInteraction | null
+  payload?: unknown
+  request?: SdkControlRequestEnvelope
+  response?: SdkControlResponseEnvelope
+  cancel?: SdkControlCancelEnvelope
+  error?: string
+}): ControlTransaction {
+  const now = Date.now()
+  const descriptor = getControlDescriptor(input.subtype)
+  return {
+    requestId: input.requestId,
+    subtype: descriptor.subtype,
+    family: descriptor.family,
+    direction: input.direction,
+    status: input.status,
+    openedAt: now,
+    updatedAt: now,
+    ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    ...(input.request ? { request: input.request } : {}),
+    ...(input.response ? { response: input.response } : {}),
+    ...(input.cancel ? { cancel: input.cancel } : {}),
+    ...(input.interaction !== undefined ? { interaction: input.interaction } : {}),
+    ...(input.payload !== undefined ? { payload: input.payload } : {}),
+    ...(input.error ? { error: input.error } : {}),
+    blocksRun: descriptor.blocksRun,
+  }
+}
+
+function emitControlRuntimeEvent(type: Extract<RunnerRuntimeEvent['type'], 'control.message' | 'control.opened' | 'control.awaiting_user' | 'control.responded' | 'control.completed' | 'control.cancel_requested' | 'control.cancelled' | 'control.failed'>, transaction: ControlTransaction, options?: {
+  direction?: ControlDirection
+  message?: SdkControlEnvelope
+  payload?: unknown
+}): void {
+  const envelope = nextEnvelope(currentSessionId)
+  if (type === 'control.message') {
+    if (!options?.direction || !options?.message) return
+    writeRuntimeEvent({
+      type,
+      direction: options.direction,
+      message: options.message,
+      transaction: summarizeControlTransaction(transaction),
+      ...envelope,
+    })
+    return
+  }
+
+  writeRuntimeEvent({
+    type,
+    transaction: summarizeControlTransaction(transaction),
+    ...(options?.payload !== undefined ? { payload: options.payload } : {}),
+    ...envelope,
+  })
+}
+
+function emitInteractiveRuntimeEvent(type: Extract<RunnerRuntimeEvent['type'], 'interactive.opened' | 'interactive.awaiting_user' | 'interactive.responded' | 'interactive.completed' | 'interactive.cancelled' | 'interactive.failed'>, transaction: ControlTransaction, payload?: unknown): void {
+  writeRuntimeEvent({
+    type,
+    transaction: summarizeControlTransaction(transaction),
+    ...(payload !== undefined ? { payload } : {}),
+    ...nextEnvelope(currentSessionId),
+  })
+}
+
+function handleControlRespondCommand(requestId: string, response: ControlResponseCommand): void {
+  if (response.kind === 'permission') {
+    logAgent('info', 'agent:permission:response', {
+      permissionId: requestId.slice(0, 8),
+      decision: response.decision,
+      selectedAction: response.selectedSuggestion?.action,
+    })
+    writeTransportEvent({
+      direction: 'inbound',
+      eventName: 'control.response.permission',
+      sdkType: 'control_response',
+      sdkSubtype: 'can_use_tool',
+      requestId,
+      toolUseId: requestId,
+      payloadSummary: response.decision,
+      ...maybeTransportPayload(response),
+      ...nextEnvelope(currentSessionId),
+    })
+    writeTransportEvent({
+      direction: 'inbound',
+      eventName: 'control.response',
+      sdkType: 'control_response',
+      sdkSubtype: 'can_use_tool',
+      requestId,
+      toolUseId: requestId,
+      payloadSummary: response.decision,
+      ...maybeTransportPayload(response),
+      ...nextEnvelope(currentSessionId),
+    })
+    const resolve = permissionWaiters.get(requestId)
+    if (resolve) {
+      permissionWaiters.delete(requestId)
+      resolve({
+        decision: response.decision,
+        ...(response.selectedSuggestion !== undefined ? { selectedSuggestion: response.selectedSuggestion } : {}),
+        ...(response.content ? { content: response.content as Record<string, ElicitationContentValue> } : {}),
+      })
+    }
+    return
+  }
+
+  logAgent('info', 'agent:elicitation:response', {
+    requestId: requestId.slice(0, 8),
+    action: response.action,
+  })
+  writeTransportEvent({
+    direction: 'inbound',
+    eventName: 'control.response.elicitation',
+    sdkType: 'control_response',
+    sdkSubtype: 'elicitation',
+    requestId,
+    payloadSummary: response.action,
+    ...maybeTransportPayload(response),
+    ...nextEnvelope(currentSessionId),
+  })
+  writeTransportEvent({
+    direction: 'inbound',
+    eventName: 'control.response',
+    sdkType: 'control_response',
+    sdkSubtype: 'elicitation',
+    requestId,
+    payloadSummary: response.action,
+    ...maybeTransportPayload(response),
+    ...nextEnvelope(currentSessionId),
+  })
+  const resolve = elicitationWaiters.get(requestId)
+  if (resolve) {
+    elicitationWaiters.delete(requestId)
+    resolve({
+      action: response.action,
+      ...(response.content ? { content: response.content as Record<string, ElicitationContentValue> } : {}),
+    })
+  }
+}
+
+type ControlResponseCommand = Extract<RunnerCommand, { type: 'control.respond' }>['response']
+type HostControlRequestCommand = Extract<RunnerCommand, { type: 'control.request' }>['request']
+
+function createInteractiveControlRequest(input: {
+  requestId: string
+  subtype: 'can_use_tool' | 'elicitation'
+  payload: PermissionRequest | ElicitationRequest
+  interaction: PendingInteraction
+}): { envelope: SdkControlRequestEnvelope; transaction: ControlTransaction } {
+  if (input.subtype === 'can_use_tool') {
+    const payload = input.payload as PermissionRequest
+    const envelope: SdkControlRequestEnvelope = {
+      type: 'control_request',
+      request_id: input.requestId,
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: payload.toolName,
+        input: payload.input,
+        ...(payload.permissionSuggestions ? { permission_suggestions: payload.permissionSuggestions as unknown as Record<string, unknown>[] } : {}),
+        ...(payload.blockedPath ? { blocked_path: payload.blockedPath } : {}),
+        ...(payload.decisionReason ? { decision_reason: payload.decisionReason } : {}),
+        ...(payload.title ? { title: payload.title } : {}),
+        ...(payload.displayName ? { display_name: payload.displayName } : {}),
+        tool_use_id: payload.permissionId,
+        ...(payload.agentId ? { agent_id: payload.agentId } : {}),
+        ...(payload.description ? { description: payload.description } : {}),
+      },
+    }
+    return {
+      envelope,
+      transaction: createControlTransaction({
+        requestId: input.requestId,
+        subtype: input.subtype,
+        direction: 'sdk_to_host',
+        status: 'awaiting_user',
+        interaction: input.interaction,
+        request: envelope,
+        payload,
+      }),
+    }
+  }
+
+  const payload = input.payload as ElicitationRequest
+  const envelope: SdkControlRequestEnvelope = {
+    type: 'control_request',
+    request_id: input.requestId,
+    request: {
+      subtype: 'elicitation',
+      mcp_server_name: payload.serverName,
+      message: payload.message,
+      ...(payload.mode ? { mode: payload.mode } : {}),
+      ...(payload.url ? { url: payload.url } : {}),
+      ...(payload.elicitationId ? { elicitation_id: payload.elicitationId } : {}),
+      ...(payload.requestedSchema ? { requested_schema: payload.requestedSchema as Record<string, unknown> } : {}),
+    },
+  }
+  return {
+    envelope,
+    transaction: createControlTransaction({
+      requestId: input.requestId,
+      subtype: input.subtype,
+      direction: 'sdk_to_host',
+      status: 'awaiting_user',
+      interaction: input.interaction,
+      request: envelope,
+      payload,
+    }),
+  }
+}
+
+function createInteractiveControlResponse(input: {
+  requestId: string
+  subtype: 'can_use_tool' | 'elicitation'
+  response: PermissionResponse | ElicitationResponse
+  interaction: PendingInteraction
+}): {
+  envelope: SdkControlResponseEnvelope
+  respondedTransaction: ControlTransaction
+  terminalTransaction: ControlTransaction
+} {
+  if (input.subtype === 'can_use_tool') {
+    const response = input.response as PermissionResponse
+    const envelope: SdkControlResponseEnvelope = {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: input.requestId,
+        response: {
+          behavior: response.decision === 'approve' ? 'allow' : 'deny',
+          ...(response.selectedSuggestion ? { selectedSuggestion: response.selectedSuggestion } : {}),
+          ...(response.content ? { content: response.content as Record<string, unknown> } : {}),
+        },
+      },
+    }
+    const respondedTransaction = createControlTransaction({
+      requestId: input.requestId,
+      subtype: input.subtype,
+      direction: 'host_to_sdk',
+      status: 'responding',
+      interaction: input.interaction,
+      response: envelope,
+      payload: response,
+    })
+    return {
+      envelope,
+      respondedTransaction,
+      terminalTransaction: {
+        ...respondedTransaction,
+        direction: 'sdk_to_host',
+        status: 'completed',
+        updatedAt: Date.now(),
+      },
+    }
+  }
+
+  const response = input.response as ElicitationResponse
+  const envelope: SdkControlResponseEnvelope = {
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: input.requestId,
+      response: {
+        action: response.action,
+        ...(response.content ? { content: response.content as Record<string, unknown> } : {}),
+      },
+    },
+  }
+  const respondedTransaction = createControlTransaction({
+    requestId: input.requestId,
+    subtype: input.subtype,
+    direction: 'host_to_sdk',
+    status: response.action === 'cancel' ? 'cancel_requested' : 'responding',
+    interaction: input.interaction,
+    response: envelope,
+    payload: response,
+  })
+  return {
+    envelope,
+    respondedTransaction,
+    terminalTransaction: {
+      ...respondedTransaction,
+      direction: 'sdk_to_host',
+      status: response.action === 'cancel' ? 'cancelled' : 'completed',
+      updatedAt: Date.now(),
+    },
+  }
+}
+
+function emitInteractiveControlRequest(input: {
+  requestId: string
+  subtype: 'can_use_tool' | 'elicitation'
+  interaction: PendingInteraction
+  payload: PermissionRequest | ElicitationRequest
+  payloadSummary: string
+  toolUseId?: string
+}): void {
+  const { envelope, transaction } = createInteractiveControlRequest({
+    requestId: input.requestId,
+    subtype: input.subtype,
+    payload: input.payload,
+    interaction: input.interaction,
+  })
+  writeTransportEvent({
+    direction: 'outbound',
+    eventName: input.subtype === 'can_use_tool' ? 'control.request.permission' : 'control.request.elicitation',
+    sdkType: 'control_request',
+    sdkSubtype: input.subtype,
+    requestId: input.requestId,
+    ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+    payloadSummary: input.payloadSummary,
+    ...maybeTransportPayload(input.payload),
+    ...nextEnvelope(currentSessionId),
+  })
+  writeTransportEvent({
+    direction: 'outbound',
+    eventName: 'control.request',
+    sdkType: 'control_request',
+    sdkSubtype: input.subtype,
+    requestId: input.requestId,
+    ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+    payloadSummary: input.payloadSummary,
+    ...maybeTransportPayload(envelope),
+    ...nextEnvelope(currentSessionId),
+  })
+  emitControlRuntimeEvent('control.message', transaction, {
+    direction: 'sdk_to_host',
+    message: envelope,
+  })
+  emitControlRuntimeEvent('control.opened', transaction, { payload: input.payload })
+  emitControlRuntimeEvent('control.awaiting_user', transaction, { payload: input.payload })
+  emitInteractiveRuntimeEvent('interactive.opened', transaction, input.payload)
+  emitInteractiveRuntimeEvent('interactive.awaiting_user', transaction, input.payload)
+  writeRuntimeEvent({
+    type: 'run.state_changed',
+    state: 'requires_action',
+    ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+  })
+}
+
+function emitInteractiveControlResponse(input: {
+  requestId: string
+  subtype: 'can_use_tool' | 'elicitation'
+  interaction: PendingInteraction
+  response: PermissionResponse | ElicitationResponse
+  payloadSummary: string
+  toolUseId?: string
+}): void {
+  const { envelope, respondedTransaction, terminalTransaction } = createInteractiveControlResponse({
+    requestId: input.requestId,
+    subtype: input.subtype,
+    response: input.response,
+    interaction: input.interaction,
+  })
+  emitControlRuntimeEvent('control.message', respondedTransaction, {
+    direction: 'host_to_sdk',
+    message: envelope,
+  })
+  writeTransportEvent({
+    direction: 'inbound',
+    eventName: 'control.response',
+    sdkType: 'control_response',
+    sdkSubtype: input.subtype,
+    requestId: input.requestId,
+    ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+    payloadSummary: input.payloadSummary,
+    ...maybeTransportPayload(envelope),
+    ...nextEnvelope(currentSessionId),
+  })
+  emitControlRuntimeEvent('control.responded', respondedTransaction, { payload: input.response })
+  emitControlRuntimeEvent(terminalTransaction.status === 'cancelled' ? 'control.cancelled' : 'control.completed', terminalTransaction, {
+    payload: input.response,
+  })
+  emitInteractiveRuntimeEvent('interactive.responded', respondedTransaction, input.response)
+  emitInteractiveRuntimeEvent(terminalTransaction.status === 'cancelled' ? 'interactive.cancelled' : 'interactive.completed', terminalTransaction, input.response)
+  writeRuntimeEvent({
+    type: 'run.state_changed',
+    state: terminalTransaction.status === 'cancelled' ? 'cancelled' : 'running',
+    ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+  })
+}
+
+function createHostControlRequestEnvelope(requestId: string, request: HostControlRequestCommand): {
+  envelope: SdkControlRequestEnvelope
+  transaction: ControlTransaction
+} {
+  const envelope: SdkControlRequestEnvelope = {
+    type: 'control_request',
+    request_id: requestId,
+    request,
+  }
+  return {
+    envelope,
+    transaction: createControlTransaction({
+      requestId,
+      subtype: request.subtype,
+      direction: 'host_to_sdk',
+      status: 'opened',
+      request: envelope,
+      payload: request,
+    }),
+  }
+}
+
+async function executeHostControlRequest(requestId: string, request: HostControlRequestCommand): Promise<void> {
+  const { envelope, transaction } = createHostControlRequestEnvelope(requestId, request)
+  writeTransportEvent({
+    direction: 'inbound',
+    eventName: 'control.request',
+    sdkType: 'control_request',
+    sdkSubtype: request.subtype,
+    requestId,
+    payloadSummary: request.subtype,
+    ...maybeTransportPayload(envelope),
+    ...nextEnvelope(currentSessionId),
+  })
+  emitControlRuntimeEvent('control.message', transaction, {
+    direction: 'host_to_sdk',
+    message: envelope,
+  })
+  emitControlRuntimeEvent('control.opened', transaction, { payload: request })
+
+  try {
+    switch (request.subtype) {
+      case 'interrupt':
+        await activeQuery?.interrupt?.()
+        break
+      case 'get_context_usage':
+        await activeQuery?.getContextUsage?.()
+        break
+      case 'mcp_status':
+        await activeQuery?.mcpServerStatus?.()
+        break
+    }
+    emitControlRuntimeEvent('control.completed', {
+      ...transaction,
+      direction: 'sdk_to_host',
+      status: 'completed',
+      updatedAt: Date.now(),
+    }, { payload: request })
+    emitInteractiveRuntimeEvent('interactive.completed', {
+      ...transaction,
+      direction: 'sdk_to_host',
+      status: 'completed',
+      updatedAt: Date.now(),
+    }, request)
+  } catch (error) {
+    emitControlRuntimeEvent('control.failed', {
+      ...transaction,
+      direction: 'sdk_to_host',
+      status: 'failed',
+      updatedAt: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    }, {
+      payload: {
+        request,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+    emitInteractiveRuntimeEvent('interactive.failed', {
+      ...transaction,
+      direction: 'sdk_to_host',
+      status: 'failed',
+      updatedAt: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    }, {
+      request,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
 
 function getStreamParentToolUseId(message: SDKMessage): string | null | undefined {
   if (message.type !== 'stream_event' || !('parent_tool_use_id' in message)) return undefined
@@ -244,6 +729,10 @@ function normalizePermissionRequest(request: SDKControlRequest): PendingInteract
         : '',
     kind: 'permission',
     status: 'pending',
+    source: {
+      kind: 'control',
+      subtype: 'can_use_tool',
+    },
     toolName: typeof payload.tool_name === 'string' ? payload.tool_name : 'unknown_tool',
     input: (payload.input && typeof payload.input === 'object' ? payload.input : {}) as Record<string, unknown>,
     title: typeof payload.title === 'string' ? payload.title : undefined,
@@ -279,6 +768,10 @@ function normalizeElicitationRequest(request: SDKControlRequest): PendingInterac
     id,
     kind: 'elicitation',
     status: 'pending',
+    source: {
+      kind: 'control',
+      subtype: 'elicitation',
+    },
     serverName,
     message: messageText,
     mode: typeof payload.mode === 'string' ? payload.mode : undefined,
@@ -294,6 +787,15 @@ type AskUserQuestionSingleSelect = {
   options: Array<{ value: string; label: string }>
   defaultValue?: string
   questions: Record<string, unknown>[]
+}
+
+type AskUserQuestionInteractiveMetadata = {
+  field: string
+  prompt: string
+  description?: string
+  options: Array<{ value: string; label: string }>
+  defaultValue?: string
+  rawQuestion?: Record<string, unknown>
 }
 
 function normalizeQuestionOption(option: unknown): { value: string; label: string } | null {
@@ -369,33 +871,43 @@ function buildAskUserQuestionElicitationRequest(toolName: string, toolInput: Rec
   toolUseID: string
   title?: string
   description?: string
-}): ElicitationRequest | null {
+}): { request: ElicitationRequest; metadata: AskUserQuestionInteractiveMetadata } | null {
   if (toolName !== 'AskUserQuestion') return null
   const parsedQuestion = parseAskUserQuestionSingleSelect(toolInput)
   if (!parsedQuestion) return null
 
   return {
-    elicitationId: options.toolUseID,
-    serverName: toolName,
-    message: options.description || options.title || parsedQuestion.prompt,
-    requestedSchema: {
-      type: 'object',
-      properties: {
-        answers: {
-          type: 'object',
-          properties: {
-            [parsedQuestion.prompt]: {
-              type: 'string',
-              title: parsedQuestion.prompt,
-              ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
-              enum: parsedQuestion.options.map((option) => option.value),
-              ...(parsedQuestion.defaultValue ? { default: parsedQuestion.defaultValue } : {}),
+    request: {
+      elicitationId: options.toolUseID,
+      serverName: toolName,
+      message: options.description || options.title || parsedQuestion.prompt,
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          answers: {
+            type: 'object',
+            properties: {
+              [parsedQuestion.field]: {
+                type: 'string',
+                title: parsedQuestion.prompt,
+                ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
+                enum: parsedQuestion.options.map((option) => option.value),
+                ...(parsedQuestion.defaultValue ? { default: parsedQuestion.defaultValue } : {}),
+              },
             },
+            required: [parsedQuestion.field],
           },
-          required: [parsedQuestion.prompt],
         },
+        required: ['answers'],
       },
-      required: ['answers'],
+    },
+    metadata: {
+      field: parsedQuestion.field,
+      prompt: parsedQuestion.prompt,
+      ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
+      options: parsedQuestion.options,
+      ...(parsedQuestion.defaultValue ? { defaultValue: parsedQuestion.defaultValue } : {}),
+      ...(parsedQuestion.questions[0] ? { rawQuestion: parsedQuestion.questions[0] } : {}),
     },
   }
 }
@@ -405,7 +917,7 @@ type AskUserQuestionAnswerContent = {
 }
 
 function mapElicitationResultToPermissionResult(
-  request: { toolUseID: string; originalInput: Record<string, unknown>; questionText?: string },
+  request: { toolUseID: string; originalInput: Record<string, unknown>; questionField?: string },
   response: ElicitationResult
 ): PermissionResult {
   if (response.action === 'accept') {
@@ -413,11 +925,11 @@ function mapElicitationResultToPermissionResult(
     const answersRecord = elicitationContent?.answers && typeof elicitationContent.answers === 'object' && !Array.isArray(elicitationContent.answers)
       ? elicitationContent.answers
       : undefined
-    const answerValue = request.questionText && answersRecord
-      ? answersRecord[request.questionText]
+    const answerValue = request.questionField && answersRecord
+      ? answersRecord[request.questionField]
       : undefined
-    const answers = request.questionText && (typeof answerValue === 'string' || typeof answerValue === 'number' || typeof answerValue === 'boolean')
-      ? { [request.questionText]: String(answerValue) }
+    const answers = request.questionField && (typeof answerValue === 'string' || typeof answerValue === 'number' || typeof answerValue === 'boolean')
+      ? { [request.questionField]: String(answerValue) }
       : {}
 
     return {
@@ -603,57 +1115,37 @@ function handleCommand(command: RunnerCommand) {
     case 'run.start':
       startDeferred.resolve(command.input)
       break
-    case 'interaction.permission.respond': {
-      logAgent('info', 'agent:permission:response', {
-        permissionId: command.permissionId.slice(0, 8),
-        decision: command.decision,
-        selectedAction: command.selectedSuggestion?.action,
-      })
-      writeTransportEvent({
-        direction: 'inbound',
-        eventName: 'control.response.permission',
-        requestId: command.permissionId,
-        toolUseId: command.permissionId,
-        payloadSummary: command.decision,
-        ...maybeTransportPayload({
-          decision: command.decision,
-          ...(command.selectedSuggestion !== undefined ? { selectedSuggestion: command.selectedSuggestion } : {}),
-          ...(command.content ? { content: command.content } : {}),
-        }),
-        ...nextEnvelope(currentSessionId),
-      })
-      const resolve = permissionWaiters.get(command.permissionId)
-      if (resolve) {
-        permissionWaiters.delete(command.permissionId)
-        resolve({
-          decision: command.decision,
-          ...(command.selectedSuggestion !== undefined ? { selectedSuggestion: command.selectedSuggestion } : {}),
-          ...(command.content ? { content: command.content as Record<string, ElicitationContentValue> } : {}),
-        })
-      }
+    case 'control.respond': {
+      handleControlRespondCommand(command.requestId, command.response)
       break
     }
-    case 'interaction.elicitation.respond': {
-      logAgent('info', 'agent:elicitation:response', {
-        requestId: command.requestId.slice(0, 8),
-        action: command.response.action,
+    case 'control.request': {
+      void executeHostControlRequest(command.requestId, command.request)
+      break
+    }
+    case 'control.cancel': {
+      const transaction = createControlTransaction({
+        requestId: command.requestId,
+        subtype: 'unknown',
+        direction: 'host_to_sdk',
+        status: 'cancel_requested',
+        cancel: {
+          type: 'control_cancel_request',
+          request_id: command.requestId,
+        },
       })
       writeTransportEvent({
         direction: 'inbound',
-        eventName: 'control.response.elicitation',
+        eventName: 'control.cancel_request',
+        sdkType: 'control_cancel_request',
         requestId: command.requestId,
-        payloadSummary: command.response.action,
-        ...maybeTransportPayload(command.response),
+        payloadSummary: 'cancel requested',
+        ...maybeTransportPayload(transaction.cancel),
         ...nextEnvelope(currentSessionId),
       })
-      const resolve = elicitationWaiters.get(command.requestId)
-      if (resolve) {
-        elicitationWaiters.delete(command.requestId)
-        resolve({
-          action: command.response.action,
-          ...(command.response.content ? { content: command.response.content as Record<string, ElicitationContentValue> } : {}),
-        })
-      }
+      emitControlRuntimeEvent('control.cancel_requested', transaction, {
+        payload: transaction.cancel,
+      })
       break
     }
     case 'run.cancel':
@@ -720,6 +1212,10 @@ async function waitForPermission(request: PermissionRequest, signal: AbortSignal
     id: request.permissionId,
     kind: 'permission',
     status: 'pending',
+    source: {
+      kind: 'control',
+      subtype: 'can_use_tool',
+    },
     toolName: request.toolName,
     input: request.input,
     title: request.title,
@@ -731,41 +1227,13 @@ async function waitForPermission(request: PermissionRequest, signal: AbortSignal
     agentId: request.agentId,
     permissionSuggestions: normalizedSuggestions,
   }
-
-  logAgent('info', 'agent:permission:requested', {
-    permissionId: request.permissionId.slice(0, 8),
-    toolName: request.toolName,
-    sessionId: currentSessionId?.slice(0, 8),
-  })
-  writeTransportEvent({
-    direction: 'outbound',
-    eventName: 'control.request.permission',
+  emitInteractiveControlRequest({
     requestId: request.permissionId,
-    toolUseId: request.permissionId,
-    payloadSummary: request.toolName,
-    ...maybeTransportPayload({
-      toolName: request.toolName,
-      input: request.input,
-      title: request.title,
-      displayName: request.displayName,
-      description: request.description,
-      decisionReason: request.decisionReason,
-      blockedPath: request.blockedPath,
-      agentId: request.agentId,
-      suggestions: request.permissionSuggestions,
-    }),
-    ...nextEnvelope(currentSessionId),
-  })
-  writeRuntimeEvent({
-    type: 'sdk.control.requested',
+    subtype: 'can_use_tool',
     interaction,
     payload: request,
-    ...nextEnvelope(currentSessionId),
-  })
-  writeRuntimeEvent({
-    type: 'run.state_changed',
-    state: 'requires_action',
-    ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    payloadSummary: request.toolName,
+    toolUseId: request.permissionId,
   })
 
   const response = await new Promise<PermissionResponse>((resolve, reject) => {
@@ -790,57 +1258,40 @@ async function waitForPermission(request: PermissionRequest, signal: AbortSignal
     selectedAction: response.selectedSuggestion?.action,
     sessionId: currentSessionId?.slice(0, 8),
   })
-  writeRuntimeEvent({
-    type: 'sdk.control.resolved',
+  emitInteractiveControlResponse({
+    requestId: request.permissionId,
+    subtype: 'can_use_tool',
     interaction: resolvedInteraction,
-    payload: response,
-    ...nextEnvelope(currentSessionId),
-  })
-  writeRuntimeEvent({
-    type: 'run.state_changed',
-    state: 'running',
-    ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    response,
+    payloadSummary: response.decision,
+    toolUseId: request.permissionId,
   })
 
   return getPermissionResult(request, response)
 }
 
-async function waitForElicitation(request: ElicitationRequest, signal: AbortSignal): Promise<ElicitationResult> {
+async function waitForElicitation(request: ElicitationRequest, signal: AbortSignal, source?: PendingInteraction['source']): Promise<ElicitationResult> {
   const requestId = request.elicitationId || request.serverName
   const interaction: PendingInteraction = {
     id: requestId,
     kind: 'elicitation',
     status: 'pending',
+    source: source ?? {
+      kind: 'control',
+      subtype: 'elicitation',
+    },
     serverName: request.serverName,
     message: request.message,
     mode: request.mode,
     url: request.url,
     requestedSchema: request.requestedSchema,
   }
-
-  logAgent('info', 'agent:elicitation:requested', {
-    requestId: requestId.slice(0, 8),
-    serverName: request.serverName,
-    sessionId: currentSessionId?.slice(0, 8),
-  })
-  writeTransportEvent({
-    direction: 'outbound',
-    eventName: 'control.request.elicitation',
+  emitInteractiveControlRequest({
     requestId,
-    payloadSummary: request.serverName,
-    ...maybeTransportPayload(request),
-    ...nextEnvelope(currentSessionId),
-  })
-  writeRuntimeEvent({
-    type: 'sdk.control.requested',
+    subtype: 'elicitation',
     interaction,
     payload: request,
-    ...nextEnvelope(currentSessionId),
-  })
-  writeRuntimeEvent({
-    type: 'run.state_changed',
-    state: 'requires_action',
-    ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    payloadSummary: request.serverName,
   })
 
   const response = await new Promise<ElicitationResponse>((resolve, reject) => {
@@ -864,16 +1315,12 @@ async function waitForElicitation(request: ElicitationRequest, signal: AbortSign
     action: response.action,
     sessionId: currentSessionId?.slice(0, 8),
   })
-  writeRuntimeEvent({
-    type: 'sdk.control.resolved',
+  emitInteractiveControlResponse({
+    requestId,
+    subtype: 'elicitation',
     interaction: resolvedInteraction,
-    payload: response,
-    ...nextEnvelope(currentSessionId),
-  })
-  writeRuntimeEvent({
-    type: 'run.state_changed',
-    state: response.action === 'cancel' ? 'cancelled' : 'running',
-    ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+    response,
+    payloadSummary: response.action,
   })
 
   if (response.action === 'cancel') {
@@ -989,19 +1436,24 @@ async function main(): Promise<void> {
   try {
     const canUseTool: CanUseTool = async (toolName, toolInput, options) => {
       const permissionId = options.toolUseID || randomUUID()
-      const elicitationRequest = buildAskUserQuestionElicitationRequest(toolName, toolInput, {
+      const elicitationCandidate = buildAskUserQuestionElicitationRequest(toolName, toolInput, {
         toolUseID: permissionId,
         title: options.title,
         description: options.description,
       })
-      if (elicitationRequest) {
-        const parsedQuestion = parseAskUserQuestionSingleSelect(toolInput)
-        const elicitationResult = await waitForElicitation(elicitationRequest, options.signal)
+      if (elicitationCandidate) {
+        const elicitationResult = await waitForElicitation(elicitationCandidate.request, options.signal, {
+          kind: 'tool',
+          subtype: 'AskUserQuestion',
+          questionField: elicitationCandidate.metadata.field,
+          questionText: elicitationCandidate.metadata.prompt,
+          ...(elicitationCandidate.metadata.rawQuestion ? { rawQuestion: elicitationCandidate.metadata.rawQuestion } : {}),
+        })
         return mapElicitationResultToPermissionResult(
           {
             toolUseID: permissionId,
             originalInput: toolInput,
-            questionText: parsedQuestion?.prompt,
+            questionField: elicitationCandidate.metadata.field,
           },
           elicitationResult,
         )

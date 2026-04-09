@@ -23,9 +23,14 @@ async function main() {
         case 'session.run.state_changed':
           console.log(`[run_state] ${event.state}`)
           break
-        case 'session.sdk.control.requested':
-        case 'session.sdk.control.resolved':
-          console.log(`[control:${event.interaction.kind}] ${event.interaction.status} ${event.interaction.id}`)
+        case 'session.control.opened':
+        case 'session.control.awaiting_user':
+        case 'session.control.responded':
+        case 'session.control.completed':
+        case 'session.control.cancel_requested':
+        case 'session.control.cancelled':
+        case 'session.control.failed':
+          console.log(`[control_tx:${event.transaction.subtype}] ${event.transaction.status} ${event.transaction.requestId}`)
           break
         case 'session.sdk.message':
           console.log(`[sdk:${event.payload.type}] seq=${event.sequence}`)

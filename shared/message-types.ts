@@ -473,10 +473,21 @@ export interface PermissionSuggestion {
   raw: PermissionUpdate | Record<string, unknown>
 }
 
+export type InteractiveSourceKind = 'control' | 'tool' | 'host'
+
+export interface InteractiveSource {
+  kind: InteractiveSourceKind
+  subtype: string
+  questionField?: string
+  questionText?: string
+  rawQuestion?: Record<string, unknown>
+}
+
 export interface PendingInteractionBase {
   id: string
   kind: 'permission' | 'elicitation'
   status: 'pending' | 'resolved' | 'cancelled'
+  source: InteractiveSource
 }
 
 export interface PendingPermissionInteraction extends PendingInteractionBase {
@@ -503,6 +514,318 @@ export interface PendingElicitationInteraction extends PendingInteractionBase {
 }
 
 export type PendingInteraction = PendingPermissionInteraction | PendingElicitationInteraction
+export type InteractiveTransaction = PendingInteraction
+
+export type ControlFamily = 'interactive' | 'command' | 'query' | 'configuration' | 'integration' | 'lifecycle'
+export type ControlDirection = 'sdk_to_host' | 'host_to_sdk'
+export type ControlStatus = 'opened' | 'awaiting_handler' | 'awaiting_user' | 'responding' | 'completed' | 'cancel_requested' | 'cancelled' | 'failed'
+export type ControlDefaultMode = 'interactive' | 'auto' | 'passthrough' | 'unsupported'
+
+export interface SdkControlRequestEnvelope {
+  type: 'control_request'
+  request_id: string
+  request: {
+    subtype: string
+    [key: string]: unknown
+  }
+}
+
+export interface SdkControlResponseSuccessPayload {
+  subtype: 'success'
+  request_id: string
+  response?: Record<string, unknown>
+}
+
+export interface SdkControlResponseErrorPayload {
+  subtype: 'error'
+  request_id: string
+  error: string
+  pending_permission_requests?: SDKControlRequest[]
+}
+
+export interface SdkControlResponseEnvelope {
+  type: 'control_response'
+  response: SdkControlResponseSuccessPayload | SdkControlResponseErrorPayload
+}
+
+export interface SdkControlCancelEnvelope {
+  type: 'control_cancel_request'
+  request_id: string
+}
+
+export type SdkControlEnvelope = SdkControlRequestEnvelope | SdkControlResponseEnvelope | SdkControlCancelEnvelope
+
+export interface ControlDescriptor {
+  subtype: string
+  family: ControlFamily
+  supportedDirections: ControlDirection[]
+  requiresResponse: boolean
+  cancelSupported: boolean
+  blocksRun: boolean
+  defaultMode: ControlDefaultMode
+  interactionKind?: PendingInteraction['kind']
+}
+
+export const DEFAULT_CONTROL_DESCRIPTOR: ControlDescriptor = {
+  subtype: 'unknown',
+  family: 'integration',
+  supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+  requiresResponse: true,
+  cancelSupported: false,
+  blocksRun: false,
+  defaultMode: 'unsupported',
+}
+
+export const CONTROL_DESCRIPTOR_REGISTRY: Record<string, ControlDescriptor> = {
+  can_use_tool: {
+    subtype: 'can_use_tool',
+    family: 'interactive',
+    supportedDirections: ['sdk_to_host'],
+    requiresResponse: true,
+    cancelSupported: true,
+    blocksRun: true,
+    defaultMode: 'interactive',
+    interactionKind: 'permission',
+  },
+  elicitation: {
+    subtype: 'elicitation',
+    family: 'interactive',
+    supportedDirections: ['sdk_to_host'],
+    requiresResponse: true,
+    cancelSupported: true,
+    blocksRun: true,
+    defaultMode: 'interactive',
+    interactionKind: 'elicitation',
+  },
+  interrupt: {
+    subtype: 'interrupt',
+    family: 'command',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  initialize: {
+    subtype: 'initialize',
+    family: 'lifecycle',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'auto',
+  },
+  set_permission_mode: {
+    subtype: 'set_permission_mode',
+    family: 'configuration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  set_model: {
+    subtype: 'set_model',
+    family: 'configuration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  set_max_thinking_tokens: {
+    subtype: 'set_max_thinking_tokens',
+    family: 'configuration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  mcp_status: {
+    subtype: 'mcp_status',
+    family: 'query',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  get_context_usage: {
+    subtype: 'get_context_usage',
+    family: 'query',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  hook_callback: {
+    subtype: 'hook_callback',
+    family: 'integration',
+    supportedDirections: ['sdk_to_host'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  mcp_message: {
+    subtype: 'mcp_message',
+    family: 'integration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  rewind_files: {
+    subtype: 'rewind_files',
+    family: 'command',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  cancel_async_message: {
+    subtype: 'cancel_async_message',
+    family: 'command',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  seed_read_state: {
+    subtype: 'seed_read_state',
+    family: 'lifecycle',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  mcp_set_servers: {
+    subtype: 'mcp_set_servers',
+    family: 'integration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  reload_plugins: {
+    subtype: 'reload_plugins',
+    family: 'integration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  mcp_reconnect: {
+    subtype: 'mcp_reconnect',
+    family: 'integration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  mcp_toggle: {
+    subtype: 'mcp_toggle',
+    family: 'integration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  stop_task: {
+    subtype: 'stop_task',
+    family: 'command',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  apply_flag_settings: {
+    subtype: 'apply_flag_settings',
+    family: 'configuration',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+  get_settings: {
+    subtype: 'get_settings',
+    family: 'query',
+    supportedDirections: ['sdk_to_host', 'host_to_sdk'],
+    requiresResponse: true,
+    cancelSupported: false,
+    blocksRun: false,
+    defaultMode: 'passthrough',
+  },
+}
+
+export function getControlDescriptor(subtype: string | undefined | null): ControlDescriptor {
+  if (!subtype) return DEFAULT_CONTROL_DESCRIPTOR
+  return CONTROL_DESCRIPTOR_REGISTRY[subtype] ?? {
+    ...DEFAULT_CONTROL_DESCRIPTOR,
+    subtype,
+  }
+}
+
+export interface ControlTransaction {
+  requestId: string
+  subtype: string
+  family: ControlFamily
+  direction: ControlDirection
+  status: ControlStatus
+  openedAt: number
+  updatedAt: number
+  sessionId?: string
+  runId?: string
+  request?: SdkControlRequestEnvelope
+  response?: SdkControlResponseEnvelope
+  cancel?: SdkControlCancelEnvelope
+  interaction?: PendingInteraction | null
+  payload?: unknown
+  error?: string
+  blocksRun: boolean
+}
+
+export type ControlTransactionSummary = Pick<
+  ControlTransaction,
+  'requestId' | 'subtype' | 'family' | 'direction' | 'status' | 'sessionId' | 'runId' | 'interaction' | 'blocksRun' | 'openedAt' | 'updatedAt' | 'error'
+>
+
+export function summarizeControlTransaction(transaction: ControlTransaction): ControlTransactionSummary {
+  return {
+    requestId: transaction.requestId,
+    subtype: transaction.subtype,
+    family: transaction.family,
+    direction: transaction.direction,
+    status: transaction.status,
+    ...(transaction.sessionId ? { sessionId: transaction.sessionId } : {}),
+    ...(transaction.runId ? { runId: transaction.runId } : {}),
+    ...(transaction.interaction !== undefined ? { interaction: transaction.interaction } : {}),
+    blocksRun: transaction.blocksRun,
+    openedAt: transaction.openedAt,
+    updatedAt: transaction.updatedAt,
+    ...(transaction.error ? { error: transaction.error } : {}),
+  }
+}
+
+export function isControlTransactionInteractive(transaction: ControlTransaction): boolean {
+  return transaction.family === 'interactive'
+}
+
+export function isControlTransactionBlocking(transaction: Pick<ControlTransaction, 'blocksRun' | 'status'>): boolean {
+  return transaction.blocksRun && transaction.status !== 'completed' && transaction.status !== 'cancelled' && transaction.status !== 'failed'
+}
 
 export interface RunStateSnapshot {
   status: SessionLifecycleState
@@ -525,6 +848,9 @@ export type SdkTransportEventName =
   | 'query.failed'
   | 'query.cancelled'
   | 'message'
+  | 'control.request'
+  | 'control.response'
+  | 'control.cancel_request'
   | 'control.request.permission'
   | 'control.response.permission'
   | 'control.request.elicitation'
@@ -617,8 +943,9 @@ export type RunnerAgentInput = {
 export type RunnerCommand =
   | { type: 'run.start'; input: RunnerAgentInput }
   | { type: 'run.cancel' }
-  | { type: 'interaction.permission.respond'; permissionId: string; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> }
-  | { type: 'interaction.elicitation.respond'; requestId: string; response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } }
+  | { type: 'control.respond'; requestId: string; response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } }
+  | { type: 'control.cancel'; requestId: string }
+  | { type: 'control.request'; requestId: string; request: { subtype: 'interrupt' } | { subtype: 'get_context_usage' } | { subtype: 'mcp_status' } }
 
 export type RunnerRuntimeEvent =
   | { type: 'run.started'; sessionId?: string }
@@ -628,8 +955,20 @@ export type RunnerRuntimeEvent =
   | { type: 'run.cancelled'; sessionId?: string }
   | ({ type: 'sdk.message'; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)
   | ({ type: 'sdk.stream_event'; event: SessionStreamEvent } & RuntimeEnvelopeBase)
-  | ({ type: 'sdk.control.requested'; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'sdk.control.resolved'; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'control.message'; direction: ControlDirection; message: SdkControlEnvelope; transaction: ControlTransactionSummary } & RuntimeEnvelopeBase)
+  | ({ type: 'control.opened'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'control.awaiting_user'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'control.responded'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'control.completed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'control.cancel_requested'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'control.cancelled'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'control.failed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'interactive.opened'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'interactive.awaiting_user'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'interactive.responded'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'interactive.completed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'interactive.cancelled'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'interactive.failed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | { type: 'sdk.transport'; event: SdkTransportEvent }
 
 export type SessionEvent =
@@ -641,8 +980,20 @@ export type SessionEvent =
   | { type: 'session.run.cancelled'; runId: string; sessionId?: string }
   | ({ type: 'session.sdk.message'; runId: string; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)
   | ({ type: 'session.sdk.stream_event'; runId: string; event: SessionStreamEvent } & RuntimeEnvelopeBase)
-  | ({ type: 'session.sdk.control.requested'; runId: string; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'session.sdk.control.resolved'; runId: string; interaction: PendingInteraction; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.message'; runId: string; direction: ControlDirection; message: SdkControlEnvelope; transaction: ControlTransactionSummary } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.opened'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.awaiting_user'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.responded'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.completed'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.cancel_requested'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.cancelled'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.control.failed'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.interactive.opened'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.interactive.awaiting_user'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.interactive.responded'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.interactive.completed'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.interactive.cancelled'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.interactive.failed'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | { type: 'session.sdk.transport'; runId: string; event: SdkTransportEvent }
   | { type: 'session.error'; runId?: string; error: string }
 

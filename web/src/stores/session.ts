@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type {
   AssistantDisplayItem,
   CollapsedToolBatchDisplayItem,
+  ControlTransactionSummary,
   DisplayItem,
   GroupedToolUseDisplayItem,
   PendingInteraction,
@@ -300,7 +301,8 @@ export const useSessionStore = defineStore('session', () => {
   const authRequired = ref(false)
   const authChecked = ref(false)
   const activeRunId = ref<string | null>(null)
-  const pendingInteraction = ref<PendingInteraction | null>(null)
+  const controlTransactionsById = ref<Record<string, ControlTransactionSummary>>({})
+  const activeControlOrder = ref<string[]>([])
   const bindingChannel = ref<'lark' | 'web' | 'discord'>('lark')
   const bindingConversationKey = ref('')
   const bindingStatus = ref<SessionBindingStatus | null>(null)
@@ -315,6 +317,24 @@ export const useSessionStore = defineStore('session', () => {
 
   const isLoading = computed(() => ['queued', 'running', 'requires_action'].includes(runState.value))
   const hasAuthToken = computed(() => authToken.value.trim().length > 0)
+  const activeInteractiveControl = computed<ControlTransactionSummary | null>(() => {
+    for (const requestId of activeControlOrder.value) {
+      const transaction = controlTransactionsById.value[requestId]
+      if (!transaction?.interaction) continue
+      if (transaction.status !== 'awaiting_user') continue
+      return transaction
+    }
+    return null
+  })
+  const recentControlTransactions = computed<ControlTransactionSummary[]>(() =>
+    activeControlOrder.value
+      .map((requestId) => controlTransactionsById.value[requestId])
+      .filter((transaction): transaction is ControlTransactionSummary => Boolean(transaction))
+      .slice()
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 8)
+  )
+  const pendingInteraction = computed<PendingInteraction | null>(() => activeInteractiveControl.value?.interaction ?? null)
   const isAwaitingApproval = computed(() => pendingInteraction.value?.kind === 'permission' && pendingInteraction.value?.status === 'pending')
   const isAwaitingInteraction = computed(() => pendingInteraction.value?.status === 'pending')
   const hasActiveRun = computed(() => awaitingRunStart || activeRunId.value !== null)
@@ -551,7 +571,8 @@ export const useSessionStore = defineStore('session', () => {
     })
     activeRunId.value = null
     awaitingRunStart = false
-    pendingInteraction.value = null
+    controlTransactionsById.value = {}
+    activeControlOrder.value = []
     streamPreviewStates.value = {}
     streamAnimationCursors.value = {}
     clearStreamTimers()
@@ -670,6 +691,20 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  function applyInteractiveTransaction(transaction: ControlTransactionSummary) {
+    controlTransactionsById.value = {
+      ...controlTransactionsById.value,
+      [transaction.requestId]: transaction,
+    }
+    const existing = new Set(activeControlOrder.value)
+    if (!existing.has(transaction.requestId)) {
+      activeControlOrder.value = [...activeControlOrder.value, transaction.requestId]
+    }
+    if (transaction.status === 'awaiting_user') {
+      runState.value = 'requires_action'
+    }
+  }
+
   function applyTransportEvent(event: Extract<SessionEvent, { type: 'session.sdk.transport' }>) {
     syncSessionId(event.event.sessionId)
     logger.debug('chat:sdk-transport:ignored-ws', {
@@ -776,13 +811,10 @@ export const useSessionStore = defineStore('session', () => {
         syncSessionId(event.sessionId)
         if (event.state === 'cancelled') {
           clearRunState('cancelled')
-        } else if (event.state !== 'requires_action' && pendingInteraction.value?.status === 'pending') {
-          pendingInteraction.value = null
         }
         break
 
       case 'session.run.completed':
-        pendingInteraction.value = null
         streamPreviewStates.value = {}
         streamAnimationCursors.value = {}
         runState.value = 'completed'
@@ -840,26 +872,24 @@ export const useSessionStore = defineStore('session', () => {
         applyTransportEvent(event)
         break
 
-      case 'session.sdk.control.requested':
-        pendingInteraction.value = event.interaction
-        runState.value = 'requires_action'
-        logger.info('chat:interaction:requested', {
-          kind: event.interaction.kind,
-          interactionId: shortId(event.interaction.id),
-          sessionId: shortId(event.sessionId),
-        })
+      case 'session.interactive.opened':
+      case 'session.interactive.awaiting_user':
+      case 'session.interactive.responded':
+      case 'session.interactive.completed':
+      case 'session.interactive.cancelled':
+      case 'session.interactive.failed':
+        applyInteractiveTransaction(event.transaction)
         syncSessionId(event.sessionId)
         break
 
-      case 'session.sdk.control.resolved':
-        if (pendingInteraction.value?.id === event.interaction.id) {
-          pendingInteraction.value = null
-        }
-        logger.info('chat:interaction:resolved', {
-          kind: event.interaction.kind,
-          interactionId: shortId(event.interaction.id),
-          sessionId: shortId(event.sessionId),
-        })
+      case 'session.control.opened':
+      case 'session.control.awaiting_user':
+      case 'session.control.responded':
+      case 'session.control.completed':
+      case 'session.control.cancel_requested':
+      case 'session.control.cancelled':
+      case 'session.control.failed':
+        applyInteractiveTransaction(event.transaction)
         syncSessionId(event.sessionId)
         break
 
@@ -1008,7 +1038,8 @@ export const useSessionStore = defineStore('session', () => {
 
     awaitingRunStart = true
     activeRunId.value = null
-    pendingInteraction.value = null
+    controlTransactionsById.value = {}
+    activeControlOrder.value = []
     runState.value = 'queued'
     optimisticMessageCount += 1
     historyMessages.value = [
@@ -1340,6 +1371,39 @@ export const useSessionStore = defineStore('session', () => {
     })
   }
 
+  function requestControl(subtype: 'interrupt' | 'get_context_usage' | 'mcp_status') {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !activeRunId.value) {
+      logger.warn('chat:control-request:blocked', {
+        hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),
+        activeRunId: shortId(activeRunId.value),
+        subtype,
+      })
+      return
+    }
+
+    logger.info('chat:control-request', {
+      subtype,
+      runId: shortId(activeRunId.value),
+    })
+    ws.send(JSON.stringify({
+      action: 'control.request',
+      runId: activeRunId.value,
+      subtype,
+      ...(currentSessionId.value ? { sessionId: currentSessionId.value } : {}),
+    }))
+  }
+
+  function respondToInteraction(response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
+    if (response.kind === 'permission') {
+      respondToPermission(response.decision, response.selectedSuggestion, response.content)
+      return
+    }
+    respondToElicitation({
+      action: response.action,
+      ...(response.content ? { content: response.content } : {}),
+    })
+  }
+
   function respondToPermission(
     decision: 'approve' | 'deny',
     selectedSuggestion?: PermissionSuggestion | null,
@@ -1498,6 +1562,9 @@ export const useSessionStore = defineStore('session', () => {
     hasActiveRun,
     activeRunId,
     pendingInteraction,
+    controlTransactionsById,
+    activeControlOrder,
+    recentControlTransactions,
     bindingChannel,
     bindingConversationKey,
     bindingStatus,
@@ -1515,6 +1582,8 @@ export const useSessionStore = defineStore('session', () => {
     sendMessage,
     respondToPermission,
     respondToElicitation,
+    respondToInteraction,
+    requestControl,
     fetchSessions,
     fetchBindingCandidates,
     fetchBindingList,

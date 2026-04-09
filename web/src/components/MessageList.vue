@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
-import TimelinePermissionRequestBlock from './TimelinePermissionRequestBlock.vue'
+import TimelineCanUseToolInteractionBlock from './TimelineCanUseToolInteractionBlock.vue'
 import TimelineRow from './TimelineRow.vue'
 import { useSessionStore } from '../stores/session'
 import {
@@ -36,6 +36,7 @@ const debugMetaVisible = computed({
   set: (value: boolean) => session.setDebugTimelineVisible(value),
 })
 const observabilityItems = computed(() => session.observabilityEvents.slice().reverse())
+const recentControlTransactions = computed(() => session.recentControlTransactions)
 const visibleTimelineItems = computed(() => session.timeline)
 const pendingPermissionInteraction = computed<PendingPermissionInteraction | null>(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction : null
@@ -100,17 +101,15 @@ function normalizeOption(option: unknown): QuestionOption | null {
 }
 
 function parseAskUserQuestionSingleSelect(interaction: PendingElicitationInteraction | null): AskUserQuestionSingleSelect | null {
-  if (!interaction || interaction.serverName !== 'AskUserQuestion') return null
+  if (!interaction || interaction.source.kind !== 'tool' || interaction.source.subtype !== 'AskUserQuestion') return null
 
   const schema = asRecord(interaction.requestedSchema)
   const answersProperty = asRecord(asRecord(schema?.properties)?.answers)
   const answerProperties = asRecord(answersProperty?.properties)
   if (!answerProperties) return null
 
-  const [questionText, rawProperty] = Object.entries(answerProperties)[0] || []
-  if (!questionText) return null
-
-  const property = asRecord(rawProperty)
+  const field = interaction.source.questionField || Object.keys(answerProperties)[0] || 'value'
+  const property = asRecord(answerProperties[field])
   if (!property) return null
 
   const optionValues = Array.isArray(property.enum)
@@ -118,16 +117,16 @@ function parseAskUserQuestionSingleSelect(interaction: PendingElicitationInterac
     : null
   if (!optionValues || optionValues.length === 0) return null
 
-  const prompt = getString(property.title) || questionText || interaction.message || interaction.serverName
+  const prompt = getString(property.title) || interaction.source.questionText || interaction.message || interaction.serverName
   if (!prompt) return null
 
   return {
-    field: 'answers',
+    field,
     prompt,
     description: getString(property.description),
     options: optionValues.map((value) => ({ value, label: value })),
     defaultValue: getString(property.default),
-    questionText,
+    questionText: field,
   }
 }
 
@@ -178,6 +177,10 @@ function getEventMeta(item: { sequence: number; receivedAt: number }): string {
 
 function getEventPayload(item: { payload: unknown }): string {
   return stringifyStructuredValue(item.payload)
+}
+
+function getControlTransactionMeta(item: { requestId: string; subtype: string; status: string; family: string; direction: string; updatedAt: number }) {
+  return `${item.subtype} · ${item.status} · ${item.direction} · ${new Date(item.updatedAt).toLocaleTimeString()}`
 }
 
 function renderObservabilityTitle(payload: Record<string, unknown> | null | undefined): string {
@@ -371,7 +374,7 @@ watch(
         </a>
       </TimelineCliSubrow>
       <div v-if="session.pendingInteraction.kind === 'permission' && pendingPermissionInteraction" class="pl-7">
-        <TimelinePermissionRequestBlock :interaction="pendingPermissionInteraction" />
+        <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" />
       </div>
       <div v-else class="space-y-3">
         <template v-if="askUserQuestion">
@@ -432,6 +435,23 @@ watch(
             </div>
           </TimelineCliSubrow>
         </template>
+      </div>
+    </div>
+
+    <div v-if="recentControlTransactions.length > 0" class="space-y-2">
+      <div class="timeline-cli-meta">Control transactions</div>
+      <div
+        v-for="item in recentControlTransactions"
+        :key="`control-${item.requestId}`"
+        class="space-y-1"
+      >
+        <TimelineCliSubrow muted>
+          <div class="min-w-0 flex-1 space-y-1">
+            <div class="text-slate-600">{{ item.requestId }}</div>
+            <div class="timeline-cli-meta">{{ getControlTransactionMeta(item) }}</div>
+            <pre v-if="item.interaction" class="whitespace-pre-wrap text-xs text-slate-500">{{ stringifyStructuredValue(item.interaction) }}</pre>
+          </div>
+        </TimelineCliSubrow>
       </div>
     </div>
 

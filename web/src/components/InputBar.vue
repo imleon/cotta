@@ -8,6 +8,7 @@ const debugMetaVisible = computed({
   get: () => session.debugTimelineVisible,
   set: (value: boolean) => session.setDebugTimelineVisible(value),
 })
+const canRequestControl = computed(() => session.isConnected && session.hasActiveRun)
 
 function send() {
   const text = input.value.trim()
@@ -43,6 +44,29 @@ function onKeydown(e: KeyboardEvent) {
         >
           Send
         </button>
+        <div class="flex items-center gap-2">
+          <button
+            class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)] disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="!canRequestControl"
+            @click="session.requestControl('interrupt')"
+          >
+            Interrupt
+          </button>
+          <button
+            class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)] disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="!canRequestControl"
+            @click="session.requestControl('get_context_usage')"
+          >
+            Context
+          </button>
+          <button
+            class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)] disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="!canRequestControl"
+            @click="session.requestControl('mcp_status')"
+          >
+            MCP
+          </button>
+        </div>
         <button
           class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)]"
           @click="debugMetaVisible = !debugMetaVisible"

@@ -89,11 +89,22 @@ function sanitizeRuntimeEvent(event: RunnerRuntimeEvent): RunnerRuntimeEvent {
         payload: sanitizeValue(event.payload) as typeof event.payload,
         ...(event.parsed ? { parsed: sanitizeValue(event.parsed) as typeof event.parsed } : {}),
       }
-    case 'sdk.control.requested':
-    case 'sdk.control.resolved':
+    case 'control.message':
       return {
         ...event,
-        interaction: sanitizeValue(event.interaction) as typeof event.interaction,
+        transaction: sanitizeValue(event.transaction) as typeof event.transaction,
+        message: sanitizeValue(event.message) as typeof event.message,
+      }
+    case 'control.opened':
+    case 'control.awaiting_user':
+    case 'control.responded':
+    case 'control.completed':
+    case 'control.cancel_requested':
+    case 'control.cancelled':
+    case 'control.failed':
+      return {
+        ...event,
+        transaction: sanitizeValue(event.transaction) as typeof event.transaction,
         ...(event.payload !== undefined ? { payload: sanitizeValue(event.payload) } : {}),
       }
     case 'sdk.transport':

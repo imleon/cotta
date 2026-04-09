@@ -1188,12 +1188,14 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
   switch (event.type) {
     case 'session.sdk.message':
       return buildAssistantStreamingDelivery(event, record)
-    case 'session.sdk.control.requested':
-      if (event.interaction.kind === 'permission') {
+    case 'session.interactive.awaiting_user':
+    case 'session.control.awaiting_user':
+      if (!event.transaction.interaction) return []
+      if (event.transaction.interaction.kind === 'permission') {
         return [{
           conversationKey: record.conversationKey,
-          text: summarizePermissionInteraction(record.runId, event.interaction),
-          card: buildPermissionCard(record.runId, event.interaction),
+          text: summarizePermissionInteraction(record.runId, event.transaction.interaction),
+          card: buildPermissionCard(record.runId, event.transaction.interaction),
           runId: record.runId,
           ...(record.sessionId ? { sessionId: record.sessionId } : {}),
           mode: 'create',
@@ -1202,27 +1204,25 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
       }
       return [{
         conversationKey: record.conversationKey,
-        text: summarizeLarkInteraction(record.runId, event.interaction),
+        text: summarizeLarkInteraction(record.runId, event.transaction.interaction),
         runId: record.runId,
         ...(record.sessionId ? { sessionId: record.sessionId } : {}),
         mode: 'fallback',
       }]
-    case 'session.sdk.control.resolved':
-      if (event.interaction.kind === 'permission') {
-        const decision = event.interaction.decisionReason === 'approve' || event.interaction.decisionReason === 'deny'
-          ? event.interaction.decisionReason
-          : 'approve'
-        return [{
-          conversationKey: record.conversationKey,
-          text: `Permission resolved: ${event.interaction.status}`,
-          card: buildPermissionResolvedCard(decision, event.interaction.status === 'resolved'),
-          runId: record.runId,
-          ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-          mode: 'create',
-          state: buildPermissionCardKitState(record),
-        }]
-      }
-      return []
+    case 'session.interactive.completed':
+    case 'session.interactive.cancelled':
+    case 'session.control.completed':
+    case 'session.control.cancelled':
+      if (!event.transaction.interaction || event.transaction.interaction.kind !== 'permission') return []
+      return [{
+        conversationKey: record.conversationKey,
+        text: `Permission resolved: ${event.transaction.interaction.status}`,
+        card: buildPermissionResolvedCard('approve', event.transaction.interaction.status === 'resolved'),
+        runId: record.runId,
+        ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+        mode: 'create',
+        state: buildPermissionCardKitState(record),
+      }]
     case 'session.run.completed': {
       const finalized = buildAssistantFinalizeDelivery(record)
       if (finalized.length > 0) return finalized

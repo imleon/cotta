@@ -6,14 +6,22 @@ import { TaskQueue } from './queue.js'
 import { SessionBindingStore } from './session-bindings.js'
 import type {
   ChannelInboundMessage,
+  ControlTransactionSummary,
   PendingInteraction,
   PermissionSuggestion,
   SessionEvent,
   SessionRunState,
 } from '../shared/message-types.js'
+import {
+  isControlTransactionBlocking,
+} from '../shared/message-types.js'
 
 export type PermissionDecision = 'approve' | 'deny'
 export type ElicitationAction = 'accept' | 'decline' | 'cancel'
+export type HostControlRequest =
+  | { subtype: 'interrupt' }
+  | { subtype: 'get_context_usage' }
+  | { subtype: 'mcp_status' }
 
 export type RunRecord = {
   runId: string
@@ -26,6 +34,8 @@ export type RunRecord = {
   sessionId?: string
   state: SessionRunState
   currentInteraction?: PendingInteraction | null
+  activeControlTransactions: Map<string, ControlTransactionSummary>
+  blockingControlRequestId?: string
 }
 
 export type CoordinatorSubscriber = (event: SessionEvent, record: RunRecord) => void
@@ -73,6 +83,7 @@ export class RunCoordinator {
       ...(sessionId ? { sessionId } : {}),
       state: 'queued',
       currentInteraction: null,
+      activeControlTransactions: new Map(),
     }
     this.runs.set(runId, record)
 
@@ -153,17 +164,44 @@ export class RunCoordinator {
   respondToPermission(runId: string, permissionId: string, decision: PermissionDecision, selectedSuggestion?: PermissionSuggestion | null, content?: Record<string, string | number | boolean | string[]>): boolean {
     const record = this.runs.get(runId)
     if (!record?.handle) return false
-    record.handle.respondToPermission(permissionId, decision, selectedSuggestion, content)
+    record.handle.respondToControl(permissionId, {
+      kind: 'permission',
+      decision,
+      ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
+      ...(content ? { content } : {}),
+    })
     return true
   }
 
   respondToElicitation(runId: string, requestId: string, action: ElicitationAction, content?: Record<string, unknown>): boolean {
     const record = this.runs.get(runId)
     if (!record?.handle) return false
-    record.handle.respondToElicitation(requestId, {
+    record.handle.respondToControl(requestId, {
+      kind: 'elicitation',
       action,
       ...(content ? { content } : {}),
     })
+    return true
+  }
+
+  respondToControl(runId: string, requestId: string, response: { kind: 'permission'; decision: PermissionDecision; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: ElicitationAction; content?: Record<string, unknown> }): boolean {
+    const record = this.runs.get(runId)
+    if (!record?.handle) return false
+    record.handle.respondToControl(requestId, response)
+    return true
+  }
+
+  requestControl(runId: string, requestId: string, request: HostControlRequest): boolean {
+    const record = this.runs.get(runId)
+    if (!record?.handle) return false
+    record.handle.requestControl(requestId, request)
+    return true
+  }
+
+  cancelControl(runId: string, requestId: string): boolean {
+    const record = this.runs.get(runId)
+    if (!record?.handle) return false
+    record.handle.cancelControl(requestId)
     return true
   }
 
@@ -177,29 +215,47 @@ export class RunCoordinator {
       case 'session.run.state_changed':
         record.state = event.state
         if (event.state !== 'requires_action') {
-          record.currentInteraction = null
+          record.blockingControlRequestId = undefined
         }
         break
-      case 'session.sdk.control.requested':
-        record.state = 'requires_action'
-        record.currentInteraction = event.interaction
-        if (record.sessionId) {
-          void this.bindings.bindSession(record, record.sessionId, {
-            lastRunId: record.runId,
-            activeInteractionId: event.interaction.id,
-          })
+      case 'session.interactive.opened':
+      case 'session.interactive.awaiting_user':
+      case 'session.interactive.responded':
+      case 'session.interactive.completed':
+      case 'session.interactive.cancelled':
+      case 'session.interactive.failed':
+      case 'session.control.opened':
+      case 'session.control.awaiting_user':
+      case 'session.control.responded':
+      case 'session.control.completed':
+      case 'session.control.cancel_requested':
+      case 'session.control.cancelled':
+      case 'session.control.failed': {
+        record.activeControlTransactions.set(event.transaction.requestId, event.transaction)
+        const blocking = Array.from(record.activeControlTransactions.values()).find((transaction) => isControlTransactionBlocking(transaction))
+        record.blockingControlRequestId = blocking?.requestId
+        if (event.transaction.interaction) {
+          if (event.type === 'session.interactive.awaiting_user' || event.type === 'session.control.awaiting_user') {
+            record.currentInteraction = event.transaction.interaction
+            record.state = 'requires_action'
+          } else if (
+            event.type === 'session.interactive.completed'
+            || event.type === 'session.interactive.cancelled'
+            || event.type === 'session.interactive.failed'
+            || event.type === 'session.control.completed'
+            || event.type === 'session.control.cancelled'
+            || event.type === 'session.control.failed'
+          ) {
+            if (record.currentInteraction?.id === event.transaction.interaction.id) {
+              record.currentInteraction = null
+            }
+          }
+        }
+        if (!blocking && record.state === 'requires_action') {
+          record.state = 'running'
         }
         break
-      case 'session.sdk.control.resolved':
-        if (record.currentInteraction?.id === event.interaction.id) {
-          record.currentInteraction = null
-        }
-        if (record.sessionId) {
-          void this.bindings.bindSession(record, record.sessionId, {
-            lastRunId: record.runId,
-          })
-        }
-        break
+      }
       default:
         break
     }

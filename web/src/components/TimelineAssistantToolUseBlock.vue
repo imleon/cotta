@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useSessionStore } from '../stores/session'
 import type { DisplayFragmentToolUse, PendingPermissionInteraction } from '../../../shared/message-types.js'
 import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
-import TimelinePermissionRequestBlock from './TimelinePermissionRequestBlock.vue'
+import TimelineCanUseToolInteractionBlock from './TimelineCanUseToolInteractionBlock.vue'
 
 const props = withDefaults(defineProps<{
   fragment: DisplayFragmentToolUse
@@ -64,7 +64,7 @@ const pendingPermissionInteraction = computed<PendingPermissionInteraction | nul
       </span>
     </div>
     <div v-if="pendingPermissionInteraction" class="pl-7">
-      <TimelinePermissionRequestBlock :interaction="pendingPermissionInteraction" />
+      <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" :fragment="fragment" attached />
     </div>
   </div>
 </template>

@@ -3,7 +3,12 @@ import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { CONFIG } from './config.js'
 import { createOutputParser, type AgentEvent } from './agent-output-parser.js'
-import type { RunnerRuntimeEvent, SessionEvent, PermissionSuggestion } from '../shared/message-types.js'
+import type {
+  ControlTransactionSummary,
+  RunnerRuntimeEvent,
+  SessionEvent,
+  PermissionSuggestion,
+} from '../shared/message-types.js'
 import { normalizeSdkEnvelopeMessage } from '../shared/transcript-normalizer.js'
 import { createLogger, shortId } from './logger.js'
 import { appendSessionRuntimeLog, appendSessionTransportLog } from './transport-logs.js'
@@ -30,14 +35,29 @@ export interface AgentRunHandle {
   done: Promise<AgentRunResult>
   respondToPermission: (permissionId: string, decision: 'approve' | 'deny', selectedSuggestion?: PermissionSuggestion | null, content?: Record<string, string | number | boolean | string[]>) => void
   respondToElicitation: (requestId: string, response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) => void
+  respondToControl: (requestId: string, response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) => void
+  requestControl: (requestId: string, request: { subtype: 'interrupt' } | { subtype: 'get_context_usage' } | { subtype: 'mcp_status' }) => void
+  cancelControl: (requestId: string) => void
   cancel: () => void
 }
 
 export type ServerEvent =
   | Extract<SessionEvent, { type: 'session.sdk.message' }>
   | Extract<SessionEvent, { type: 'session.sdk.stream_event' }>
-  | Extract<SessionEvent, { type: 'session.sdk.control.requested' }>
-  | Extract<SessionEvent, { type: 'session.sdk.control.resolved' }>
+  | Extract<SessionEvent, { type: 'session.control.message' }>
+  | Extract<SessionEvent, { type: 'session.control.opened' }>
+  | Extract<SessionEvent, { type: 'session.control.awaiting_user' }>
+  | Extract<SessionEvent, { type: 'session.control.responded' }>
+  | Extract<SessionEvent, { type: 'session.control.completed' }>
+  | Extract<SessionEvent, { type: 'session.control.cancel_requested' }>
+  | Extract<SessionEvent, { type: 'session.control.cancelled' }>
+  | Extract<SessionEvent, { type: 'session.control.failed' }>
+  | Extract<SessionEvent, { type: 'session.interactive.opened' }>
+  | Extract<SessionEvent, { type: 'session.interactive.awaiting_user' }>
+  | Extract<SessionEvent, { type: 'session.interactive.responded' }>
+  | Extract<SessionEvent, { type: 'session.interactive.completed' }>
+  | Extract<SessionEvent, { type: 'session.interactive.cancelled' }>
+  | Extract<SessionEvent, { type: 'session.interactive.failed' }>
   | Extract<SessionEvent, { type: 'session.sdk.transport' }>
   | Extract<SessionEvent, { type: 'session.run.state_changed' }>
 
@@ -59,8 +79,14 @@ function isRunnerRuntimeEvent(value: unknown): value is RunnerRuntimeEvent {
     record.type === 'run.cancelled' ||
     record.type === 'sdk.message' ||
     record.type === 'sdk.stream_event' ||
-    record.type === 'sdk.control.requested' ||
-    record.type === 'sdk.control.resolved' ||
+    record.type === 'control.message' ||
+    record.type === 'control.opened' ||
+    record.type === 'control.awaiting_user' ||
+    record.type === 'control.responded' ||
+    record.type === 'control.completed' ||
+    record.type === 'control.cancel_requested' ||
+    record.type === 'control.cancelled' ||
+    record.type === 'control.failed' ||
     record.type === 'sdk.transport'
   )
 }
@@ -106,21 +132,142 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
         sequence: event.sequence,
         ...(event.sessionId ? { sessionId: event.sessionId } : {}),
       }
-    case 'sdk.control.requested':
+    case 'control.message':
       return {
-        type: 'session.sdk.control.requested',
+        type: 'session.control.message',
         runId,
-        interaction: event.interaction,
+        direction: event.direction,
+        message: event.message,
+        transaction: event.transaction,
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'control.opened':
+      return {
+        type: 'session.control.opened',
+        runId,
+        transaction: event.transaction,
         ...(event.payload !== undefined ? { payload: event.payload } : {}),
         receivedAt: event.receivedAt,
         sequence: event.sequence,
         ...(event.sessionId ? { sessionId: event.sessionId } : {}),
       }
-    case 'sdk.control.resolved':
+    case 'interactive.opened':
       return {
-        type: 'session.sdk.control.resolved',
+        type: 'session.interactive.opened',
         runId,
-        interaction: event.interaction,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'control.awaiting_user':
+      return {
+        type: 'session.control.awaiting_user',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'interactive.awaiting_user':
+      return {
+        type: 'session.interactive.awaiting_user',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'control.responded':
+      return {
+        type: 'session.control.responded',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'interactive.responded':
+      return {
+        type: 'session.interactive.responded',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'control.completed':
+      return {
+        type: 'session.control.completed',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'interactive.completed':
+      return {
+        type: 'session.interactive.completed',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'control.cancel_requested':
+      return {
+        type: 'session.control.cancel_requested',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'control.cancelled':
+      return {
+        type: 'session.control.cancelled',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'interactive.cancelled':
+      return {
+        type: 'session.interactive.cancelled',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'control.failed':
+      return {
+        type: 'session.control.failed',
+        runId,
+        transaction: event.transaction,
+        ...(event.payload !== undefined ? { payload: event.payload } : {}),
+        receivedAt: event.receivedAt,
+        sequence: event.sequence,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      }
+    case 'interactive.failed':
+      return {
+        type: 'session.interactive.failed',
+        runId,
+        transaction: event.transaction,
         ...(event.payload !== undefined ? { payload: event.payload } : {}),
         receivedAt: event.receivedAt,
         sequence: event.sequence,
@@ -273,15 +420,35 @@ export function createAgentRun(input: AgentInput, onEvent: AgentEventHandler, si
     done,
     respondToPermission(permissionId, decision, selectedSuggestion, content) {
       writeCommand(child, {
-        type: 'interaction.permission.respond',
-        permissionId,
-        decision,
-        ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
-        ...(content ? { content } : {}),
+        type: 'control.respond',
+        requestId: permissionId,
+        response: {
+          kind: 'permission',
+          decision,
+          ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
+          ...(content ? { content } : {}),
+        },
       })
     },
     respondToElicitation(requestId, response) {
-      writeCommand(child, { type: 'interaction.elicitation.respond', requestId, response })
+      writeCommand(child, {
+        type: 'control.respond',
+        requestId,
+        response: {
+          kind: 'elicitation',
+          action: response.action,
+          ...(response.content ? { content: response.content } : {}),
+        },
+      })
+    },
+    respondToControl(requestId, response) {
+      writeCommand(child, { type: 'control.respond', requestId, response })
+    },
+    requestControl(requestId, request) {
+      writeCommand(child, { type: 'control.request', requestId, request })
+    },
+    cancelControl(requestId) {
+      writeCommand(child, { type: 'control.cancel', requestId })
     },
     cancel() {
       onEvent({ type: 'session.run.state_changed', runId, state: 'cancelled', ...(sessionId ? { sessionId } : {}) })

@@ -8,7 +8,7 @@ import { useSessionStore } from '../stores/session'
 import {
   stringifyStructuredValue,
 } from '../../../shared/transcript-normalizer.js'
-import type { PendingAskUserQuestionInteraction, PendingElicitationInteraction, PendingPermissionInteraction } from '../../../shared/message-types.js'
+import type { SdkElicitationInteraction, PermissionInteraction } from '../../../shared/message-types.js'
 import type { TimelineItem } from '../stores/session'
 
 const session = useSessionStore()
@@ -23,14 +23,11 @@ const debugMetaVisible = computed({
 const observabilityItems = computed(() => session.observabilityEvents.slice().reverse())
 const recentControlTransactions = computed(() => session.recentControlTransactions)
 const visibleTimelineItems = computed(() => session.timeline)
-const pendingPermissionInteraction = computed<PendingPermissionInteraction | null>(() =>
+const pendingPermissionInteraction = computed<PermissionInteraction | null>(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction : null
 )
-const pendingElicitationInteraction = computed<PendingElicitationInteraction | null>(() =>
+const pendingElicitationInteraction = computed<SdkElicitationInteraction | null>(() =>
   session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction : null
-)
-const pendingAskUserQuestionInteraction = computed<PendingAskUserQuestionInteraction | null>(() =>
-  session.pendingInteraction?.kind === 'ask_user_question' ? session.pendingInteraction : null
 )
 const pendingInteractionTitle = computed(() => {
   const interaction = session.pendingInteraction
@@ -38,18 +35,12 @@ const pendingInteractionTitle = computed(() => {
   if (interaction.kind === 'permission') {
     return interaction.title || interaction.displayName || interaction.toolName || 'Pending interaction'
   }
-  if (interaction.kind === 'ask_user_question') {
-    return interaction.prompt || interaction.toolName || 'Question required'
-  }
   return interaction.message || interaction.serverName || 'Pending interaction'
 })
 const pendingInteractionDescription = computed(() => {
   const interaction = session.pendingInteraction
   if (!interaction) return ''
   if (interaction.kind === 'permission') {
-    return interaction.description || ''
-  }
-  if (interaction.kind === 'ask_user_question') {
     return interaction.description || ''
   }
   return interaction.message || ''
@@ -81,7 +72,7 @@ const isPendingPermissionAttached = computed(() => {
 })
 
 const isPendingElicitationAttached = computed(() => {
-  const toolUseId = (pendingElicitationInteraction.value?.toolUseId || pendingAskUserQuestionInteraction.value?.toolUseId)
+  const toolUseId = pendingElicitationInteraction.value?.toolUseId
   if (!toolUseId) return false
   return visibleTimelineItems.value.some((item) => itemHasToolUseId(item, toolUseId))
 })
@@ -160,7 +151,7 @@ watch(
 )
 
 watch(
-  () => session.historyMessages.length,
+  () => session.historyTimelineItems.length,
   async (next, prev) => {
     if (next === 0 || next === prev || preservingOlderScroll.value) return
     if (!initialHistoryAutoScrollPending.value) return
@@ -209,7 +200,7 @@ watch(
       :show-debug-meta="debugMetaVisible"
     />
 
-    <div v-if="session.pendingInteraction && ((session.pendingInteraction.kind === 'permission' && !isPendingPermissionAttached) || ((session.pendingInteraction.kind === 'elicitation' || session.pendingInteraction.kind === 'ask_user_question') && !isPendingElicitationAttached))" class="space-y-3">
+    <div v-if="session.pendingInteraction && ((session.pendingInteraction.kind === 'permission' && !isPendingPermissionAttached) || (session.pendingInteraction.kind === 'elicitation' && !isPendingElicitationAttached))" class="space-y-3">
       <div class="text-slate-900">
         {{ session.pendingInteraction.kind === 'permission' ? 'Permission required' : 'Interaction required' }}
         <span class="text-slate-500"> · {{ pendingInteractionTitle }}</span>
@@ -234,7 +225,7 @@ watch(
         <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" />
       </div>
       <div v-else class="space-y-3">
-        <TimelineElicitationInteractionBlock v-if="pendingElicitationInteraction || pendingAskUserQuestionInteraction" :interaction="(pendingAskUserQuestionInteraction || pendingElicitationInteraction)!" />
+        <TimelineElicitationInteractionBlock v-if="pendingElicitationInteraction" :interaction="pendingElicitationInteraction" />
       </div>
     </div>
 

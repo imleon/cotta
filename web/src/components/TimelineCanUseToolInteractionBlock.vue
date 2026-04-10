@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useSessionStore } from '../stores/session'
-import type { DisplayFragmentToolUse, PendingPermissionInteraction, PermissionSuggestion } from '../../../shared/message-types.js'
+import type { DisplayFragmentToolUse, PermissionInteraction, PermissionSuggestion } from '../../../shared/message-types.js'
 import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
 
 const props = defineProps<{
-  interaction: PendingPermissionInteraction
+  interaction: PermissionInteraction
   fragment?: DisplayFragmentToolUse
   attached?: boolean
 }>()

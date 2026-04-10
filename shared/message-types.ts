@@ -508,14 +508,15 @@ export interface AskUserQuestionAnswerContent {
   answers: Record<string, string>
 }
 
-export interface PendingInteractionBase {
+export interface InteractionBase {
   id: string
-  kind: 'permission' | 'elicitation' | 'ask_user_question'
+  kind: 'permission' | 'elicitation'
   status: 'pending' | 'resolved' | 'cancelled'
   source: InteractiveSource
+  blocksRun?: boolean
 }
 
-export interface PendingPermissionInteraction extends PendingInteractionBase {
+export interface PermissionInteraction extends InteractionBase {
   kind: 'permission'
   toolName: string
   input: Record<string, unknown>
@@ -529,7 +530,7 @@ export interface PendingPermissionInteraction extends PendingInteractionBase {
   permissionSuggestions?: PermissionSuggestion[]
 }
 
-export interface PendingElicitationInteraction extends PendingInteractionBase {
+export interface SdkElicitationInteraction extends InteractionBase {
   kind: 'elicitation'
   toolUseId?: string
   serverName: string
@@ -539,19 +540,7 @@ export interface PendingElicitationInteraction extends PendingInteractionBase {
   requestedSchema?: unknown
 }
 
-export interface PendingAskUserQuestionInteraction extends PendingInteractionBase {
-  kind: 'ask_user_question'
-  toolName: 'AskUserQuestion'
-  toolUseId?: string
-  field: string
-  prompt: string
-  description?: string
-  options: InteractiveOption[]
-  defaultValue?: string
-  rawQuestion?: Record<string, unknown>
-}
-
-export type PendingInteraction = PendingPermissionInteraction | PendingElicitationInteraction | PendingAskUserQuestionInteraction
+export type PendingInteraction = PermissionInteraction | SdkElicitationInteraction
 export type InteractiveTransaction = PendingInteraction
 
 export type ControlFamily = 'interactive' | 'command' | 'query' | 'configuration' | 'integration' | 'lifecycle'
@@ -984,7 +973,7 @@ export type RunnerAgentInput = {
 export type RunnerCommand =
   | { type: 'run.start'; input: RunnerAgentInput }
   | { type: 'run.cancel' }
-  | { type: 'control.respond'; requestId: string; response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } }
+  | { type: 'interactive.respond'; requestId: string; response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } }
   | { type: 'control.cancel'; requestId: string }
   | { type: 'control.request'; requestId: string; request: { subtype: 'interrupt' } | { subtype: 'get_context_usage' } | { subtype: 'mcp_status' } }
 
@@ -1037,6 +1026,57 @@ export type SessionEvent =
   | ({ type: 'session.interactive.failed'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | { type: 'session.sdk.transport'; runId: string; event: SdkTransportEvent }
   | { type: 'session.error'; runId?: string; error: string }
+
+export type LaneKind = 'history' | 'user' | 'live' | 'control' | 'session' | 'drop'
+export type LiveLaneKind = 'user' | 'stream_event' | 'assistant' | 'system' | 'result' | 'tool_progress' | 'tool_use_summary' | 'prompt_suggestion'
+
+export type SdkLaneClassification = {
+  lane: Exclude<LaneKind, 'history' | 'control'>
+  liveKind?: LiveLaneKind
+}
+
+export function classifySdkMessageLane(message: SDKMessage, source: 'history' | 'runtime' = 'runtime'): SdkLaneClassification | { lane: 'history' } {
+  if (source === 'history') {
+    return { lane: 'history' }
+  }
+
+  switch (message.type) {
+    case 'user': {
+      const replay = 'isReplay' in message && message.isReplay === true
+      if (replay) return { lane: 'drop' }
+      const synthetic = message.isSynthetic === true
+      const parentToolUseId = message.parent_tool_use_id
+      const hasToolUseResult = message.tool_use_result != null
+      if (!synthetic && parentToolUseId == null && !hasToolUseResult) {
+        return { lane: 'user' }
+      }
+      return { lane: 'live', liveKind: 'user' }
+    }
+    case 'stream_event':
+      return { lane: 'live', liveKind: 'stream_event' }
+    case 'assistant':
+      return { lane: 'live', liveKind: 'assistant' }
+    case 'system':
+      return { lane: 'live', liveKind: 'system' }
+    case 'result':
+      return { lane: 'live', liveKind: 'result' }
+    case 'tool_progress':
+      return { lane: 'live', liveKind: 'tool_progress' }
+    case 'tool_use_summary':
+      return { lane: 'live', liveKind: 'tool_use_summary' }
+    case 'prompt_suggestion':
+      return { lane: 'live', liveKind: 'prompt_suggestion' }
+    case 'auth_status':
+    case 'rate_limit_event':
+      return { lane: 'session' }
+    default:
+      return { lane: 'drop' }
+  }
+}
+
+export function isControlLaneType(type: string): boolean {
+  return type === 'control_request' || type === 'control_response' || type === 'control_cancel_request'
+}
 
 export type SdkMessageLayer = 'business-message' | 'run-state' | 'debug-observability' | 'live-preview'
 

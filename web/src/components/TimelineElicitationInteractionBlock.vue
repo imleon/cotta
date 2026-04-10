@@ -3,25 +3,26 @@ import { computed, ref, watch } from 'vue'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
 import { useSessionStore } from '../stores/session'
 import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
-import type { InteractiveOption, PendingAskUserQuestionInteraction, PendingElicitationInteraction } from '../../../shared/message-types.js'
+import type { InteractiveOption, SdkElicitationInteraction } from '../../../shared/message-types.js'
 
 const props = defineProps<{
-  interaction: PendingElicitationInteraction | PendingAskUserQuestionInteraction
+  interaction: SdkElicitationInteraction
   attached?: boolean
 }>()
 
 const session = useSessionStore()
-const elicitationInput = ref('')
-const elicitationAnswer = ref('')
+const genericInput = ref('')
+const selectValue = ref('')
 
-type AskUserQuestionSingleSelect = {
+type GenericSingleSelect = {
   field: string
   prompt: string
   description?: string
   options: InteractiveOption[]
   defaultValue?: string
-  answerField: string
 }
+
+type RendererType = 'url' | 'single_select' | 'generic_json_fallback'
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -31,46 +32,75 @@ function getString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined
 }
 
-function parseAskUserQuestionSingleSelect(interaction: PendingElicitationInteraction | PendingAskUserQuestionInteraction): AskUserQuestionSingleSelect | null {
-  if (interaction.kind === 'ask_user_question') {
-    return {
-      field: interaction.field,
-      prompt: interaction.prompt,
-      description: interaction.description,
-      options: interaction.options,
-      defaultValue: interaction.defaultValue,
-      answerField: interaction.field,
+function getOptionsFromEnumSchema(property: Record<string, unknown>): InteractiveOption[] {
+  const enumValues = Array.isArray(property.enum)
+    ? property.enum.filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
+    : null
+  if (!enumValues || enumValues.length === 0) return []
+  return enumValues.map((value) => ({ value, label: value }))
+}
+
+function parseGenericSingleSelect(interaction: SdkElicitationInteraction): GenericSingleSelect | null {
+  const schema = asRecord(interaction.requestedSchema)
+  if (!schema) return null
+
+  const directProperties = asRecord(schema.properties)
+  if (directProperties && Object.keys(directProperties).length === 1) {
+    const field = Object.keys(directProperties)[0] || 'value'
+    const property = asRecord(directProperties[field])
+    if (property && property.type === 'string') {
+      const options = getOptionsFromEnumSchema(property)
+      if (options.length > 0) {
+        return {
+          field,
+          prompt: getString(property.title) || interaction.message || interaction.serverName,
+          description: getString(property.description) || interaction.message,
+          options,
+          defaultValue: getString(property.default),
+        }
+      }
     }
   }
 
-  const schema = asRecord(interaction.requestedSchema)
-  const answersProperty = asRecord(asRecord(schema?.properties)?.answers)
+  const answersProperty = asRecord(directProperties?.answers)
   const answerProperties = asRecord(answersProperty?.properties)
   if (!answerProperties) return null
-
   const field = Object.keys(answerProperties)[0] || 'value'
   const property = asRecord(answerProperties[field])
-  if (!property) return null
-
-  const optionValues = Array.isArray(property.enum)
-    ? property.enum.filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
-    : null
-  if (!optionValues || optionValues.length === 0) return null
-
-  const prompt = getString(property.title) || interaction.message || interaction.serverName
-  if (!prompt) return null
+  if (!property || property.type !== 'string') return null
+  const options = getOptionsFromEnumSchema(property)
+  if (options.length === 0) return null
 
   return {
     field,
-    prompt,
-    description: getString(property.description),
-    options: optionValues.map((value) => ({ value, label: value })),
+    prompt: getString(property.title) || interaction.message || interaction.serverName,
+    description: getString(property.description) || interaction.message,
+    options,
     defaultValue: getString(property.default),
-    answerField: field,
   }
 }
 
-function getDefaultAnswer(question: AskUserQuestionSingleSelect | null): string {
+const genericSingleSelect = computed(() => parseGenericSingleSelect(props.interaction))
+const rendererType = computed<RendererType>(() => {
+  if (props.interaction.mode === 'url') return 'url'
+  if (genericSingleSelect.value) return 'single_select'
+  return 'generic_json_fallback'
+})
+
+const title = computed(() => genericSingleSelect.value?.prompt || props.interaction.message || props.interaction.serverName || 'Interaction required')
+const description = computed(() => genericSingleSelect.value?.description || props.interaction.message || '')
+const interactionUrl = computed(() => props.interaction.url)
+const requestedSchemaText = computed(() => props.interaction.requestedSchema ? stringifyStructuredValue(props.interaction.requestedSchema) : '')
+const genericHint = computed(() => rendererType.value === 'url'
+  ? 'Open the interaction URL and complete the requested step, then confirm or provide any follow-up details here.'
+  : '当前提供最小闭环输入。可直接填写 JSON；若不是 JSON，将作为 value 字段提交。')
+const genericPlaceholder = computed(() =>
+  rendererType.value === 'url'
+    ? '可填写结果说明，或直接留空后提交确认。'
+    : '{"key":"value"} 或直接输入文本'
+)
+
+function getDefaultAnswer(question: { defaultValue?: string; options: InteractiveOption[] } | null): string {
   if (!question) return ''
   const matchedDefault = question.defaultValue && question.options.some((option) => option.value === question.defaultValue)
     ? question.defaultValue
@@ -78,46 +108,20 @@ function getDefaultAnswer(question: AskUserQuestionSingleSelect | null): string 
   return matchedDefault || question.options[0]?.value || ''
 }
 
-const askUserQuestion = computed(() => parseAskUserQuestionSingleSelect(props.interaction))
-const title = computed(() => {
-  if (props.interaction.kind === 'ask_user_question') {
-    return props.interaction.prompt || 'Question required'
-  }
-  return askUserQuestion.value?.prompt || props.interaction.message || props.interaction.serverName || 'Interaction required'
-})
-const description = computed(() => {
-  if (props.interaction.kind === 'ask_user_question') {
-    return props.interaction.description || ''
-  }
-  return askUserQuestion.value?.description || props.interaction.message || ''
-})
-const interactionUrl = computed(() => props.interaction.kind === 'elicitation' ? props.interaction.url : undefined)
-const requestedSchemaText = computed(() => props.interaction.kind === 'elicitation' && props.interaction.requestedSchema ? stringifyStructuredValue(props.interaction.requestedSchema) : '')
-const genericHint = computed(() => props.interaction.kind === 'elicitation' && props.interaction.mode === 'url'
-  ? 'Open the interaction URL and complete the requested step, then submit or cancel here.'
-  : '当前提供最小闭环输入。可直接填写 JSON；若不是 JSON，将作为 value 字段提交。')
-
-function submitAskUserQuestion() {
-  if (!askUserQuestion.value) return
+function submitGenericSingleSelect() {
+  if (!genericSingleSelect.value) return
   session.respondToInteraction({
-    kind: 'ask_user_question',
+    kind: 'elicitation',
     action: 'accept',
     content: {
-      answers: {
-        [askUserQuestion.value.answerField]: elicitationAnswer.value,
-      },
+      [genericSingleSelect.value.field]: selectValue.value,
     },
   })
-  elicitationAnswer.value = ''
+  selectValue.value = ''
 }
 
-function submitElicitation() {
-  if (askUserQuestion.value) {
-    submitAskUserQuestion()
-    return
-  }
-
-  const text = elicitationInput.value.trim()
+function submitGenericFallback() {
+  const text = genericInput.value.trim()
   if (!text) {
     session.respondToInteraction({ kind: 'elicitation', action: 'accept', content: {} })
     return
@@ -141,14 +145,22 @@ function submitElicitation() {
     })
   }
 
-  elicitationInput.value = ''
+  genericInput.value = ''
+}
+
+function submitCurrent() {
+  if (rendererType.value === 'single_select') {
+    submitGenericSingleSelect()
+    return
+  }
+  submitGenericFallback()
 }
 
 watch(
   () => props.interaction.id,
   () => {
-    elicitationInput.value = ''
-    elicitationAnswer.value = getDefaultAnswer(askUserQuestion.value)
+    genericInput.value = ''
+    selectValue.value = getDefaultAnswer(genericSingleSelect.value)
   },
   { immediate: true },
 )
@@ -178,28 +190,28 @@ watch(
       </a>
     </TimelineCliSubrow>
 
-    <template v-if="askUserQuestion">
+    <template v-if="rendererType === 'single_select' && genericSingleSelect">
       <label
-        v-for="option in askUserQuestion.options"
-        :key="`${interaction.id}-${askUserQuestion.answerField}-${option.value}`"
+        v-for="option in genericSingleSelect.options"
+        :key="`${interaction.id}-${option.value}`"
         class="flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 text-[12px] leading-5 transition-colors"
-        :class="elicitationAnswer === option.value
+        :class="selectValue === option.value
           ? 'border-amber-300 bg-white/90 text-slate-700'
           : 'border-amber-100/80 bg-white/65 text-slate-500 hover:border-amber-200 hover:bg-white/80'"
       >
         <input
-          v-model="elicitationAnswer"
+          v-model="selectValue"
           type="radio"
-          :name="`${interaction.id}-${askUserQuestion.answerField}`"
+          :name="`${interaction.id}`"
           class="mt-1"
           :value="option.value"
         >
         <span class="min-w-0 flex-1 text-slate-700">{{ option.label }}</span>
       </label>
       <div class="flex gap-3 text-sm">
-        <button class="timeline-cli-button text-slate-700" @click="submitAskUserQuestion">Submit</button>
-        <button class="timeline-cli-button" @click="session.respondToInteraction({ kind: 'ask_user_question', action: 'decline' })">Decline</button>
-        <button class="timeline-cli-button" @click="session.respondToInteraction({ kind: 'ask_user_question', action: 'cancel' })">Cancel interaction</button>
+        <button class="timeline-cli-button text-slate-700" @click="submitCurrent">Submit</button>
+        <button class="timeline-cli-button" @click="session.respondToInteraction({ kind: 'elicitation', action: 'decline' })">Decline</button>
+        <button class="timeline-cli-button" @click="session.respondToInteraction({ kind: 'elicitation', action: 'cancel' })">Cancel interaction</button>
       </div>
     </template>
 
@@ -213,13 +225,13 @@ watch(
       <TimelineCliSubrow no-prefix>
         <div class="min-w-0 flex-1 space-y-3">
           <textarea
-            v-model="elicitationInput"
+            v-model="genericInput"
             rows="4"
             class="w-full resize-y rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400"
-            placeholder='{"key":"value"} 或直接输入文本'
+            :placeholder="genericPlaceholder"
           />
           <div class="flex gap-3 text-sm">
-            <button class="timeline-cli-button text-slate-700" @click="submitElicitation">Submit</button>
+            <button class="timeline-cli-button text-slate-700" @click="submitCurrent">Submit</button>
             <button class="timeline-cli-button" @click="session.respondToInteraction({ kind: 'elicitation', action: 'decline' })">Decline</button>
             <button class="timeline-cli-button" @click="session.respondToInteraction({ kind: 'elicitation', action: 'cancel' })">Cancel interaction</button>
           </div>

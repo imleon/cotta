@@ -6,6 +6,8 @@ import type {
   ControlTransactionSummary,
   DisplayItem,
   GroupedToolUseDisplayItem,
+  LaneKind,
+  LiveLaneKind,
   PendingInteraction,
   PermissionSuggestion,
   SessionBindingStatus,
@@ -22,12 +24,12 @@ import type {
   TranscriptAtom,
 } from '../../../shared/message-types.js'
 import {
+  classifySdkMessageLane,
   getSdkMessageLayer,
-  isBusinessSdkMessage,
 } from '../../../shared/message-types.js'
 import {
-  getHiddenAtomsForDebug,
   buildDisplayItems,
+  buildHistoryDisplayItems,
   buildTranscriptAtom,
 } from '../../../shared/transcript-display.js'
 import {
@@ -75,6 +77,13 @@ interface SessionBindingStatusResponse {
 interface SessionBindingsListResponse {
   bindings?: SessionBindingStatusResponse[]
 }
+
+type RuntimeSdkMessageEvent = Extract<SessionEvent, { type: 'session.sdk.message' }>
+type LaneBucket<T> = {
+  lane: LaneKind
+  items: T[]
+}
+type LiveLaneBuckets = Record<LiveLaneKind, RuntimeSdkMessageEvent[]>
 
 const AUTH_TOKEN_STORAGE_KEY = 'cotta-auth-token'
 const DEFAULT_HISTORY_PAGE_SIZE = 100
@@ -339,20 +348,85 @@ export const useSessionStore = defineStore('session', () => {
   const isAwaitingInteraction = computed(() => pendingInteraction.value?.status === 'pending')
   const hasActiveRun = computed(() => awaitingRunStart || activeRunId.value !== null)
   const bindingSummary = computed(() => bindingStatus.value?.binding?.sessionId || '未绑定')
-  const observabilityEvents = computed(() => eventLog.value.filter((event) => {
+  const sdkMessageLaneBuckets = computed(() => {
+    const user: RuntimeSdkMessageEvent[] = []
+    const liveUser: RuntimeSdkMessageEvent[] = []
+    const streamEvent: RuntimeSdkMessageEvent[] = []
+    const assistant: RuntimeSdkMessageEvent[] = []
+    const system: RuntimeSdkMessageEvent[] = []
+    const result: RuntimeSdkMessageEvent[] = []
+    const toolProgress: RuntimeSdkMessageEvent[] = []
+    const toolUseSummary: RuntimeSdkMessageEvent[] = []
+    const promptSuggestion: RuntimeSdkMessageEvent[] = []
+    const session: RuntimeSdkMessageEvent[] = []
+
+    for (const event of eventLog.value) {
+      const classified = classifySdkMessageLane(event.payload)
+      switch (classified.lane) {
+        case 'user':
+          user.push(event)
+          break
+        case 'live':
+          switch (classified.liveKind) {
+            case 'user':
+              liveUser.push(event)
+              break
+            case 'stream_event':
+              streamEvent.push(event)
+              break
+            case 'assistant':
+              assistant.push(event)
+              break
+            case 'system':
+              system.push(event)
+              break
+            case 'result':
+              result.push(event)
+              break
+            case 'tool_progress':
+              toolProgress.push(event)
+              break
+            case 'tool_use_summary':
+              toolUseSummary.push(event)
+              break
+            case 'prompt_suggestion':
+              promptSuggestion.push(event)
+              break
+            default:
+              break
+          }
+          break
+        case 'session':
+          session.push(event)
+          break
+        default:
+          break
+      }
+    }
+
+    return {
+      user,
+      live: {
+        user: liveUser,
+        stream_event: streamEvent,
+        assistant,
+        system,
+        result,
+        tool_progress: toolProgress,
+        tool_use_summary: toolUseSummary,
+        prompt_suggestion: promptSuggestion,
+      } satisfies LiveLaneBuckets,
+      session,
+    }
+  })
+  const userLaneEvents = computed(() => sdkMessageLaneBuckets.value.user)
+  const liveLaneEvents = computed(() => sdkMessageLaneBuckets.value.live)
+  const sessionLaneEvents = computed(() => sdkMessageLaneBuckets.value.session)
+  const observabilityEvents = computed(() => sessionLaneEvents.value.filter((event) => {
     if (getSdkMessageLayer(event.payload) !== 'debug-observability') return false
     return !(event.payload?.type === 'system' && event.payload?.subtype === 'init')
   }))
   const debugTimelineVisible = ref(false)
-  const historyAtoms = computed<TranscriptAtom[]>(() =>
-    historyMessages.value.map((message, index) => buildTranscriptAtom(message, {
-      source: 'history',
-      sourceIndex: index,
-      timestamp: message.timestamp,
-      optimistic: Boolean(message.optimistic),
-      ...(message.localId ? { localId: message.localId } : {}),
-    }))
-  )
   const liveAssistantResponseIdsCoveredByPreview = computed<Set<string>>(() => {
     const ids = new Set<string>()
     for (const preview of Object.values(streamPreviewStates.value)) {
@@ -363,9 +437,22 @@ export const useSessionStore = defineStore('session', () => {
     }
     return ids
   })
+  const userLaneAtoms = computed<TranscriptAtom[]>(() =>
+    userLaneEvents.value
+      .map((event, index) => {
+        const message = getTimelineMessageFromEvent(event)
+        if (!message) return null
+        return buildTranscriptAtom(message, {
+          source: 'live',
+          sourceIndex: index,
+          timestamp: typeof event.receivedAt === 'number' ? event.receivedAt : message.timestamp,
+          sequence: event.sequence,
+        })
+      })
+      .filter((atom): atom is TranscriptAtom => atom !== null && atom.semanticKind !== 'meta')
+  )
   const liveAtoms = computed<TranscriptAtom[]>(() =>
-    eventLog.value
-      .filter((event) => isBusinessSdkMessage(event.payload))
+    [...liveLaneEvents.value.user, ...liveLaneEvents.value.assistant]
       .map((event, index) => {
         const message = getTimelineMessageFromEvent(event)
         if (!message) return null
@@ -390,41 +477,31 @@ export const useSessionStore = defineStore('session', () => {
 
 
 
-  const defaultTimelineItems = computed<DisplayItem[]>(() =>
-    buildDisplayItems([...historyAtoms.value, ...liveAtoms.value], {
+  const historyTimelineItems = computed<DisplayItem[]>(() =>
+    buildHistoryDisplayItems(historyMessages.value, {
       mode: 'default',
       includeHiddenAtoms: false,
     })
   )
-  const attachedHiddenAtomIds = computed<Set<string>>(() => {
-    const ids = new Set<string>()
-    for (const item of defaultTimelineItems.value) {
-      if (item.kind === 'assistant' && item.hiddenAtomIds?.length) {
-        for (const atomId of item.hiddenAtomIds) ids.add(atomId)
-      }
-    }
-    return ids
-  })
-  const hiddenTimelineItems = computed<TimelineRenderableItem[]>(() =>
-    getHiddenAtomsForDebug([...historyAtoms.value, ...liveAtoms.value], {
+  const userTimelineItems = computed<DisplayItem[]>(() =>
+    buildDisplayItems(userLaneAtoms.value, {
       mode: 'default',
-      includeHiddenAtoms: true,
+      includeHiddenAtoms: false,
     })
-      .filter((atom) => !attachedHiddenAtomIds.value.has(atom.id))
-      .filter((atom) => atom.semanticKind !== 'thinking' || Boolean(atom.assistant.stopReason))
-      .map((atom) => ({
-        kind: 'hidden_debug_atom' as const,
-        id: `hidden-${atom.id}`,
-        key: `hidden-${atom.id}`,
-        timestamp: atom.order.timestamp,
-        atomIds: [atom.id],
-        atom,
-        reason: atom.semanticKind === 'meta'
-          ? 'meta'
-          : atom.semanticKind === 'summary'
-            ? 'summary'
-            : 'redacted_thinking',
-      }))
+  )
+  const liveTimelineItems = computed<DisplayItem[]>(() =>
+    buildDisplayItems(liveAtoms.value, {
+      mode: 'default',
+      includeHiddenAtoms: false,
+    })
+  )
+  const defaultTimelineItems = computed<DisplayItem[]>(() =>
+    [...historyTimelineItems.value, ...userTimelineItems.value, ...liveTimelineItems.value]
+      .slice()
+      .sort((left, right) => {
+        if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp
+        return left.key.localeCompare(right.key)
+      })
   )
   const livePreviewItems = computed<TimelineLivePreviewItem[]>(() =>
     Object.entries(streamPreviewStates.value)
@@ -457,7 +534,6 @@ export const useSessionStore = defineStore('session', () => {
   )
   const timeline = computed<TimelineRenderableItem[]>(() => {
     const visibleItems = defaultTimelineItems.value
-    const debugOnlyHiddenItems = debugTimelineVisible.value ? hiddenTimelineItems.value : []
     const { items: itemsWithOverlays, unattachedOverlays } = attachOverlaysToDisplayItems(
       visibleItems,
       livePreviewItems.value,
@@ -472,7 +548,7 @@ export const useSessionStore = defineStore('session', () => {
           timestamp: Math.max(overlay.timestamp, lastVisibleTimestamp + index + 1),
         }))
 
-    return [...itemsWithOverlays, ...debugOnlyHiddenItems, ...positionedUnattachedOverlays]
+    return [...itemsWithOverlays, ...positionedUnattachedOverlays]
       .slice()
       .sort((left, right) => {
         if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp
@@ -1330,7 +1406,8 @@ export const useSessionStore = defineStore('session', () => {
         eventLog.value = eventLog.value.filter((event) => {
           if ('sessionId' in event && event.sessionId && event.sessionId !== id) return true
           if (event.type !== 'session.sdk.message') return false
-          return !isBusinessSdkMessage(event.payload)
+          const classified = classifySdkMessageLane(event.payload)
+          return classified.lane !== 'user' && !(classified.lane === 'live' && (classified.liveKind === 'user' || classified.liveKind === 'assistant'))
         })
         streamPreviewStates.value = {}
         streamAnimationCursors.value = {}
@@ -1393,31 +1470,9 @@ export const useSessionStore = defineStore('session', () => {
     }))
   }
 
-  function respondToInteraction(response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } | { kind: 'ask_user_question'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
-    if (response.kind === 'permission') {
-      respondToPermission(response.decision, response.selectedSuggestion, response.content)
-      return
-    }
-    if (response.kind === 'ask_user_question') {
-      respondToElicitation({
-        action: response.action,
-        ...(response.content ? { content: response.content } : {}),
-      })
-      return
-    }
-    respondToElicitation({
-      action: response.action,
-      ...(response.content ? { content: response.content } : {}),
-    })
-  }
-
-  function respondToPermission(
-    decision: 'approve' | 'deny',
-    selectedSuggestion?: PermissionSuggestion | null,
-    content?: Record<string, string | number | boolean | string[]>
-  ) {
-    if (!ws || ws.readyState !== WebSocket.OPEN || !pendingInteraction.value || pendingInteraction.value.kind !== 'permission' || !activeRunId.value) {
-      logger.warn('chat:permission:blocked', {
+  function respondToInteraction(response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !pendingInteraction.value || !activeRunId.value) {
+      logger.warn('chat:interactive:blocked', {
         hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),
         interactionKind: pendingInteraction.value?.kind,
         activeRunId: shortId(activeRunId.value),
@@ -1425,49 +1480,34 @@ export const useSessionStore = defineStore('session', () => {
       return
     }
 
-    logger.info('chat:permission:respond', {
-      decision,
-      selectedAction: selectedSuggestion?.action,
+
+    logger.info('chat:interactive:respond', {
+      kind: response.kind,
       interactionId: shortId(pendingInteraction.value.id),
       runId: shortId(activeRunId.value),
     })
+
     ws.send(
       JSON.stringify({
-        action: 'permission.respond',
+        action: 'interactive.respond',
         runId: activeRunId.value,
-        permissionId: pendingInteraction.value.id,
-        decision,
-        ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
-        ...(content ? { content } : {}),
+        interactionId: pendingInteraction.value.id,
+        kind: response.kind,
+        response: response.kind === 'permission'
+          ? {
+              decision: response.decision,
+              ...(response.selectedSuggestion !== undefined ? { selectedSuggestion: response.selectedSuggestion } : {}),
+              ...(response.content ? { content: response.content } : {}),
+            }
+          : {
+              action: response.action,
+              ...(response.content ? { content: response.content } : {}),
+            },
+        ...(currentSessionId.value ? { sessionId: currentSessionId.value } : {}),
       })
     )
   }
 
-  function respondToElicitation(response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
-    if (!ws || ws.readyState !== WebSocket.OPEN || !pendingInteraction.value || pendingInteraction.value.kind !== 'elicitation' || !activeRunId.value) {
-      logger.warn('chat:elicitation:blocked', {
-        hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),
-        interactionKind: pendingInteraction.value?.kind,
-        activeRunId: shortId(activeRunId.value),
-      })
-      return
-    }
-
-    logger.info('chat:elicitation:respond', {
-      action: response.action,
-      interactionId: shortId(pendingInteraction.value.id),
-      runId: shortId(activeRunId.value),
-    })
-    ws.send(
-      JSON.stringify({
-        action: 'elicitation.respond',
-        runId: activeRunId.value,
-        requestId: pendingInteraction.value.id,
-        responseAction: response.action,
-        ...(response.content ? { content: response.content } : {}),
-      })
-    )
-  }
 
   async function initialize() {
     logger.info('initialize:start', {
@@ -1546,7 +1586,11 @@ export const useSessionStore = defineStore('session', () => {
   return {
     timeline,
     historyMessages,
-    historyAtoms,
+    historyTimelineItems,
+    userLaneEvents,
+    userTimelineItems,
+    liveLaneEvents,
+    sessionLaneEvents,
     liveAtoms,
     streamPreviewStates,
     streamAnimationCursors,
@@ -1587,8 +1631,6 @@ export const useSessionStore = defineStore('session', () => {
     isAwaitingInteraction,
     connect,
     sendMessage,
-    respondToPermission,
-    respondToElicitation,
     respondToInteraction,
     requestControl,
     fetchSessions,

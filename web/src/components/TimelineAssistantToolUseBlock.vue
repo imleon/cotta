@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSessionStore } from '../stores/session'
-import type { DisplayFragmentToolUse, PendingElicitationInteraction, PendingPermissionInteraction } from '../../../shared/message-types.js'
+import type { DisplayFragmentToolUse, SdkElicitationInteraction, PermissionInteraction } from '../../../shared/message-types.js'
 import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
 import TimelineCanUseToolInteractionBlock from './TimelineCanUseToolInteractionBlock.vue'
 import TimelineElicitationInteractionBlock from './TimelineElicitationInteractionBlock.vue'
@@ -41,14 +41,14 @@ const statusDotClass = computed(() => {
   }
 })
 
-const pendingPermissionInteraction = computed<PendingPermissionInteraction | null>(() => {
+const pendingPermissionInteraction = computed<PermissionInteraction | null>(() => {
   const interaction = session.pendingInteraction
   if (interaction?.kind !== 'permission') return null
   if (!interaction.toolUseId || interaction.toolUseId !== props.fragment.toolUseId) return null
   return interaction
 })
 
-const pendingElicitationInteraction = computed<PendingElicitationInteraction | null>(() => {
+const pendingElicitationInteraction = computed<SdkElicitationInteraction | null>(() => {
   const interaction = session.pendingInteraction
   if (interaction?.kind !== 'elicitation') return null
   if (!interaction.toolUseId || interaction.toolUseId !== props.fragment.toolUseId) return null

@@ -161,33 +161,10 @@ export class RunCoordinator {
     return true
   }
 
-  respondToPermission(runId: string, permissionId: string, decision: PermissionDecision, selectedSuggestion?: PermissionSuggestion | null, content?: Record<string, string | number | boolean | string[]>): boolean {
+  respondToInteractive(runId: string, requestId: string, response: { kind: 'permission'; decision: PermissionDecision; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: ElicitationAction; content?: Record<string, unknown> }): boolean {
     const record = this.runs.get(runId)
     if (!record?.handle) return false
-    record.handle.respondToControl(permissionId, {
-      kind: 'permission',
-      decision,
-      ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
-      ...(content ? { content } : {}),
-    })
-    return true
-  }
-
-  respondToElicitation(runId: string, requestId: string, action: ElicitationAction, content?: Record<string, unknown>): boolean {
-    const record = this.runs.get(runId)
-    if (!record?.handle) return false
-    record.handle.respondToControl(requestId, {
-      kind: 'elicitation',
-      action,
-      ...(content ? { content } : {}),
-    })
-    return true
-  }
-
-  respondToControl(runId: string, requestId: string, response: { kind: 'permission'; decision: PermissionDecision; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: ElicitationAction; content?: Record<string, unknown> }): boolean {
-    const record = this.runs.get(runId)
-    if (!record?.handle) return false
-    record.handle.respondToControl(requestId, response)
+    record.handle.respondToInteractive(requestId, response)
     return true
   }
 

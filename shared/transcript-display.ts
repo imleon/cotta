@@ -23,6 +23,7 @@ import {
   getTranscriptStopReason,
   getTranscriptToolResultIds,
   getTranscriptToolUseIds,
+  hasRenderableTranscriptContent,
   isTranscriptMetaMessage,
   isTranscriptRedactedThinkingMessage,
   isTranscriptSummaryMessage,
@@ -241,6 +242,9 @@ function createFragments(
       if (isTranscriptRedactedThinkingMessage(message)) {
         continue
       }
+      if (!block.text?.trim()) {
+        continue
+      }
       fragments.push({
         type: 'thinking',
         text: block.text,
@@ -277,8 +281,13 @@ function createFragments(
     }
   }
 
-  if (isTranscriptRedactedThinkingMessage(message) && fragments.length === 0) {
-    return fragments
+  if (fragments.length === 0) {
+    if (isTranscriptRedactedThinkingMessage(message)) {
+      return fragments
+    }
+    if (message.blocks?.length && !hasRenderableTranscriptContent(message.blocks)) {
+      return fragments
+    }
   }
 
   if (fragments.length === 0 && message.content) {
@@ -319,6 +328,38 @@ function createUserDisplayItem(atom: TranscriptAtom): UserDisplayItem {
     displayKind: getUserDisplayKind(atom.message),
     debug: getDebugAtomMeta(atom),
   }
+}
+
+function makeHistoryItemId(message: SessionMessage, index: number): string {
+  return getTranscriptMessageId(message) ?? `history-item-${index}`
+}
+
+function buildHistoryAtom(message: SessionMessage, index: number): TranscriptAtom {
+  const timestamp = typeof message.timestamp === 'number' ? message.timestamp : Date.now()
+  return {
+    id: makeHistoryItemId(message, index),
+    source: 'history',
+    order: {
+      timestamp,
+      sourceIndex: index,
+    },
+    message,
+    role: message.role,
+    semanticKind: getTranscriptSemanticKind(message),
+    linkage: getLinkage(message),
+    assistant: {
+      stopReason: getTranscriptStopReason(message),
+      model: getTranscriptAssistantModel(message),
+      usage: getTranscriptAssistantUsage(message),
+    },
+    meta: {
+      raw: message.raw,
+    },
+  }
+}
+
+function buildHistoryAtoms(messages: SessionMessage[]): TranscriptAtom[] {
+  return messages.map((message, index) => buildHistoryAtom(message, index))
 }
 
 function createSummaryDisplayItem(atom: TranscriptAtom, mode: 'default' | 'transcript'): SummaryDisplayItem {
@@ -872,4 +913,10 @@ export function buildDisplayItems(atoms: TranscriptAtom[], options: BuildDisplay
   const mode = options.mode ?? 'default'
   const orderedAtoms = orderAtomsForAssembly(atoms, { mode, includeHiddenAtoms: options.includeHiddenAtoms })
   return applyDisplayPoliciesAndTransforms(orderedAtoms, mode)
+}
+
+export function buildHistoryDisplayItems(messages: SessionMessage[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {
+  const atoms = buildHistoryAtoms(messages)
+  const items = buildDisplayItems(atoms, options)
+  return collapseLowSignalTools(items)
 }

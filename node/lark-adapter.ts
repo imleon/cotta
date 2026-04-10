@@ -419,7 +419,10 @@ async function handleInteractionCommand(
         decision: command.decision,
       },
     })
-    const ok = coordinator.respondToPermission(command.runId, command.interactionId, command.decision)
+    const ok = coordinator.respondToInteractive(command.runId, command.interactionId, {
+      kind: 'permission',
+      decision: command.decision,
+    })
     await sendLarkTextMessage(
       conversationKey,
       ok
@@ -443,7 +446,11 @@ async function handleInteractionCommand(
       ...(command.content ? { content: command.content } : {}),
     },
   })
-  const ok = coordinator.respondToElicitation(command.runId, command.interactionId, command.action, command.content)
+  const ok = coordinator.respondToInteractive(command.runId, command.interactionId, {
+    kind: 'elicitation',
+    action: command.action,
+    ...(command.content ? { content: command.content } : {}),
+  })
   await sendLarkTextMessage(
     conversationKey,
     ok
@@ -861,7 +868,10 @@ async function processLarkPermissionAction(coordinator: RunCoordinator, data: La
     }
   }
 
-  const ok = coordinator.respondToPermission(runId, interactionId, decision)
+  const ok = coordinator.respondToInteractive(runId, interactionId, {
+    kind: 'permission',
+    decision,
+  })
   const resolvedCard = buildPermissionResolvedCard(decision, ok)
   return {
     ...(ok
@@ -1135,17 +1145,6 @@ function summarizePermissionInteraction(runId: string, interaction: Extract<Pend
   ].join('\n')
 }
 
-function summarizeAskUserQuestionInteraction(runId: string, interaction: Extract<PendingInteraction, { kind: 'ask_user_question' }>): string {
-  const optionsHint = interaction.options.map((option) => option.label).join(' / ')
-  return [
-    interaction.prompt || 'Question required',
-    optionsHint ? `Options: ${optionsHint}` : '',
-    `Accept: /elicitation ${runId} ${interaction.id} accept {"answers":{"${interaction.field}":"<value>"}}`,
-    `Decline: /elicitation ${runId} ${interaction.id} decline`,
-    `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
-  ].filter(Boolean).join('\n')
-}
-
 function summarizeElicitationInteraction(runId: string, interaction: Extract<PendingInteraction, { kind: 'elicitation' }>): string {
   const schemaHint = interaction.requestedSchema
     ? `\nSchema hint: ${JSON.stringify(interaction.requestedSchema)}`
@@ -1162,9 +1161,6 @@ function summarizeElicitationInteraction(runId: string, interaction: Extract<Pen
 export function summarizeLarkInteraction(runId: string, interaction: PendingInteraction): string {
   if (interaction.kind === 'permission') {
     return summarizePermissionInteraction(runId, interaction)
-  }
-  if (interaction.kind === 'ask_user_question') {
-    return summarizeAskUserQuestionInteraction(runId, interaction)
   }
   return summarizeElicitationInteraction(runId, interaction)
 }

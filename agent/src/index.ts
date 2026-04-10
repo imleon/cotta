@@ -1,10 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { query, type CanUseTool, type ElicitationRequest, type ElicitationResult, type PermissionResult, type PermissionUpdate, type Query, type SDKControlRequest, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
-  AskUserQuestionRequestData,
   ControlDirection,
   ControlTransaction,
-  InteractiveOption,
   PendingInteraction,
   PermissionSuggestion,
   RunnerAgentInput,
@@ -250,52 +248,45 @@ function handleControlRespondCommand(requestId: string, response: ControlRespons
   }
 }
 
-type ControlResponseCommand = Extract<RunnerCommand, { type: 'control.respond' }>['response']
+type ControlResponseCommand = Extract<RunnerCommand, { type: 'interactive.respond' }>['response']
 type HostControlRequestCommand = Extract<RunnerCommand, { type: 'control.request' }>['request']
 
-function createInteractiveControlRequest(input: {
-  requestId: string
-  subtype: 'can_use_tool' | 'elicitation'
-  payload: PermissionRequest | ElicitationRequest
-  interaction: PendingInteraction
-}): { envelope: SdkControlRequestEnvelope; transaction: ControlTransaction } {
-  if (input.subtype === 'can_use_tool') {
-    const payload = input.payload as PermissionRequest
-    const envelope: SdkControlRequestEnvelope = {
-      type: 'control_request',
-      request_id: input.requestId,
-      request: {
-        subtype: 'can_use_tool',
-        tool_name: payload.toolName,
-        input: payload.input,
-        ...(payload.permissionSuggestions ? { permission_suggestions: payload.permissionSuggestions as unknown as Record<string, unknown>[] } : {}),
-        ...(payload.blockedPath ? { blocked_path: payload.blockedPath } : {}),
-        ...(payload.decisionReason ? { decision_reason: payload.decisionReason } : {}),
-        ...(payload.title ? { title: payload.title } : {}),
-        ...(payload.displayName ? { display_name: payload.displayName } : {}),
-        tool_use_id: payload.permissionId,
-        ...(payload.agentId ? { agent_id: payload.agentId } : {}),
-        ...(payload.description ? { description: payload.description } : {}),
-      },
-    }
-    return {
-      envelope,
-      transaction: createControlTransaction({
-        requestId: input.requestId,
-        subtype: input.subtype,
-        direction: 'sdk_to_host',
-        status: 'awaiting_user',
-        interaction: input.interaction,
-        request: envelope,
-        payload,
-      }),
-    }
-  }
-
-  const payload = input.payload as ElicitationRequest
+function createPermissionControlRequest(requestId: string, payload: PermissionRequest, interaction: Extract<PendingInteraction, { kind: 'permission' }>): { envelope: SdkControlRequestEnvelope; transaction: ControlTransaction } {
   const envelope: SdkControlRequestEnvelope = {
     type: 'control_request',
-    request_id: input.requestId,
+    request_id: requestId,
+    request: {
+      subtype: 'can_use_tool',
+      tool_name: payload.toolName,
+      input: payload.input,
+      ...(payload.permissionSuggestions ? { permission_suggestions: payload.permissionSuggestions as unknown as Record<string, unknown>[] } : {}),
+      ...(payload.blockedPath ? { blocked_path: payload.blockedPath } : {}),
+      ...(payload.decisionReason ? { decision_reason: payload.decisionReason } : {}),
+      ...(payload.title ? { title: payload.title } : {}),
+      ...(payload.displayName ? { display_name: payload.displayName } : {}),
+      tool_use_id: payload.permissionId,
+      ...(payload.agentId ? { agent_id: payload.agentId } : {}),
+      ...(payload.description ? { description: payload.description } : {}),
+    },
+  }
+  return {
+    envelope,
+    transaction: createControlTransaction({
+      requestId,
+      subtype: 'can_use_tool',
+      direction: 'sdk_to_host',
+      status: 'awaiting_user',
+      interaction,
+      request: envelope,
+      payload,
+    }),
+  }
+}
+
+function createElicitationControlRequest(requestId: string, payload: ElicitationRequest, interaction: Extract<PendingInteraction, { kind: 'elicitation' }>): { envelope: SdkControlRequestEnvelope; transaction: ControlTransaction } {
+  const envelope: SdkControlRequestEnvelope = {
+    type: 'control_request',
+    request_id: requestId,
     request: {
       subtype: 'elicitation',
       mcp_server_name: payload.serverName,
@@ -309,68 +300,65 @@ function createInteractiveControlRequest(input: {
   return {
     envelope,
     transaction: createControlTransaction({
-      requestId: input.requestId,
-      subtype: input.subtype,
+      requestId,
+      subtype: 'elicitation',
       direction: 'sdk_to_host',
       status: 'awaiting_user',
-      interaction: input.interaction,
+      interaction,
       request: envelope,
       payload,
     }),
   }
 }
 
-function createInteractiveControlResponse(input: {
-  requestId: string
-  subtype: 'can_use_tool' | 'elicitation'
-  response: PermissionResponse | ElicitationResponse
-  interaction: PendingInteraction
-}): {
+function createPermissionControlResponse(requestId: string, response: PermissionResponse, interaction: Extract<PendingInteraction, { kind: 'permission' }>): {
   envelope: SdkControlResponseEnvelope
   respondedTransaction: ControlTransaction
   terminalTransaction: ControlTransaction
 } {
-  if (input.subtype === 'can_use_tool') {
-    const response = input.response as PermissionResponse
-    const envelope: SdkControlResponseEnvelope = {
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: input.requestId,
-        response: {
-          behavior: response.decision === 'approve' ? 'allow' : 'deny',
-          ...(response.selectedSuggestion ? { selectedSuggestion: response.selectedSuggestion } : {}),
-          ...(response.content ? { content: response.content as Record<string, unknown> } : {}),
-        },
-      },
-    }
-    const respondedTransaction = createControlTransaction({
-      requestId: input.requestId,
-      subtype: input.subtype,
-      direction: 'host_to_sdk',
-      status: 'responding',
-      interaction: input.interaction,
-      response: envelope,
-      payload: response,
-    })
-    return {
-      envelope,
-      respondedTransaction,
-      terminalTransaction: {
-        ...respondedTransaction,
-        direction: 'sdk_to_host',
-        status: 'completed',
-        updatedAt: Date.now(),
-      },
-    }
-  }
-
-  const response = input.response as ElicitationResponse
   const envelope: SdkControlResponseEnvelope = {
     type: 'control_response',
     response: {
       subtype: 'success',
-      request_id: input.requestId,
+      request_id: requestId,
+      response: {
+        behavior: response.decision === 'approve' ? 'allow' : 'deny',
+        ...(response.selectedSuggestion ? { selectedSuggestion: response.selectedSuggestion } : {}),
+        ...(response.content ? { content: response.content as Record<string, unknown> } : {}),
+      },
+    },
+  }
+  const respondedTransaction = createControlTransaction({
+    requestId,
+    subtype: 'can_use_tool',
+    direction: 'host_to_sdk',
+    status: 'responding',
+    interaction,
+    response: envelope,
+    payload: response,
+  })
+  return {
+    envelope,
+    respondedTransaction,
+    terminalTransaction: {
+      ...respondedTransaction,
+      direction: 'sdk_to_host',
+      status: 'completed',
+      updatedAt: Date.now(),
+    },
+  }
+}
+
+function createElicitationControlResponse(requestId: string, response: ElicitationResponse, interaction: Extract<PendingInteraction, { kind: 'elicitation' }>): {
+  envelope: SdkControlResponseEnvelope
+  respondedTransaction: ControlTransaction
+  terminalTransaction: ControlTransaction
+} {
+  const envelope: SdkControlResponseEnvelope = {
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: requestId,
       response: {
         action: response.action,
         ...(response.content ? { content: response.content as Record<string, unknown> } : {}),
@@ -378,11 +366,11 @@ function createInteractiveControlResponse(input: {
     },
   }
   const respondedTransaction = createControlTransaction({
-    requestId: input.requestId,
-    subtype: input.subtype,
+    requestId,
+    subtype: 'elicitation',
     direction: 'host_to_sdk',
     status: response.action === 'cancel' ? 'cancel_requested' : 'responding',
-    interaction: input.interaction,
+    interaction,
     response: envelope,
     payload: response,
   })
@@ -406,12 +394,9 @@ function emitInteractiveControlRequest(input: {
   payloadSummary: string
   toolUseId?: string
 }): void {
-  const { envelope, transaction } = createInteractiveControlRequest({
-    requestId: input.requestId,
-    subtype: input.subtype,
-    payload: input.payload,
-    interaction: input.interaction,
-  })
+  const { envelope, transaction } = input.interaction.kind === 'permission'
+    ? createPermissionControlRequest(input.requestId, input.payload as PermissionRequest, input.interaction)
+    : createElicitationControlRequest(input.requestId, input.payload as ElicitationRequest, input.interaction)
   writeTransportEvent({
     direction: 'outbound',
     eventName: input.subtype === 'can_use_tool' ? 'control.request.permission' : 'control.request.elicitation',
@@ -457,12 +442,9 @@ function emitInteractiveControlResponse(input: {
   payloadSummary: string
   toolUseId?: string
 }): void {
-  const { envelope, respondedTransaction, terminalTransaction } = createInteractiveControlResponse({
-    requestId: input.requestId,
-    subtype: input.subtype,
-    response: input.response,
-    interaction: input.interaction,
-  })
+  const { envelope, respondedTransaction, terminalTransaction } = input.interaction.kind === 'permission'
+    ? createPermissionControlResponse(input.requestId, input.response as PermissionResponse, input.interaction)
+    : createElicitationControlResponse(input.requestId, input.response as ElicitationResponse, input.interaction)
   emitControlRuntimeEvent('control.message', respondedTransaction, {
     direction: 'host_to_sdk',
     message: envelope,
@@ -783,208 +765,6 @@ function normalizeElicitationRequest(request: SDKControlRequest): PendingInterac
   }
 }
 
-type AskUserQuestionSingleSelect = {
-  field: string
-  prompt: string
-  description?: string
-  options: Array<{ value: string; label: string }>
-  defaultValue?: string
-  questions: Record<string, unknown>[]
-}
-
-type AskUserQuestionInteractiveMetadata = {
-  field: string
-  prompt: string
-  description?: string
-  options: InteractiveOption[]
-  defaultValue?: string
-  rawQuestion?: Record<string, unknown>
-}
-
-function buildAskUserQuestionInteractiveCandidate(toolName: string, toolInput: Record<string, unknown>, options: {
-  toolUseID: string
-  title?: string
-  description?: string
-}): { request: AskUserQuestionRequestData; metadata: AskUserQuestionInteractiveMetadata; toolUseId: string } | null {
-  if (toolName !== 'AskUserQuestion') return null
-  const parsedQuestion = parseAskUserQuestionSingleSelect(toolInput)
-  if (!parsedQuestion) return null
-
-  return {
-    request: {
-      field: parsedQuestion.field,
-      prompt: options.description || options.title || parsedQuestion.prompt,
-      ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
-      options: parsedQuestion.options,
-      ...(parsedQuestion.defaultValue ? { defaultValue: parsedQuestion.defaultValue } : {}),
-      ...(parsedQuestion.questions[0] ? { rawQuestion: parsedQuestion.questions[0] } : {}),
-    },
-    metadata: {
-      field: parsedQuestion.field,
-      prompt: parsedQuestion.prompt,
-      ...(parsedQuestion.description ? { description: parsedQuestion.description } : {}),
-      options: parsedQuestion.options,
-      ...(parsedQuestion.defaultValue ? { defaultValue: parsedQuestion.defaultValue } : {}),
-      ...(parsedQuestion.questions[0] ? { rawQuestion: parsedQuestion.questions[0] } : {}),
-    },
-    toolUseId: options.toolUseID,
-  }
-}
-
-function buildAskUserQuestionSdkElicitationRequest(candidate: { request: AskUserQuestionRequestData; toolUseId: string }): ElicitationRequest {
-  return {
-    elicitationId: candidate.toolUseId,
-    serverName: 'AskUserQuestion',
-    message: candidate.request.prompt,
-    requestedSchema: {
-      type: 'object',
-      properties: {
-        answers: {
-          type: 'object',
-          properties: {
-            [candidate.request.field]: {
-              type: 'string',
-              title: candidate.request.prompt,
-              ...(candidate.request.description ? { description: candidate.request.description } : {}),
-              enum: candidate.request.options.map((option) => option.value),
-              ...(candidate.request.defaultValue ? { default: candidate.request.defaultValue } : {}),
-            },
-          },
-          required: [candidate.request.field],
-        },
-      },
-      required: ['answers'],
-    },
-  }
-}
-
-function buildSdkElicitationInteractiveRequest(toolName: string, toolInput: Record<string, unknown>, options: {
-  toolUseID: string
-  title?: string
-  description?: string
-}): { request: ElicitationRequest; metadata: AskUserQuestionInteractiveMetadata } | null {
-  const candidate = buildAskUserQuestionInteractiveCandidate(toolName, toolInput, options)
-  if (!candidate) return null
-  return {
-    request: buildAskUserQuestionSdkElicitationRequest(candidate),
-    metadata: candidate.metadata,
-  }
-}
-
-
-function normalizeQuestionOption(option: unknown): { value: string; label: string } | null {
-  if (typeof option === 'string' && option.trim().length > 0) {
-    return { value: option, label: option }
-  }
-
-  const record = asRecord(option)
-  if (!record) return null
-
-  const value = getString(record.value) || getString(record.id) || getString(record.key) || getString(record.label) || getString(record.text) || getString(record.title)
-  if (!value) return null
-
-  return {
-    value,
-    label: getString(record.label) || getString(record.text) || getString(record.title) || value,
-  }
-}
-
-function getString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value : undefined
-}
-
-function getBoolean(value: unknown): boolean | undefined {
-  return typeof value === 'boolean' ? value : undefined
-}
-
-function parseAskUserQuestionSingleSelect(input: Record<string, unknown>): AskUserQuestionSingleSelect | null {
-  const questions = Array.isArray(input.questions) ? input.questions : null
-  if (!questions || questions.length !== 1) return null
-
-  const question = asRecord(questions[0])
-  if (!question) return null
-
-  const type = getString(question.type)?.toLowerCase()
-  const format = getString(question.format)?.toLowerCase()
-  const questionType = getString(question.questionType)?.toLowerCase()
-  const multiSelect = getBoolean(question.multiSelect) ?? getBoolean(question.multiple) ?? false
-  const optionsSource = Array.isArray(question.options)
-    ? question.options
-    : Array.isArray(question.choices)
-      ? question.choices
-      : Array.isArray(question.enum)
-        ? question.enum
-        : null
-  const options = (optionsSource || []).map(normalizeQuestionOption).filter((option): option is { value: string; label: string } => Boolean(option))
-
-  const isSingleSelect = !multiSelect && (
-    type === 'single_select'
-    || type === 'radio'
-    || questionType === 'single_select'
-    || questionType === 'radio'
-    || format === 'enum'
-    || options.length > 0
-  )
-
-  if (!isSingleSelect || options.length === 0) return null
-
-  const field = getString(question.name) || getString(question.key) || getString(question.id) || 'value'
-  const prompt = getString(question.question) || getString(question.title) || getString(question.label) || 'Question required'
-
-  return {
-    field,
-    prompt,
-    description: getString(question.description) || getString(question.hint) || getString(question.helpText),
-    options,
-    defaultValue: getString(question.defaultValue) || getString(question.default) || getString(question.value),
-    questions: questions.filter((item): item is Record<string, unknown> => Boolean(asRecord(item))).map((item) => item as Record<string, unknown>),
-  }
-}
-
-type AskUserQuestionToolAnswerContent = {
-  answers?: Record<string, unknown>
-}
-
-function mapAskUserQuestionResultToPermissionResult(
-  request: { toolUseID: string; originalInput: Record<string, unknown>; questionField?: string },
-  response: ElicitationResult
-): PermissionResult {
-  if (response.action === 'accept') {
-    const elicitationContent = response.content as unknown as AskUserQuestionToolAnswerContent | undefined
-    const answersRecord = elicitationContent?.answers && typeof elicitationContent.answers === 'object' && !Array.isArray(elicitationContent.answers)
-      ? elicitationContent.answers
-      : undefined
-    const answerValue = request.questionField && answersRecord
-      ? answersRecord[request.questionField]
-      : undefined
-    const answers = request.questionField && (typeof answerValue === 'string' || typeof answerValue === 'number' || typeof answerValue === 'boolean')
-      ? { [request.questionField]: String(answerValue) }
-      : {}
-
-    return {
-      behavior: 'allow',
-      updatedInput: {
-        ...request.originalInput,
-        answers,
-      },
-      toolUseID: request.toolUseID,
-      decisionClassification: 'user_temporary',
-    }
-  }
-
-  const message = response.action === 'cancel'
-    ? 'User cancelled the question.'
-    : 'User declined to answer the question.'
-
-  return {
-    behavior: 'deny',
-    message,
-    interrupt: true,
-    toolUseID: request.toolUseID,
-    decisionClassification: 'user_reject',
-  }
-}
-
 type PermissionRequest = {
   permissionId: string
   toolName: string
@@ -1009,20 +789,6 @@ type ElicitationContentValue = string | number | boolean | string[]
 type ElicitationResponse = {
   action: 'accept' | 'decline' | 'cancel'
   content?: Record<string, ElicitationContentValue>
-}
-
-type StreamAccumulatorState = {
-  textByScopeAndIndex: Map<string, string>
-  thinkingByScopeAndIndex: Map<string, string>
-  toolInputByScopeAndIndex: Map<string, string>
-}
-
-function createStreamAccumulatorState(): StreamAccumulatorState {
-  return {
-    textByScopeAndIndex: new Map(),
-    thinkingByScopeAndIndex: new Map(),
-    toolInputByScopeAndIndex: new Map(),
-  }
 }
 
 function normalizePermissionSuggestions(suggestions: PermissionUpdate[] | undefined): PermissionSuggestion[] | undefined {
@@ -1144,7 +910,7 @@ function handleCommand(command: RunnerCommand) {
     case 'run.start':
       startDeferred.resolve(command.input)
       break
-    case 'control.respond': {
+    case 'interactive.respond': {
       handleControlRespondCommand(command.requestId, command.response)
       break
     }
@@ -1297,85 +1063,6 @@ async function waitForPermission(request: PermissionRequest, signal: AbortSignal
   })
 
   return getPermissionResult(request, response)
-}
-
-async function waitForAskUserQuestion(request: AskUserQuestionRequestData, signal: AbortSignal, options: {
-  toolUseId: string
-}): Promise<ElicitationResult> {
-  const interaction: PendingInteraction = {
-    id: options.toolUseId,
-    kind: 'ask_user_question',
-    status: 'pending',
-    source: {
-      kind: 'tool',
-      toolName: 'AskUserQuestion',
-      toolUseId: options.toolUseId,
-    },
-    toolName: 'AskUserQuestion',
-    toolUseId: options.toolUseId,
-    field: request.field,
-    prompt: request.prompt,
-    ...(request.description ? { description: request.description } : {}),
-    options: request.options,
-    ...(request.defaultValue ? { defaultValue: request.defaultValue } : {}),
-    ...(request.rawQuestion ? { rawQuestion: request.rawQuestion } : {}),
-  }
-  const transportRequest = buildAskUserQuestionSdkElicitationRequest({
-    request,
-    toolUseId: options.toolUseId,
-  })
-  emitInteractiveControlRequest({
-    requestId: options.toolUseId,
-    subtype: 'elicitation',
-    interaction,
-    payload: transportRequest,
-    payloadSummary: request.prompt,
-    toolUseId: options.toolUseId,
-  })
-
-  const response = await new Promise<ElicitationResponse>((resolve, reject) => {
-    elicitationWaiters.set(options.toolUseId, resolve)
-    signal.addEventListener(
-      'abort',
-      () => {
-        elicitationWaiters.delete(options.toolUseId)
-        reject(new Error('Elicitation request aborted'))
-      },
-      { once: true }
-    )
-  })
-
-  const resolvedInteraction: PendingInteraction = {
-    ...interaction,
-    status: response.action === 'cancel' ? 'cancelled' : 'resolved',
-  }
-  logAgent('info', 'agent:ask-user-question:resolved', {
-    requestId: options.toolUseId.slice(0, 8),
-    action: response.action,
-    sessionId: currentSessionId?.slice(0, 8),
-  })
-  emitInteractiveControlResponse({
-    requestId: options.toolUseId,
-    subtype: 'elicitation',
-    interaction: resolvedInteraction,
-    response,
-    payloadSummary: response.action,
-    toolUseId: options.toolUseId,
-  })
-
-  if (response.action === 'cancel') {
-    return {
-      action: 'cancel',
-      ...(response.content ? { content: response.content } : {}),
-    }
-  }
-  if (response.action === 'decline') {
-    return { action: 'decline' }
-  }
-  return {
-    action: 'accept',
-    ...(response.content ? { content: response.content } : {}),
-  }
 }
 
 async function waitForElicitation(request: ElicitationRequest, signal: AbortSignal, source?: PendingInteraction['source']): Promise<ElicitationResult> {
@@ -1545,24 +1232,6 @@ async function main(): Promise<void> {
   try {
     const canUseTool: CanUseTool = async (toolName, toolInput, options) => {
       const permissionId = options.toolUseID || randomUUID()
-      const askUserQuestionCandidate = buildAskUserQuestionInteractiveCandidate(toolName, toolInput, {
-        toolUseID: permissionId,
-        title: options.title,
-        description: options.description,
-      })
-      if (askUserQuestionCandidate) {
-        const askUserQuestionResult = await waitForAskUserQuestion(askUserQuestionCandidate.request, options.signal, {
-          toolUseId: permissionId,
-        })
-        return mapAskUserQuestionResultToPermissionResult(
-          {
-            toolUseID: permissionId,
-            originalInput: toolInput,
-            questionField: askUserQuestionCandidate.metadata.field,
-          },
-          askUserQuestionResult,
-        )
-      }
       return waitForPermission(
         {
           permissionId,

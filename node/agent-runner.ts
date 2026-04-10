@@ -33,9 +33,7 @@ export interface AgentRunResult {
 
 export interface AgentRunHandle {
   done: Promise<AgentRunResult>
-  respondToPermission: (permissionId: string, decision: 'approve' | 'deny', selectedSuggestion?: PermissionSuggestion | null, content?: Record<string, string | number | boolean | string[]>) => void
-  respondToElicitation: (requestId: string, response: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) => void
-  respondToControl: (requestId: string, response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) => void
+  respondToInteractive: (requestId: string, response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) => void
   requestControl: (requestId: string, request: { subtype: 'interrupt' } | { subtype: 'get_context_usage' } | { subtype: 'mcp_status' }) => void
   cancelControl: (requestId: string) => void
   cancel: () => void
@@ -418,31 +416,8 @@ export function createAgentRun(input: AgentInput, onEvent: AgentEventHandler, si
 
   return {
     done,
-    respondToPermission(permissionId, decision, selectedSuggestion, content) {
-      writeCommand(child, {
-        type: 'control.respond',
-        requestId: permissionId,
-        response: {
-          kind: 'permission',
-          decision,
-          ...(selectedSuggestion !== undefined ? { selectedSuggestion } : {}),
-          ...(content ? { content } : {}),
-        },
-      })
-    },
-    respondToElicitation(requestId, response) {
-      writeCommand(child, {
-        type: 'control.respond',
-        requestId,
-        response: {
-          kind: 'elicitation',
-          action: response.action,
-          ...(response.content ? { content: response.content } : {}),
-        },
-      })
-    },
-    respondToControl(requestId, response) {
-      writeCommand(child, { type: 'control.respond', requestId, response })
+    respondToInteractive(requestId, response) {
+      writeCommand(child, { type: 'interactive.respond', requestId, response })
     },
     requestControl(requestId, request) {
       writeCommand(child, { type: 'control.request', requestId, request })

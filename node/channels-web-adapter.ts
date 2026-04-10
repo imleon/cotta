@@ -55,44 +55,22 @@ async function appendWebChannelLog(params: {
   }, params.runId)
 }
 
-function handlePermission(
-  ws: any,
-  coordinator: RunCoordinator,
-  runId: string,
-  permissionId: string,
-  decision: PermissionDecision,
-  selectedSuggestion?: PermissionSuggestion | null,
-  content?: Record<string, string | number | boolean | string[]>,
-) {
-  const ok = coordinator.respondToPermission(runId, permissionId, decision, selectedSuggestion, content)
-  if (!ok) {
-    sendSessionEvent(ws, { type: 'session.error', runId, error: 'No matching active run for permission response' })
-    return
-  }
-}
-
-function handleElicitation(ws: any, coordinator: RunCoordinator, runId: string, requestId: string, action: ElicitationAction, content: unknown) {
-  if (content !== undefined && (typeof content !== 'object' || content === null || Array.isArray(content))) {
-    sendSessionEvent(ws, { type: 'session.error', runId, error: 'Elicitation content must be an object' })
-    return
-  }
-
-  const ok = coordinator.respondToElicitation(
-    runId,
-    requestId,
-    action,
-    content && typeof content === 'object' && !Array.isArray(content)
-      ? content as Record<string, unknown>
-      : undefined,
-  )
-  if (!ok) {
-    sendSessionEvent(ws, { type: 'session.error', runId, error: 'No matching active run for elicitation response' })
-    return
-  }
-}
 
 function isStructuredResponseContent(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function handleInteractiveResponse(
+  ws: any,
+  coordinator: RunCoordinator,
+  runId: string,
+  interactionId: string,
+  response: { kind: 'permission'; decision: PermissionDecision; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: ElicitationAction; content?: Record<string, unknown> },
+) {
+  const ok = coordinator.respondToInteractive(runId, interactionId, response)
+  if (!ok) {
+    sendSessionEvent(ws, { type: 'session.error', runId, error: 'No matching active run for interactive response' })
+  }
 }
 
 function handleControlRequest(ws: any, coordinator: RunCoordinator, runId: string, request: HostControlRequest) {
@@ -163,49 +141,37 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
             return
           }
 
-          if (data.action === 'permission.respond' && data.runId && typeof data.permissionId === 'string' && (data.decision === 'approve' || data.decision === 'deny')) {
-            if (data.content !== undefined && !isStructuredResponseContent(data.content)) {
-              sendSessionEvent(ws, { type: 'session.error', runId: data.runId, error: 'Permission content must be an object' })
-              return
-            }
+          if (data.action === 'interactive.respond' && data.runId && data.interactionId && data.kind) {
             void appendWebChannelLog({
               sessionId: typeof data.sessionId === 'string' ? data.sessionId : undefined,
               runId: data.runId,
               direction: 'inbound',
-              eventName: 'permission.respond',
-              payloadSummary: data.decision,
+              eventName: 'interactive.respond',
+              payloadSummary: data.kind,
               payload: {
-                permissionId: data.permissionId,
-                decision: data.decision,
-                ...(data.selectedSuggestion !== undefined ? { selectedSuggestion: data.selectedSuggestion } : {}),
-                ...(data.content !== undefined ? { content: data.content } : {}),
+                interactionId: data.interactionId,
+                kind: data.kind,
+                response: data.response,
               },
             })
-            handlePermission(
+            handleInteractiveResponse(
               ws,
               coordinator,
               data.runId,
-              data.permissionId,
-              data.decision,
-              data.selectedSuggestion as PermissionSuggestion | null | undefined,
-              data.content as Record<string, string | number | boolean | string[]> | undefined,
+              data.interactionId,
+              data.kind === 'permission'
+                ? {
+                    kind: 'permission' as const,
+                    decision: data.response?.decision as PermissionDecision,
+                    ...(data.response?.selectedSuggestion !== undefined ? { selectedSuggestion: data.response.selectedSuggestion as PermissionSuggestion | null | undefined } : {}),
+                    ...(data.response?.content !== undefined ? { content: data.response.content as Record<string, string | number | boolean | string[]> } : {}),
+                  }
+                : {
+                    kind: 'elicitation' as const,
+                    action: data.response?.action as ElicitationAction,
+                    ...(data.response?.content !== undefined ? { content: data.response.content as Record<string, unknown> } : {}),
+                  },
             )
-            return
-          }
-
-          if (data.action === 'elicitation.respond' && data.runId && data.requestId && (data.responseAction === 'accept' || data.responseAction === 'decline' || data.responseAction === 'cancel')) {
-            void appendWebChannelLog({
-              sessionId: typeof data.sessionId === 'string' ? data.sessionId : undefined,
-              runId: data.runId,
-              direction: 'inbound',
-              eventName: 'elicitation.respond',
-              payloadSummary: data.responseAction,
-              payload: {
-                requestId: data.requestId,
-                action: data.responseAction,
-              },
-            })
-            handleElicitation(ws, coordinator, data.runId, data.requestId, data.responseAction, data.content)
             return
           }
 

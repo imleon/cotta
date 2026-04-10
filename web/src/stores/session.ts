@@ -6,7 +6,6 @@ import type {
   ControlTransactionSummary,
   DisplayItem,
   GroupedToolUseDisplayItem,
-  LaneKind,
   LiveLaneKind,
   PendingInteraction,
   PermissionSuggestion,
@@ -79,10 +78,6 @@ interface SessionBindingsListResponse {
 }
 
 type RuntimeSdkMessageEvent = Extract<SessionEvent, { type: 'session.sdk.message' }>
-type LaneBucket<T> = {
-  lane: LaneKind
-  items: T[]
-}
 type LiveLaneBuckets = Record<LiveLaneKind, RuntimeSdkMessageEvent[]>
 
 const AUTH_TOKEN_STORAGE_KEY = 'cotta-auth-token'

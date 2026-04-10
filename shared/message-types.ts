@@ -1027,11 +1027,11 @@ export type SessionEvent =
   | { type: 'session.sdk.transport'; runId: string; event: SdkTransportEvent }
   | { type: 'session.error'; runId?: string; error: string }
 
-export type LaneKind = 'history' | 'user' | 'live' | 'control' | 'session' | 'drop'
+export type LaneKind = 'history' | 'user' | 'live' | 'session' | 'drop'
 export type LiveLaneKind = 'user' | 'stream_event' | 'assistant' | 'system' | 'result' | 'tool_progress' | 'tool_use_summary' | 'prompt_suggestion'
 
 export type SdkLaneClassification = {
-  lane: Exclude<LaneKind, 'history' | 'control'>
+  lane: Exclude<LaneKind, 'history'>
   liveKind?: LiveLaneKind
 }
 
@@ -1068,10 +1068,6 @@ export function classifySdkMessageLane(message: SDKMessage): SdkLaneClassificati
     default:
       return { lane: 'drop' }
   }
-}
-
-export function isControlLaneType(type: string): boolean {
-  return type === 'control_request' || type === 'control_response' || type === 'control_cancel_request'
 }
 
 export type SdkMessageLayer = 'business-message' | 'run-state' | 'debug-observability' | 'live-preview'

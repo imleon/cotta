@@ -3,6 +3,7 @@ import { createAgentRun, type AgentRunHandle, type ServerEvent } from './agent-r
 import { CONFIG } from './config.js'
 import { createLogger, shortId } from './logger.js'
 import { TaskQueue } from './queue.js'
+import { KeyedTaskQueue } from './keyed-task-queue.js'
 import { SessionBindingStore } from './session-bindings.js'
 import type {
   ChannelInboundMessage,
@@ -28,6 +29,8 @@ export type RunRecord = {
   channel: ChannelInboundMessage['channel']
   conversationKey: string
   userKey?: string
+  inboundPlatformMessageId?: string
+  typingReaction?: { sourceMessageId: string; reactionId?: string | null; started?: boolean; cleared?: boolean } | null
   handle: AgentRunHandle | null
   abortController: AbortController
   canceled: boolean
@@ -44,6 +47,7 @@ const logger = createLogger('run-coordinator')
 
 export class RunCoordinator {
   private readonly queue = new TaskQueue(CONFIG.maxConcurrentAgents)
+  private readonly keyedQueue = new KeyedTaskQueue(CONFIG.maxConcurrentAgents)
   private readonly bindings = new SessionBindingStore()
   private readonly runs = new Map<string, RunRecord>()
   private readonly subscribers = new Map<string, CoordinatorSubscriber>()
@@ -58,6 +62,29 @@ export class RunCoordinator {
 
   getRun(runId: string): RunRecord | null {
     return this.runs.get(runId) ?? null
+  }
+
+  getLatestRunByConversation(channel: ChannelInboundMessage['channel'], conversationKey: string): RunRecord | null {
+    let latest: RunRecord | null = null
+    for (const record of this.runs.values()) {
+      if (record.channel !== channel || record.conversationKey !== conversationKey) continue
+      latest = record
+    }
+    return latest
+  }
+
+  getLatestInterruptibleRunByConversation(channel: ChannelInboundMessage['channel'], conversationKey: string): RunRecord | null {
+    let latest: RunRecord | null = null
+    for (const record of this.runs.values()) {
+      if (record.channel !== channel || record.conversationKey !== conversationKey) continue
+      if (record.state === 'completed' || record.state === 'failed' || record.state === 'cancelled') continue
+      latest = record
+    }
+    return latest
+  }
+
+  getCurrentInteraction(runId: string): PendingInteraction | null {
+    return this.runs.get(runId)?.currentInteraction ?? null
   }
 
   async startRun(message: ChannelInboundMessage): Promise<RunRecord> {
@@ -77,6 +104,8 @@ export class RunCoordinator {
       channel: message.channel,
       conversationKey: message.conversationKey,
       ...(message.userKey ? { userKey: message.userKey } : {}),
+      ...(message.platformMessageId ? { inboundPlatformMessageId: message.platformMessageId } : {}),
+      typingReaction: message.platformMessageId ? { sourceMessageId: message.platformMessageId, started: false, cleared: false } : null,
       handle: null,
       abortController,
       canceled: false,
@@ -94,7 +123,8 @@ export class RunCoordinator {
     this.dispatch({ type: 'session.run.queued', runId, ...(sessionId ? { sessionId } : {}) }, record)
     this.dispatch({ type: 'session.run.state_changed', runId, state: 'queued', ...(sessionId ? { sessionId } : {}) }, record)
 
-    void this.queue.enqueue(async () => {
+    const queueKey = `${message.channel}:${message.conversationKey}`
+    void this.keyedQueue.enqueue(queueKey, async () => {
       if (record.canceled) throw new Error('Run canceled before start')
 
       record.handle = createAgentRun({

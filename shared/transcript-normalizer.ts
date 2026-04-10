@@ -252,6 +252,24 @@ export function renderStreamPreviewState(
   }
 }
 
+export function renderStreamPreviewText(preview: StreamPreviewState): string {
+  return preview.blocks
+    .slice()
+    .sort((left, right) => left.index - right.index)
+    .flatMap((block) => {
+      if (block.kind === 'text') {
+        const text = block.text.trim()
+        return text ? [text] : []
+      }
+      if (block.kind === 'tool_use') {
+        const text = `[Tool call] ${block.name}`.trim()
+        return text ? [text] : []
+      }
+      return []
+    })
+    .join('\n\n')
+    .trim()
+}
 
 export interface TranscriptBlock {
   type: 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'unknown'

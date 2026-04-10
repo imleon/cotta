@@ -17,7 +17,10 @@ export class SessionControlService {
   async getBindingStatus(ref: ChannelConversationRef): Promise<SessionBindingStatus> {
     const binding = await this.bindings.get(ref)
     const session = binding ? await getSession(binding.sessionId) : null
-    const activeRun = binding?.lastRunId ? this.toActiveRunSummary(this.coordinator.getRun(binding.lastRunId)) : null
+    const activeRun = this.toActiveRunSummary(
+      this.coordinator.getLatestInterruptibleRunByConversation(ref.channel, ref.conversationKey)
+      ?? (binding?.lastRunId ? this.coordinator.getRun(binding.lastRunId) : null),
+    )
     return {
       ref,
       binding,

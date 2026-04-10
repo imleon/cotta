@@ -2,8 +2,11 @@ import * as Lark from '@larksuiteoapi/node-sdk'
 import { CONFIG } from './config.js'
 import { createLogger, shortId } from './logger.js'
 import { appendSessionChannelLog } from './transport-logs.js'
+import { optimizeLarkMarkdownStyle } from './lark-markdown-style.js'
 import { SessionBindingStore } from './session-bindings.js'
 import { SessionControlService } from './session-control-service.js'
+import { LarkStreamingController } from './lark-streaming-controller.js'
+import { DedupeStore } from './dedupe-store.js'
 import type {
   ChannelInboundMessage,
   ChannelOutboundMessage,
@@ -15,6 +18,8 @@ import type { RunCoordinator, RunRecord } from './run-coordinator.js'
 import {
   buildContentFromBlocks,
   extractStructuredContentFromBlocks,
+  getTranscriptAssistantModel,
+  getTranscriptAssistantUsage,
   hasRenderableTranscriptContent,
   normalizeSdkEnvelopeMessage,
 } from '../shared/transcript-normalizer.js'
@@ -34,9 +39,12 @@ let wsClientCardPatched = false
 let wsStartPromise: Promise<void> | null = null
 let bindings = new SessionBindingStore()
 let sessionControl: SessionControlService | null = null
-const processedMessageIds = new Map<string, number>()
-const processedActionKeys = new Map<string, number>()
-const larkStreamingStates = new Map<string, LarkStreamingState>()
+const messageDedupe = new DedupeStore(DEDUPE_TTL_MS)
+const actionDedupe = new DedupeStore(DEDUPE_TTL_MS)
+const larkStreamingControllers = new Map<string, LarkStreamingController>()
+const streamingControllerStartedAt = new Map<string, number>()
+const latestAssistantModelByRun = new Map<string, string | null>()
+const latestAssistantUsageByRun = new Map<string, ReturnType<typeof getTranscriptAssistantUsage>>()
 const STREAMING_CARD_ELEMENT_ID = 'streaming_content'
 
 export type LarkInboundEvent = {
@@ -53,7 +61,6 @@ type LarkOutboundDelivery = {
   runId?: string
   sessionId?: string
   mode?: 'create' | 'stream' | 'finalize' | 'fallback'
-  state?: LarkStreamingState
   preferRawCardFallback?: boolean
 }
 
@@ -136,6 +143,7 @@ type LarkInteractionCommand =
   | { type: 'permission'; runId: string; interactionId: string; decision: 'approve' | 'deny' }
   | { type: 'elicitation'; runId: string; interactionId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> }
   | { type: 'session'; action: 'current' | 'clear' | 'new' | 'use'; sessionId?: string }
+  | { type: 'stop' }
   | { type: 'invalid'; scope: 'permission' | 'elicitation' | 'session'; reason: string }
 
 function getSessionControl(coordinator: RunCoordinator): SessionControlService {
@@ -163,29 +171,12 @@ function parseLarkMessageText(content: unknown): string {
   }
 }
 
-function cleanupDedupeMap(store: Map<string, number>, now: number): void {
-  for (const [key, seenAt] of store.entries()) {
-    if (now - seenAt > DEDUPE_TTL_MS) {
-      store.delete(key)
-    }
-  }
-}
-
-function markIfDuplicate(store: Map<string, number>, key?: string): boolean {
-  if (!key) return false
-  const now = Date.now()
-  cleanupDedupeMap(store, now)
-  if (store.has(key)) return true
-  store.set(key, now)
-  return false
-}
-
 function isDuplicateMessage(platformMessageId?: string): boolean {
-  return markIfDuplicate(processedMessageIds, platformMessageId)
+  return messageDedupe.checkAndMark(platformMessageId)
 }
 
 function isDuplicateAction(actionKey?: string): boolean {
-  return markIfDuplicate(processedActionKeys, actionKey)
+  return actionDedupe.checkAndMark(actionKey)
 }
 
 async function isDuplicateInboundMessage(conversationKey: string, platformMessageId?: string): Promise<boolean> {
@@ -280,6 +271,10 @@ function parseLarkInteractionCommand(text: string): LarkInteractionCommand | nul
       scope: 'elicitation',
       reason: 'use /elicitation <runId> <interactionId> accept <json|text> | decline | cancel',
     }
+  }
+
+  if (trimmed === '/stop') {
+    return { type: 'stop' }
   }
 
   if (trimmed.startsWith('/session')) {
@@ -410,6 +405,37 @@ async function appendLarkChannelLog(params: {
   }, params.runId)
 }
 
+function isEventExpired(createTime?: string, expiryMs: number = 30 * 60 * 1000): boolean {
+  if (!createTime) return false
+  const value = Number(createTime)
+  if (!Number.isFinite(value)) return false
+  return Date.now() - value > expiryMs
+}
+
+function resolveElicitationAvailability(
+  coordinator: RunCoordinator,
+  runId: string,
+  interactionId: string,
+): Extract<PendingInteraction, { kind: 'elicitation' }> | null {
+  const interaction = coordinator.getCurrentInteraction(runId)
+  if (!interaction || interaction.kind !== 'elicitation' || interaction.id !== interactionId) {
+    return null
+  }
+  return interaction
+}
+
+function resolvePermissionAvailability(
+  coordinator: RunCoordinator,
+  runId: string,
+  interactionId: string,
+): Extract<PendingInteraction, { kind: 'permission' }> | null {
+  const interaction = coordinator.getCurrentInteraction(runId)
+  if (!interaction || interaction.kind !== 'permission' || interaction.id !== interactionId) {
+    return null
+  }
+  return interaction
+}
+
 async function handleInteractionCommand(
   coordinator: RunCoordinator,
   control: SessionControlService,
@@ -418,6 +444,26 @@ async function handleInteractionCommand(
 ): Promise<void> {
   if (command.type === 'invalid') {
     await sendLarkTextMessage(conversationKey, `Invalid ${command.scope} command: ${command.reason}`)
+    return
+  }
+
+  if (command.type === 'stop') {
+    const activeRun = coordinator.getLatestInterruptibleRunByConversation('lark', conversationKey)
+    if (!activeRun) {
+      await sendLarkTextMessage(conversationKey, 'No active run to stop.')
+      return
+    }
+    const requestId = `stop-${Date.now()}`
+    const requested = coordinator.requestControl(activeRun.runId, requestId, { subtype: 'interrupt' })
+    const controller = larkStreamingControllers.get(activeRun.runId) ?? null
+    if (controller) {
+      await controller.abort()
+      larkStreamingControllers.delete(activeRun.runId)
+    }
+    await sendLarkTextMessage(
+      conversationKey,
+      requested ? 'Stopping current run.' : 'Unable to stop the current run.',
+    )
     return
   }
 
@@ -475,10 +521,13 @@ async function handleInteractionCommand(
         decision: command.decision,
       },
     })
-    const ok = coordinator.respondToInteractive(command.runId, command.interactionId, {
-      kind: 'permission',
-      decision: command.decision,
-    })
+    const interaction = resolvePermissionAvailability(coordinator, command.runId, command.interactionId)
+    const ok = interaction
+      ? coordinator.respondToInteractive(command.runId, command.interactionId, {
+          kind: 'permission',
+          decision: command.decision,
+        })
+      : false
     await sendLarkTextMessage(
       conversationKey,
       ok
@@ -502,11 +551,14 @@ async function handleInteractionCommand(
       ...(command.content ? { content: command.content } : {}),
     },
   })
-  const ok = coordinator.respondToInteractive(command.runId, command.interactionId, {
-    kind: 'elicitation',
-    action: command.action,
-    ...(command.content ? { content: command.content } : {}),
-  })
+  const interaction = resolveElicitationAvailability(coordinator, command.runId, command.interactionId)
+  const ok = interaction
+    ? coordinator.respondToInteractive(command.runId, command.interactionId, {
+        kind: 'elicitation',
+        action: command.action,
+        ...(command.content ? { content: command.content } : {}),
+      })
+    : false
   await sendLarkTextMessage(
     conversationKey,
     ok
@@ -903,140 +955,100 @@ function buildElicitationCard(runId: string, interaction: Extract<PendingInterac
 }
 
 function buildAssistantStreamingCard(params: {
-  title?: string
   answerText: string
   thinkingText?: string
   toolCalls?: string[]
   toolResults?: string[]
+  model?: string | null
+  usage?: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheWriteTokens?: number | null } | null
+  elapsedMs?: number
+  statusLabel?: 'Processing' | 'Completed' | 'Error' | 'Stopped'
   isFinal?: boolean
-}): Lark.InteractiveCard {
-  const mainContent = params.answerText || params.thinkingText || (params.isFinal ? 'Done.' : 'Thinking...')
-  const elements: unknown[] = [
-    {
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: mainContent,
-      },
-      element_id: STREAMING_CARD_ELEMENT_ID,
-    },
-  ]
+}): Record<string, unknown> {
+  const mainContent = optimizeLarkMarkdownStyle(params.answerText || params.thinkingText || (params.isFinal ? 'Done.' : 'Processing...'))
+  const normalizedThinking = params.thinkingText ? optimizeLarkMarkdownStyle(params.thinkingText) : undefined
+  const normalizedToolCalls = params.toolCalls?.map((item) => optimizeLarkMarkdownStyle(item))
+  const normalizedToolResults = params.toolResults?.map((item) => optimizeLarkMarkdownStyle(item))
+  const elements: unknown[] = []
 
-  if (params.thinkingText && params.answerText) {
-    elements.unshift({
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: `**Thinking**\n${params.thinkingText}`,
-      },
+  if (normalizedThinking && params.answerText) {
+    elements.push({
+      tag: 'markdown',
+      content: `**Thinking**\n${normalizedThinking}`,
     })
   }
 
-  if (params.toolCalls && params.toolCalls.length > 0) {
+  elements.push({
+    tag: 'markdown',
+    content: mainContent,
+    text_align: 'left',
+    text_size: 'normal_v2',
+    margin: '0px 0px 0px 0px',
+    element_id: STREAMING_CARD_ELEMENT_ID,
+  })
+
+  if (normalizedToolCalls && normalizedToolCalls.length > 0) {
     elements.push({
-      tag: 'note',
-      elements: params.toolCalls.map((item) => ({
-        tag: 'plain_text',
-        content: item,
-      })),
+      tag: 'markdown',
+      content: normalizedToolCalls.join('\n'),
     })
   }
 
-  if (params.toolResults && params.toolResults.length > 0) {
+  if (normalizedToolResults && normalizedToolResults.length > 0) {
     elements.push({
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: params.toolResults.join('\n\n'),
-      },
+      tag: 'markdown',
+      content: normalizedToolResults.join('\n\n'),
+    })
+  }
+
+  const footerParts = [
+    params.statusLabel ?? (params.isFinal ? 'Completed' : 'Processing'),
+    typeof params.elapsedMs === 'number' ? `Elapsed: ${Math.max(0, Math.round(params.elapsedMs / 1000))}s` : '',
+    params.model ? `Model: ${params.model}` : '',
+    params.usage?.inputTokens != null ? `In: ${params.usage.inputTokens}` : '',
+    params.usage?.outputTokens != null ? `Out: ${params.usage.outputTokens}` : '',
+  ].filter(Boolean)
+
+  if (footerParts.length > 0) {
+    elements.push({
+      tag: 'markdown',
+      content: footerParts.join(' · '),
+      text_size: 'notation',
     })
   }
 
   return {
+    schema: '2.0',
     config: {
       wide_screen_mode: true,
       update_multi: true,
-    },
-    header: {
-      template: params.isFinal ? 'green' : 'blue',
-      title: {
-        tag: 'plain_text',
-        content: params.title || (params.isFinal ? 'Claude response' : 'Claude is responding'),
+      ...(params.isFinal ? {} : { streaming_mode: true }),
+      locales: ['zh_cn', 'en_us'],
+      summary: {
+        content: params.isFinal ? 'Claude response' : 'Processing...',
+        i18n_content: {
+          zh_cn: params.isFinal ? 'Claude 回复' : '处理中...',
+          en_us: params.isFinal ? 'Claude response' : 'Processing...',
+        },
       },
     },
-    elements: elements as unknown as Lark.InteractiveCard['elements'],
+    body: {
+      elements,
+    },
   }
 }
 
-function getStreamingState(runId: string): LarkStreamingState | null {
-  return larkStreamingStates.get(runId) ?? null
+function getStreamingController(runId: string): LarkStreamingController | null {
+  return larkStreamingControllers.get(runId) ?? null
 }
 
-function setStreamingState(state: LarkStreamingState): LarkStreamingState {
-  larkStreamingStates.set(state.runId, state)
-  return state
+function clearStreamingController(runId: string): void {
+  larkStreamingControllers.delete(runId)
+  streamingControllerStartedAt.delete(runId)
+  latestAssistantModelByRun.delete(runId)
+  latestAssistantUsageByRun.delete(runId)
 }
 
-function clearStreamingState(runId: string): void {
-  larkStreamingStates.delete(runId)
-}
-
-function buildStreamingState(record: RunRecord): LarkStreamingState {
-  return setStreamingState({
-    runId: record.runId,
-    conversationKey: record.conversationKey,
-    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-    mode: 'interactive',
-    phase: 'idle',
-    accumulatedText: '',
-    sequence: 0,
-  })
-}
-
-function resolveStreamingState(record: RunRecord): LarkStreamingState {
-  return getStreamingState(record.runId) ?? buildStreamingState(record)
-}
-
-function buildStructuredAssistantCardState(event: Extract<SessionEvent, { type: 'session.sdk.message' }>, record: RunRecord): LarkStreamingState | null {
-  const parsed = event.parsed ?? normalizeSdkEnvelopeMessage(event.payload)
-  if (!parsed || parsed.role !== 'assistant' || !Array.isArray(parsed.blocks) || parsed.blocks.length === 0) {
-    return null
-  }
-  if (!hasRenderableTranscriptContent(parsed.blocks)) {
-    return null
-  }
-
-  const structured = extractStructuredContentFromBlocks(parsed.blocks)
-  const segments = [
-    structured.answerText,
-    ...structured.toolResults.map((item) => item.output).filter(Boolean),
-  ].filter(Boolean)
-  const accumulatedText = segments.join('\n\n').trim() || buildContentFromBlocks(parsed.blocks).trim()
-  const current = resolveStreamingState(record)
-
-  return setStreamingState({
-    ...current,
-    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-    mode: current.mode,
-    phase: 'streaming',
-    accumulatedText,
-    sequence: event.sequence,
-    lastMessageCursor: event.sequence,
-  })
-}
-
-
-function buildPermissionCardKitState(record: RunRecord): LarkStreamingState {
-  return {
-    runId: record.runId,
-    conversationKey: record.conversationKey,
-    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-    mode: 'cardkit',
-    phase: 'completed',
-    accumulatedText: '',
-    sequence: 0,
-  }
-}
 
 function createLarkEventDispatcher(coordinator: RunCoordinator): any {
   return new Lark.EventDispatcher({
@@ -1071,6 +1083,11 @@ async function handleLarkMessageEvent(coordinator: RunCoordinator, data: any): P
   }
 
   if (await isDuplicateInboundMessage(conversationKey, platformMessageId)) {
+    return
+  }
+
+  if (isEventExpired(typeof data?.message?.create_time === 'string' ? data.message.create_time : undefined)) {
+    logger.info('lark:message:expired', { conversationKey, platformMessageId })
     return
   }
 
@@ -1231,9 +1248,7 @@ async function processLarkElicitationAction(coordinator: RunCoordinator, data: L
   }
 
   const run = coordinator.getRun(runId)
-  const interaction = run?.currentInteraction?.kind === 'elicitation' && run.currentInteraction.id === interactionId
-    ? run.currentInteraction
-    : null
+  const interaction = resolveElicitationAvailability(coordinator, runId, interactionId)
   if (!interaction) {
     return {
       toast: {
@@ -1318,10 +1333,13 @@ async function processLarkPermissionAction(coordinator: RunCoordinator, data: La
     }
   }
 
-  const ok = coordinator.respondToInteractive(runId, interactionId, {
-    kind: 'permission',
-    decision,
-  })
+  const interaction = resolvePermissionAvailability(coordinator, runId, interactionId)
+  const ok = interaction
+    ? coordinator.respondToInteractive(runId, interactionId, {
+        kind: 'permission',
+        decision,
+      })
+    : false
   const resolvedCard = buildPermissionResolvedCard(decision, ok)
   return {
     ...(ok
@@ -1352,6 +1370,76 @@ export async function invokeLarkEvent(coordinator: RunCoordinator, body: unknown
   const dispatcher = getLarkDispatcher(coordinator)
   const assigned = Object.assign(Object.create({ headers }), body as object)
   return dispatcher.invoke(assigned)
+}
+
+async function addLarkTypingReaction(messageId: string): Promise<{ reactionId: string | null; error?: string }> {
+  const client = getLarkClient()
+  if (!client) {
+    return { reactionId: null, error: 'Lark client is not configured' }
+  }
+
+  try {
+    const response = await client.im.messageReaction.create({
+      path: {
+        message_id: messageId,
+      },
+      data: {
+        reaction_type: {
+          emoji_type: 'Typing',
+        },
+      },
+    })
+    const reactionId = typeof response?.data?.reaction_id === 'string' ? response.data.reaction_id : null
+    return { reactionId }
+  } catch (error) {
+    logger.error('lark:typing:add:error', {
+      messageId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return { reactionId: null, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function removeLarkTypingReaction(state: { sourceMessageId: string; reactionId?: string | null }): Promise<void> {
+  if (!state.reactionId) return
+  const client = getLarkClient()
+  if (!client) {
+    return
+  }
+
+  try {
+    await client.im.messageReaction.delete({
+      path: {
+        message_id: state.sourceMessageId,
+        reaction_id: state.reactionId,
+      },
+    })
+  } catch (error) {
+    logger.error('lark:typing:remove:error', {
+      messageId: state.sourceMessageId,
+      reactionId: state.reactionId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+async function ensureTypingReactionStarted(record: RunRecord): Promise<void> {
+  if (!record.typingReaction || record.typingReaction.started || !record.typingReaction.sourceMessageId) return
+  const result = await addLarkTypingReaction(record.typingReaction.sourceMessageId)
+  record.typingReaction = {
+    ...record.typingReaction,
+    reactionId: result.reactionId,
+    started: true,
+  }
+}
+
+async function clearTypingReaction(record: RunRecord): Promise<void> {
+  if (!record.typingReaction || record.typingReaction.cleared) return
+  await removeLarkTypingReaction(record.typingReaction)
+  record.typingReaction = {
+    ...record.typingReaction,
+    cleared: true,
+  }
 }
 
 export async function sendLarkTextMessage(conversationKey: string, text: string): Promise<{ delivered: boolean; response?: unknown; error?: string }> {
@@ -1476,6 +1564,99 @@ async function sendLarkCardKitMessage(
   }
 }
 
+async function updateLarkCardMessage(
+  messageId: string,
+  card: unknown,
+): Promise<{ delivered: boolean; response?: unknown; error?: string }> {
+  const client = getLarkClient()
+  if (!client) {
+    return { delivered: false, error: 'Lark client is not configured' }
+  }
+
+  try {
+    const response = await client.im.message.patch({
+      path: {
+        message_id: messageId,
+      },
+      data: {
+        content: JSON.stringify(card),
+      },
+    })
+    return { delivered: true, response }
+  } catch (error) {
+    logger.error('lark:update-card:error', {
+      messageId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return { delivered: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function setLarkCardKitStreamingMode(
+  cardId: string,
+  streamingMode: boolean,
+  sequence: number,
+): Promise<{ delivered: boolean; error?: string; response?: unknown }> {
+  const client = getLarkClient()
+  if (!client) {
+    return { delivered: false, error: 'Lark CardKit is not configured' }
+  }
+
+  try {
+    const response = await client.cardkit.v1.card.settings({
+      data: {
+        settings: JSON.stringify({ streaming_mode: streamingMode }),
+        sequence,
+      },
+      path: {
+        card_id: cardId,
+      },
+    })
+    return { delivered: true, response }
+  } catch (error) {
+    logger.error('lark:cardkit:settings:error', {
+      cardId,
+      sequence,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return { delivered: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function updateLarkCardKitCard(
+  cardId: string,
+  card: unknown,
+  sequence: number,
+): Promise<{ delivered: boolean; error?: string; response?: unknown }> {
+  const client = getLarkClient()
+  if (!client) {
+    return { delivered: false, error: 'Lark CardKit is not configured' }
+  }
+
+  try {
+    const response = await client.cardkit.v1.card.update({
+      data: {
+        card: {
+          type: 'card_json',
+          data: JSON.stringify(card),
+        },
+        sequence,
+      },
+      path: {
+        card_id: cardId,
+      },
+    })
+    return { delivered: true, response }
+  } catch (error) {
+    logger.error('lark:cardkit:update:error', {
+      cardId,
+      sequence,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return { delivered: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 async function updateLarkCardKitStreamingContent(
   state: LarkStreamingState,
   card: ReturnType<typeof buildAssistantStreamingCard>,
@@ -1486,20 +1667,22 @@ async function updateLarkCardKitStreamingContent(
   }
 
   try {
-    const markdownElement = Array.isArray(card.elements)
-      ? card.elements.find((element) => {
+    const elements = card && typeof card === 'object' && 'body' in (card as Record<string, unknown>)
+      ? (((card as Record<string, unknown>).body as Record<string, unknown> | undefined)?.elements as unknown[] | undefined)
+      : undefined
+    const markdownElement = Array.isArray(elements)
+      ? elements.find((element) => {
           if (!element || typeof element !== 'object') return false
-          return (element as { tag?: unknown }).tag === 'div'
+          return (element as { element_id?: unknown }).element_id === STREAMING_CARD_ELEMENT_ID
         })
       : null
-    const text = markdownElement && typeof markdownElement === 'object'
-      ? ((markdownElement as { text?: unknown }).text as Record<string, unknown> | undefined)
-      : undefined
-    const content = text && typeof text.content === 'string' ? text.content : state.accumulatedText
+    const content = markdownElement && typeof markdownElement === 'object' && 'content' in (markdownElement as Record<string, unknown>)
+      ? ((markdownElement as Record<string, unknown>).content as string | undefined)
+      : state.accumulatedText
 
     const response = await client.cardkit.v1.cardElement.content({
       data: {
-        content,
+        content: content ?? state.accumulatedText,
         sequence: Math.max(1, state.sequence),
       },
       path: {
@@ -1522,47 +1705,21 @@ async function finalizeLarkCardKit(
   state: LarkStreamingState,
   card: ReturnType<typeof buildAssistantStreamingCard>,
 ): Promise<{ delivered: boolean; error?: string; response?: unknown }> {
-  const client = getLarkClient()
-  if (!client || !state.cardId) {
+  if (!state.cardId) {
     return { delivered: false, error: 'Lark CardKit is not configured' }
   }
 
-  try {
-    await client.cardkit.v1.card.settings({
-      data: {
-        settings: JSON.stringify({ streaming_mode: false }),
-        sequence: Math.max(1, state.sequence),
-      },
-      path: {
-        card_id: state.cardId,
-      },
-    })
-    const response = await client.cardkit.v1.card.update({
-      data: {
-        card: {
-          type: 'card_json',
-          data: JSON.stringify({
-            schema: '2.0',
-            config: card.config,
-            header: card.header,
-            body: { elements: card.elements },
-          }),
-        },
-        sequence: Math.max(2, state.sequence + 1),
-      },
-      path: {
-        card_id: state.cardId,
-      },
-    })
-    return { delivered: true, response }
-  } catch (error) {
-    logger.error('lark:cardkit:finalize:error', {
-      runId: state.runId,
-      cardId: state.cardId,
-      error: error instanceof Error ? error.message : String(error),
-    })
-    return { delivered: false, error: error instanceof Error ? error.message : String(error) }
+  const closeResult = await setLarkCardKitStreamingMode(state.cardId, false, Math.max(1, state.sequence))
+  if (!closeResult.delivered) {
+    return closeResult
   }
+
+  const updateResult = await updateLarkCardKitCard(
+    state.cardId,
+    card,
+    Math.max(2, state.sequence + 1),
+  )
+  return updateResult
 }
 
 export function toLarkInboundMessage(event: LarkInboundEvent): ChannelInboundMessage {
@@ -1665,91 +1822,10 @@ export function extractLarkAssistantText(event: Extract<SessionEvent, { type: 's
   return parsed.content.trim()
 }
 
-function buildAssistantStreamingDelivery(
-  event: Extract<SessionEvent, { type: 'session.sdk.message' }>,
-  record: RunRecord,
-): LarkOutboundDelivery[] {
-  const parsed = event.parsed ?? normalizeSdkEnvelopeMessage(event.payload)
-  if (!parsed || parsed.role !== 'assistant' || !Array.isArray(parsed.blocks) || parsed.blocks.length === 0) {
-    return []
-  }
-
-  const nextState = buildStructuredAssistantCardState(event, record)
-  if (!nextState) return []
-
-  const structured = extractStructuredContentFromBlocks(parsed.blocks)
-  const fallbackText = buildContentFromBlocks(parsed.blocks).trim()
-  if (nextState.mode === 'text') {
-    return fallbackText
-      ? [{
-          conversationKey: record.conversationKey,
-          text: fallbackText,
-          runId: record.runId,
-          ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-          mode: 'fallback',
-          state: nextState,
-        }]
-      : []
-  }
-
-  return [{
-    conversationKey: record.conversationKey,
-    card: buildAssistantStreamingCard({
-      answerText: structured.answerText,
-      thinkingText: structured.thinkingText,
-      toolCalls: structured.toolCalls.map((item) => `[Tool call] ${item.name}`),
-      toolResults: structured.toolResults.map((item) => item.output ? `[Tool result]\n${item.output}` : '[Tool result]'),
-      isFinal: false,
-    }),
-    runId: record.runId,
-    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-    mode: nextState.cardId ? 'stream' : 'create',
-    state: nextState,
-  }]
-}
-
-function buildAssistantFinalizeDelivery(record: RunRecord): LarkOutboundDelivery[] {
-  const state = getStreamingState(record.runId)
-  if (!state || state.phase !== 'streaming') return []
-
-  const finalized = setStreamingState({
-    ...state,
-    phase: 'completed',
-    finalizedAt: Date.now(),
-  })
-
-  if (finalized.mode === 'text') {
-    return finalized.accumulatedText
-      ? [{
-          conversationKey: record.conversationKey,
-          text: finalized.accumulatedText,
-          runId: record.runId,
-          ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-          mode: 'finalize',
-          state: finalized,
-        }]
-      : []
-  }
-
-  return [{
-    conversationKey: record.conversationKey,
-    card: buildAssistantStreamingCard({
-      answerText: finalized.accumulatedText,
-      isFinal: true,
-    }),
-    runId: record.runId,
-    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-    mode: 'finalize',
-    state: finalized,
-  }]
-}
-
 export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): LarkOutboundDelivery[] {
   if (record.channel !== 'lark') return []
 
   switch (event.type) {
-    case 'session.sdk.message':
-      return buildAssistantStreamingDelivery(event, record)
     case 'session.interactive.awaiting_user':
     case 'session.control.awaiting_user':
       if (!event.transaction.interaction) return []
@@ -1761,7 +1837,6 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
           runId: record.runId,
           ...(record.sessionId ? { sessionId: record.sessionId } : {}),
           mode: 'create',
-          state: buildPermissionCardKitState(record),
           preferRawCardFallback: true,
         }]
       }
@@ -1791,7 +1866,6 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
           runId: record.runId,
           ...(record.sessionId ? { sessionId: record.sessionId } : {}),
           mode: 'create',
-          state: buildPermissionCardKitState(record),
           preferRawCardFallback: true,
         }]
       }
@@ -1810,8 +1884,8 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
       }]
     }
     case 'session.run.completed': {
-      const finalized = buildAssistantFinalizeDelivery(record)
-      if (finalized.length > 0) return finalized
+      const controller = getStreamingController(record.runId)
+      if (controller?.hasVisibleContent) return []
       return [{
         conversationKey: record.conversationKey,
         text: 'Run completed, but no renderable assistant message was produced for Lark delivery.',
@@ -1821,10 +1895,10 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
       }]
     }
     case 'session.run.cancelled':
-      return buildAssistantFinalizeDelivery(record)
+      return []
     case 'session.run.failed': {
-      const finalized = buildAssistantFinalizeDelivery(record)
-      if (finalized.length > 0) return finalized
+      const controller = getStreamingController(record.runId)
+      if (controller?.hasVisibleContent) return []
       return [{
         conversationKey: record.conversationKey,
         text: `Run failed: ${event.error}`,
@@ -1838,7 +1912,130 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
   }
 }
 
+function getOrCreateStreamingController(record: RunRecord): LarkStreamingController {
+  const existing = getStreamingController(record.runId)
+  if (existing) return existing
+
+  streamingControllerStartedAt.set(record.runId, Date.now())
+  const controller = new LarkStreamingController({
+    runId: record.runId,
+    conversationKey: record.conversationKey,
+    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+    buildCard: ({ answerText, thinkingText, toolCalls, toolResults, model, usage, elapsedMs, statusLabel, isFinal }) => buildAssistantStreamingCard({ answerText, thinkingText, toolCalls, toolResults, model, usage, elapsedMs, statusLabel, isFinal }),
+    createCardKitMessage: async (card) => await sendLarkCardKitMessage(record.conversationKey, card),
+    sendInteractiveCard: async (card) => {
+      const result = await sendLarkCardMessage(record.conversationKey, card)
+      return {
+        delivered: result.delivered,
+        messageId: result.delivered && result.response && typeof result.response === 'object' && 'data' in (result.response as Record<string, unknown>)
+          ? (((result.response as Record<string, unknown>).data as Record<string, unknown> | undefined)?.message_id as string | undefined)
+          : undefined,
+        error: result.error,
+      }
+    },
+    streamCardKitContent: async (cardId, content, sequence) => {
+      const card = buildAssistantStreamingCard({ answerText: content, isFinal: false })
+      return await updateLarkCardKitStreamingContent({
+        runId: record.runId,
+        conversationKey: record.conversationKey,
+        ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+        mode: 'cardkit',
+        phase: 'streaming',
+        accumulatedText: content,
+        sequence,
+        cardId,
+      }, card)
+    },
+    updateInteractiveCard: async (messageId, card) => {
+      return await updateLarkCardMessage(messageId, card)
+    },
+    finalizeCardKit: async (cardId, closeSequence, updateSequence, card) => {
+      const closeResult = await setLarkCardKitStreamingMode(cardId, false, closeSequence)
+      if (!closeResult.delivered) return closeResult
+      return await updateLarkCardKitCard(cardId, card, updateSequence)
+    },
+    appendLog: async ({ eventName, payloadSummary, payload, rawPayload }) => {
+      await appendLarkChannelLog({
+        sessionId: record.sessionId,
+        runId: record.runId,
+        direction: 'outbound',
+        eventName,
+        conversationKey: record.conversationKey,
+        payloadSummary,
+        ...(payload !== undefined ? { payload } : {}),
+        ...(rawPayload !== undefined ? { rawPayload } : {}),
+      })
+    },
+    getFooterMetrics: () => ({
+      model: latestAssistantModelByRun.get(record.runId) ?? null,
+      usage: latestAssistantUsageByRun.get(record.runId) ?? null,
+      elapsedMs: Date.now() - (streamingControllerStartedAt.get(record.runId) ?? Date.now()),
+    }),
+  })
+
+  larkStreamingControllers.set(record.runId, controller)
+  return controller
+}
+
 export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRecord): Promise<void> {
+  if (record.channel === 'lark') {
+    if (event.type === 'session.sdk.stream_event') {
+      await ensureTypingReactionStarted(record)
+      const controller = getOrCreateStreamingController(record)
+      await controller.onStreamEvent(event.event)
+      return
+    }
+
+    if (event.type === 'session.sdk.message') {
+      await ensureTypingReactionStarted(record)
+      const parsed = event.parsed ?? normalizeSdkEnvelopeMessage(event.payload)
+      if (parsed?.role === 'assistant') {
+        latestAssistantModelByRun.set(record.runId, getTranscriptAssistantModel(parsed))
+        latestAssistantUsageByRun.set(record.runId, getTranscriptAssistantUsage(parsed))
+        const text = extractLarkAssistantText(event)
+        if (text) {
+          const controller = getOrCreateStreamingController(record)
+          await controller.onMaterializedText(text)
+        }
+      }
+      return
+    }
+
+    if (event.type === 'session.run.completed') {
+      const controller = getStreamingController(record.runId)
+      if (controller) {
+        controller.markFullyComplete()
+        await controller.onIdle()
+        await clearTypingReaction(record)
+        clearStreamingController(record.runId)
+        return
+      }
+      await clearTypingReaction(record)
+    }
+
+    if (event.type === 'session.run.failed') {
+      const controller = getStreamingController(record.runId)
+      if (controller) {
+        await controller.onError(event.error)
+        await clearTypingReaction(record)
+        clearStreamingController(record.runId)
+        return
+      }
+      await clearTypingReaction(record)
+    }
+
+    if (event.type === 'session.run.cancelled') {
+      const controller = getStreamingController(record.runId)
+      if (controller) {
+        await controller.abort()
+        await clearTypingReaction(record)
+        clearStreamingController(record.runId)
+        return
+      }
+      await clearTypingReaction(record)
+    }
+  }
+
   const deliveries = buildLarkDeliveries(event, record)
   if (deliveries.length === 0) return
 
@@ -1859,126 +2056,8 @@ export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRe
       payload: delivery.card ?? delivery.text,
     })
 
-    if (delivery.card && delivery.state && delivery.state.mode === 'cardkit') {
-      if (!delivery.state.cardId && delivery.mode === 'create') {
-        const result = await sendLarkCardKitMessage(delivery.conversationKey, {
-          schema: '2.0',
-          config: delivery.card && typeof delivery.card === 'object' && 'config' in (delivery.card as Record<string, unknown>)
-            ? ((delivery.card as Record<string, unknown>).config as Record<string, unknown>)
-            : { wide_screen_mode: true, streaming_mode: true },
-          header: delivery.card && typeof delivery.card === 'object' && 'header' in (delivery.card as Record<string, unknown>)
-            ? (delivery.card as Record<string, unknown>).header
-            : undefined,
-          body: {
-            elements: delivery.card && typeof delivery.card === 'object' && 'elements' in (delivery.card as Record<string, unknown>)
-              ? (delivery.card as Record<string, unknown>).elements
-              : [],
-          },
-        })
-        if (result.delivered) {
-          if (delivery.state) {
-            setStreamingState({
-              ...delivery.state,
-              cardId: result.cardId,
-              messageId: result.messageId,
-            })
-          }
-        } else if (delivery.state) {
-          setStreamingState({
-            ...delivery.state,
-            mode: 'text',
-          })
-        }
-        await appendLarkChannelLog({
-          sessionId: delivery.sessionId,
-          runId: delivery.runId,
-          direction: 'outbound',
-          eventName: result.delivered ? 'message.delivered' : 'message.failed',
-          conversationKey: delivery.conversationKey,
-          payloadSummary: result.delivered ? 'cardkit-card' : (result.error || 'failed'),
-          payload: result,
-        })
-        if (result.delivered) continue
-        if (delivery.card && delivery.preferRawCardFallback) {
-          const rawFallback = await sendLarkCardMessage(delivery.conversationKey, delivery.card)
-          await appendLarkChannelLog({
-            sessionId: delivery.sessionId,
-            runId: delivery.runId,
-            direction: 'outbound',
-            eventName: 'card.raw.requested',
-            conversationKey: delivery.conversationKey,
-            payloadSummary: 'interactive-card-raw',
-            rawPayload: rawFallback.content,
-            payload: {
-              contentLength: rawFallback.content.length,
-            },
-          })
-          await appendLarkChannelLog({
-            sessionId: delivery.sessionId,
-            runId: delivery.runId,
-            direction: 'outbound',
-            eventName: rawFallback.delivered ? 'message.delivered' : 'message.failed',
-            conversationKey: delivery.conversationKey,
-            payloadSummary: rawFallback.delivered ? 'interactive-card' : (rawFallback.error || 'failed'),
-            rawPayload: rawFallback.responseContent,
-            payload: rawFallback,
-          })
-          if (rawFallback.delivered) continue
-        }
-        if (delivery.text) {
-          const fallback = await sendLarkTextMessage(delivery.conversationKey, delivery.text)
-          await appendLarkChannelLog({
-            sessionId: delivery.sessionId,
-            runId: delivery.runId,
-            direction: 'outbound',
-            eventName: fallback.delivered ? 'message.delivered' : 'message.failed',
-            conversationKey: delivery.conversationKey,
-            payloadSummary: fallback.delivered ? delivery.text : (fallback.error || 'failed'),
-            payload: fallback,
-          })
-          continue
-        }
-      }
-
-      if (delivery.state.cardId && delivery.mode === 'stream') {
-        const result = await updateLarkCardKitStreamingContent(delivery.state, delivery.card as ReturnType<typeof buildAssistantStreamingCard>)
-        await appendLarkChannelLog({
-          sessionId: delivery.sessionId,
-          runId: delivery.runId,
-          direction: 'outbound',
-          eventName: result.delivered ? 'message.delivered' : 'message.failed',
-          conversationKey: delivery.conversationKey,
-          payloadSummary: result.delivered ? 'cardkit-stream' : (result.error || 'failed'),
-          payload: result,
-        })
-        if (result.delivered) continue
-      }
-
-      if (delivery.state.cardId && delivery.mode === 'finalize') {
-        const result = await finalizeLarkCardKit(delivery.state, delivery.card as ReturnType<typeof buildAssistantStreamingCard>)
-        await appendLarkChannelLog({
-          sessionId: delivery.sessionId,
-          runId: delivery.runId,
-          direction: 'outbound',
-          eventName: result.delivered ? 'message.delivered' : 'message.failed',
-          conversationKey: delivery.conversationKey,
-          payloadSummary: result.delivered ? 'cardkit-finalize' : (result.error || 'failed'),
-          payload: result,
-        })
-        clearStreamingState(delivery.runId || record.runId)
-        if (result.delivered) continue
-      }
-    }
-
     if (delivery.card) {
       const result = await sendLarkCardMessage(delivery.conversationKey, delivery.card)
-      if (delivery.state) {
-        const nextMode = result.delivered ? delivery.state.mode : 'text'
-        setStreamingState({
-          ...delivery.state,
-          mode: nextMode,
-        })
-      }
       await appendLarkChannelLog({
         sessionId: delivery.sessionId,
         runId: delivery.runId,
@@ -2005,9 +2084,6 @@ export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRe
     }
     if (delivery.text) {
       const result = await sendLarkTextMessage(delivery.conversationKey, delivery.text)
-      if (delivery.mode === 'finalize') {
-        clearStreamingState(delivery.runId || record.runId)
-      }
       await appendLarkChannelLog({
         sessionId: delivery.sessionId,
         runId: delivery.runId,

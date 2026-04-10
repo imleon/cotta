@@ -461,8 +461,6 @@ export interface LarkStreamingState {
   sequence: number
   messageId?: string
   cardId?: string
-  lastMessageCursor?: number
-  finalizedAt?: number
 }
 
 export interface PermissionSuggestion {

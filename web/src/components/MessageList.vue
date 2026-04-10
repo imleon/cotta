@@ -8,7 +8,7 @@ import { useSessionStore } from '../stores/session'
 import {
   stringifyStructuredValue,
 } from '../../../shared/transcript-normalizer.js'
-import type { SdkElicitationInteraction, PermissionInteraction } from '../../../shared/message-types.js'
+import type { AssistantDisplayItem, SdkElicitationInteraction, PermissionInteraction } from '../../../shared/message-types.js'
 import type { TimelineItem } from '../stores/session'
 
 const session = useSessionStore()
@@ -23,6 +23,90 @@ const debugMetaVisible = computed({
 const observabilityItems = computed(() => session.observabilityEvents.slice().reverse())
 const recentControlTransactions = computed(() => session.recentControlTransactions)
 const visibleTimelineItems = computed(() => session.timeline)
+const debugExperimentTimestamp = ref(Date.now())
+const debugExperimentContent = 'Run failed · Error During Execution\n\nMock error: tool sandbox rejected the request while the stream was still active.'
+const debugExperimentSummary = computed(() => ({
+  runState: session.runState,
+  timelineCount: session.timeline.length,
+  previewCount: session.livePreviewItems.length,
+  observabilityCount: session.observabilityEvents.length,
+  controlCount: session.recentControlTransactions.length,
+}))
+const debugExperimentCard = computed<AssistantDisplayItem>(() => ({
+  kind: 'assistant',
+  id: 'debug-experiment-error-result',
+  key: 'debug-experiment-error-result',
+  timestamp: debugExperimentTimestamp.value,
+  atomIds: ['debug-experiment-error-result'],
+  messages: [{
+    role: 'assistant',
+    content: debugExperimentContent,
+    timestamp: debugExperimentTimestamp.value,
+    blocks: [{
+      type: 'text',
+      text: debugExperimentContent,
+      raw: debugExperimentContent,
+    }],
+    raw: {
+      type: 'result',
+      subtype: 'error_during_execution',
+      isErrorResult: true,
+      message: {
+        id: 'debug-experiment-error-result',
+        stop_reason: 'error',
+        model: 'claude-sonnet-4-5',
+        usage: {
+          input_tokens: 1234,
+          output_tokens: 321,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    },
+  }],
+  anchorMessage: {
+    role: 'assistant',
+    content: debugExperimentContent,
+    timestamp: debugExperimentTimestamp.value,
+    blocks: [{
+      type: 'text',
+      text: debugExperimentContent,
+      raw: debugExperimentContent,
+    }],
+    raw: {
+      type: 'result',
+      subtype: 'error_during_execution',
+      isErrorResult: true,
+      message: {
+        id: 'debug-experiment-error-result',
+        stop_reason: 'error',
+        model: 'claude-sonnet-4-5',
+        usage: {
+          input_tokens: 1234,
+          output_tokens: 321,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    },
+  },
+  fragments: [{
+    type: 'text',
+    text: debugExperimentContent,
+  }],
+  footer: {
+    stopReason: 'error',
+    model: 'claude-sonnet-4-5',
+    usage: {
+      inputTokens: 1234,
+      outputTokens: 321,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+    completedAt: debugExperimentTimestamp.value,
+    deltaMs: 4200,
+  },
+}))
 const pendingPermissionInteraction = computed<PermissionInteraction | null>(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction : null
 )
@@ -183,6 +267,19 @@ watch(
 
     <div v-if="pendingElicitationInteraction && !isPendingElicitationAttached" class="pl-7">
       <TimelineElicitationInteractionBlock :interaction="pendingElicitationInteraction" />
+    </div>
+
+    <div v-if="debugMetaVisible" class="space-y-2">
+      <div class="timeline-cli-meta">Debug experiment</div>
+      <TimelineRow :item="debugExperimentCard" />
+      <TimelineCliSubrow muted>
+        <div class="min-w-0 flex-1 space-y-1">
+          <div class="timeline-cli-meta">
+            run={{ debugExperimentSummary.runState }} · timeline={{ debugExperimentSummary.timelineCount }} · overlays={{ debugExperimentSummary.previewCount }} · observability={{ debugExperimentSummary.observabilityCount }} · controls={{ debugExperimentSummary.controlCount }}
+          </div>
+          <div class="text-xs text-slate-500">内容为 mock，但样式与生产 assistant/error 卡片路径一致；不参与 live mainline 语义。</div>
+        </div>
+      </TimelineCliSubrow>
     </div>
 
     <div v-if="recentControlTransactions.length > 0" class="space-y-2">

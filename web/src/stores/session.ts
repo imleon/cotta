@@ -121,8 +121,68 @@ function redactUrl(url: URL): string {
   return safe.toString()
 }
 
+function asPayloadRecord(payload: Extract<SessionEvent, { type: 'session.sdk.message' }>['payload']): Record<string, unknown> | null {
+  return payload && typeof payload === 'object' ? payload as Record<string, unknown> : null
+}
+
+function isErrorResultPayload(payload: Extract<SessionEvent, { type: 'session.sdk.message' }>['payload']): boolean {
+  const record = asPayloadRecord(payload)
+  return record?.type === 'result' && record.subtype !== 'success'
+}
+
+function inferResultModel(payload: Extract<SessionEvent, { type: 'session.sdk.message' }>['payload']): string | null {
+  const record = asPayloadRecord(payload)
+  if (record?.type !== 'result') return null
+  const modelUsage = record.modelUsage
+  if (!modelUsage || typeof modelUsage !== 'object') return null
+  const model = Object.keys(modelUsage as Record<string, unknown>).find((key) => key.trim().length > 0)
+  return model ?? null
+}
+
+function formatErrorResultSubtype(subtype: string): string {
+  const normalized = subtype.startsWith('error_') ? subtype.slice('error_'.length) : subtype
+  return normalized
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function buildErrorResultMessage(event: Extract<SessionEvent, { type: 'session.sdk.message' }>): SessionMessage | null {
+  if (!isErrorResultPayload(event.payload)) return null
+
+  const payload = asPayloadRecord(event.payload)
+  if (!payload) return null
+
+  const errors = Array.isArray(payload.errors)
+    ? payload.errors.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    : []
+  const subtype = typeof payload.subtype === 'string' ? payload.subtype : 'error'
+  const title = formatErrorResultSubtype(subtype)
+  const content = [title ? `Run failed · ${title}` : 'Run failed', ...errors].join('\n\n').trim()
+  const model = inferResultModel(event.payload)
+
+  return {
+    role: 'assistant',
+    content,
+    timestamp: typeof event.receivedAt === 'number' ? event.receivedAt : Date.now(),
+    blocks: [{ type: 'text', text: content, raw: content }],
+    raw: {
+      ...payload,
+      isErrorResult: true,
+      message: {
+        ...(typeof payload.uuid === 'string' ? { id: `result-${payload.uuid}` } : {}),
+        content,
+        ...(typeof payload.stop_reason === 'string' || payload.stop_reason === null ? { stop_reason: payload.stop_reason } : {}),
+        ...(payload.usage && typeof payload.usage === 'object' ? { usage: payload.usage } : {}),
+        ...(model ? { model } : {}),
+      },
+    },
+  }
+}
+
 function getTimelineMessageFromEvent(event: Extract<SessionEvent, { type: 'session.sdk.message' }>): SessionMessage | null {
-  return event.parsed ?? null
+  return event.parsed ?? buildErrorResultMessage(event)
 }
 
 function isMatchingOptimisticUserMessage(message: OptimisticUserMessage, candidate: SessionMessage, timestamp: number): boolean {
@@ -760,31 +820,31 @@ export const useSessionStore = defineStore('session', () => {
     const timelineEvent: Extract<SessionEvent, { type: 'session.sdk.message' }> = {
       ...event,
       receivedAt: timelineReceivedAt,
+      ...(parsedMessage ? { parsed: parsedMessage } : {}),
     }
     const layer = getSdkMessageLayer(timelineEvent.payload)
+    const shouldIncludeInMainline = layer === 'business-message' || isErrorResultPayload(timelineEvent.payload)
 
-    if (layer === 'run-state') {
+    if (!shouldIncludeInMainline) {
       syncSessionId(timelineEvent.sessionId)
       return
     }
 
     eventLog.value = [...eventLog.value.slice(-199), timelineEvent]
-    if (layer === 'business-message') {
-      if (parsedMessage?.role === 'assistant') {
-        const toolUseIds = (parsedMessage.blocks || [])
-          .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
-        const responseId = getTranscriptResponseId(parsedMessage)
-        const toolUseIdSet = new Set(toolUseIds)
-        const materialized = markStreamPreviewsMaterialized(
-          streamPreviewStates.value,
-          streamAnimationCursors.value,
-          responseId,
-          toolUseIdSet,
-        )
-        streamPreviewStates.value = materialized.previewStates
-        streamAnimationCursors.value = materialized.animationCursors
-        scheduleFinalizedPreviewSweep()
-      }
+    if (parsedMessage?.role === 'assistant') {
+      const toolUseIds = (parsedMessage.blocks || [])
+        .flatMap((block) => block.type === 'tool_use' && typeof block.toolUseId === 'string' ? [block.toolUseId] : [])
+      const responseId = getTranscriptResponseId(parsedMessage)
+      const toolUseIdSet = new Set(toolUseIds)
+      const materialized = markStreamPreviewsMaterialized(
+        streamPreviewStates.value,
+        streamAnimationCursors.value,
+        responseId,
+        toolUseIdSet,
+      )
+      streamPreviewStates.value = materialized.previewStates
+      streamAnimationCursors.value = materialized.animationCursors
+      scheduleFinalizedPreviewSweep()
     }
     syncSessionId(timelineEvent.sessionId)
     if (eventLog.value.length === 1 || eventLog.value.length % EVENT_LOG_INTERVAL === 0) {

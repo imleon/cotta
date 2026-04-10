@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { elicitationFixtures } from '../lib/elicitation-fixtures.js'
 import { useSessionStore } from '../stores/session'
 
 const session = useSessionStore()
 const input = ref('')
+const selectedFixtureId = computed({
+  get: () => session.fixtureInteraction?.id || '',
+  set: (value: string) => session.setFixtureInteraction(value),
+})
 const debugMetaVisible = computed({
   get: () => session.debugTimelineVisible,
   set: (value: boolean) => session.setDebugTimelineVisible(value),
@@ -21,6 +26,14 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     send()
+  }
+}
+
+function toggleDebugTools() {
+  const next = !debugMetaVisible.value
+  debugMetaVisible.value = next
+  if (!next) {
+    session.setFixtureInteraction('')
   }
 }
 </script>
@@ -44,6 +57,18 @@ function onKeydown(e: KeyboardEvent) {
         >
           Send
         </button>
+        <label v-if="debugMetaVisible" class="flex items-center gap-2 rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm">
+          <span>Fixture</span>
+          <select
+            v-model="selectedFixtureId"
+            class="bg-transparent text-[12px] text-[var(--tt-text)] outline-none"
+          >
+            <option value="">None</option>
+            <option v-for="fixture in elicitationFixtures" :key="fixture.id" :value="fixture.id">
+              {{ fixture.id }}
+            </option>
+          </select>
+        </label>
         <div class="flex items-center gap-2">
           <button
             class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -69,7 +94,7 @@ function onKeydown(e: KeyboardEvent) {
         </div>
         <button
           class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)]"
-          @click="debugMetaVisible = !debugMetaVisible"
+          @click="toggleDebugTools"
         >
           {{ debugMetaVisible ? 'Hide debug' : 'Show debug' }}
         </button>

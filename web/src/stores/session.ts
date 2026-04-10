@@ -41,6 +41,7 @@ import {
   getTranscriptStopReason,
 } from '../../../shared/transcript-normalizer.js'
 import { createDebugLogger } from '../lib/debug.js'
+import { elicitationFixtures } from '../lib/elicitation-fixtures.js'
 
 export type {
   TimelineRenderableItem as TimelineItem,
@@ -81,6 +82,7 @@ type RuntimeSdkMessageEvent = Extract<SessionEvent, { type: 'session.sdk.message
 type LiveLaneBuckets = Record<LiveLaneKind, RuntimeSdkMessageEvent[]>
 
 const AUTH_TOKEN_STORAGE_KEY = 'cotta-auth-token'
+const ELICITATION_FIXTURE_STORAGE_KEY = 'cotta-elicitation-fixture'
 const DEFAULT_HISTORY_PAGE_SIZE = 100
 const logger = createDebugLogger('session-store')
 const EVENT_LOG_INTERVAL = 20
@@ -318,6 +320,7 @@ export const useSessionStore = defineStore('session', () => {
   const authRequired = ref(false)
   const authChecked = ref(false)
   const activeRunId = ref<string | null>(null)
+  const fixtureInteractionId = ref(localStorage.getItem(ELICITATION_FIXTURE_STORAGE_KEY) || '')
   const controlTransactionsById = ref<Record<string, ControlTransactionSummary>>({})
   const activeControlOrder = ref<string[]>([])
   const bindingChannel = ref<'lark' | 'web' | 'discord'>('lark')
@@ -351,7 +354,10 @@ export const useSessionStore = defineStore('session', () => {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, 8)
   )
-  const pendingInteraction = computed<PendingInteraction | null>(() => activeInteractiveControl.value?.interaction ?? null)
+  const fixtureInteraction = computed<PendingInteraction | null>(() =>
+    elicitationFixtures.find((fixture) => fixture.id === fixtureInteractionId.value) ?? null,
+  )
+  const pendingInteraction = computed<PendingInteraction | null>(() => fixtureInteraction.value ?? activeInteractiveControl.value?.interaction ?? null)
   const isAwaitingApproval = computed(() => pendingInteraction.value?.kind === 'permission' && pendingInteraction.value?.status === 'pending')
   const isAwaitingInteraction = computed(() => pendingInteraction.value?.status === 'pending')
   const hasActiveRun = computed(() => awaitingRunStart || activeRunId.value !== null)
@@ -1486,6 +1492,16 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function respondToInteraction(response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
+    if (fixtureInteraction.value && pendingInteraction.value?.id === fixtureInteraction.value.id) {
+      logger.info('chat:interactive:fixture-resolved', {
+        kind: response.kind,
+        interactionId: shortId(fixtureInteraction.value.id),
+        action: response.kind === 'permission' ? response.decision : response.action,
+      })
+      setFixtureInteraction('')
+      return
+    }
+
     if (!ws || ws.readyState !== WebSocket.OPEN || !pendingInteraction.value || !activeRunId.value) {
       logger.warn('chat:interactive:blocked', {
         hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),
@@ -1599,6 +1615,15 @@ export const useSessionStore = defineStore('session', () => {
     debugTimelineVisible.value = visible
   }
 
+  function setFixtureInteraction(id: string) {
+    fixtureInteractionId.value = id
+    if (id) {
+      localStorage.setItem(ELICITATION_FIXTURE_STORAGE_KEY, id)
+      return
+    }
+    localStorage.removeItem(ELICITATION_FIXTURE_STORAGE_KEY)
+  }
+
   return {
     timeline,
     historyMessages,
@@ -1628,6 +1653,7 @@ export const useSessionStore = defineStore('session', () => {
     hasAuthToken,
     hasActiveRun,
     activeRunId,
+    fixtureInteraction,
     pendingInteraction,
     controlTransactionsById,
     activeControlOrder,
@@ -1665,6 +1691,7 @@ export const useSessionStore = defineStore('session', () => {
     loadOlderSessionMessages,
     initialize,
     setDebugTimelineVisible,
+    setFixtureInteraction,
     setAuthToken,
     clearAuthToken,
   }

@@ -18,6 +18,11 @@ import {
   hasRenderableTranscriptContent,
   normalizeSdkEnvelopeMessage,
 } from '../shared/transcript-normalizer.js'
+import {
+  buildElicitationContent,
+  inferElicitationRenderer,
+  type ElicitationRenderer,
+} from '../shared/elicitation-renderer.js'
 
 const logger = createLogger('lark-adapter')
 const DEDUPE_TTL_MS = 10 * 60 * 1000
@@ -50,6 +55,57 @@ type LarkOutboundDelivery = {
   mode?: 'create' | 'stream' | 'finalize' | 'fallback'
   state?: LarkStreamingState
   preferRawCardFallback?: boolean
+}
+
+type LarkElicitationCardActionType =
+  | 'elicitation_submit'
+  | 'elicitation_decline'
+  | 'elicitation_cancel'
+  | 'elicitation_continue_url'
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined
+}
+
+function getStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : []
+}
+
+function getActionFormValue(data: Lark.InteractiveCardActionEvent): Record<string, unknown> {
+  const action = asRecord(data?.action)
+  const formValue = asRecord(action?.form_value)
+  return formValue ?? {}
+}
+
+function getActionValue(data: Lark.InteractiveCardActionEvent): Record<string, unknown> {
+  const action = asRecord(data?.action)
+  const value = asRecord(action?.value)
+  return value ?? {}
+}
+
+function getActionType(data: Lark.InteractiveCardActionEvent): string {
+  return getString(getActionValue(data).actionType) || ''
+}
+
+function getActionName(data: Lark.InteractiveCardActionEvent): string {
+  return getString(asRecord(data?.action)?.name) || ''
+}
+
+function getActionOption(data: Lark.InteractiveCardActionEvent): string | undefined {
+  return getString(asRecord(data?.action)?.option)
+}
+
+function getActionChecked(data: Lark.InteractiveCardActionEvent): boolean | undefined {
+  const action = asRecord(data?.action)
+  return typeof action?.checked === 'boolean' ? action.checked : undefined
 }
 
 function formatPermissionSuggestions(suggestions?: Extract<PendingInteraction, { kind: 'permission' }>['permissionSuggestions']): string[] {
@@ -591,6 +647,261 @@ function buildPermissionResolvedCard(decision: 'approve' | 'deny', ok: boolean):
   )
 }
 
+function buildElicitationStatusCard(title: string, message: string, template: 'green' | 'red' | 'grey'): Lark.InteractiveCard {
+  return buildPermissionStatusCard(title, message, template)
+}
+
+function buildElicitationResolvedCard(action: 'accept' | 'decline' | 'cancel', ok: boolean): Lark.InteractiveCard {
+  const accepted = ok && action === 'accept'
+  const declined = ok && action === 'decline'
+  return buildElicitationStatusCard(
+    ok
+      ? (accepted ? 'Elicitation submitted' : declined ? 'Elicitation declined' : 'Elicitation cancelled')
+      : 'Elicitation unavailable',
+    ok
+      ? (accepted
+          ? 'Claude received the requested input.'
+          : declined
+            ? 'Claude will continue without this input.'
+            : 'This interaction was cancelled.')
+      : 'No matching active run was found for this elicitation action.',
+    accepted ? 'green' : declined ? 'red' : 'grey',
+  )
+}
+
+function makePlainText(content: string): Lark.InteractiveCardPlainTextItem {
+  return { tag: 'plain_text', content }
+}
+
+function makeMarkdown(content: string): Lark.InteractiveCardLarkMdItem {
+  return { tag: 'lark_md', content }
+}
+
+function buildBaseElicitationCard(title: string, description?: string): { config: Record<string, unknown>; header: Record<string, unknown>; elements: unknown[] } {
+  const elements: unknown[] = [{
+    tag: 'div',
+    text: makeMarkdown(`**${title}**${description ? `\n${description}` : ''}`),
+  }]
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: false,
+    },
+    header: {
+      template: 'orange',
+      title: makePlainText(`Elicitation required · ${title}`),
+    },
+    elements,
+  }
+}
+
+function buildElicitationActionValue(runId: string, interactionId: string, renderer: ElicitationRenderer, actionType: LarkElicitationCardActionType): Record<string, unknown> {
+  return {
+    actionType,
+    runId,
+    interactionId,
+    rendererType: renderer.type,
+    ...('field' in renderer ? { field: renderer.field } : {}),
+    ...('containerField' in renderer && renderer.containerField ? { containerField: renderer.containerField } : {}),
+    ...('valueType' in renderer ? { valueType: renderer.valueType } : {}),
+  }
+}
+
+function buildElicitationCardActions(
+  runId: string,
+  interaction: Extract<PendingInteraction, { kind: 'elicitation' }>,
+  renderer: ElicitationRenderer,
+  options?: { includeSubmit?: boolean; submitLabel?: string; formAction?: boolean },
+): Lark.InterfaceCardActionElement {
+  const includeSubmit = options?.includeSubmit ?? true
+  const submitLabel = options?.submitLabel ?? (renderer.type === 'url_open' ? 'Continue' : 'Submit')
+  const formAction = options?.formAction ?? false
+  const actions: unknown[] = []
+
+  if (includeSubmit) {
+    actions.push({
+      tag: 'button',
+      type: 'primary',
+      text: makePlainText(submitLabel),
+      ...(formAction
+        ? {
+            form_action_type: 'submit',
+            name: `submit_${interaction.id.slice(0, 12)}`,
+          }
+        : {}),
+      value: buildElicitationActionValue(
+        runId,
+        interaction.id,
+        renderer,
+        renderer.type === 'url_open' ? 'elicitation_continue_url' : 'elicitation_submit',
+      ),
+    })
+  }
+
+  actions.push(
+    {
+      tag: 'button',
+      type: 'default',
+      text: makePlainText('Decline'),
+      value: buildElicitationActionValue(runId, interaction.id, renderer, 'elicitation_decline'),
+    },
+    {
+      tag: 'button',
+      type: 'danger',
+      text: makePlainText('Cancel'),
+      value: buildElicitationActionValue(runId, interaction.id, renderer, 'elicitation_cancel'),
+    },
+  )
+
+  return {
+    tag: 'action',
+    layout: 'trisection',
+    actions: actions as Lark.InteractiveCardActionItem[],
+  }
+}
+
+function buildElicitationCard(runId: string, interaction: Extract<PendingInteraction, { kind: 'elicitation' }>): Lark.InteractiveCard {
+  const renderer = inferElicitationRenderer(interaction)
+  const card = buildBaseElicitationCard(renderer.title, renderer.description)
+
+  switch (renderer.type) {
+    case 'url_open':
+      card.elements.push(
+        {
+          tag: 'div',
+          text: makeMarkdown(`Open the URL, complete the external step, then continue here.\n${renderer.url}`),
+        },
+        {
+          tag: 'action',
+          layout: 'bisected',
+          actions: [
+            {
+              tag: 'button',
+              type: 'default',
+              text: makePlainText('Open URL'),
+              multi_utl: { url: renderer.url, android_url: renderer.url, ios_url: renderer.url, pc_url: renderer.url },
+              value: buildElicitationActionValue(runId, interaction.id, renderer, 'elicitation_continue_url'),
+            },
+            {
+              tag: 'button',
+              type: 'primary',
+              text: makePlainText('Continue'),
+              value: buildElicitationActionValue(runId, interaction.id, renderer, 'elicitation_continue_url'),
+            },
+          ],
+        },
+        buildElicitationCardActions(runId, interaction, renderer, { includeSubmit: false }),
+      )
+      break
+    case 'form_text':
+      card.elements.push({
+        tag: 'form',
+        name: `elicitation_form_${interaction.id.slice(0, 12)}`,
+        elements: [
+          {
+            tag: 'input',
+            name: renderer.field,
+            required: renderer.required,
+            input_type: renderer.type === 'form_text' && renderer.format === 'date-time' ? 'multiline_text' : 'text',
+            ...(renderer.placeholder ? { placeholder: makePlainText(renderer.placeholder) } : {}),
+            ...(renderer.defaultValue !== undefined ? { default_value: String(renderer.defaultValue) } : {}),
+            ...(renderer.type === 'form_text' && renderer.maxLength !== undefined ? { max_length: renderer.maxLength } : {}),
+            label: makePlainText(renderer.title),
+          },
+          buildElicitationCardActions(runId, interaction, renderer, { formAction: true }),
+        ],
+      })
+      break
+    case 'form_boolean':
+      card.elements.push(
+        {
+          tag: 'checker',
+          name: renderer.field,
+          checked: renderer.defaultValue ?? false,
+          text: makePlainText(renderer.title),
+          behaviors: [{ type: 'callback', value: buildElicitationActionValue(runId, interaction.id, renderer, 'elicitation_submit') }],
+        },
+        buildElicitationCardActions(runId, interaction, renderer, { includeSubmit: false }),
+      )
+      break
+    case 'form_single_select':
+      card.elements.push({
+        tag: 'form',
+        name: `elicitation_form_${interaction.id.slice(0, 12)}`,
+        elements: [
+          {
+            tag: 'select_static',
+            name: renderer.field,
+            required: renderer.required,
+            ...(renderer.defaultValue ? { initial_option: renderer.defaultValue } : {}),
+            placeholder: makePlainText('Please select'),
+            options: renderer.options.map((option) => ({
+              text: makePlainText(option.label),
+              value: option.value,
+            })),
+          },
+          buildElicitationCardActions(runId, interaction, renderer, { formAction: true }),
+        ],
+      })
+      break
+    case 'form_multi_select':
+      card.elements.push({
+        tag: 'form',
+        name: `elicitation_form_${interaction.id.slice(0, 12)}`,
+        elements: [
+          {
+            tag: 'multi_select_static',
+            name: renderer.field,
+            required: renderer.required,
+            selected_values: renderer.defaultValue ?? [],
+            placeholder: makePlainText('Select one or more'),
+            options: renderer.options.map((option) => ({
+              text: makePlainText(option.label),
+              value: option.value,
+            })),
+          },
+          {
+            tag: 'note',
+            elements: [makePlainText(`Min: ${renderer.minSelections ?? 0} · Max: ${renderer.maxSelections ?? renderer.options.length}`)],
+          },
+          buildElicitationCardActions(runId, interaction, renderer, { formAction: true }),
+        ],
+      })
+      break
+    case 'generic_json_fallback':
+      card.elements.push({
+        tag: 'form',
+        name: `elicitation_form_${interaction.id.slice(0, 12)}`,
+        elements: [
+          {
+            tag: 'input',
+            name: 'json_payload',
+            required: true,
+            input_type: 'multiline_text',
+            rows: 3,
+            auto_resize: true,
+            max_rows: 6,
+            placeholder: makePlainText('{"field":"value"}'),
+            label: makePlainText('JSON payload'),
+          },
+          {
+            tag: 'note',
+            elements: [makePlainText('Provide a JSON object payload. The /elicitation text command still works as fallback.')],
+          },
+          buildElicitationCardActions(runId, interaction, renderer, { formAction: true }),
+        ],
+      })
+      break
+  }
+
+  return {
+    config: card.config as unknown as Lark.InteractiveCard['config'],
+    header: card.header as unknown as Lark.InteractiveCard['header'],
+    elements: card.elements as unknown as Lark.InteractiveCard['elements'],
+  }
+}
+
 function buildAssistantStreamingCard(params: {
   title?: string
   answerText: string
@@ -803,7 +1114,7 @@ async function handleLarkMessageEvent(coordinator: RunCoordinator, data: any): P
 async function handleLarkCardActionEvent(coordinator: RunCoordinator, data: Lark.InteractiveCardActionEvent): Promise<unknown> {
   const cardEvent = data as Lark.InteractiveCardActionEvent & { open_chat_id?: string }
   const runId = typeof data?.action?.value?.runId === 'string' ? data.action.value.runId : undefined
-  const actionType = typeof data?.action?.value?.actionType === 'string' ? data.action.value.actionType : undefined
+  const actionType = getActionType(data) || undefined
   const run = runId ? coordinator.getRun(runId) : null
 
   await appendLarkChannelLog({
@@ -822,6 +1133,9 @@ async function handleLarkCardActionEvent(coordinator: RunCoordinator, data: Lark
     },
   })
 
+  if ((actionType || '').startsWith('elicitation_')) {
+    return await processLarkElicitationAction(coordinator, data)
+  }
   return await processLarkPermissionAction(coordinator, data)
 }
 
@@ -831,6 +1145,142 @@ function wrapLarkCardResponse(card: Lark.InteractiveCard): { card: { type: 'raw'
       type: 'raw',
       data: card,
     },
+  }
+}
+
+function parseElicitationSubmitContent(
+  renderer: ElicitationRenderer,
+  data: Lark.InteractiveCardActionEvent,
+): Record<string, unknown> | { __error: string } {
+  const formValue = getActionFormValue(data)
+  switch (renderer.type) {
+    case 'url_open':
+      return {}
+    case 'form_text': {
+      const rawValue = getString(formValue[renderer.field]) ?? ''
+      if (renderer.required && !rawValue.trim()) return { __error: 'This field is required.' }
+      if (renderer.valueType === 'string') {
+        if (renderer.minLength !== undefined && rawValue.length < renderer.minLength) return { __error: `Must be at least ${renderer.minLength} characters.` }
+        if (renderer.maxLength !== undefined && rawValue.length > renderer.maxLength) return { __error: `Must be at most ${renderer.maxLength} characters.` }
+        return buildElicitationContent(renderer, rawValue)
+      }
+      const numericValue = Number(rawValue)
+      if (!Number.isFinite(numericValue)) return { __error: renderer.valueType === 'integer' ? 'Must be a valid integer.' : 'Must be a valid number.' }
+      if (renderer.valueType === 'integer' && !Number.isInteger(numericValue)) return { __error: 'Must be a valid integer.' }
+      if (renderer.minimum !== undefined && numericValue < renderer.minimum) return { __error: `Must be >= ${renderer.minimum}.` }
+      if (renderer.maximum !== undefined && numericValue > renderer.maximum) return { __error: `Must be <= ${renderer.maximum}.` }
+      return buildElicitationContent(renderer, numericValue)
+    }
+    case 'form_boolean': {
+      const checked = getActionChecked(data)
+      return buildElicitationContent(renderer, checked ?? false)
+    }
+    case 'form_single_select': {
+      const selected = getActionOption(data) ?? getString(formValue[renderer.field]) ?? ''
+      if (renderer.required && !selected) return { __error: 'Please select an option.' }
+      if (selected && !renderer.options.some((option) => option.value === selected)) return { __error: 'Invalid selection.' }
+      return buildElicitationContent(renderer, selected)
+    }
+    case 'form_multi_select': {
+      const selected = getStringArray(formValue[renderer.field])
+      if (renderer.required && selected.length === 0) return { __error: 'Please select at least one option.' }
+      if (renderer.minSelections !== undefined && selected.length < renderer.minSelections) return { __error: `Please select at least ${renderer.minSelections} option(s).` }
+      if (renderer.maxSelections !== undefined && selected.length > renderer.maxSelections) return { __error: `Please select at most ${renderer.maxSelections} option(s).` }
+      if (selected.some((value) => !renderer.options.some((option) => option.value === value))) return { __error: 'Invalid selection.' }
+      return buildElicitationContent(renderer, selected)
+    }
+    case 'generic_json_fallback': {
+      const rawJson = getString(formValue.json_payload) ?? ''
+      if (!rawJson.trim()) return { __error: 'JSON payload is required.' }
+      try {
+        const parsed = JSON.parse(rawJson)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return { __error: 'Invalid JSON payload.' }
+        }
+        return parsed as Record<string, unknown>
+      } catch {
+        return { __error: 'Invalid JSON payload.' }
+      }
+    }
+  }
+}
+
+async function processLarkElicitationAction(coordinator: RunCoordinator, data: Lark.InteractiveCardActionEvent): Promise<unknown> {
+  const actionValue = getActionValue(data)
+  const runId = getString(actionValue.runId) || ''
+  const interactionId = getString(actionValue.interactionId) || ''
+  const actionType = getActionType(data) as LarkElicitationCardActionType
+  const actionKey = [data?.open_message_id, runId, interactionId, actionType || 'invalid'].join(':')
+
+  if (!runId || !interactionId || !actionType) {
+    return {
+      toast: {
+        type: 'error',
+        content: 'Invalid elicitation action.',
+      },
+    }
+  }
+
+  if (isDuplicateAction(actionKey)) {
+    return {
+      toast: {
+        type: 'info',
+        content: 'This elicitation action was already handled.',
+      },
+    }
+  }
+
+  const run = coordinator.getRun(runId)
+  const interaction = run?.currentInteraction?.kind === 'elicitation' && run.currentInteraction.id === interactionId
+    ? run.currentInteraction
+    : null
+  if (!interaction) {
+    return {
+      toast: {
+        type: 'error',
+        content: 'No matching active run for that elicitation action.',
+      },
+      ...wrapLarkCardResponse(buildElicitationResolvedCard('cancel', false)),
+    }
+  }
+
+  const renderer = inferElicitationRenderer(interaction)
+  if (actionType === 'elicitation_decline' || actionType === 'elicitation_cancel') {
+    const action = actionType === 'elicitation_decline' ? 'decline' : 'cancel'
+    const ok = coordinator.respondToInteractive(runId, interactionId, {
+      kind: 'elicitation',
+      action,
+    })
+    return {
+      toast: {
+        type: ok ? 'success' : 'error',
+        content: ok ? `Elicitation ${action}.` : 'No matching active run for that elicitation action.',
+      },
+      ...wrapLarkCardResponse(buildElicitationResolvedCard(action, ok)),
+    }
+  }
+
+  const content = parseElicitationSubmitContent(renderer, data)
+  if ('__error' in content) {
+    return {
+      toast: {
+        type: 'error',
+        content: content.__error,
+      },
+    }
+  }
+
+  const ok = coordinator.respondToInteractive(runId, interactionId, {
+    kind: 'elicitation',
+    action: 'accept',
+    ...(Object.keys(content).length > 0 ? { content } : {}),
+  })
+  return {
+    toast: {
+      type: ok ? 'success' : 'error',
+      content: ok ? 'Elicitation submitted.' : 'No matching active run for that elicitation action.',
+    },
+    ...wrapLarkCardResponse(buildElicitationResolvedCard('accept', ok)),
   }
 }
 
@@ -1146,16 +1596,51 @@ function summarizePermissionInteraction(runId: string, interaction: Extract<Pend
 }
 
 function summarizeElicitationInteraction(runId: string, interaction: Extract<PendingInteraction, { kind: 'elicitation' }>): string {
+  const renderer = inferElicitationRenderer(interaction)
   const schemaHint = interaction.requestedSchema
     ? `\nSchema hint: ${JSON.stringify(interaction.requestedSchema)}`
     : ''
-  return [
-    interaction.message || 'Additional input required',
-    `Accept with text: /elicitation ${runId} ${interaction.id} accept your answer`,
-    `Accept with JSON: /elicitation ${runId} ${interaction.id} accept {"field":"value"}`,
-    `Decline: /elicitation ${runId} ${interaction.id} decline`,
-    `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
-  ].join('\n') + schemaHint
+
+  switch (renderer.type) {
+    case 'url_open':
+      return [
+        renderer.title,
+        renderer.url,
+        `Continue: use the card button or /elicitation ${runId} ${interaction.id} accept {}`,
+        `Decline: /elicitation ${runId} ${interaction.id} decline`,
+        `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
+      ].join('\n')
+    case 'form_text':
+      return [
+        renderer.title,
+        `Submit with JSON: /elicitation ${runId} ${interaction.id} accept {"${renderer.field}":"value"}`,
+        `Decline: /elicitation ${runId} ${interaction.id} decline`,
+        `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
+      ].join('\n') + schemaHint
+    case 'form_boolean':
+      return [
+        renderer.title,
+        `Submit with JSON: /elicitation ${runId} ${interaction.id} accept {"${renderer.field}":true}`,
+        `Decline: /elicitation ${runId} ${interaction.id} decline`,
+        `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
+      ].join('\n')
+    case 'form_single_select':
+    case 'form_multi_select':
+      return [
+        renderer.title,
+        `Options: ${renderer.options.map((option) => option.value).join(', ')}`,
+        `Use the card to submit or fallback to /elicitation ${runId} ${interaction.id} accept <json>`,
+        `Decline: /elicitation ${runId} ${interaction.id} decline`,
+        `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
+      ].join('\n')
+    case 'generic_json_fallback':
+      return [
+        interaction.message || 'Additional input required',
+        `Use the card JSON field or /elicitation ${runId} ${interaction.id} accept {"field":"value"}`,
+        `Decline: /elicitation ${runId} ${interaction.id} decline`,
+        `Cancel: /elicitation ${runId} ${interaction.id} cancel`,
+      ].join('\n') + schemaHint
+  }
 }
 
 export function summarizeLarkInteraction(runId: string, interaction: PendingInteraction): string {
@@ -1283,27 +1768,44 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
       return [{
         conversationKey: record.conversationKey,
         text: summarizeLarkInteraction(record.runId, event.transaction.interaction),
+        card: buildElicitationCard(record.runId, event.transaction.interaction),
         runId: record.runId,
         ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-        mode: 'fallback',
+        mode: 'create',
+        preferRawCardFallback: true,
       }]
     case 'session.interactive.completed':
     case 'session.interactive.cancelled':
     case 'session.control.completed':
     case 'session.control.cancelled': {
-      if (!event.transaction.interaction || event.transaction.interaction.kind !== 'permission') return []
-      const decision = getPermissionDecisionFromPayload(event.payload) ?? 'approve'
+      if (!event.transaction.interaction) return []
+      if (event.transaction.interaction.kind === 'permission') {
+        const decision = getPermissionDecisionFromPayload(event.payload) ?? 'approve'
+        const ok = event.transaction.interaction.status === 'resolved'
+        return [{
+          conversationKey: record.conversationKey,
+          text: ok
+            ? `Permission ${decision}`
+            : 'Permission unavailable',
+          card: buildPermissionResolvedCard(decision, ok),
+          runId: record.runId,
+          ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+          mode: 'create',
+          state: buildPermissionCardKitState(record),
+          preferRawCardFallback: true,
+        }]
+      }
       const ok = event.transaction.interaction.status === 'resolved'
+      const action = event.transaction.interaction.status === 'cancelled'
+        ? 'cancel'
+        : ((asRecord(event.payload)?.action === 'decline' ? 'decline' : 'accept') as 'accept' | 'decline' | 'cancel')
       return [{
         conversationKey: record.conversationKey,
-        text: ok
-          ? `Permission ${decision}`
-          : 'Permission unavailable',
-        card: buildPermissionResolvedCard(decision, ok),
+        text: ok ? `Elicitation ${action}` : 'Elicitation unavailable',
+        card: buildElicitationResolvedCard(action, ok),
         runId: record.runId,
         ...(record.sessionId ? { sessionId: record.sessionId } : {}),
         mode: 'create',
-        state: buildPermissionCardKitState(record),
         preferRawCardFallback: true,
       }]
     }

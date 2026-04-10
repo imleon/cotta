@@ -29,29 +29,6 @@ const pendingPermissionInteraction = computed<PermissionInteraction | null>(() =
 const pendingElicitationInteraction = computed<SdkElicitationInteraction | null>(() =>
   session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction : null
 )
-const pendingInteractionTitle = computed(() => {
-  const interaction = session.pendingInteraction
-  if (!interaction) return 'Pending interaction'
-  if (interaction.kind === 'permission') {
-    return interaction.title || interaction.displayName || interaction.toolName || 'Pending interaction'
-  }
-  return interaction.message || interaction.serverName || 'Pending interaction'
-})
-const pendingInteractionDescription = computed(() => {
-  const interaction = session.pendingInteraction
-  if (!interaction) return ''
-  if (interaction.kind === 'permission') {
-    return interaction.description || ''
-  }
-  return interaction.message || ''
-})
-const pendingInteractionReason = computed(() =>
-  session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction.decisionReason || '' : ''
-)
-const pendingInteractionUrl = computed(() =>
-  session.pendingInteraction?.kind === 'elicitation' ? session.pendingInteraction.url : undefined
-)
-
 function itemHasToolUseId(item: TimelineItem, toolUseId: string): boolean {
   if (item.kind === 'assistant') {
     return item.fragments.some((fragment) => fragment.type === 'tool_use' && fragment.toolUseId === toolUseId)
@@ -200,33 +177,12 @@ watch(
       :show-debug-meta="debugMetaVisible"
     />
 
-    <div v-if="session.pendingInteraction && ((session.pendingInteraction.kind === 'permission' && !isPendingPermissionAttached) || (session.pendingInteraction.kind === 'elicitation' && !isPendingElicitationAttached))" class="space-y-3">
-      <div class="text-slate-900">
-        {{ session.pendingInteraction.kind === 'permission' ? 'Permission required' : 'Interaction required' }}
-        <span class="text-slate-500"> · {{ pendingInteractionTitle }}</span>
-      </div>
-      <TimelineCliSubrow v-if="pendingInteractionDescription">
-        <div>{{ pendingInteractionDescription }}</div>
-      </TimelineCliSubrow>
-      <TimelineCliSubrow v-if="pendingInteractionReason" muted>
-        <div>{{ pendingInteractionReason }}</div>
-      </TimelineCliSubrow>
-      <TimelineCliSubrow v-if="pendingInteractionUrl">
-        <a
-          :href="pendingInteractionUrl"
-          target="_blank"
-          rel="noreferrer"
-          class="text-sm text-slate-600 underline underline-offset-2 hover:text-sky-700"
-        >
-          Open interaction URL
-        </a>
-      </TimelineCliSubrow>
-      <div v-if="session.pendingInteraction.kind === 'permission' && pendingPermissionInteraction" class="pl-7">
-        <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" />
-      </div>
-      <div v-else class="space-y-3">
-        <TimelineElicitationInteractionBlock v-if="pendingElicitationInteraction" :interaction="pendingElicitationInteraction" />
-      </div>
+    <div v-if="pendingPermissionInteraction && !isPendingPermissionAttached" class="pl-7">
+      <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" />
+    </div>
+
+    <div v-if="pendingElicitationInteraction && !isPendingElicitationAttached" class="pl-7">
+      <TimelineElicitationInteractionBlock :interaction="pendingElicitationInteraction" />
     </div>
 
     <div v-if="recentControlTransactions.length > 0" class="space-y-2">

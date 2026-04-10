@@ -91,9 +91,9 @@ const logger = createDebugLogger('session-store')
 const EVENT_LOG_INTERVAL = 20
 const OPTIMISTIC_USER_MATCH_WINDOW_MS = 30_000
 
-type HistoryMessage = SessionMessage & {
-  optimistic?: boolean
-  localId?: string
+type OptimisticUserMessage = SessionMessage & {
+  optimistic: true
+  localId: string
 }
 
 function normalizeSession(item: any): SessionSummary {
@@ -128,11 +128,23 @@ function getTimelineMessageFromEvent(event: Extract<SessionEvent, { type: 'sessi
   return event.parsed ?? null
 }
 
-function isMatchingOptimisticUserMessage(message: HistoryMessage, candidate: SessionMessage, timestamp: number): boolean {
-  if (!message.optimistic || message.role !== 'user' || candidate.role !== 'user') return false
+function isMatchingOptimisticUserMessage(message: OptimisticUserMessage, candidate: SessionMessage, timestamp: number): boolean {
+  if (message.role !== 'user' || candidate.role !== 'user') return false
   if (message.content.trim() !== candidate.content.trim()) return false
   const messageTimestamp = typeof message.timestamp === 'number' ? message.timestamp : 0
   return Math.abs(messageTimestamp - timestamp) <= OPTIMISTIC_USER_MATCH_WINDOW_MS
+}
+
+function shouldRetainSdkMessageAfterHistoryReload(message: Extract<SessionEvent, { type: 'session.sdk.message' }>['payload']): boolean {
+  const classified = classifySdkMessageLane(message)
+  if (classified.lane === 'session') return true
+  if (classified.lane !== 'live') return false
+  return classified.liveKind === 'stream_event'
+    || classified.liveKind === 'system'
+    || classified.liveKind === 'result'
+    || classified.liveKind === 'tool_progress'
+    || classified.liveKind === 'tool_use_summary'
+    || classified.liveKind === 'prompt_suggestion'
 }
 
 function getStreamScopeKey(event: SessionStreamEvent): string {
@@ -296,7 +308,8 @@ function attachOverlaysToDisplayItems(
 }
 
 export const useSessionStore = defineStore('session', () => {
-  const historyMessages = ref<HistoryMessage[]>([])
+  const historyMessages = ref<SessionMessage[]>([])
+  const optimisticUserMessages = ref<OptimisticUserMessage[]>([])
   const historyMessagesHasMore = ref(false)
   const historyMessagesLoading = ref(false)
   const historyMessagesLoadingOlder = ref(false)
@@ -437,20 +450,36 @@ export const useSessionStore = defineStore('session', () => {
     }
     return ids
   })
-  const userLaneAtoms = computed<TranscriptAtom[]>(() =>
-    userLaneEvents.value
+  const userLaneAtoms = computed<TranscriptAtom[]>(() => {
+    const optimisticAtoms = optimisticUserMessages.value.map((message, index) =>
+      buildTranscriptAtom(message, {
+        source: 'live',
+        sourceIndex: index,
+        timestamp: message.timestamp,
+        optimistic: true,
+        localId: message.localId,
+      })
+    )
+    const runtimeAtoms = userLaneEvents.value
       .map((event, index) => {
         const message = getTimelineMessageFromEvent(event)
         if (!message) return null
         return buildTranscriptAtom(message, {
           source: 'live',
-          sourceIndex: index,
+          sourceIndex: optimisticAtoms.length + index,
           timestamp: typeof event.receivedAt === 'number' ? event.receivedAt : message.timestamp,
           sequence: event.sequence,
         })
       })
       .filter((atom): atom is TranscriptAtom => atom !== null && atom.semanticKind !== 'meta')
-  )
+
+    return [...optimisticAtoms, ...runtimeAtoms]
+      .slice()
+      .sort((left, right) => {
+        if (left.order.timestamp !== right.order.timestamp) return left.order.timestamp - right.order.timestamp
+        return left.order.sourceIndex - right.order.sourceIndex
+      })
+  })
   const liveAtoms = computed<TranscriptAtom[]>(() =>
     [...liveLaneEvents.value.user, ...liveLaneEvents.value.assistant]
       .map((event, index) => {
@@ -715,7 +744,7 @@ export const useSessionStore = defineStore('session', () => {
     if (parsedMessage?.role === 'user') {
       let matchedOptimisticTimestamp: number | null = null
       let removedOptimistic = false
-      historyMessages.value = historyMessages.value.filter((message) => {
+      optimisticUserMessages.value = optimisticUserMessages.value.filter((message) => {
         if (removedOptimistic) return true
         if (!isMatchingOptimisticUserMessage(message, parsedMessage, clientReceivedAt)) return true
         removedOptimistic = true
@@ -910,11 +939,6 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'session.run.failed':
-        historyMessages.value.push({
-          role: 'system',
-          content: `Error: ${event.error}`,
-          timestamp: Date.now(),
-        })
         logger.error('chat:error', {
           runId: shortId(event.runId),
           sessionId: shortId(event.sessionId),
@@ -970,11 +994,6 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'session.error':
-        historyMessages.value.push({
-          role: 'system',
-          content: `Error: ${event.error}`,
-          timestamp: Date.now(),
-        })
         logger.error('chat:error', {
           runId: shortId(event.runId),
           error: event.error,
@@ -1118,8 +1137,8 @@ export const useSessionStore = defineStore('session', () => {
     activeControlOrder.value = []
     runState.value = 'queued'
     optimisticMessageCount += 1
-    historyMessages.value = [
-      ...historyMessages.value,
+    optimisticUserMessages.value = [
+      ...optimisticUserMessages.value,
       {
         role: 'user',
         content: trimmed,
@@ -1330,6 +1349,7 @@ export const useSessionStore = defineStore('session', () => {
     logger.info('chat:new')
     currentSessionId.value = null
     historyMessages.value = []
+    optimisticUserMessages.value = []
     historyMessagesHasMore.value = false
     historyMessagesLoading.value = false
     historyMessagesLoadingOlder.value = false
@@ -1352,6 +1372,7 @@ export const useSessionStore = defineStore('session', () => {
     })
     currentSessionId.value = id
     historyMessages.value = []
+    optimisticUserMessages.value = []
     historyMessagesHasMore.value = false
     historyMessagesLoading.value = false
     historyMessagesLoadingOlder.value = false
@@ -1403,11 +1424,10 @@ export const useSessionStore = defineStore('session', () => {
         historyMessages.value = [...messages, ...historyMessages.value]
       } else {
         historyMessages.value = messages
+        optimisticUserMessages.value = []
         eventLog.value = eventLog.value.filter((event) => {
           if ('sessionId' in event && event.sessionId && event.sessionId !== id) return true
-          if (event.type !== 'session.sdk.message') return false
-          const classified = classifySdkMessageLane(event.payload)
-          return classified.lane !== 'user' && !(classified.lane === 'live' && (classified.liveKind === 'user' || classified.liveKind === 'assistant'))
+          return shouldRetainSdkMessageAfterHistoryReload(event.payload)
         })
         streamPreviewStates.value = {}
         streamAnimationCursors.value = {}
@@ -1560,6 +1580,7 @@ export const useSessionStore = defineStore('session', () => {
     authError.value = ''
     currentSessionId.value = null
     historyMessages.value = []
+    optimisticUserMessages.value = []
     historyMessagesHasMore.value = false
     historyMessagesLoading.value = false
     historyMessagesLoadingOlder.value = false

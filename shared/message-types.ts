@@ -1035,11 +1035,7 @@ export type SdkLaneClassification = {
   liveKind?: LiveLaneKind
 }
 
-export function classifySdkMessageLane(message: SDKMessage, source: 'history' | 'runtime' = 'runtime'): SdkLaneClassification | { lane: 'history' } {
-  if (source === 'history') {
-    return { lane: 'history' }
-  }
-
+export function classifySdkMessageLane(message: SDKMessage): SdkLaneClassification {
   switch (message.type) {
     case 'user': {
       const replay = 'isReplay' in message && message.isReplay === true

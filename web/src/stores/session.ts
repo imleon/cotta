@@ -871,16 +871,6 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function applyTransportEvent(event: Extract<SessionEvent, { type: 'session.sdk.transport' }>) {
-    syncSessionId(event.event.sessionId)
-    logger.debug('chat:sdk-transport:ignored-ws', {
-      direction: event.event.direction,
-      eventName: event.event.eventName,
-      sequence: event.event.sequence,
-      sessionId: shortId(event.event.sessionId),
-    })
-  }
-
   function scheduleStreamDisplayAdvance() {
     if (streamAnimationFrame !== null) return
     streamAnimationFrame = window.setTimeout(() => {
@@ -948,14 +938,14 @@ export const useSessionStore = defineStore('session', () => {
 
   function applyEvent(event: SessionEvent) {
     observedEventCount += 1
-    if (observedEventCount === 1 || observedEventCount % EVENT_LOG_INTERVAL === 0 || (event.type !== 'session.sdk.message' && event.type !== 'session.sdk.transport')) {
+    if (observedEventCount === 1 || observedEventCount % EVENT_LOG_INTERVAL === 0 || event.type !== 'session.sdk.message') {
       logger.info('session:event', {
         count: observedEventCount,
         type: event.type,
         runId: 'runId' in event ? shortId(event.runId) : undefined,
-        sessionId: 'sessionId' in event ? shortId(event.sessionId) : event.type === 'session.sdk.transport' ? shortId(event.event.sessionId) : undefined,
+        sessionId: 'sessionId' in event ? shortId(event.sessionId) : undefined,
         state: 'state' in event ? event.state : undefined,
-        sequence: 'sequence' in event ? event.sequence : event.type === 'session.sdk.transport' ? event.event.sequence : undefined,
+        sequence: 'sequence' in event ? event.sequence : undefined,
       })
     }
 
@@ -1028,10 +1018,6 @@ export const useSessionStore = defineStore('session', () => {
         streamAnimationCursors.value = next.animationCursors
         break
       }
-
-      case 'session.sdk.transport':
-        applyTransportEvent(event)
-        break
 
       case 'session.interactive.opened':
       case 'session.interactive.awaiting_user':

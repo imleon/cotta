@@ -5,13 +5,17 @@ import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.
 
 const logView = useLogViewStore()
 const sdkRawItems = computed(() => logView.sdkRawLog)
+const messageItems = computed(() => sdkRawItems.value.filter((item) => item.event.kind === 'sdk_message'))
+const controlItems = computed(() => sdkRawItems.value.filter((item) => item.event.kind !== 'sdk_message'))
 const persistentItems = computed(() => logView.persistentLog.filter((item) => {
   const type = getPersistentType(item.line)
   return type !== 'last-prompt' && type !== 'permission-mode'
 }))
-const activeItems = computed(() => (
-  logView.selectedLogTab === 'sdk-raw' ? sdkRawItems.value : persistentItems.value
-))
+const activeItems = computed(() => {
+  if (logView.selectedLogTab === 'messages') return messageItems.value
+  if (logView.selectedLogTab === 'control') return controlItems.value
+  return persistentItems.value
+})
 const sortedSessions = computed(() => (
   [...logView.sessions].sort((left, right) => {
     const leftTime = typeof left.updatedAt === 'number' && Number.isFinite(left.updatedAt) ? left.updatedAt : 0
@@ -22,11 +26,29 @@ const sortedSessions = computed(() => (
 const preservingOlderScroll = ref(false)
 const scrollContainer = ref<HTMLElement | null>(null)
 const scrollToLatestPending = ref(true)
-const sdkRawGridTemplate = '28ch 16ch 10ch 10ch 14ch 18ch 18ch minmax(28ch, 1fr)'
-const sdkRawGridStyle = {
-  gridTemplateColumns: sdkRawGridTemplate,
+const messageGridTemplate = '24ch 14ch 20ch 18ch 22ch minmax(28ch, 1fr)'
+const messageGridStyle = {
+  gridTemplateColumns: messageGridTemplate,
   width: 'max-content',
   minWidth: '100%',
+}
+const controlGridTemplate = '28ch 16ch 10ch 14ch 18ch 18ch minmax(28ch, 1fr)'
+const controlGridStyle = {
+  gridTemplateColumns: controlGridTemplate,
+  width: 'max-content',
+  minWidth: '100%',
+}
+
+type SessionSdkRawLogEntryLike = {
+  event: {
+    kind: string
+    direction: string
+    requestId?: string
+    subtype?: string
+    message: unknown
+  }
+  runId: string
+  loggedAt: number
 }
 
 function formatTimestamp(timestamp: number): string {
@@ -39,7 +61,6 @@ function formatTimestamp(timestamp: number): string {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-    timeZoneName: 'short',
   }).format(date)
   const milliseconds = String(date.getMilliseconds()).padStart(3, '0')
   return `${base}.${milliseconds}`
@@ -75,36 +96,93 @@ function getRawDirectionClass(direction: string): string {
   return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
 }
 
-function getRawKindClass(kind: string): string {
-  if (kind === 'sdk_message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
+function getControlKindClass(kind: string): string {
   if (kind === 'control_request') return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
   if (kind === 'control_response') return 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
   return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
 }
 
-function getRawMessageType(item: SessionSdkRawLogEntryLike): string {
-  const { event } = item
-  if (event.kind === 'sdk_message') {
-    const message = event.message as Record<string, unknown>
-    const type = typeof message.type === 'string' ? message.type : 'unknown'
-    const subtype = typeof message.subtype === 'string' ? `.${message.subtype}` : ''
-    return `${type}${subtype}`
-  }
-  return event.subtype || '-'
+function getMessageTypeClass(type: string): string {
+  if (type.startsWith('assistant')) return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
+  if (type.startsWith('user') || type.startsWith('synthetic_user')) return 'border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_7%,white)] text-[var(--tt-accent)]'
+  if (type.startsWith('system')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
+  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)] text-[var(--tt-text-muted)]'
 }
 
-type SessionSdkRawLogEntryLike = {
-  event: {
-    kind: string
-    direction: string
-    requestId?: string
-    subtype?: string
-    message: unknown
-    sequence: number
-    receivedAt: number
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function truncateText(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit)}…` : value
+}
+
+function getMessageContentEntries(item: SessionSdkRawLogEntryLike): Array<Record<string, unknown>> {
+  const message = asRecord(item.event.message)
+  if (!message) return []
+  const type = message.type
+  if (type !== 'assistant' && type !== 'user' && type !== 'synthetic_user') return []
+  const messageRecord = asRecord(message.message)
+  const content = messageRecord?.content
+  if (typeof content === 'string') {
+    return [{ type: 'text', text: content }]
   }
-  runId: string
-  loggedAt: number
+  if (content && typeof content === 'object' && !Array.isArray(content)) {
+    return [content as Record<string, unknown>]
+  }
+  if (Array.isArray(content)) {
+    return content.filter((entry) => entry && typeof entry === 'object') as Record<string, unknown>[]
+  }
+  return []
+}
+
+function extractMessageContentKind(item: SessionSdkRawLogEntryLike): string {
+  const [first] = getMessageContentEntries(item)
+  if (first && typeof first.type === 'string') return first.type
+  const message = asRecord(item.event.message)
+  if (!message) return '-'
+  const event = asRecord(message.event)
+  if (typeof event?.type === 'string') return event.type
+  if (typeof message.stop_reason === 'string' && message.stop_reason.trim()) return message.stop_reason
+  return '-'
+}
+
+function extractMessageSummary(item: SessionSdkRawLogEntryLike): string {
+  const entries = getMessageContentEntries(item)
+  for (const entry of entries) {
+    if (typeof entry.text === 'string' && entry.text.trim()) return truncateText(entry.text.trim(), 20)
+    if (typeof entry.content === 'string' && entry.content.trim()) return truncateText(entry.content.trim(), 20)
+    if (typeof entry.thinking === 'string' && entry.thinking.trim()) return truncateText(entry.thinking.trim(), 20)
+    if (typeof entry.name === 'string' && entry.name.trim()) {
+      const input = asRecord(entry.input)
+      const command = typeof input?.command === 'string' ? input.command.trim() : ''
+      const summary = command ? `${entry.name} ${command}` : entry.name
+      if (summary.trim()) return truncateText(summary.trim(), 20)
+    }
+  }
+  const message = asRecord(item.event.message)
+  if (!message) return '-'
+  const result = message.result
+  if (typeof result === 'string' && result.trim()) return truncateText(result.trim(), 20)
+  return '-'
+}
+
+function getSdkMessageType(item: SessionSdkRawLogEntryLike): string {
+  const message = asRecord(item.event.message)
+  if (!message) return 'unknown'
+  const type = typeof message.type === 'string' ? message.type : 'unknown'
+  const subtype = typeof message.subtype === 'string' ? `.${message.subtype}` : ''
+  return `${type}${subtype}`
+}
+
+function getMessageRowClass(item: SessionSdkRawLogEntryLike): string {
+  return getSdkMessageType(item).startsWith('synthetic_user')
+    ? 'bg-[color:color-mix(in_srgb,var(--tt-accent)_8%,white)] hover:bg-[color:color-mix(in_srgb,var(--tt-accent)_14%,white)]'
+    : 'hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]'
+}
+
+function getControlType(item: SessionSdkRawLogEntryLike): string {
+  return item.event.subtype || '-'
 }
 
 function getPersistentRecord(line: string): Record<string, unknown> | null {
@@ -239,7 +317,7 @@ onBeforeUnmount(() => {
     <div class="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col gap-2">
       <div class="border-b border-[var(--tt-border)] pb-2">
         <h2 class="text-sm font-semibold text-[var(--tt-accent)]">SDK logs</h2>
-        <p class="mt-0.5 text-[11px] text-[var(--tt-text-subtle)]">同一 session 下查看 SDK 边界原始日志与 Claude persistent 日志。</p>
+        <p class="mt-0.5 text-[11px] text-[var(--tt-text-subtle)]">同一 session 下查看 SDK Messages、Control 与 Claude persistent 日志。</p>
       </div>
 
       <div class="flex items-center justify-between gap-2 pb-1">
@@ -257,10 +335,17 @@ onBeforeUnmount(() => {
           <div class="inline-flex rounded border border-[var(--tt-border)] bg-[var(--tt-card)] p-0.5 text-[11px]">
             <button
               class="rounded px-2 py-1"
-              :class="logView.selectedLogTab === 'sdk-raw' ? 'bg-[var(--tt-accent)] text-white' : 'text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]'"
-              @click="logView.selectLogTab('sdk-raw')"
+              :class="logView.selectedLogTab === 'messages' ? 'bg-[var(--tt-accent)] text-white' : 'text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]'"
+              @click="logView.selectLogTab('messages')"
             >
-              SDK Raw
+              SDK Messages
+            </button>
+            <button
+              class="rounded px-2 py-1"
+              :class="logView.selectedLogTab === 'control' ? 'bg-[var(--tt-accent)] text-white' : 'text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]'"
+              @click="logView.selectLogTab('control')"
+            >
+              Control
             </button>
             <button
               class="rounded px-2 py-1"
@@ -278,7 +363,7 @@ onBeforeUnmount(() => {
         <button
           class="rounded border px-2 py-1 text-[11px] font-semibold tracking-wide disabled:cursor-not-allowed disabled:opacity-50"
           :class="liveButtonClass"
-          :disabled="!logView.selectedSessionId || (logView.selectedLogTab === 'sdk-raw' ? logView.sdkRawLogLoading : logView.persistentLogLoading)"
+          :disabled="!logView.selectedSessionId || (logView.selectedLogTab === 'persistent' ? logView.persistentLogLoading : logView.sdkRawLogLoading)"
           @click="logView.toggleLogLive"
         >
           {{ liveButtonLabel }}
@@ -286,31 +371,70 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="min-h-0 flex-1 overflow-hidden rounded border border-[var(--tt-border)] bg-[var(--tt-card)] font-mono">
-        <template v-if="logView.selectedLogTab === 'sdk-raw'">
-          <div v-if="sdkRawItems.length === 0" class="flex h-full items-center justify-center p-6 text-center text-sm text-[var(--tt-text-subtle)]">
-            No SDK raw logs yet.
+        <template v-if="logView.selectedLogTab === 'messages'">
+          <div v-if="messageItems.length === 0" class="flex h-full items-center justify-center p-6 text-center text-sm text-[var(--tt-text-subtle)]">
+            No SDK message logs yet.
           </div>
 
           <div v-else ref="scrollContainer" class="h-full overflow-auto" @scroll="handleScroll">
-            <div class="sticky top-0 z-10 grid gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]" :style="sdkRawGridStyle">
+            <div class="sticky top-0 z-10 grid gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]" :style="messageGridStyle">
+              <div>Time</div>
+              <div>Run ID</div>
+              <div>msg.type</div>
+              <div>cnt.kind</div>
+              <div>Summary</div>
+              <div>Payload</div>
+            </div>
+            <div
+              v-for="item in messageItems"
+              :key="`sdk-message-${item.runId}-${item.cursor}`"
+              class="grid gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0"
+              :class="getMessageRowClass(item)"
+              :style="messageGridStyle"
+            >
+              <div class="shrink-0 whitespace-nowrap text-[var(--tt-text-subtle)]">{{ formatTimestamp(item.loggedAt) }}</div>
+              <div class="shrink-0 text-[var(--tt-text-subtle)]">{{ item.runId.slice(0, 8) }}</div>
+              <div class="min-w-0">
+                <span class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top" :class="getMessageTypeClass(getSdkMessageType(item))">
+                  {{ getSdkMessageType(item) }}
+                </span>
+              </div>
+              <div class="truncate text-[var(--tt-text-muted)]">{{ extractMessageContentKind(item) }}</div>
+              <div class="truncate text-[var(--tt-text-muted)]">{{ extractMessageSummary(item) }}</div>
+              <div class="min-w-0">
+                <details class="rounded border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-2 py-1">
+                  <summary class="cursor-pointer text-[var(--tt-text-muted)] hover:text-[var(--tt-accent)]">Payload</summary>
+                  <pre class="mt-1 overflow-x-auto border border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[var(--tt-accent)] px-2 py-2 text-[11px] text-[#F8F4EF]">{{ stringifyStructuredValue(item.event.message) }}</pre>
+                </details>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="logView.selectedLogTab === 'control'">
+          <div v-if="controlItems.length === 0" class="flex h-full items-center justify-center p-6 text-center text-sm text-[var(--tt-text-subtle)]">
+            No control logs yet.
+          </div>
+
+          <div v-else ref="scrollContainer" class="h-full overflow-auto" @scroll="handleScroll">
+            <div class="sticky top-0 z-10 grid gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]" :style="controlGridStyle">
               <div>Time</div>
               <div>Kind</div>
               <div>Dir</div>
-              <div>Seq</div>
               <div>Run ID</div>
               <div>Request ID</div>
               <div>Type</div>
               <div>Payload</div>
             </div>
             <div
-              v-for="item in sdkRawItems"
-              :key="`sdk-raw-${item.runId}-${item.cursor}`"
+              v-for="item in controlItems"
+              :key="`sdk-control-${item.runId}-${item.cursor}`"
               class="grid gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0 hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]"
-              :style="sdkRawGridStyle"
+              :style="controlGridStyle"
             >
               <div class="shrink-0 whitespace-nowrap text-[var(--tt-text-subtle)]">{{ formatTimestamp(item.loggedAt) }}</div>
               <div class="min-w-0">
-                <span class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top" :class="getRawKindClass(item.event.kind)">
+                <span class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top" :class="getControlKindClass(item.event.kind)">
                   {{ item.event.kind }}
                 </span>
               </div>
@@ -319,10 +443,9 @@ onBeforeUnmount(() => {
                   {{ getRawDirectionLabel(item.event.direction) }}
                 </span>
               </div>
-              <div class="shrink-0 text-[var(--tt-text-subtle)]">#{{ item.event.sequence }}</div>
               <div class="shrink-0 text-[var(--tt-text-subtle)]">{{ item.runId.slice(0, 8) }}</div>
               <div class="truncate text-[var(--tt-text-subtle)]">{{ item.event.requestId || '-' }}</div>
-              <div class="truncate text-[var(--tt-text-muted)]">{{ getRawMessageType(item) }}</div>
+              <div class="truncate text-[var(--tt-text-muted)]">{{ getControlType(item) }}</div>
               <div class="min-w-0">
                 <details class="rounded border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-2 py-1">
                   <summary class="cursor-pointer text-[var(--tt-text-muted)] hover:text-[var(--tt-accent)]">Payload</summary>

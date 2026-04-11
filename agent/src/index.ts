@@ -16,7 +16,6 @@ import type {
   SdkRawLogDirection,
   SdkRawLogKind,
   SessionStreamEvent,
-  SdkTransportEvent,
   StreamEventEnvelope,
   StreamEventNormalized,
   StreamEventScope,
@@ -52,20 +51,10 @@ function writeRuntimeEvent(event: RunnerRuntimeEvent): void {
   writeOutput(event)
 }
 
-function writeTransportEvent(event: Omit<SdkTransportEvent, 'source'>): void {
-  writeRuntimeEvent({
-    type: 'sdk.transport',
-    event: {
-      source: 'sdk-transport',
-      ...event,
-    },
-  })
-}
-
 function writeSdkRawEvent(input: {
   kind: SdkRawLogKind
   direction: SdkRawLogDirection
-  message: SDKMessage | SdkControlEnvelope
+  message: unknown
   requestId?: string
   subtype?: string
   envelope?: RuntimeEnvelopeBase
@@ -91,6 +80,12 @@ function extractSessionId(value: unknown): string | undefined {
   return typeof direct === 'string' && direct.length > 0 ? direct : undefined
 }
 
+function shouldSkipSdkRawMessage(message: SDKMessage): boolean {
+  if (message.type !== 'stream_event') return false
+  const event = (message as unknown as { event?: { type?: unknown } }).event
+  return typeof event?.type === 'string' && event.type.endsWith('_delta')
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason?: unknown) => void
@@ -105,29 +100,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null
 }
 
-function summarizeValue(value: unknown): string {
-  if (value == null) return ''
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    if (!trimmed) return ''
-    return trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : trimmed
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  if (Array.isArray(value)) return `array(${value.length})`
-  if (typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>)
-    return keys.length > 0 ? `object(${keys.slice(0, 6).join(', ')})` : 'object(0)'
-  }
-  return String(value)
-}
-
-function shouldIncludeTransportPayload(): boolean {
-  return true
-}
-
-function maybeTransportPayload(payload: unknown): { payload?: unknown } {
-  return shouldIncludeTransportPayload() ? { payload } : {}
-}
 
 function createControlTransaction(input: {
   requestId: string
@@ -204,28 +176,6 @@ function handleControlRespondCommand(requestId: string, response: ControlRespons
       decision: response.decision,
       selectedAction: response.selectedSuggestion?.action,
     })
-    writeTransportEvent({
-      direction: 'inbound',
-      eventName: 'control.response.permission',
-      sdkType: 'control_response',
-      sdkSubtype: 'can_use_tool',
-      requestId,
-      toolUseId: requestId,
-      payloadSummary: response.decision,
-      ...maybeTransportPayload(response),
-      ...nextEnvelope(currentSessionId),
-    })
-    writeTransportEvent({
-      direction: 'inbound',
-      eventName: 'control.response',
-      sdkType: 'control_response',
-      sdkSubtype: 'can_use_tool',
-      requestId,
-      toolUseId: requestId,
-      payloadSummary: response.decision,
-      ...maybeTransportPayload(response),
-      ...nextEnvelope(currentSessionId),
-    })
     const resolve = permissionWaiters.get(requestId)
     if (resolve) {
       permissionWaiters.delete(requestId)
@@ -241,26 +191,6 @@ function handleControlRespondCommand(requestId: string, response: ControlRespons
   logAgent('info', 'agent:elicitation:response', {
     requestId: requestId.slice(0, 8),
     action: response.action,
-  })
-  writeTransportEvent({
-    direction: 'inbound',
-    eventName: 'control.response.elicitation',
-    sdkType: 'control_response',
-    sdkSubtype: 'elicitation',
-    requestId,
-    payloadSummary: response.action,
-    ...maybeTransportPayload(response),
-    ...nextEnvelope(currentSessionId),
-  })
-  writeTransportEvent({
-    direction: 'inbound',
-    eventName: 'control.response',
-    sdkType: 'control_response',
-    sdkSubtype: 'elicitation',
-    requestId,
-    payloadSummary: response.action,
-    ...maybeTransportPayload(response),
-    ...nextEnvelope(currentSessionId),
   })
   const resolve = elicitationWaiters.get(requestId)
   if (resolve) {
@@ -421,29 +351,7 @@ function emitInteractiveControlRequest(input: {
   const { envelope, transaction } = input.interaction.kind === 'permission'
     ? createPermissionControlRequest(input.requestId, input.payload as PermissionRequest, input.interaction)
     : createElicitationControlRequest(input.requestId, input.payload as ElicitationRequest, input.interaction)
-  writeTransportEvent({
-    direction: 'outbound',
-    eventName: input.subtype === 'can_use_tool' ? 'control.request.permission' : 'control.request.elicitation',
-    sdkType: 'control_request',
-    sdkSubtype: input.subtype,
-    requestId: input.requestId,
-    ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
-    payloadSummary: input.payloadSummary,
-    ...maybeTransportPayload(input.payload),
-    ...nextEnvelope(currentSessionId),
-  })
   const rawEnvelope = nextEnvelope(currentSessionId)
-  writeTransportEvent({
-    direction: 'outbound',
-    eventName: 'control.request',
-    sdkType: 'control_request',
-    sdkSubtype: input.subtype,
-    requestId: input.requestId,
-    ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
-    payloadSummary: input.payloadSummary,
-    ...maybeTransportPayload(envelope),
-    ...rawEnvelope,
-  })
   writeSdkRawEvent({
     kind: 'control_request',
     direction: 'sdk_to_host',
@@ -483,17 +391,6 @@ function emitInteractiveControlResponse(input: {
     message: envelope,
   })
   const rawEnvelope = nextEnvelope(currentSessionId)
-  writeTransportEvent({
-    direction: 'inbound',
-    eventName: 'control.response',
-    sdkType: 'control_response',
-    sdkSubtype: input.subtype,
-    requestId: input.requestId,
-    ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
-    payloadSummary: input.payloadSummary,
-    ...maybeTransportPayload(envelope),
-    ...rawEnvelope,
-  })
   writeSdkRawEvent({
     kind: 'control_response',
     direction: 'host_to_sdk',
@@ -540,16 +437,6 @@ function createHostControlRequestEnvelope(requestId: string, request: HostContro
 async function executeHostControlRequest(requestId: string, request: HostControlRequestCommand): Promise<void> {
   const { envelope, transaction } = createHostControlRequestEnvelope(requestId, request)
   const rawEnvelope = nextEnvelope(currentSessionId)
-  writeTransportEvent({
-    direction: 'inbound',
-    eventName: 'control.request',
-    sdkType: 'control_request',
-    sdkSubtype: request.subtype,
-    requestId,
-    payloadSummary: request.subtype,
-    ...maybeTransportPayload(envelope),
-    ...rawEnvelope,
-  })
   writeSdkRawEvent({
     kind: 'control_request',
     direction: 'host_to_sdk',
@@ -920,34 +807,6 @@ function getPermissionResult(request: PermissionRequest, response: PermissionRes
   }
 }
 
-function summarizeSdkMessage(message: SDKMessage): string {
-  switch (message.type) {
-    case 'assistant': {
-      if (typeof message.message?.content === 'string') return summarizeValue(message.message.content)
-      if (Array.isArray(message.message?.content)) return `assistant blocks=${message.message.content.length}`
-      return 'assistant message'
-    }
-    case 'user': {
-      if (typeof message.message?.content === 'string') return summarizeValue(message.message.content)
-      if (Array.isArray(message.message?.content)) return `user blocks=${message.message.content.length}`
-      return 'user message'
-    }
-    case 'result':
-      return typeof message.subtype === 'string' ? `result.${message.subtype}` : 'result'
-    case 'tool_progress':
-      return typeof message.tool_name === 'string' ? `tool ${message.tool_name}` : 'tool progress'
-    case 'tool_use_summary':
-      return typeof message.summary === 'string' ? summarizeValue(message.summary) : 'tool summary'
-    case 'system':
-      return typeof message.subtype === 'string' ? `system.${message.subtype}` : 'system'
-    default: {
-      const payload = message as Record<string, unknown>
-      const subtype = typeof payload.subtype === 'string' ? `.${payload.subtype}` : ''
-      return `${message.type}${subtype}`
-    }
-  }
-}
-
 const startDeferred = createDeferred<RunnerAgentInput>()
 const permissionWaiters = new Map<string, (response: PermissionResponse) => void>()
 const elicitationWaiters = new Map<string, (response: ElicitationResponse) => void>()
@@ -982,15 +841,6 @@ function handleCommand(command: RunnerCommand) {
         cancel: cancelEnvelope,
       })
       const rawEnvelope = nextEnvelope(currentSessionId)
-      writeTransportEvent({
-        direction: 'inbound',
-        eventName: 'control.cancel_request',
-        sdkType: 'control_cancel_request',
-        requestId: command.requestId,
-        payloadSummary: 'cancel requested',
-        ...maybeTransportPayload(cancelEnvelope),
-        ...rawEnvelope,
-      })
       writeSdkRawEvent({
         kind: 'control_cancel_request',
         direction: 'host_to_sdk',
@@ -1007,12 +857,6 @@ function handleCommand(command: RunnerCommand) {
       cancelRequested = true
       logAgent('warn', 'agent:run:cancel', {
         sessionId: currentSessionId?.slice(0, 8),
-      })
-      writeTransportEvent({
-        direction: 'inbound',
-        eventName: 'query.cancel',
-        payloadSummary: 'cancel requested',
-        ...nextEnvelope(currentSessionId),
       })
       activeQuery?.close()
       break
@@ -1211,22 +1055,15 @@ function handleSdkMessage(message: SDKMessage) {
     })
   }
 
-  writeTransportEvent({
-    direction: 'outbound',
-    eventName: 'message',
-    sdkType: message.type,
-    sdkSubtype: 'subtype' in message && typeof message.subtype === 'string' ? message.subtype : undefined,
-    payloadSummary: summarizeSdkMessage(message),
-    ...maybeTransportPayload(message),
-    ...rawEnvelope,
-  })
-  writeSdkRawEvent({
-    kind: 'sdk_message',
-    direction: 'sdk_outbound',
-    message,
-    subtype: 'subtype' in message && typeof message.subtype === 'string' ? message.subtype : undefined,
-    envelope: rawEnvelope,
-  })
+  if (!shouldSkipSdkRawMessage(message)) {
+    writeSdkRawEvent({
+      kind: 'sdk_message',
+      direction: 'sdk_outbound',
+      message,
+      subtype: 'subtype' in message && typeof message.subtype === 'string' ? message.subtype : undefined,
+      envelope: rawEnvelope,
+    })
+  }
 
   if (message.type === 'system' && message.subtype === 'session_state_changed') {
     writeRuntimeEvent({
@@ -1339,20 +1176,20 @@ async function main(): Promise<void> {
     }
 
     let messageCount = 0
+    const promptEnvelope = nextEnvelope(currentSessionId)
     writeRuntimeEvent({ type: 'run.started', ...(currentSessionId ? { sessionId: currentSessionId } : {}) })
     writeRuntimeEvent({ type: 'run.state_changed', state: 'running', ...(currentSessionId ? { sessionId: currentSessionId } : {}) })
-    writeTransportEvent({
-      direction: 'inbound',
-      eventName: 'query.start',
-      payloadSummary: input.prompt.trim().slice(0, 160),
-      ...maybeTransportPayload({
-        prompt: input.prompt,
-        sessionId: input.sessionId,
-        systemPrompt: input.systemPrompt,
-        model: input.model,
-        allowedTools,
-      }),
-      ...nextEnvelope(currentSessionId),
+    writeSdkRawEvent({
+      kind: 'sdk_message',
+      direction: 'host_to_sdk',
+      message: {
+        type: 'synthetic_user',
+        message: {
+          content: input.prompt,
+        },
+        ...(currentSessionId ? { session_id: currentSessionId } : {}),
+      },
+      envelope: promptEnvelope,
     })
     logAgent('info', 'agent:query:start', {
       sessionId: currentSessionId?.slice(0, 8),
@@ -1376,13 +1213,6 @@ async function main(): Promise<void> {
         messageCount,
         sessionId: currentSessionId?.slice(0, 8),
       })
-      writeTransportEvent({
-        direction: 'outbound',
-        eventName: 'query.completed',
-        payloadSummary: `messages=${messageCount}`,
-        ...maybeTransportPayload({ messageCount }),
-        ...nextEnvelope(currentSessionId),
-      })
       writeRuntimeEvent({
         type: 'run.completed',
         messageCount,
@@ -1392,13 +1222,6 @@ async function main(): Promise<void> {
       logAgent('warn', 'agent:query:cancelled', {
         messageCount,
         sessionId: currentSessionId?.slice(0, 8),
-      })
-      writeTransportEvent({
-        direction: 'outbound',
-        eventName: 'query.cancelled',
-        payloadSummary: `messages=${messageCount}`,
-        ...maybeTransportPayload({ messageCount }),
-        ...nextEnvelope(currentSessionId),
       })
       writeRuntimeEvent({
         type: 'run.cancelled',
@@ -1411,13 +1234,6 @@ async function main(): Promise<void> {
         error: error instanceof Error ? error.message : String(error),
         sessionId: currentSessionId?.slice(0, 8),
       })
-      writeTransportEvent({
-        direction: 'outbound',
-        eventName: 'query.failed',
-        payloadSummary: error instanceof Error ? error.message : String(error),
-        ...maybeTransportPayload(error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : { error: String(error) }),
-        ...nextEnvelope(currentSessionId),
-      })
       writeRuntimeEvent({
         type: 'run.failed',
         error: error instanceof Error ? error.message : String(error),
@@ -1426,12 +1242,6 @@ async function main(): Promise<void> {
       })
       process.exit(1)
     } else {
-      writeTransportEvent({
-        direction: 'outbound',
-        eventName: 'query.cancelled',
-        payloadSummary: 'cancelled after close',
-        ...nextEnvelope(currentSessionId),
-      })
       writeRuntimeEvent({
         type: 'run.cancelled',
         ...(currentSessionId ? { sessionId: currentSessionId } : {}),

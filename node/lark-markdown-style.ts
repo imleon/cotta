@@ -1,40 +1,59 @@
-function protectCodeBlocks(text: string): { protectedText: string; restore: (value: string) => string } {
-  const blocks: string[] = []
-  const protectedText = text.replace(/```[\s\S]*?```/g, (match) => {
-    const index = blocks.push(match) - 1
-    return `__COTTA_CODE_BLOCK_${index}__`
+/** Matches complete markdown image syntax: `![alt](value)` */
+const IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
+
+function stripInvalidImageKeys(text: string): string {
+  if (!text.includes('![')) return text
+  return text.replace(IMAGE_RE, (fullMatch, _alt, value) => {
+    if (value.startsWith('img_')) return fullMatch
+    return ''
   })
-  return {
-    protectedText,
-    restore(value: string) {
-      return value.replace(/__COTTA_CODE_BLOCK_(\d+)__/g, (_token, rawIndex) => {
-        const index = Number(rawIndex)
-        return Number.isInteger(index) && blocks[index] ? blocks[index] : _token
-      })
-    },
-  }
 }
 
-function optimizeMarkdownCore(text: string): string {
-  let result = text
+function optimizeMarkdownCore(text: string, cardVersion = 2): string {
+  const mark = '___CB_'
+  const codeBlocks: string[] = []
+  let result = text.replace(/(^|\n)(`{3,})([^\n]*)\n[\s\S]*?\n\2(?=\n|$)/g, (match, prefix = '') => {
+    const block = match.slice(String(prefix).length)
+    return `${prefix}${mark}${codeBlocks.push(block) - 1}___`
+  })
 
-  const hasH1toH3 = /^#{1,3} /m.test(result)
-  if (hasH1toH3) {
-    result = result.replace(/^#{2,6} (.+)$/gm, '##### $1')
-    result = result.replace(/^# (.+)$/gm, '#### $1')
+  const hasHeadings = /^#{1,6} /m.test(text)
+  if (hasHeadings) {
+    // Lark renders headings noticeably larger than the web UI. Flatten them into
+    // bold body text so the visual size stays closer to the web experience.
+    result = result.replace(/^#{1,6}\s+(.+)$/gm, '**$1**')
   }
 
-  result = result.replace(/([^\n])\n(\|.+\|\n\|[-: ]+\|)/g, '$1\n\n$2')
-  result = result.replace(/(\|[-: ]+\|(?:\n\|.*\|)+)(\n[^\n])/g, '$1\n\n$2')
-  result = result.replace(/([^\n])\n(```)/g, '$1\n\n$2')
-  result = result.replace(/(```)\n([^\n])/g, '$1\n\n$2')
-  result = result.replace(/\n{3,}/g, '\n\n')
+  if (cardVersion >= 2) {
+    result = result.replace(/^(#{4,5} .+)\n{1,2}(#{4,5} )/gm, '$1\n<br>\n$2')
 
-  return result.trim()
+    result = result.replace(/^([^|\n].*)\n(\|.+\|)/gm, '$1\n\n$2')
+    result = result.replace(/\n\n((?:\|.+\|[^\S\n]*\n?)+)/g, '\n\n$1')
+    result = result.replace(/((?:^\|.+\|[^\S\n]*\n?)+)/gm, (match, _table, offset) => {
+      const after = result.slice(offset + match.length).replace(/^\n+/, '')
+      if (!after || /^(---|#{4,5} |\*\*)/.test(after)) return match
+      return `${match}\n`
+    })
+
+    codeBlocks.forEach((block, index) => {
+      result = result.replace(`${mark}${index}___`, `\n${block}\n`)
+    })
+  } else {
+    codeBlocks.forEach((block, index) => {
+      result = result.replace(`${mark}${index}___`, block)
+    })
+  }
+
+  result = result.replace(/\n{3,}/g, '\n\n')
+  return result
 }
 
 export function optimizeLarkMarkdownStyle(text: string): string {
   if (!text.trim()) return text
-  const { protectedText, restore } = protectCodeBlocks(text)
-  return restore(optimizeMarkdownCore(protectedText))
+
+  try {
+    return stripInvalidImageKeys(optimizeMarkdownCore(text, 2))
+  } catch {
+    return text
+  }
 }

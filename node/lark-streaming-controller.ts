@@ -55,6 +55,7 @@ type StreamingControllerDeps = {
   conversationKey: string
   sessionId?: string
   buildCard: (params: BuildCardParams) => unknown
+  buildFinalCard?: (footer: DisplayAssistantFooter) => Promise<unknown | null>
   createCardKitMessage: (card: unknown) => Promise<CreateCardResult>
   sendInteractiveCard: (card: unknown) => Promise<InteractiveCardResult>
   streamCardKitContent: (cardId: string, content: string, sequence: number) => Promise<UpdateResult>
@@ -214,7 +215,7 @@ export class LarkStreamingController {
 
     const finalText = this.text.completedText || this.text.accumulatedText || LARK_EMPTY_REPLY_FALLBACK_TEXT
     const footer = await this.deps.getFooterMetrics()
-    const finalCard = this.deps.buildCard({
+    const finalCard = await this.deps.buildFinalCard?.(footer) ?? this.deps.buildCard({
       answerText: finalText,
       thinkingText: this.thinkingText || undefined,
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,

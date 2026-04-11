@@ -14,7 +14,7 @@ import { SessionBindingStore } from './session-bindings.js'
 import { SessionControlService } from './session-control-service.js'
 import type { StaticMetadataSnapshot, StaticMetadataTreeNode } from '../shared/message-types.js'
 import { listAllSessions, getMessagesPage } from './sessions.js'
-import { appendSessionChannelLog, readSessionChannelLogs, readSessionPersistentLogs, readSessionRuntimeLogs, readSessionSdkRawLogs, readSessionTransportLogs } from './transport-logs.js'
+import { readSessionPersistentLogs, readSessionSdkRawLogs } from './transport-logs.js'
 import { createLogger, shortId } from './logger.js'
 import { buildSdkExportTree, mapTree, overlayNodeValues } from './sdk-type-tree.js'
 
@@ -35,34 +35,6 @@ const USER_STATE_PATH = resolve(homedir(), '.claude.json')
 const SDK_PACKAGE_JSON_PATH = resolve(SDK_DIR, 'package.json')
 const SDK_MANIFEST_JSON_PATH = resolve(SDK_DIR, 'manifest.json')
 const SDK_DTS_PATH = resolve(SDK_DIR, 'sdk.d.ts')
-
-function isSafeSessionId(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-zA-Z0-9._-]+$/.test(value)
-}
-
-async function writeChannelLog(params: {
-  sessionId?: string
-  runId?: string
-  channel: 'web' | 'lark' | 'discord'
-  direction: 'inbound' | 'outbound' | 'internal'
-  eventName: string
-  conversationKey?: string
-  platformMessageId?: string
-  payloadSummary?: string
-  payload?: unknown
-}): Promise<void> {
-  if (!isSafeSessionId(params.sessionId)) return
-  await appendSessionChannelLog(params.sessionId, {
-    source: 'channel',
-    channel: params.channel,
-    direction: params.direction,
-    eventName: params.eventName,
-    ...(params.conversationKey ? { conversationKey: params.conversationKey } : {}),
-    ...(params.platformMessageId ? { platformMessageId: params.platformMessageId } : {}),
-    ...(params.payloadSummary ? { payloadSummary: params.payloadSummary } : {}),
-    ...(params.payload !== undefined ? { payload: params.payload } : {}),
-  }, params.runId)
-}
 
 function createNode(input: {
   key: string
@@ -464,26 +436,7 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
       }
 
       const message = createLarkOutboundMessage(runId, sessionId, conversationKey, content)
-      await writeChannelLog({
-        sessionId: message.sessionId,
-        runId: message.runId,
-        channel: 'lark',
-        direction: 'outbound',
-        eventName: 'message.requested',
-        conversationKey: message.conversationKey,
-        payloadSummary: message.content,
-      })
       const delivery = await sendLarkTextMessage(message.conversationKey, message.content)
-      await writeChannelLog({
-        sessionId: message.sessionId,
-        runId: message.runId,
-        channel: 'lark',
-        direction: 'outbound',
-        eventName: delivery.delivered ? 'message.delivered' : 'message.failed',
-        conversationKey: message.conversationKey,
-        payloadSummary: delivery.delivered ? 'delivered' : (delivery.error || 'failed'),
-        payload: delivery,
-      })
       return c.json({ ...delivery, message })
     } catch (error) {
       logger.error('http:lark:outbound:error', {
@@ -636,66 +589,6 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
       return c.json(page)
     } catch (err) {
       logger.error('http:sdk-raw-logs:error', {
-        error: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - startedAt,
-      })
-      return c.json({ items: [], hasMore: false, nextCursor: null, error: String(err) })
-    }
-  })
-
-  app.get('/api/sessions/:id/transport-logs', async (c) => {
-    const startedAt = Date.now()
-    try {
-      const id = c.req.param('id')
-      const limit = parseInt(c.req.query('limit') || '100', 10)
-      const cursorRaw = c.req.query('cursor')
-      const follow = c.req.query('follow') === '1'
-      const full = c.req.query('full') === '1'
-      const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
-      const page = await readSessionTransportLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow, full)
-      return c.json(page)
-    } catch (err) {
-      logger.error('http:transport-logs:error', {
-        error: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - startedAt,
-      })
-      return c.json({ items: [], hasMore: false, nextCursor: null, error: String(err) })
-    }
-  })
-
-  app.get('/api/sessions/:id/runtime-logs', async (c) => {
-    const startedAt = Date.now()
-    try {
-      const id = c.req.param('id')
-      const limit = parseInt(c.req.query('limit') || '100', 10)
-      const cursorRaw = c.req.query('cursor')
-      const follow = c.req.query('follow') === '1'
-      const full = c.req.query('full') === '1'
-      const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
-      const page = await readSessionRuntimeLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow, full)
-      return c.json(page)
-    } catch (err) {
-      logger.error('http:runtime-logs:error', {
-        error: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - startedAt,
-      })
-      return c.json({ items: [], hasMore: false, nextCursor: null, error: String(err) })
-    }
-  })
-
-  app.get('/api/sessions/:id/channel-logs', async (c) => {
-    const startedAt = Date.now()
-    try {
-      const id = c.req.param('id')
-      const limit = parseInt(c.req.query('limit') || '100', 10)
-      const cursorRaw = c.req.query('cursor')
-      const follow = c.req.query('follow') === '1'
-      const full = c.req.query('full') === '1'
-      const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
-      const page = await readSessionChannelLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow, full)
-      return c.json(page)
-    } catch (err) {
-      logger.error('http:channel-logs:error', {
         error: err instanceof Error ? err.message : String(err),
         durationMs: Date.now() - startedAt,
       })

@@ -2,7 +2,6 @@ import * as Lark from '@larksuiteoapi/node-sdk'
 import { CONFIG } from './config.js'
 import { createLogger, shortId } from './logger.js'
 import { KeyedTaskQueue } from './keyed-task-queue.js'
-import { appendSessionChannelLog } from './transport-logs.js'
 import { optimizeLarkMarkdownStyle } from './lark-markdown-style.js'
 import { SessionBindingStore } from './session-bindings.js'
 import { SessionControlService } from './session-control-service.js'
@@ -10,12 +9,17 @@ import { LarkStreamingController } from './lark-streaming-controller.js'
 import { DedupeStore } from './dedupe-store.js'
 import { getMessages } from './sessions.js'
 import type {
+  AssistantDisplayItem,
   ChannelInboundMessage,
   ChannelOutboundMessage,
+  CollapsedToolBatchDisplayItem,
   DisplayAssistantFooter,
+  DisplayFragment,
+  GroupedToolUseDisplayItem,
   LarkStreamingState,
   PendingInteraction,
   SessionEvent,
+  SessionMessage,
 } from '../shared/message-types.js'
 import type { RunCoordinator, RunRecord } from './run-coordinator.js'
 import {
@@ -26,6 +30,7 @@ import {
   getTranscriptStopReason,
   hasRenderableTranscriptContent,
   normalizeSdkEnvelopeMessage,
+  stringifyStructuredValue,
 } from '../shared/transcript-normalizer.js'
 import {
   buildElicitationContent,
@@ -33,7 +38,7 @@ import {
   type ElicitationRenderer,
 } from '../shared/elicitation-renderer.js'
 import { buildAssistantFooterText } from '../shared/assistant-footer-format.js'
-import { getAssistantFooter } from '../shared/transcript-display.js'
+import { buildHistoryDisplayItems, getAssistantFooter } from '../shared/transcript-display.js'
 
 const logger = createLogger('lark-adapter')
 const DEDUPE_TTL_MS = 10 * 60 * 1000
@@ -399,31 +404,6 @@ export async function startLarkLongConnection(coordinator: RunCoordinator): Prom
   return await startPromise
 }
 
-async function appendLarkChannelLog(params: {
-  sessionId?: string
-  runId?: string
-  direction: 'inbound' | 'outbound' | 'internal'
-  eventName: string
-  conversationKey?: string
-  platformMessageId?: string
-  payloadSummary?: string
-  payload?: unknown
-  rawPayload?: unknown
-}): Promise<void> {
-  if (typeof params.sessionId !== 'string' || !params.sessionId) return
-  await appendSessionChannelLog(params.sessionId, {
-    source: 'channel',
-    channel: 'lark',
-    direction: params.direction,
-    eventName: params.eventName,
-    ...(params.conversationKey ? { conversationKey: params.conversationKey } : {}),
-    ...(params.platformMessageId ? { platformMessageId: params.platformMessageId } : {}),
-    ...(params.payloadSummary ? { payloadSummary: params.payloadSummary } : {}),
-    ...(params.payload !== undefined ? { payload: params.payload } : {}),
-    ...(params.rawPayload !== undefined ? { rawPayload: params.rawPayload } : {}),
-  }, params.runId)
-}
-
 function isEventExpired(createTime?: string, expiryMs: number = 30 * 60 * 1000): boolean {
   if (!createTime) return false
   const value = Number(createTime)
@@ -532,18 +512,6 @@ async function handleInteractionCommand(
 
   if (command.type === 'permission') {
     const run = coordinator.getRun(command.runId)
-    await appendLarkChannelLog({
-      sessionId: run?.sessionId,
-      runId: command.runId,
-      direction: 'inbound',
-      eventName: 'permission.respond',
-      conversationKey,
-      payloadSummary: command.decision,
-      payload: {
-        interactionId: command.interactionId,
-        decision: command.decision,
-      },
-    })
     const interaction = resolvePermissionAvailability(coordinator, command.runId, command.interactionId)
     const ok = interaction
       ? coordinator.respondToInteractive(command.runId, command.interactionId, {
@@ -562,19 +530,6 @@ async function handleInteractionCommand(
   }
 
   const run = coordinator.getRun(command.runId)
-  await appendLarkChannelLog({
-    sessionId: run?.sessionId,
-    runId: command.runId,
-    direction: 'inbound',
-    eventName: 'elicitation.respond',
-    conversationKey,
-    payloadSummary: command.action,
-    payload: {
-      interactionId: command.interactionId,
-      action: command.action,
-      ...(command.content ? { content: command.content } : {}),
-    },
-  })
   const interaction = resolveElicitationAvailability(coordinator, command.runId, command.interactionId)
   const ok = interaction
     ? coordinator.respondToInteractive(command.runId, command.interactionId, {
@@ -994,10 +949,7 @@ function buildAssistantStreamingCard(params: {
   const elements: unknown[] = []
 
   if (normalizedThinking && params.answerText) {
-    elements.push({
-      tag: 'markdown',
-      content: `**Thinking**\n${normalizedThinking}`,
-    })
+    elements.push(createLarkThinkingPanel(normalizedThinking))
   }
 
   elements.push({
@@ -1010,22 +962,21 @@ function buildAssistantStreamingCard(params: {
   })
 
   if (normalizedToolCalls && normalizedToolCalls.length > 0) {
-    elements.push({
-      tag: 'markdown',
-      content: normalizedToolCalls.join('\n'),
-    })
+    for (const toolCall of normalizedToolCalls) {
+      elements.push(createLarkToolPanel(toolCall))
+    }
   }
 
   if (normalizedToolResults && normalizedToolResults.length > 0) {
-    elements.push({
-      tag: 'markdown',
-      content: normalizedToolResults.join('\n\n'),
-    })
+    for (const toolResult of normalizedToolResults) {
+      elements.push(createLarkToolResultPanel(toolResult))
+    }
   }
 
   const footerText = params.footer ? buildAssistantFooterText(params.footer) : ''
 
   if (footerText.trim().length > 0) {
+    elements.push({ tag: 'hr' })
     elements.push({
       tag: 'markdown',
       content: footerText,
@@ -1147,15 +1098,6 @@ async function handleLarkMessageEvent(coordinator: RunCoordinator, data: any): P
     finalSessionId: shortId(inbound.sessionId),
   })
   const run = await coordinator.startRun(inbound)
-  await appendLarkChannelLog({
-    sessionId: run.sessionId,
-    runId: run.runId,
-    direction: 'inbound',
-    eventName: 'message.accepted',
-    conversationKey,
-    platformMessageId,
-    payloadSummary: text,
-  })
 }
 
 async function handleLarkCardActionEvent(coordinator: RunCoordinator, data: Lark.InteractiveCardActionEvent): Promise<unknown> {
@@ -1164,21 +1106,6 @@ async function handleLarkCardActionEvent(coordinator: RunCoordinator, data: Lark
   const actionType = getActionType(data) || undefined
   const run = runId ? coordinator.getRun(runId) : null
 
-  await appendLarkChannelLog({
-    sessionId: run?.sessionId,
-    runId,
-    direction: 'inbound',
-    eventName: 'card-action.received',
-    conversationKey: typeof cardEvent.open_chat_id === 'string' ? cardEvent.open_chat_id : undefined,
-    platformMessageId: typeof data?.open_message_id === 'string' ? data.open_message_id : undefined,
-    payloadSummary: actionType || 'card-action',
-    payload: {
-      openMessageId: data?.open_message_id,
-      actionType,
-      decision: data?.action?.value?.decision,
-      source: 'ws',
-    },
-  })
 
   if ((actionType || '').startsWith('elicitation_')) {
     return await processLarkElicitationAction(coordinator, data)
@@ -2070,6 +1997,296 @@ async function resolvePersistedFooter(record: RunRecord): Promise<Pick<DisplayAs
   }
 }
 
+const LARK_PANEL_PADDING = '6px 8px 6px 8px'
+const LARK_PANEL_BORDER = { color: 'grey', corner_radius: '5px' } as const
+const TOOL_USE_STEP_CONTENT_INDENT = '0px 0px 0px 22px'
+
+function createLarkDivMarkdown(content: string, options: { textSize?: 'notation' | 'normal_v2'; margin?: string } = {}): Record<string, unknown> {
+  return {
+    tag: 'div',
+    ...(options.margin ? { margin: options.margin } : {}),
+    text: {
+      tag: 'lark_md',
+      content: optimizeLarkMarkdownStyle(content),
+      ...(options.textSize ? { text_size: options.textSize } : {}),
+    },
+  }
+}
+
+function createLarkDivPlainText(content: string, options: { textSize?: 'notation' | 'normal_v2'; margin?: string; textColor?: 'grey' } = {}): Record<string, unknown> {
+  return {
+    tag: 'div',
+    ...(options.margin ? { margin: options.margin } : {}),
+    text: {
+      tag: 'plain_text',
+      content,
+      ...(options.textColor ? { text_color: options.textColor } : {}),
+      ...(options.textSize ? { text_size: options.textSize } : {}),
+    },
+  }
+}
+
+function createLarkSectionPanel(params: {
+  title: string
+  titleEmoji?: string
+  body?: string
+  bodyTag?: 'markdown' | 'plain'
+  bodyMargin?: string
+  verticalSpacing?: '4px' | '8px'
+  elements?: unknown[]
+}): Record<string, unknown> {
+  const title = params.titleEmoji ? `${params.titleEmoji} ${params.title}` : params.title
+  return {
+    tag: 'collapsible_panel',
+    expanded: false,
+    header: {
+      title: {
+        tag: 'plain_text',
+        content: title,
+        text_color: 'grey',
+        text_size: 'notation',
+      },
+      vertical_align: 'center',
+      icon: {
+        tag: 'standard_icon',
+        token: 'down-small-ccm_outlined',
+        color: 'grey',
+        size: '16px 16px',
+      },
+      icon_position: 'right',
+      icon_expanded_angle: -180,
+    },
+    border: LARK_PANEL_BORDER,
+    vertical_spacing: params.verticalSpacing ?? '4px',
+    padding: LARK_PANEL_PADDING,
+    elements: params.elements ?? (params.body
+      ? [params.bodyTag === 'plain'
+        ? createLarkDivPlainText(params.body, { textSize: 'notation', textColor: 'grey', ...(params.bodyMargin ? { margin: params.bodyMargin } : {}) })
+        : createLarkDivMarkdown(params.body, { textSize: 'notation', ...(params.bodyMargin ? { margin: params.bodyMargin } : {}) })]
+      : []),
+  }
+}
+
+function longestBacktickRun(value: string): number {
+  const matches = value.match(/`+/g) ?? []
+  return matches.reduce((max, run) => Math.max(max, run.length), 0)
+}
+
+function formatLarkCodeBlock(content: string, language: 'json' | 'text' = 'text'): string {
+  const normalized = content.replace(/\r\n/g, '\n').trim()
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(normalized) + 1))
+  return `${fence}${language}\n${normalized}\n${fence}`
+}
+
+function buildLarkToolTitle(name: string): string {
+  return name || 'unknown_tool'
+}
+
+function buildLarkToolInputDetail(input?: unknown): string {
+  const inputText = stringifyStructuredValue(input).trim().replace(/\s+/g, ' ')
+  if (!inputText) return ''
+  return inputText.length > 240 ? `${inputText.slice(0, 240)}…` : inputText
+}
+
+function createLarkThinkingPanel(body: string): Record<string, unknown> {
+  return createLarkSectionPanel({
+    title: 'Thinking',
+    titleEmoji: '💭',
+    body,
+    verticalSpacing: '4px',
+  })
+}
+
+function createLarkToolPanel(name: string, input?: unknown, resultText?: string): Record<string, unknown> {
+  const elements: unknown[] = [
+    createLarkDivMarkdown(`**${buildLarkToolTitle(name)}**`, { textSize: 'notation' }),
+  ]
+
+  const detail = buildLarkToolInputDetail(input)
+  if (detail) {
+    elements.push(createLarkDivPlainText(detail, {
+      textSize: 'notation',
+      textColor: 'grey',
+      margin: TOOL_USE_STEP_CONTENT_INDENT,
+    }))
+  }
+
+  if (resultText) {
+    elements.push(createLarkDivMarkdown(`**Result**\n${formatLarkCodeBlock(resultText)}`, {
+      textSize: 'notation',
+      margin: TOOL_USE_STEP_CONTENT_INDENT,
+    }))
+  }
+
+  return createLarkSectionPanel({
+    title: 'Tool',
+    titleEmoji: '🛠️',
+    verticalSpacing: '4px',
+    elements,
+  })
+}
+
+function createLarkToolResultPanel(resultText: string): Record<string, unknown> {
+  return createLarkSectionPanel({
+    title: 'Tool Result',
+    titleEmoji: '🧾',
+    body: `**Result**\n${formatLarkCodeBlock(resultText)}`,
+    verticalSpacing: '4px',
+  })
+}
+
+function createLarkSectionMarkdown(title: string, body: string): Record<string, unknown> {
+  return createLarkSectionPanel({ title, body, verticalSpacing: '4px' })
+}
+
+function buildLarkToolUseLabel(name: string, input?: unknown): string {
+  const safeName = name || 'unknown_tool'
+  const inputText = stringifyStructuredValue(input).trim().replace(/\s+/g, ' ')
+  if (!inputText) return safeName
+  const compact = inputText.length > 160 ? `${inputText.slice(0, 160)}…` : inputText
+  return `${safeName}(${compact})`
+}
+
+function buildLarkToolResultText(fragment: DisplayFragment & { type: 'tool_result' }): string {
+  if (fragment.display?.previewText) return fragment.display.previewText
+  return stringifyStructuredValue(fragment.output).trim()
+}
+
+function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
+  const elements: unknown[] = []
+  const shouldIndentFooter = item.fragments[0]?.type === 'tool_use'
+
+  for (const fragment of item.fragments) {
+    if (fragment.type === 'text') {
+      const text = optimizeLarkMarkdownStyle(fragment.text.trim())
+      if (text) {
+        elements.push({
+          tag: 'markdown',
+          content: text,
+          text_align: 'left',
+          text_size: 'normal_v2',
+          margin: '0px 0px 0px 0px',
+        })
+      }
+      continue
+    }
+
+    if (fragment.type === 'thinking') {
+      const text = fragment.text?.trim()
+      if (text) {
+        elements.push(createLarkThinkingPanel(text))
+      }
+      continue
+    }
+
+    if (fragment.type === 'tool_use') {
+      elements.push(createLarkToolPanel(fragment.name, fragment.input))
+      continue
+    }
+
+    if (fragment.type === 'tool_result') {
+      const resultText = buildLarkToolResultText(fragment)
+      if (resultText) {
+        elements.push(createLarkToolResultPanel(resultText))
+      }
+      continue
+    }
+
+    if (fragment.type === 'summary') {
+      const text = fragment.text.trim()
+      if (text) {
+        elements.push(createLarkSectionMarkdown('Summary', text))
+      }
+    }
+  }
+
+  const footerText = buildAssistantFooterText(item.footer)
+  if (footerText.trim()) {
+    elements.push({ tag: 'hr' })
+    elements.push({
+      tag: 'markdown',
+      content: shouldIndentFooter ? `&nbsp;&nbsp;&nbsp;&nbsp;${footerText}` : footerText,
+      text_size: 'notation',
+    })
+  }
+
+  return elements
+}
+
+function buildLarkGroupedToolUseElements(item: GroupedToolUseDisplayItem): unknown[] {
+  const elements: unknown[] = []
+  for (const tool of item.toolUses) {
+    const resultText = tool.resultDisplay?.previewText ?? stringifyStructuredValue(tool.result).trim()
+    elements.push(createLarkToolPanel(tool.name, tool.input, resultText || undefined))
+  }
+
+  const footerText = buildAssistantFooterText(item.footer)
+  if (footerText.trim()) {
+    elements.push({ tag: 'hr' })
+    elements.push({
+      tag: 'markdown',
+      content: footerText,
+      text_size: 'notation',
+    })
+  }
+  return elements
+}
+
+function buildLarkCollapsedToolBatchElements(item: CollapsedToolBatchDisplayItem): unknown[] {
+  const totalOps = item.summary.readCount + item.summary.searchCount + item.summary.listCount + item.summary.bashCount
+  const lines = [
+    `${totalOps} low-signal tool calls${item.summary.latestHint ? ` · ${item.summary.latestHint}` : ''}`,
+    `Read ${item.summary.readCount} · Search ${item.summary.searchCount} · List ${item.summary.listCount} · Bash ${item.summary.bashCount}`,
+  ]
+
+  const elements: unknown[] = [createLarkSectionMarkdown('Tool Batch', lines.join('\n'))]
+  const footerText = buildAssistantFooterText(item.footer)
+  if (footerText.trim()) {
+    elements.push({ tag: 'hr' })
+    elements.push({
+      tag: 'markdown',
+      content: footerText,
+      text_size: 'notation',
+    })
+  }
+  return elements
+}
+
+function buildLarkFinalCardFromHistory(messages: SessionMessage[], footer: DisplayAssistantFooter): Record<string, unknown> | null {
+  const items = buildHistoryDisplayItems(messages, { mode: 'default', includeHiddenAtoms: false })
+    .filter((item): item is AssistantDisplayItem | GroupedToolUseDisplayItem | CollapsedToolBatchDisplayItem =>
+      item.kind === 'assistant' || item.kind === 'grouped_tool_use' || item.kind === 'collapsed_tool_batch')
+  const target = items[items.length - 1]
+  if (!target) return null
+
+  const elements = target.kind === 'assistant'
+    ? buildLarkAssistantElements({ ...target, footer })
+    : target.kind === 'grouped_tool_use'
+      ? buildLarkGroupedToolUseElements({ ...target, footer })
+      : buildLarkCollapsedToolBatchElements({ ...target, footer })
+
+  if (elements.length === 0) return null
+
+  return {
+    schema: '2.0',
+    config: {
+      wide_screen_mode: true,
+      update_multi: true,
+      locales: ['zh_cn', 'en_us'],
+      summary: {
+        content: 'Claude response',
+        i18n_content: {
+          zh_cn: 'Claude 回复',
+          en_us: 'Claude response',
+        },
+      },
+    },
+    body: {
+      elements,
+    },
+  }
+}
+
 function getOrCreateStreamingController(record: RunRecord): LarkStreamingController {
   const existing = getStreamingController(record.runId)
   if (existing) return existing
@@ -2080,6 +2297,11 @@ function getOrCreateStreamingController(record: RunRecord): LarkStreamingControl
     conversationKey: record.conversationKey,
     ...(record.sessionId ? { sessionId: record.sessionId } : {}),
     buildCard: ({ answerText, thinkingText, toolCalls, toolResults, footer, isFinal }) => buildAssistantStreamingCard({ answerText, thinkingText, toolCalls, toolResults, footer, isFinal }),
+    buildFinalCard: async (footer) => {
+      if (!record.sessionId) return null
+      const messages = await getMessages(record.sessionId, 200)
+      return buildLarkFinalCardFromHistory(messages, footer)
+    },
     createCardKitMessage: async (card) => await sendLarkCardKitMessage(
       record.conversationKey,
       card,
@@ -2145,17 +2367,7 @@ function getOrCreateStreamingController(record: RunRecord): LarkStreamingControl
         }),
       )
     },
-    appendLog: async ({ eventName, payloadSummary, payload, rawPayload }) => {
-      await appendLarkChannelLog({
-        sessionId: record.sessionId,
-        runId: record.runId,
-        direction: 'outbound',
-        eventName,
-        conversationKey: record.conversationKey,
-        payloadSummary,
-        ...(payload !== undefined ? { payload } : {}),
-        ...(rawPayload !== undefined ? { rawPayload } : {}),
-      })
+    appendLog: async () => {
     },
     getFooterMetrics: async () => {
       const startedAt = streamingControllerStartedAt.get(record.runId) ?? Date.now()
@@ -2250,55 +2462,15 @@ async function deliverLarkSessionEventNow(event: SessionEvent, record: RunRecord
   })
 
   for (const delivery of deliveries) {
-    await appendLarkChannelLog({
-      sessionId: delivery.sessionId,
-      runId: delivery.runId,
-      direction: 'outbound',
-      eventName: 'message.requested',
-      conversationKey: delivery.conversationKey,
-      payloadSummary: delivery.text || (delivery.card ? 'interactive-card' : 'outbound'),
-      payload: delivery.card ?? delivery.text,
-    })
 
     const replyContext = toLarkReplyContext(delivery)
 
     if (delivery.card) {
       const result = await sendLarkCardMessage(delivery.conversationKey, delivery.card, replyContext)
-      await appendLarkChannelLog({
-        sessionId: delivery.sessionId,
-        runId: delivery.runId,
-        direction: 'outbound',
-        eventName: 'card.raw.requested',
-        conversationKey: delivery.conversationKey,
-        payloadSummary: 'interactive-card-raw',
-        rawPayload: result.content,
-        payload: {
-          contentLength: result.content.length,
-        },
-      })
-      await appendLarkChannelLog({
-        sessionId: delivery.sessionId,
-        runId: delivery.runId,
-        direction: 'outbound',
-        eventName: result.delivered ? 'message.delivered' : 'message.failed',
-        conversationKey: delivery.conversationKey,
-        payloadSummary: result.delivered ? 'interactive-card' : (result.error || 'failed'),
-        rawPayload: result.responseContent,
-        payload: result,
-      })
       continue
     }
     if (delivery.text) {
       const result = await sendLarkTextMessage(delivery.conversationKey, delivery.text, replyContext)
-      await appendLarkChannelLog({
-        sessionId: delivery.sessionId,
-        runId: delivery.runId,
-        direction: 'outbound',
-        eventName: result.delivered ? 'message.delivered' : 'message.failed',
-        conversationKey: delivery.conversationKey,
-        payloadSummary: result.delivered ? delivery.text : (result.error || 'failed'),
-        payload: result,
-      })
     }
   }
 }

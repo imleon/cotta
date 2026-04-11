@@ -20,7 +20,7 @@ interface PersistentLogsResponse {
   nextCursor?: number | null
 }
 
-type LogTab = 'sdk-raw' | 'persistent'
+type LogTab = 'messages' | 'control' | 'persistent'
 
 const logger = createDebugLogger('log-view-store')
 const SESSION_LIST_REFRESH_INTERVAL_MS = 3000
@@ -60,7 +60,7 @@ function mergePersistentLogEntries(
 export const useLogViewStore = defineStore('log-view', () => {
   const sessionStore = useSessionStore()
   const selectedSessionId = ref<string | null>(null)
-  const selectedLogTab = ref<LogTab>('sdk-raw')
+  const selectedLogTab = ref<LogTab>('messages')
   const logLive = ref(true)
 
   const sdkRawLog = ref<SessionSdkRawLogEntry[]>([])
@@ -101,7 +101,7 @@ export const useLogViewStore = defineStore('log-view', () => {
   }
 
   function pauseSelectedLogFollow() {
-    if (selectedLogTab.value === 'sdk-raw') {
+    if (selectedLogTab.value === 'messages' || selectedLogTab.value === 'control') {
       stopSdkRawFollow()
       return
     }

@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import type { UpgradeWebSocket } from 'hono/ws'
 import type { SessionEvent, PermissionSuggestion } from '../shared/message-types.js'
 import type { ElicitationAction, PermissionDecision, RunCoordinator } from './run-coordinator.js'
-import { appendSessionChannelLog } from './transport-logs.js'
 import { createLogger, shortId } from './logger.js'
 
 const logger = createLogger('web-adapter')
@@ -29,32 +28,6 @@ function sendSocketEvent(ws: any, payload: unknown) {
 function sendSessionEvent(ws: any, event: SessionEvent) {
   sendSocketEvent(ws, event)
 }
-
-function isSafeSessionId(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-zA-Z0-9._-]+$/.test(value)
-}
-
-async function appendWebChannelLog(params: {
-  sessionId?: string
-  runId?: string
-  direction: 'inbound' | 'outbound' | 'internal'
-  eventName: string
-  conversationKey?: string
-  payloadSummary?: string
-  payload?: unknown
-}) {
-  if (!isSafeSessionId(params.sessionId)) return
-  await appendSessionChannelLog(params.sessionId, {
-    source: 'channel',
-    channel: 'web',
-    direction: params.direction,
-    eventName: params.eventName,
-    ...(params.conversationKey ? { conversationKey: params.conversationKey } : {}),
-    ...(params.payloadSummary ? { payloadSummary: params.payloadSummary } : {}),
-    ...(params.payload !== undefined ? { payload: params.payload } : {}),
-  }, params.runId)
-}
-
 
 function isStructuredResponseContent(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -96,16 +69,7 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
           if (!activeRun) return
           const eventRunId = 'runId' in event ? event.runId : undefined
           if (eventRunId !== activeRun.runId) return
-          if (event.type === 'session.sdk.transport') return
-
           sendSessionEvent(ws, event)
-          void appendWebChannelLog({
-            sessionId: 'sessionId' in event ? event.sessionId : undefined,
-            runId: eventRunId,
-            direction: 'outbound',
-            eventName: event.type,
-            payloadSummary: event.type,
-          })
           if (event.type === 'session.run.completed' || event.type === 'session.run.failed' || event.type === 'session.run.cancelled') {
             activeRun = null
           }
@@ -124,13 +88,6 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
 
             const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined
             const conversationKey = sessionId || `conn:${connId}`
-            void appendWebChannelLog({
-              sessionId,
-              direction: 'inbound',
-              eventName: 'message.create',
-              conversationKey,
-              payloadSummary: typeof data.prompt === 'string' ? data.prompt : 'message.create',
-            })
             const run = await coordinator.startRun({
               channel: 'web',
               conversationKey,
@@ -142,18 +99,6 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
           }
 
           if (data.action === 'interactive.respond' && data.runId && data.interactionId && data.kind) {
-            void appendWebChannelLog({
-              sessionId: typeof data.sessionId === 'string' ? data.sessionId : undefined,
-              runId: data.runId,
-              direction: 'inbound',
-              eventName: 'interactive.respond',
-              payloadSummary: data.kind,
-              payload: {
-                interactionId: data.interactionId,
-                kind: data.kind,
-                response: data.response,
-              },
-            })
             handleInteractiveResponse(
               ws,
               coordinator,
@@ -176,26 +121,11 @@ export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket, coord
           }
 
           if (data.action === 'control.request' && data.runId && (data.subtype === 'interrupt' || data.subtype === 'get_context_usage' || data.subtype === 'mcp_status')) {
-            void appendWebChannelLog({
-              sessionId: typeof data.sessionId === 'string' ? data.sessionId : undefined,
-              runId: data.runId,
-              direction: 'inbound',
-              eventName: 'control.request',
-              payloadSummary: data.subtype,
-              payload: { subtype: data.subtype },
-            })
             handleControlRequest(ws, coordinator, data.runId, { subtype: data.subtype })
             return
           }
 
           if (data.action === 'run.cancel') {
-            void appendWebChannelLog({
-              sessionId: typeof data.sessionId === 'string' ? data.sessionId : undefined,
-              runId: activeRun?.runId,
-              direction: 'inbound',
-              eventName: 'run.cancel',
-              payloadSummary: 'cancel',
-            })
             if (activeRun) {
               coordinator.cancelRun(activeRun.runId)
               activeRun = null

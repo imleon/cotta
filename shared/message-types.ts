@@ -879,48 +879,7 @@ export interface SdkRawLogEvent extends RuntimeEnvelopeBase {
   direction: SdkRawLogDirection
   requestId?: string
   subtype?: string
-  message: SDKMessage | SdkControlEnvelope
-}
-
-export type SdkTransportDirection = 'inbound' | 'outbound'
-export type ChannelLogDirection = 'inbound' | 'outbound' | 'internal'
-export type SdkTransportEventName =
-  | 'query.start'
-  | 'query.cancel'
-  | 'query.completed'
-  | 'query.failed'
-  | 'query.cancelled'
-  | 'message'
-  | 'control.request'
-  | 'control.response'
-  | 'control.cancel_request'
-  | 'control.request.permission'
-  | 'control.response.permission'
-  | 'control.request.elicitation'
-  | 'control.response.elicitation'
-
-export interface SdkTransportEvent extends RuntimeEnvelopeBase {
-  source: 'sdk-transport'
-  direction: SdkTransportDirection
-  eventName: SdkTransportEventName
-  sdkType?: string
-  sdkSubtype?: string
-  requestId?: string
-  toolUseId?: string
-  payloadSummary?: string
-  payload?: unknown
-}
-
-export interface SessionTransportLogEntry {
-  cursor: number
-  runId: string
-  event: SdkTransportEvent & { sessionId: string }
-}
-
-export interface SessionTransportLogPage {
-  items: SessionTransportLogEntry[]
-  hasMore: boolean
-  nextCursor: number | null
+  message: unknown
 }
 
 export interface SessionSdkRawLogEntry {
@@ -945,46 +904,6 @@ export interface SessionPersistentLogEntry {
 
 export interface SessionPersistentLogPage {
   items: SessionPersistentLogEntry[]
-  hasMore: boolean
-  nextCursor: number | null
-}
-
-export interface SessionRuntimeLogEntry {
-  cursor: number
-  runId: string
-  loggedAt: number
-  sessionId: string
-  event: RunnerRuntimeEvent
-}
-
-export interface SessionRuntimeLogPage {
-  items: SessionRuntimeLogEntry[]
-  hasMore: boolean
-  nextCursor: number | null
-}
-
-export interface ChannelLogEvent {
-  source: 'channel'
-  channel: ChannelType
-  direction: ChannelLogDirection
-  eventName: string
-  conversationKey?: string
-  platformMessageId?: string
-  payloadSummary?: string
-  payload?: unknown
-  rawPayload?: unknown
-}
-
-export interface SessionChannelLogEntry {
-  cursor: number
-  runId?: string
-  loggedAt: number
-  sessionId: string
-  event: ChannelLogEvent
-}
-
-export interface SessionChannelLogPage {
-  items: SessionChannelLogEntry[]
   hasMore: boolean
   nextCursor: number | null
 }
@@ -1026,7 +945,6 @@ export type RunnerRuntimeEvent =
   | ({ type: 'interactive.completed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'interactive.cancelled'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'interactive.failed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | { type: 'sdk.transport'; event: SdkTransportEvent }
   | { type: 'sdk.raw'; event: SdkRawLogEvent }
 
 export type SessionEvent =
@@ -1052,7 +970,6 @@ export type SessionEvent =
   | ({ type: 'session.interactive.completed'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.interactive.cancelled'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.interactive.failed'; runId: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | { type: 'session.sdk.transport'; runId: string; event: SdkTransportEvent }
   | { type: 'session.error'; runId?: string; error: string }
 
 export type LaneKind = 'history' | 'user' | 'live' | 'session' | 'drop'

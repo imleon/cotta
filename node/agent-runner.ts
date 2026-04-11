@@ -11,7 +11,7 @@ import type {
 } from '../shared/message-types.js'
 import { normalizeSdkEnvelopeMessage } from '../shared/transcript-normalizer.js'
 import { createLogger, shortId } from './logger.js'
-import { appendSessionRuntimeLog, appendSessionTransportLog } from './transport-logs.js'
+import { appendSessionRuntimeLog, appendSessionSdkRawLog, appendSessionTransportLog } from './transport-logs.js'
 export type { AgentEvent } from './agent-output-parser.js'
 
 const logger = createLogger('agent-runner')
@@ -85,7 +85,8 @@ function isRunnerRuntimeEvent(value: unknown): value is RunnerRuntimeEvent {
     record.type === 'control.cancel_requested' ||
     record.type === 'control.cancelled' ||
     record.type === 'control.failed' ||
-    record.type === 'sdk.transport'
+    record.type === 'sdk.transport' ||
+    record.type === 'sdk.raw'
   )
 }
 
@@ -283,11 +284,20 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
 }
 
 function getEventSessionId(event: RunnerRuntimeEvent): string | undefined {
-  return event.type === 'sdk.transport' ? event.event.sessionId : event.sessionId
+  return event.type === 'sdk.transport' || event.type === 'sdk.raw' ? event.event.sessionId : event.sessionId
 }
 
 function attachSessionId(event: RunnerRuntimeEvent, sessionId: string): RunnerRuntimeEvent {
   if (event.type === 'sdk.transport') {
+    return {
+      ...event,
+      event: {
+        ...event.event,
+        sessionId,
+      },
+    }
+  }
+  if (event.type === 'sdk.raw') {
     return {
       ...event,
       event: {
@@ -322,6 +332,9 @@ export function createAgentRun(input: AgentInput, onEvent: AgentEventHandler, si
       await appendSessionRuntimeLog(runId, hydrated)
       if (hydrated.type === 'sdk.transport') {
         await appendSessionTransportLog(runId, hydrated.event)
+      }
+      if (hydrated.type === 'sdk.raw') {
+        await appendSessionSdkRawLog(runId, hydrated.event)
       }
     }
   }

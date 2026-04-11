@@ -10,8 +10,11 @@ import type {
   SessionPersistentLogPage,
   SessionRuntimeLogEntry,
   SessionRuntimeLogPage,
+  SessionSdkRawLogEntry,
+  SessionSdkRawLogPage,
   SessionTransportLogEntry,
   SessionTransportLogPage,
+  SdkRawLogEvent,
   SdkTransportEvent,
 } from '../shared/message-types.js'
 import { sanitizeValue } from './logger.js'
@@ -23,9 +26,11 @@ const LEGACY_RUNTIME_LOG_DIR = './data/runtime-logs'
 const DEFAULT_TRANSPORT_PAGE_SIZE = 100
 const DEFAULT_RUNTIME_PAGE_SIZE = 100
 const DEFAULT_CHANNEL_PAGE_SIZE = 100
+const DEFAULT_SDK_RAW_PAGE_SIZE = 100
 const MAX_TRANSPORT_PAGE_SIZE = 200
 const MAX_RUNTIME_PAGE_SIZE = 200
 const MAX_CHANNEL_PAGE_SIZE = 200
+const MAX_SDK_RAW_PAGE_SIZE = 200
 
 type StoredTransportLogRecord = {
   runId: string
@@ -39,6 +44,13 @@ type StoredRuntimeLogRecord = {
   event: RunnerRuntimeEvent
 }
 
+type StoredSdkRawLogRecord = {
+  runId: string
+  loggedAt: number
+  sessionId: string
+  event: SdkRawLogEvent
+}
+
 type StoredChannelLogRecord = {
   runId?: string
   loggedAt: number
@@ -46,7 +58,7 @@ type StoredChannelLogRecord = {
   event: ChannelLogEvent
 }
 
-type LogFileKind = 'transport' | 'runtime' | 'channel'
+type LogFileKind = 'transport' | 'runtime' | 'channel' | 'sdk-raw'
 
 function getLogFilePath(sessionId: string, kind: LogFileKind): string {
   return join(LOG_DIR, `${sessionId}.${kind}.ndjson`)
@@ -81,6 +93,48 @@ function sanitizeChannelEvent(event: ChannelLogEvent): ChannelLogEvent {
   }
 }
 
+const RAW_REDACTED = '[REDACTED]'
+
+function sanitizeRawString(value: string): string {
+  return value
+    .replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, `$1${RAW_REDACTED}`)
+    .replace(/([?&]auth=)[^&]+/gi, `$1${RAW_REDACTED}`)
+}
+
+function isSensitiveRawKey(key: string): boolean {
+  const normalized = key.toLowerCase()
+  return normalized.includes('token')
+    || normalized.includes('authorization')
+    || normalized.includes('secret')
+    || normalized.includes('password')
+    || normalized.includes('apikey')
+    || normalized === 'auth'
+}
+
+function sanitizeRawValue(value: unknown): unknown {
+  if (value == null) return value
+  if (typeof value === 'string') return sanitizeRawString(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+  if (value instanceof Error) return { name: value.name, message: sanitizeRawString(value.message) }
+  if (Array.isArray(value)) return value.map((item) => sanitizeRawValue(item))
+  if (typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => [
+        key,
+        isSensitiveRawKey(key) ? RAW_REDACTED : sanitizeRawValue(entryValue),
+      ])
+    )
+  }
+  return String(value)
+}
+
+function sanitizeSdkRawEvent(event: SdkRawLogEvent): SdkRawLogEvent {
+  return {
+    ...event,
+    message: sanitizeRawValue(event.message) as SdkRawLogEvent['message'],
+  }
+}
+
 function sanitizeRuntimeEvent(event: RunnerRuntimeEvent): RunnerRuntimeEvent {
   switch (event.type) {
     case 'sdk.message':
@@ -112,13 +166,18 @@ function sanitizeRuntimeEvent(event: RunnerRuntimeEvent): RunnerRuntimeEvent {
         ...event,
         event: normalizeTransportPayload(event.event),
       }
+    case 'sdk.raw':
+      return {
+        ...event,
+        event: sanitizeSdkRawEvent(event.event),
+      }
     default:
       return event
   }
 }
 
 function getRuntimeEventSessionId(event: RunnerRuntimeEvent): string | null {
-  if (event.type === 'sdk.transport') {
+  if (event.type === 'sdk.transport' || event.type === 'sdk.raw') {
     return typeof event.event.sessionId === 'string' ? sanitizeSessionId(event.event.sessionId) : null
   }
   return typeof event.sessionId === 'string' ? sanitizeSessionId(event.sessionId) : null
@@ -227,6 +286,22 @@ export async function appendSessionRuntimeLog(runId: string, event: RunnerRuntim
   await appendLogRecord(getLogFilePath(sessionId, 'runtime'), record)
 }
 
+export async function appendSessionSdkRawLog(runId: string, event: SdkRawLogEvent): Promise<void> {
+  const sessionId = typeof event.sessionId === 'string' ? sanitizeSessionId(event.sessionId) : null
+  if (!sessionId) return
+
+  const record: StoredSdkRawLogRecord = {
+    runId,
+    loggedAt: Date.now(),
+    sessionId,
+    event: {
+      ...sanitizeSdkRawEvent(event),
+      sessionId,
+    },
+  }
+  await appendLogRecord(getLogFilePath(sessionId, 'sdk-raw'), record)
+}
+
 export async function appendSessionChannelLog(
   sessionId: string,
   event: ChannelLogEvent,
@@ -278,6 +353,30 @@ function parseRuntimeLogLine(line: string, cursor: number): SessionRuntimeLogEnt
     if (!parsed.event || typeof parsed.event !== 'object') return null
     const event = parsed.event as RunnerRuntimeEvent
     if (typeof event.type !== 'string') return null
+    return {
+      cursor,
+      runId: parsed.runId,
+      loggedAt: parsed.loggedAt,
+      sessionId: parsed.sessionId,
+      event,
+    }
+  } catch {
+    return null
+  }
+}
+
+function parseSdkRawLogLine(line: string, cursor: number): SessionSdkRawLogEntry | null {
+  if (!line.trim()) return null
+  try {
+    const parsed = JSON.parse(line) as Partial<StoredSdkRawLogRecord>
+    if (!parsed || typeof parsed !== 'object') return null
+    if (typeof parsed.runId !== 'string') return null
+    if (typeof parsed.loggedAt !== 'number' || !Number.isFinite(parsed.loggedAt)) return null
+    if (typeof parsed.sessionId !== 'string' || !sanitizeSessionId(parsed.sessionId)) return null
+    if (!parsed.event || typeof parsed.event !== 'object') return null
+    const event = parsed.event as SdkRawLogEvent
+    if (event.source !== 'sdk-raw') return null
+    if (typeof event.kind !== 'string' || typeof event.direction !== 'string') return null
     return {
       cursor,
       runId: parsed.runId,
@@ -388,7 +487,7 @@ export async function readSessionTransportLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  return paginateLogLines(content, full ? 0 : cursor, safeLimit, follow, parseTransportLogLine)
+  return paginateLogLines(content, full ? null : cursor, safeLimit, follow, parseTransportLogLine)
 }
 
 export async function readSessionRuntimeLogs(
@@ -412,7 +511,30 @@ export async function readSessionRuntimeLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  return paginateLogLines(content, full ? 0 : cursor, safeLimit, follow, parseRuntimeLogLine)
+  return paginateLogLines(content, full ? null : cursor, safeLimit, follow, parseRuntimeLogLine)
+}
+
+export async function readSessionSdkRawLogs(
+  sessionId: string,
+  cursor?: number | null,
+  limit: number = DEFAULT_SDK_RAW_PAGE_SIZE,
+  follow: boolean = false,
+  full: boolean = false,
+): Promise<SessionSdkRawLogPage> {
+  const safeSessionId = sanitizeSessionId(sessionId)
+  if (!safeSessionId) {
+    return { items: [], hasMore: false, nextCursor: null }
+  }
+
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(MAX_SDK_RAW_PAGE_SIZE, Math.floor(limit))) : DEFAULT_SDK_RAW_PAGE_SIZE
+  const content = await readFirstExistingLogFile([
+    getLogFilePath(safeSessionId, 'sdk-raw'),
+  ])
+  if (content === null) {
+    return { items: [], hasMore: false, nextCursor: null }
+  }
+
+  return paginateLogLines(content, full ? null : cursor, safeLimit, follow, parseSdkRawLogLine)
 }
 
 export async function readSessionChannelLogs(
@@ -435,5 +557,5 @@ export async function readSessionChannelLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  return paginateLogLines(content, full ? 0 : cursor, safeLimit, follow, parseChannelLogLine)
+  return paginateLogLines(content, full ? null : cursor, safeLimit, follow, parseChannelLogLine)
 }

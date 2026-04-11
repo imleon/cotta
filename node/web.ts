@@ -14,7 +14,7 @@ import { SessionBindingStore } from './session-bindings.js'
 import { SessionControlService } from './session-control-service.js'
 import type { StaticMetadataSnapshot, StaticMetadataTreeNode } from '../shared/message-types.js'
 import { listAllSessions, getMessagesPage } from './sessions.js'
-import { appendSessionChannelLog, readSessionChannelLogs, readSessionPersistentLogs, readSessionRuntimeLogs, readSessionTransportLogs } from './transport-logs.js'
+import { appendSessionChannelLog, readSessionChannelLogs, readSessionPersistentLogs, readSessionRuntimeLogs, readSessionSdkRawLogs, readSessionTransportLogs } from './transport-logs.js'
 import { createLogger, shortId } from './logger.js'
 import { buildSdkExportTree, mapTree, overlayNodeValues } from './sdk-type-tree.js'
 
@@ -620,6 +620,26 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
         durationMs: Date.now() - startedAt,
       })
       return c.json({ messages: [], hasMore: false, nextBefore: null, error: String(err) })
+    }
+  })
+
+  app.get('/api/sessions/:id/sdk-raw-logs', async (c) => {
+    const startedAt = Date.now()
+    try {
+      const id = c.req.param('id')
+      const limit = parseInt(c.req.query('limit') || '100', 10)
+      const cursorRaw = c.req.query('cursor')
+      const follow = c.req.query('follow') === '1'
+      const full = c.req.query('full') === '1'
+      const cursor = cursorRaw ? parseInt(cursorRaw, 10) : null
+      const page = await readSessionSdkRawLogs(id, Number.isFinite(cursor) ? cursor : null, limit, follow, full)
+      return c.json(page)
+    } catch (err) {
+      logger.error('http:sdk-raw-logs:error', {
+        error: err instanceof Error ? err.message : String(err),
+        durationMs: Date.now() - startedAt,
+      })
+      return c.json({ items: [], hasMore: false, nextCursor: null, error: String(err) })
     }
   })
 

@@ -99,6 +99,7 @@ async function handleRefreshBindings() {
                 <div class="min-w-0 flex-1">
                   <div class="truncate text-sm font-medium text-slate-900">{{ entry.ref.conversationKey || '—' }}</div>
                   <div class="mt-1 truncate font-mono text-xs text-slate-500">{{ entry.binding?.sessionId || 'unbound' }}</div>
+                  <div v-if="entry.binding?.chatType" class="mt-1 truncate text-xs text-slate-500">chat_type: {{ entry.binding.chatType }}</div>
                   <div class="mt-1 truncate text-xs text-slate-500">{{ entry.session?.title || 'Untitled session' }}</div>
                 </div>
                 <span class="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-500">

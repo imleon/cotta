@@ -4,19 +4,14 @@ import { useLogViewStore } from '../stores/log-view'
 import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
 
 const logView = useLogViewStore()
-const transportItems = computed(() => logView.transportLog)
-const runtimeItems = computed(() => logView.runtimeLog.filter((item) => item.event.type !== 'sdk.transport'))
-const channelItems = computed(() => logView.channelLog)
+const sdkRawItems = computed(() => logView.sdkRawLog)
 const persistentItems = computed(() => logView.persistentLog.filter((item) => {
   const type = getPersistentType(item.line)
   return type !== 'last-prompt' && type !== 'permission-mode'
 }))
-const activeItems = computed(() => {
-  if (logView.selectedLogTab === 'transport') return transportItems.value
-  if (logView.selectedLogTab === 'runtime') return runtimeItems.value
-  if (logView.selectedLogTab === 'channel') return channelItems.value
-  return persistentItems.value
-})
+const activeItems = computed(() => (
+  logView.selectedLogTab === 'sdk-raw' ? sdkRawItems.value : persistentItems.value
+))
 const sortedSessions = computed(() => (
   [...logView.sessions].sort((left, right) => {
     const leftTime = typeof left.updatedAt === 'number' && Number.isFinite(left.updatedAt) ? left.updatedAt : 0
@@ -27,24 +22,11 @@ const sortedSessions = computed(() => (
 const preservingOlderScroll = ref(false)
 const scrollContainer = ref<HTMLElement | null>(null)
 const scrollToLatestPending = ref(true)
-const transportGridTemplate = '28ch 6ch 24ch 10ch 14ch 18ch 18ch minmax(24ch, 1fr)'
-const transportGridStyle = {
-  gridTemplateColumns: transportGridTemplate,
+const sdkRawGridTemplate = '28ch 16ch 10ch 10ch 14ch 18ch 18ch minmax(28ch, 1fr)'
+const sdkRawGridStyle = {
+  gridTemplateColumns: sdkRawGridTemplate,
   width: 'max-content',
   minWidth: '100%',
-}
-
-function getTransportDirectionLabel(direction: string): string {
-  return direction === 'inbound' ? 'IN' : 'OUT'
-}
-
-function getTransportTitle(item: { event: { eventName: string; sdkType?: string; sdkSubtype?: string } }): string {
-  const { eventName, sdkType, sdkSubtype } = item.event
-  if (eventName === 'message') {
-    if (!sdkType) return 'message'
-    return sdkSubtype ? `message(${sdkType}.${sdkSubtype})` : `message(${sdkType})`
-  }
-  return eventName
 }
 
 function formatTimestamp(timestamp: number): string {
@@ -77,95 +59,52 @@ function formatSessionActivity(timestamp?: number): string {
   }).format(date).replace(/\//g, '/')
 }
 
-function getDirectionClass(direction: string): string {
-  return direction === 'inbound'
-    ? 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
-    : 'border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_7%,white)] text-[var(--tt-accent)]'
+function getRawDirectionLabel(direction: string): string {
+  if (direction === 'sdk_to_host') return 'SDK→HOST'
+  if (direction === 'host_to_sdk') return 'HOST→SDK'
+  return 'SDK'
 }
 
-function getEventTagClass(eventName: string): string {
-  if (eventName === 'message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
-  if (eventName.startsWith('query.')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
-  if (eventName.startsWith('control.')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
-  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)] text-[var(--tt-text-muted)]'
+function getRawDirectionClass(direction: string): string {
+  if (direction === 'sdk_to_host') {
+    return 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
+  }
+  if (direction === 'host_to_sdk') {
+    return 'border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_7%,white)] text-[var(--tt-accent)]'
+  }
+  return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
 }
 
-function getRowClass(eventName: string): string {
-  return eventName === 'query.start'
-    ? 'bg-[color:color-mix(in_srgb,var(--tt-success)_8%,white)] hover:bg-[color:color-mix(in_srgb,var(--tt-success)_16%,white)]'
-    : 'hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]'
+function getRawKindClass(kind: string): string {
+  if (kind === 'sdk_message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
+  if (kind === 'control_request') return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
+  if (kind === 'control_response') return 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
+  return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
 }
 
-function getRuntimeTypeClass(type: string): string {
-  if (type.startsWith('run.')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
-  if (type.startsWith('sdk.control.')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
-  if (type === 'sdk.message') return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
-  if (type === 'sdk.transport') return 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
-  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)] text-[var(--tt-text-muted)]'
-}
-
-function getRuntimeRowClass(type: string): string {
-  return type === 'run.started'
-    ? 'bg-[color:color-mix(in_srgb,var(--tt-success)_6%,white)] hover:bg-[color:color-mix(in_srgb,var(--tt-success)_14%,white)]'
-    : 'hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]'
-}
-
-function getRuntimeSummary(item: { event: Record<string, unknown> }): string {
+function getRawMessageType(item: SessionSdkRawLogEntryLike): string {
   const { event } = item
-  if (typeof event.type !== 'string') return '-'
-  if (event.type === 'run.state_changed') return typeof event.state === 'string' ? event.state : '-'
-  if (event.type === 'run.completed') return typeof event.messageCount === 'number' ? `messages=${event.messageCount}` : '-'
-  if (event.type === 'run.failed') return typeof event.error === 'string' ? event.error : '-'
-  if (event.type === 'sdk.message') {
-    const payload = event.payload
-    if (payload && typeof payload === 'object') {
-      const record = payload as Record<string, unknown>
-      if (typeof record.type === 'string') {
-        const subtype = typeof record.subtype === 'string' ? `.${record.subtype}` : ''
-        return `${record.type}${subtype}`
-      }
-    }
+  if (event.kind === 'sdk_message') {
+    const message = event.message as Record<string, unknown>
+    const type = typeof message.type === 'string' ? message.type : 'unknown'
+    const subtype = typeof message.subtype === 'string' ? `.${message.subtype}` : ''
+    return `${type}${subtype}`
   }
-  if (event.type === 'sdk.control.requested' || event.type === 'sdk.control.resolved') {
-    const interaction = event.interaction
-    if (interaction && typeof interaction === 'object') {
-      const record = interaction as Record<string, unknown>
-      if (typeof record.kind === 'string') return record.kind
-    }
+  return event.subtype || '-'
+}
+
+type SessionSdkRawLogEntryLike = {
+  event: {
+    kind: string
+    direction: string
+    requestId?: string
+    subtype?: string
+    message: unknown
+    sequence: number
+    receivedAt: number
   }
-  if (event.type === 'sdk.transport') {
-    const transportEvent = event.event
-    if (transportEvent && typeof transportEvent === 'object') {
-      const record = transportEvent as Record<string, unknown>
-      return typeof record.eventName === 'string' ? record.eventName : 'sdk.transport'
-    }
-  }
-  return '-'
-}
-
-function getRuntimePayload(item: { event: Record<string, unknown> }): unknown {
-  const { event } = item
-  if (event.type === 'sdk.message') return event.payload
-  if (event.type === 'sdk.control.requested' || event.type === 'sdk.control.resolved') return event.payload ?? event.interaction
-  if (event.type === 'sdk.transport') return event.event
-  return item.event
-}
-
-function getChannelDirectionClass(direction: string): string {
-  if (direction === 'inbound') return 'border-[color:color-mix(in_srgb,var(--tt-success)_32%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_88%,var(--tt-text))]'
-  if (direction === 'outbound') return 'border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_7%,white)] text-[var(--tt-accent)]'
-  return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
-}
-
-function getChannelEventClass(eventName: string): string {
-  if (eventName.includes('message')) return 'border-[color:color-mix(in_srgb,var(--tt-primary)_24%,white)] bg-[color:color-mix(in_srgb,var(--tt-primary)_10%,white)] text-[var(--tt-primary-strong)]'
-  if (eventName.includes('permission') || eventName.includes('elicitation') || eventName.includes('card-action')) return 'border-[color:color-mix(in_srgb,var(--tt-coral)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-coral)_12%,white)] text-[var(--tt-primary-strong)]'
-  if (eventName.includes('run')) return 'border-[color:color-mix(in_srgb,var(--tt-warning)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_11%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_82%,var(--tt-text))]'
-  return 'border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_76%,white)] text-[var(--tt-text-muted)]'
-}
-
-function getChannelPayload(item: { event: Record<string, unknown> }): unknown {
-  return item.event.payload ?? item.event
+  runId: string
+  loggedAt: number
 }
 
 function getPersistentRecord(line: string): Record<string, unknown> | null {
@@ -204,14 +143,14 @@ function formatPersistentJson(line: string): string {
 }
 
 const liveButtonClass = computed(() => (
-  logView.transportLogLive
+  logView.logLive
     ? 'border-[color:color-mix(in_srgb,var(--tt-success)_35%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_12%,white)] text-[var(--tt-success)]'
     : 'border-[color:color-mix(in_srgb,var(--tt-warning)_30%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_14%,white)] text-[var(--tt-warning)]'
 ))
 
 const liveButtonLabel = computed(() => {
-  if (logView.transportLogLive) {
-    return (logView.transportLogRefreshing || logView.runtimeLogRefreshing || logView.channelLogRefreshing || logView.persistentLogRefreshing) ? 'LIVE · SYNCING' : 'LIVE'
+  if (logView.logLive) {
+    return (logView.sdkRawLogRefreshing || logView.persistentLogRefreshing) ? 'LIVE · SYNCING' : 'LIVE'
   }
   return 'PAUSED'
 })
@@ -270,7 +209,7 @@ watch(() => activeItems.value.length, async (next, prev) => {
     await scrollToBottom()
     return
   }
-  if (logView.transportLogLive && next > prev && isNearBottom()) {
+  if (logView.logLive && next > prev && isNearBottom()) {
     await scrollToBottom()
   }
 })
@@ -281,9 +220,7 @@ onMounted(() => {
     if (logView.selectedSessionId) {
       scrollToLatestPending.value = true
       void Promise.all([
-        logView.reloadTransportLogs(),
-        logView.reloadRuntimeLogs(),
-        logView.reloadChannelLogs(),
+        logView.reloadSdkRawLogs(),
         logView.reloadPersistentLogs(),
       ])
     }
@@ -292,9 +229,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   logView.stopSessionListRefresh()
-  logView.stopTransportFollow()
-  logView.stopRuntimeFollow()
-  logView.stopChannelFollow()
+  logView.stopSdkRawFollow()
   logView.stopPersistentFollow()
 })
 </script>
@@ -304,7 +239,7 @@ onBeforeUnmount(() => {
     <div class="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col gap-2">
       <div class="border-b border-[var(--tt-border)] pb-2">
         <h2 class="text-sm font-semibold text-[var(--tt-accent)]">SDK logs</h2>
-        <p class="mt-0.5 text-[11px] text-[var(--tt-text-subtle)]">同一 session 下可切换查看 transport、runtime、channel 与 persistent 日志。</p>
+        <p class="mt-0.5 text-[11px] text-[var(--tt-text-subtle)]">同一 session 下查看 SDK 边界原始日志与 Claude persistent 日志。</p>
       </div>
 
       <div class="flex items-center justify-between gap-2 pb-1">
@@ -322,24 +257,10 @@ onBeforeUnmount(() => {
           <div class="inline-flex rounded border border-[var(--tt-border)] bg-[var(--tt-card)] p-0.5 text-[11px]">
             <button
               class="rounded px-2 py-1"
-              :class="logView.selectedLogTab === 'transport' ? 'bg-[var(--tt-accent)] text-white' : 'text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]'"
-              @click="logView.selectLogTab('transport')"
+              :class="logView.selectedLogTab === 'sdk-raw' ? 'bg-[var(--tt-accent)] text-white' : 'text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]'"
+              @click="logView.selectLogTab('sdk-raw')"
             >
-              Transport
-            </button>
-            <button
-              class="rounded px-2 py-1"
-              :class="logView.selectedLogTab === 'runtime' ? 'bg-[var(--tt-accent)] text-white' : 'text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]'"
-              @click="logView.selectLogTab('runtime')"
-            >
-              Runtime
-            </button>
-            <button
-              class="rounded px-2 py-1"
-              :class="logView.selectedLogTab === 'channel' ? 'bg-[var(--tt-accent)] text-white' : 'text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]'"
-              @click="logView.selectLogTab('channel')"
-            >
-              Channel
+              SDK Raw
             </button>
             <button
               class="rounded px-2 py-1"
@@ -357,143 +278,55 @@ onBeforeUnmount(() => {
         <button
           class="rounded border px-2 py-1 text-[11px] font-semibold tracking-wide disabled:cursor-not-allowed disabled:opacity-50"
           :class="liveButtonClass"
-          :disabled="!logView.selectedSessionId || (logView.selectedLogTab === 'transport' ? logView.transportLogLoading : logView.selectedLogTab === 'runtime' ? logView.runtimeLogLoading : logView.selectedLogTab === 'channel' ? logView.channelLogLoading : logView.persistentLogLoading)"
-          @click="logView.toggleTransportLive"
+          :disabled="!logView.selectedSessionId || (logView.selectedLogTab === 'sdk-raw' ? logView.sdkRawLogLoading : logView.persistentLogLoading)"
+          @click="logView.toggleLogLive"
         >
           {{ liveButtonLabel }}
         </button>
       </div>
 
       <div class="min-h-0 flex-1 overflow-hidden rounded border border-[var(--tt-border)] bg-[var(--tt-card)] font-mono">
-        <template v-if="logView.selectedLogTab === 'transport'">
-          <div v-if="transportItems.length === 0" class="flex h-full items-center justify-center p-6 text-center text-sm text-[var(--tt-text-subtle)]">
-            No SDK transport logs yet.
+        <template v-if="logView.selectedLogTab === 'sdk-raw'">
+          <div v-if="sdkRawItems.length === 0" class="flex h-full items-center justify-center p-6 text-center text-sm text-[var(--tt-text-subtle)]">
+            No SDK raw logs yet.
           </div>
 
           <div v-else ref="scrollContainer" class="h-full overflow-auto" @scroll="handleScroll">
-            <div class="sticky top-0 z-10 grid gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]" :style="transportGridStyle">
+            <div class="sticky top-0 z-10 grid gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]" :style="sdkRawGridStyle">
               <div>Time</div>
+              <div>Kind</div>
               <div>Dir</div>
-              <div>Transport Event</div>
               <div>Seq</div>
               <div>Run ID</div>
               <div>Request ID</div>
-              <div>Tool Use ID</div>
-              <div>Summary</div>
+              <div>Type</div>
+              <div>Payload</div>
             </div>
             <div
-              v-for="item in transportItems"
-              :key="`sdk-transport-${item.runId}-${item.event.sequence}-${item.event.receivedAt}`"
-              class="grid gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0"
-              :class="getRowClass(item.event.eventName)"
-              :style="transportGridStyle"
+              v-for="item in sdkRawItems"
+              :key="`sdk-raw-${item.runId}-${item.cursor}`"
+              class="grid gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0 hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]"
+              :style="sdkRawGridStyle"
             >
-              <div class="shrink-0 whitespace-nowrap text-[var(--tt-text-subtle)]">{{ formatTimestamp(item.event.receivedAt) }}</div>
-              <div>
-                <span class="inline-flex min-w-[3.5ch] justify-center rounded border px-1.5 py-0 font-medium" :class="getDirectionClass(item.event.direction)">
-                  {{ getTransportDirectionLabel(item.event.direction) }}
+              <div class="shrink-0 whitespace-nowrap text-[var(--tt-text-subtle)]">{{ formatTimestamp(item.loggedAt) }}</div>
+              <div class="min-w-0">
+                <span class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top" :class="getRawKindClass(item.event.kind)">
+                  {{ item.event.kind }}
                 </span>
               </div>
-              <div class="min-w-0">
-                <span class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top" :class="getEventTagClass(item.event.eventName)">
-                  {{ getTransportTitle(item) }}
+              <div>
+                <span class="inline-flex min-w-[7ch] justify-center rounded border px-1.5 py-0 font-medium" :class="getRawDirectionClass(item.event.direction)">
+                  {{ getRawDirectionLabel(item.event.direction) }}
                 </span>
               </div>
               <div class="shrink-0 text-[var(--tt-text-subtle)]">#{{ item.event.sequence }}</div>
               <div class="shrink-0 text-[var(--tt-text-subtle)]">{{ item.runId.slice(0, 8) }}</div>
               <div class="truncate text-[var(--tt-text-subtle)]">{{ item.event.requestId || '-' }}</div>
-              <div class="truncate text-[var(--tt-text-subtle)]">{{ item.event.toolUseId || '-' }}</div>
+              <div class="truncate text-[var(--tt-text-muted)]">{{ getRawMessageType(item) }}</div>
               <div class="min-w-0">
-                <div v-if="item.event.payloadSummary" class="truncate text-[var(--tt-text-muted)]">
-                  {{ item.event.payloadSummary }}
-                </div>
-                <details v-if="item.event.payload !== undefined" class="mt-1 rounded border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-2 py-1">
-                  <summary class="cursor-pointer text-[var(--tt-success)] hover:text-[var(--tt-accent)]">Payload</summary>
-                  <pre class="mt-1 overflow-x-auto border border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[var(--tt-accent)] px-2 py-2 text-[11px] text-[#F8F4EF]">{{ stringifyStructuredValue(item.event.payload) }}</pre>
-                </details>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <template v-else-if="logView.selectedLogTab === 'runtime'">
-          <div v-if="runtimeItems.length === 0" class="flex h-full items-center justify-center p-6 text-center text-sm text-[var(--tt-text-subtle)]">
-            No runtime logs yet.
-          </div>
-
-          <div v-else ref="scrollContainer" class="h-full overflow-auto" @scroll="handleScroll">
-            <div class="sticky top-0 z-10 grid grid-cols-[28ch_16ch_10ch_14ch_minmax(28ch,1fr)] gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]">
-              <div>Time</div>
-              <div>Runtime Event</div>
-              <div>Seq</div>
-              <div>Run ID</div>
-              <div>Details</div>
-            </div>
-            <div
-              v-for="item in runtimeItems"
-              :key="`runtime-${item.runId}-${item.cursor}`"
-              class="grid grid-cols-[28ch_16ch_10ch_14ch_minmax(28ch,1fr)] gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0"
-              :class="getRuntimeRowClass(item.event.type)"
-            >
-              <div class="shrink-0 whitespace-nowrap text-[var(--tt-text-subtle)]">{{ formatTimestamp(item.loggedAt) }}</div>
-              <div class="min-w-0">
-                <span class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top" :class="getRuntimeTypeClass(item.event.type)">
-                  {{ item.event.type }}
-                </span>
-              </div>
-              <div class="shrink-0 text-[var(--tt-text-subtle)]">
-                <template v-if="'sequence' in item.event && typeof item.event.sequence === 'number'">#{{ item.event.sequence }}</template>
-                <template v-else>-</template>
-              </div>
-              <div class="shrink-0 text-[var(--tt-text-subtle)]">{{ item.runId.slice(0, 8) }}</div>
-              <div class="min-w-0">
-                <div class="truncate text-[var(--tt-text-muted)]">{{ getRuntimeSummary(item) }}</div>
-                <details class="mt-1 rounded border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-2 py-1">
+                <details class="rounded border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-2 py-1">
                   <summary class="cursor-pointer text-[var(--tt-text-muted)] hover:text-[var(--tt-accent)]">Payload</summary>
-                  <pre class="mt-1 overflow-x-auto border border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[var(--tt-accent)] px-2 py-2 text-[11px] text-[#F8F4EF]">{{ stringifyStructuredValue(getRuntimePayload(item)) }}</pre>
-                </details>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <template v-else-if="logView.selectedLogTab === 'channel'">
-          <div v-if="channelItems.length === 0" class="flex h-full items-center justify-center p-6 text-center text-sm text-[var(--tt-text-subtle)]">
-            No channel logs yet.
-          </div>
-
-          <div v-else ref="scrollContainer" class="h-full overflow-auto" @scroll="handleScroll">
-            <div class="sticky top-0 z-10 grid grid-cols-[28ch_10ch_18ch_16ch_20ch_minmax(28ch,1fr)] gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]">
-              <div>Time</div>
-              <div>Dir</div>
-              <div>Channel Event</div>
-              <div>Run ID</div>
-              <div>Conversation</div>
-              <div>Details</div>
-            </div>
-            <div
-              v-for="item in channelItems"
-              :key="`channel-${item.sessionId}-${item.cursor}`"
-              class="grid grid-cols-[28ch_10ch_18ch_16ch_20ch_minmax(28ch,1fr)] gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0 hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]"
-            >
-              <div class="shrink-0 whitespace-nowrap text-[var(--tt-text-subtle)]">{{ formatTimestamp(item.loggedAt) }}</div>
-              <div>
-                <span class="inline-flex min-w-[4ch] justify-center rounded border px-1.5 py-0 font-medium" :class="getChannelDirectionClass(item.event.direction)">
-                  {{ item.event.direction.toUpperCase() }}
-                </span>
-              </div>
-              <div class="min-w-0">
-                <span class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top" :class="getChannelEventClass(item.event.eventName)">
-                  {{ item.event.eventName }}
-                </span>
-              </div>
-              <div class="shrink-0 text-[var(--tt-text-subtle)]">{{ item.runId ? item.runId.slice(0, 8) : '-' }}</div>
-              <div class="truncate text-[var(--tt-text-subtle)]">{{ item.event.conversationKey || '-' }}</div>
-              <div class="min-w-0">
-                <div class="truncate text-[var(--tt-text-muted)]">{{ item.event.payloadSummary || '-' }}</div>
-                <details v-if="item.event.payload !== undefined" class="mt-1 rounded border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-2 py-1">
-                  <summary class="cursor-pointer text-[var(--tt-text-muted)] hover:text-[var(--tt-accent)]">Payload</summary>
-                  <pre class="mt-1 overflow-x-auto border border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[var(--tt-accent)] px-2 py-2 text-[11px] text-[#F8F4EF]">{{ stringifyStructuredValue(getChannelPayload(item)) }}</pre>
+                  <pre class="mt-1 overflow-x-auto border border-[color:color-mix(in_srgb,var(--tt-accent)_18%,white)] bg-[var(--tt-accent)] px-2 py-2 text-[11px] text-[#F8F4EF]">{{ stringifyStructuredValue(item.event.message) }}</pre>
                 </details>
               </div>
             </div>

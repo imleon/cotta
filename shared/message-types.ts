@@ -417,6 +417,8 @@ export interface ChannelInboundMessage extends ChannelConversationRef {
   sessionId?: string
   platformMessageId?: string
   replyToMessageId?: string
+  chatType?: 'p2p' | 'group'
+  senderOpenId?: string
 }
 
 export interface ChannelOutboundMessage extends ChannelConversationRef {
@@ -429,6 +431,7 @@ export interface ChannelOutboundMessage extends ChannelConversationRef {
 export interface SessionBinding extends ChannelConversationRef {
   sessionId: string
   updatedAt: number
+  chatType?: 'p2p' | 'group'
   lastRunId?: string
   activeInteractionId?: string
   lastInboundPlatformMessageId?: string
@@ -867,6 +870,18 @@ export interface RuntimeEnvelopeBase {
   sequence: number
 }
 
+export type SdkRawLogKind = 'sdk_message' | 'control_request' | 'control_response' | 'control_cancel_request'
+export type SdkRawLogDirection = 'sdk_to_host' | 'host_to_sdk' | 'sdk_outbound'
+
+export interface SdkRawLogEvent extends RuntimeEnvelopeBase {
+  source: 'sdk-raw'
+  kind: SdkRawLogKind
+  direction: SdkRawLogDirection
+  requestId?: string
+  subtype?: string
+  message: SDKMessage | SdkControlEnvelope
+}
+
 export type SdkTransportDirection = 'inbound' | 'outbound'
 export type ChannelLogDirection = 'inbound' | 'outbound' | 'internal'
 export type SdkTransportEventName =
@@ -904,6 +919,20 @@ export interface SessionTransportLogEntry {
 
 export interface SessionTransportLogPage {
   items: SessionTransportLogEntry[]
+  hasMore: boolean
+  nextCursor: number | null
+}
+
+export interface SessionSdkRawLogEntry {
+  cursor: number
+  runId: string
+  loggedAt: number
+  sessionId: string
+  event: SdkRawLogEvent
+}
+
+export interface SessionSdkRawLogPage {
+  items: SessionSdkRawLogEntry[]
   hasMore: boolean
   nextCursor: number | null
 }
@@ -998,6 +1027,7 @@ export type RunnerRuntimeEvent =
   | ({ type: 'interactive.cancelled'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'interactive.failed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | { type: 'sdk.transport'; event: SdkTransportEvent }
+  | { type: 'sdk.raw'; event: SdkRawLogEvent }
 
 export type SessionEvent =
   | { type: 'session.run.queued'; runId: string; sessionId?: string }

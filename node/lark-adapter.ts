@@ -1,15 +1,18 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { CONFIG } from './config.js'
 import { createLogger, shortId } from './logger.js'
+import { KeyedTaskQueue } from './keyed-task-queue.js'
 import { appendSessionChannelLog } from './transport-logs.js'
 import { optimizeLarkMarkdownStyle } from './lark-markdown-style.js'
 import { SessionBindingStore } from './session-bindings.js'
 import { SessionControlService } from './session-control-service.js'
 import { LarkStreamingController } from './lark-streaming-controller.js'
 import { DedupeStore } from './dedupe-store.js'
+import { getMessages } from './sessions.js'
 import type {
   ChannelInboundMessage,
   ChannelOutboundMessage,
+  DisplayAssistantFooter,
   LarkStreamingState,
   PendingInteraction,
   SessionEvent,
@@ -20,6 +23,7 @@ import {
   extractStructuredContentFromBlocks,
   getTranscriptAssistantModel,
   getTranscriptAssistantUsage,
+  getTranscriptStopReason,
   hasRenderableTranscriptContent,
   normalizeSdkEnvelopeMessage,
 } from '../shared/transcript-normalizer.js'
@@ -28,6 +32,8 @@ import {
   inferElicitationRenderer,
   type ElicitationRenderer,
 } from '../shared/elicitation-renderer.js'
+import { buildAssistantFooterText } from '../shared/assistant-footer-format.js'
+import { getAssistantFooter } from '../shared/transcript-display.js'
 
 const logger = createLogger('lark-adapter')
 const DEDUPE_TTL_MS = 10 * 60 * 1000
@@ -42,14 +48,18 @@ let sessionControl: SessionControlService | null = null
 const messageDedupe = new DedupeStore(DEDUPE_TTL_MS)
 const actionDedupe = new DedupeStore(DEDUPE_TTL_MS)
 const larkStreamingControllers = new Map<string, LarkStreamingController>()
+const larkDeliveryQueue = new KeyedTaskQueue(CONFIG.maxConcurrentAgents)
 const streamingControllerStartedAt = new Map<string, number>()
 const latestAssistantModelByRun = new Map<string, string | null>()
 const latestAssistantUsageByRun = new Map<string, ReturnType<typeof getTranscriptAssistantUsage>>()
+const latestAssistantStopReasonByRun = new Map<string, string | null>()
 const STREAMING_CARD_ELEMENT_ID = 'streaming_content'
 
 export type LarkInboundEvent = {
   conversationKey: string
   userKey?: string
+  senderOpenId?: string
+  chatType?: 'p2p' | 'group'
   text: string
   platformMessageId?: string
 }
@@ -62,6 +72,15 @@ type LarkOutboundDelivery = {
   sessionId?: string
   mode?: 'create' | 'stream' | 'finalize' | 'fallback'
   preferRawCardFallback?: boolean
+  replyToMessageId?: string
+  chatType?: 'p2p' | 'group'
+  senderOpenId?: string
+}
+
+type LarkReplyContext = {
+  replyToMessageId?: string
+  chatType?: 'p2p' | 'group'
+  senderOpenId?: string
 }
 
 type LarkElicitationCardActionType =
@@ -441,16 +460,17 @@ async function handleInteractionCommand(
   control: SessionControlService,
   conversationKey: string,
   command: LarkInteractionCommand,
+  replyContext?: LarkReplyContext,
 ): Promise<void> {
   if (command.type === 'invalid') {
-    await sendLarkTextMessage(conversationKey, `Invalid ${command.scope} command: ${command.reason}`)
+    await sendLarkTextMessage(conversationKey, `Invalid ${command.scope} command: ${command.reason}`, replyContext)
     return
   }
 
   if (command.type === 'stop') {
     const activeRun = coordinator.getLatestInterruptibleRunByConversation('lark', conversationKey)
     if (!activeRun) {
-      await sendLarkTextMessage(conversationKey, 'No active run to stop.')
+      await sendLarkTextMessage(conversationKey, 'No active run to stop.', replyContext)
       return
     }
     const requestId = `stop-${Date.now()}`
@@ -463,6 +483,7 @@ async function handleInteractionCommand(
     await sendLarkTextMessage(
       conversationKey,
       requested ? 'Stopping current run.' : 'Unable to stop the current run.',
+      replyContext,
     )
     return
   }
@@ -482,7 +503,7 @@ async function handleInteractionCommand(
         session?.title ? `Session title: ${session.title}` : '',
         activeRun ? `Active run: ${activeRun.runId} (${activeRun.state})` : 'Active run: none',
       ].filter(Boolean)
-      await sendLarkTextMessage(conversationKey, lines.join('\n'))
+      await sendLarkTextMessage(conversationKey, lines.join('\n'), replyContext)
       return
     }
 
@@ -493,6 +514,7 @@ async function handleInteractionCommand(
         command.action === 'new'
           ? 'Cleared current binding. The next message will start a new session.'
           : 'Cleared current session binding.',
+        replyContext,
       )
       return
     }
@@ -503,6 +525,7 @@ async function handleInteractionCommand(
       status.binding
         ? `Bound this chat to session ${status.binding.sessionId}${status.session?.title ? ` (${status.session.title})` : ''}.`
         : 'Failed to bind this chat to the requested session.',
+      replyContext,
     )
     return
   }
@@ -533,6 +556,7 @@ async function handleInteractionCommand(
       ok
         ? `Permission response recorded: ${command.decision}`
         : 'No matching active run for that permission command.',
+      replyContext,
     )
     return
   }
@@ -564,6 +588,7 @@ async function handleInteractionCommand(
     ok
       ? `Elicitation response recorded: ${command.action}`
       : 'No matching active run for that elicitation command.',
+    replyContext,
   )
 }
 
@@ -959,10 +984,7 @@ function buildAssistantStreamingCard(params: {
   thinkingText?: string
   toolCalls?: string[]
   toolResults?: string[]
-  model?: string | null
-  usage?: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheWriteTokens?: number | null } | null
-  elapsedMs?: number
-  statusLabel?: 'Processing' | 'Completed' | 'Error' | 'Stopped'
+  footer?: DisplayAssistantFooter
   isFinal?: boolean
 }): Record<string, unknown> {
   const mainContent = optimizeLarkMarkdownStyle(params.answerText || params.thinkingText || (params.isFinal ? 'Done.' : 'Processing...'))
@@ -1001,18 +1023,12 @@ function buildAssistantStreamingCard(params: {
     })
   }
 
-  const footerParts = [
-    params.statusLabel ?? (params.isFinal ? 'Completed' : 'Processing'),
-    typeof params.elapsedMs === 'number' ? `Elapsed: ${Math.max(0, Math.round(params.elapsedMs / 1000))}s` : '',
-    params.model ? `Model: ${params.model}` : '',
-    params.usage?.inputTokens != null ? `In: ${params.usage.inputTokens}` : '',
-    params.usage?.outputTokens != null ? `Out: ${params.usage.outputTokens}` : '',
-  ].filter(Boolean)
+  const footerText = params.footer ? buildAssistantFooterText(params.footer) : ''
 
-  if (footerParts.length > 0) {
+  if (footerText.trim().length > 0) {
     elements.push({
       tag: 'markdown',
-      content: footerParts.join(' · '),
+      content: footerText,
       text_size: 'notation',
     })
   }
@@ -1047,6 +1063,7 @@ function clearStreamingController(runId: string): void {
   streamingControllerStartedAt.delete(runId)
   latestAssistantModelByRun.delete(runId)
   latestAssistantUsageByRun.delete(runId)
+  latestAssistantStopReasonByRun.delete(runId)
 }
 
 
@@ -1071,11 +1088,12 @@ function createLarkEventDispatcher(coordinator: RunCoordinator): any {
 async function handleLarkMessageEvent(coordinator: RunCoordinator, data: any): Promise<void> {
   const conversationKey = typeof data?.message?.chat_id === 'string' ? data.message.chat_id : ''
   const text = parseLarkMessageText(data?.message?.content)
-  const userKey = typeof data?.sender?.sender_id?.open_id === 'string'
-    ? data.sender.sender_id.open_id
-    : typeof data?.sender?.sender_id?.user_id === 'string'
-      ? data.sender.sender_id.user_id
-      : undefined
+  const senderOpenId = typeof data?.sender?.sender_id?.open_id === 'string' ? data.sender.sender_id.open_id : undefined
+  const userKey = senderOpenId
+    ?? (typeof data?.sender?.sender_id?.user_id === 'string' ? data.sender.sender_id.user_id : undefined)
+  const chatType = data?.message?.chat_type === 'p2p' || data?.message?.chat_type === 'group'
+    ? data.message.chat_type
+    : undefined
   const platformMessageId = typeof data?.message?.message_id === 'string' ? data.message.message_id : undefined
 
   if (!conversationKey || !text) {
@@ -1094,7 +1112,17 @@ async function handleLarkMessageEvent(coordinator: RunCoordinator, data: any): P
   const control = getSessionControl(coordinator)
   const interactionCommand = parseLarkInteractionCommand(text)
   if (interactionCommand) {
-    await handleInteractionCommand(coordinator, control, conversationKey, interactionCommand)
+    await handleInteractionCommand(
+      coordinator,
+      control,
+      conversationKey,
+      interactionCommand,
+      {
+        ...(platformMessageId ? { replyToMessageId: platformMessageId } : {}),
+        ...(chatType ? { chatType } : {}),
+        ...(senderOpenId ? { senderOpenId } : {}),
+      },
+    )
     return
   }
 
@@ -1105,6 +1133,8 @@ async function handleLarkMessageEvent(coordinator: RunCoordinator, data: any): P
       conversationKey,
       text,
       ...(userKey ? { userKey } : {}),
+      ...(senderOpenId ? { senderOpenId } : {}),
+      ...(chatType ? { chatType } : {}),
       ...(platformMessageId ? { platformMessageId } : {}),
     }),
     resolvedSessionId,
@@ -1372,6 +1402,53 @@ export async function invokeLarkEvent(coordinator: RunCoordinator, body: unknown
   return dispatcher.invoke(assigned)
 }
 
+function toLarkReplyContext(context: LarkReplyContext): LarkReplyContext | undefined {
+  const replyContext: LarkReplyContext = {
+    ...(context.replyToMessageId ? { replyToMessageId: context.replyToMessageId } : {}),
+    ...(context.chatType ? { chatType: context.chatType } : {}),
+    ...(context.senderOpenId ? { senderOpenId: context.senderOpenId } : {}),
+  }
+  return Object.keys(replyContext).length > 0 ? replyContext : undefined
+}
+
+function buildLarkReplyPrefix(context: LarkReplyContext): { textPrefix?: string; cardPrefix?: string } {
+  if (!context.replyToMessageId || context.chatType !== 'group' || !context.senderOpenId) {
+    return {}
+  }
+  return {
+    textPrefix: `<at user_id="${context.senderOpenId}"></at>`,
+    cardPrefix: `<at id=${context.senderOpenId}></at>`,
+  }
+}
+
+function applyLarkReplyMentionToText(text: string, context: LarkReplyContext): string {
+  const prefix = buildLarkReplyPrefix(context).textPrefix
+  return prefix ? `${prefix}\n${text}` : text
+}
+
+function applyLarkReplyMentionToCard(card: unknown, context: LarkReplyContext): unknown {
+  const prefix = buildLarkReplyPrefix(context).cardPrefix
+  if (!prefix) return card
+  const asRecordCard = card && typeof card === 'object' ? card as Record<string, unknown> : null
+  const body = asRecordCard?.body && typeof asRecordCard.body === 'object' ? asRecordCard.body as Record<string, unknown> : null
+  const elements = Array.isArray(body?.elements) ? [...body.elements as unknown[]] : null
+  if (!asRecordCard || !body || !elements) return card
+
+  const first = elements[0]
+  if (first && typeof first === 'object' && (first as Record<string, unknown>).element_id === 'reply_mention') {
+    return card
+  }
+
+  elements.unshift({ tag: 'markdown', content: prefix, element_id: 'reply_mention' })
+  return {
+    ...asRecordCard,
+    body: {
+      ...body,
+      elements,
+    },
+  }
+}
+
 async function addLarkTypingReaction(messageId: string): Promise<{ reactionId: string | null; error?: string }> {
   const client = getLarkClient()
   if (!client) {
@@ -1442,7 +1519,11 @@ async function clearTypingReaction(record: RunRecord): Promise<void> {
   }
 }
 
-export async function sendLarkTextMessage(conversationKey: string, text: string): Promise<{ delivered: boolean; response?: unknown; error?: string }> {
+export async function sendLarkTextMessage(
+  conversationKey: string,
+  text: string,
+  options?: LarkReplyContext,
+): Promise<{ delivered: boolean; response?: unknown; error?: string }> {
   const client = getLarkClient()
   if (!client) {
     logger.warn('lark:send:missing-config', { conversationKey })
@@ -1450,13 +1531,27 @@ export async function sendLarkTextMessage(conversationKey: string, text: string)
   }
 
   try {
+    const resolvedText = applyLarkReplyMentionToText(text, options ?? {})
+    if (options?.replyToMessageId) {
+      const response = await client.im.message.reply({
+        path: {
+          message_id: options.replyToMessageId,
+        },
+        data: {
+          content: JSON.stringify({ text: resolvedText }),
+          msg_type: 'text',
+        },
+      })
+      return { delivered: true, response }
+    }
+
     const response = await client.im.message.create({
       params: {
         receive_id_type: 'chat_id',
       },
       data: {
         receive_id: conversationKey,
-        content: JSON.stringify({ text }),
+        content: JSON.stringify({ text: resolvedText }),
         msg_type: 'text',
       },
     })
@@ -1473,15 +1568,35 @@ export async function sendLarkTextMessage(conversationKey: string, text: string)
 async function sendLarkCardMessage(
   conversationKey: string,
   card: unknown,
+  options?: LarkReplyContext,
 ): Promise<{ delivered: boolean; response?: unknown; error?: string; content: string; responseContent?: string }> {
   const client = getLarkClient()
-  const content = JSON.stringify(card)
+  const resolvedCard = applyLarkReplyMentionToCard(card, options ?? {})
+  const content = JSON.stringify(resolvedCard)
   if (!client) {
     logger.warn('lark:send:missing-config', { conversationKey })
     return { delivered: false, error: 'Lark client is not configured', content }
   }
 
   try {
+    if (options?.replyToMessageId) {
+      const response = await client.im.message.reply({
+        path: {
+          message_id: options.replyToMessageId,
+        },
+        data: {
+          msg_type: 'interactive',
+          content,
+        },
+      })
+      return {
+        delivered: true,
+        response,
+        content,
+        responseContent: JSON.stringify(response),
+      }
+    }
+
     const response = await client.im.message.create({
       params: {
         receive_id_type: 'chat_id',
@@ -1514,6 +1629,7 @@ async function sendLarkCardMessage(
 async function sendLarkCardKitMessage(
   conversationKey: string,
   card: unknown,
+  options?: LarkReplyContext,
 ): Promise<{ delivered: boolean; cardId?: string; messageId?: string; response?: unknown; error?: string }> {
   const client = getLarkClient()
   if (!client) {
@@ -1522,10 +1638,11 @@ async function sendLarkCardKitMessage(
   }
 
   try {
+    const resolvedCard = applyLarkReplyMentionToCard(card, options ?? {})
     const cardResponse = await client.cardkit.v1.card.create({
       data: {
         type: 'card_json',
-        data: JSON.stringify(card),
+        data: JSON.stringify(resolvedCard),
       },
     })
     const cardId = typeof cardResponse?.data?.card_id === 'string'
@@ -1535,19 +1652,31 @@ async function sendLarkCardKitMessage(
       return { delivered: false, response: cardResponse, error: 'CardKit card_id missing' }
     }
 
-    const response = await client.im.message.create({
-      params: {
-        receive_id_type: 'chat_id',
-      },
-      data: {
-        receive_id: conversationKey,
-        msg_type: 'interactive',
-        content: JSON.stringify({
-          type: 'card',
-          data: { card_id: cardId },
-        }),
-      },
+    const payload = JSON.stringify({
+      type: 'card',
+      data: { card_id: cardId },
     })
+
+    const response = options?.replyToMessageId
+      ? await client.im.message.reply({
+          path: {
+            message_id: options.replyToMessageId,
+          },
+          data: {
+            msg_type: 'interactive',
+            content: payload,
+          },
+        })
+      : await client.im.message.create({
+          params: {
+            receive_id_type: 'chat_id',
+          },
+          data: {
+            receive_id: conversationKey,
+            msg_type: 'interactive',
+            content: payload,
+          },
+        })
 
     return {
       delivered: true,
@@ -1567,6 +1696,7 @@ async function sendLarkCardKitMessage(
 async function updateLarkCardMessage(
   messageId: string,
   card: unknown,
+  options?: LarkReplyContext,
 ): Promise<{ delivered: boolean; response?: unknown; error?: string }> {
   const client = getLarkClient()
   if (!client) {
@@ -1579,7 +1709,7 @@ async function updateLarkCardMessage(
         message_id: messageId,
       },
       data: {
-        content: JSON.stringify(card),
+        content: JSON.stringify(applyLarkReplyMentionToCard(card, options ?? {})),
       },
     })
     return { delivered: true, response }
@@ -1627,6 +1757,7 @@ async function updateLarkCardKitCard(
   cardId: string,
   card: unknown,
   sequence: number,
+  options?: LarkReplyContext,
 ): Promise<{ delivered: boolean; error?: string; response?: unknown }> {
   const client = getLarkClient()
   if (!client) {
@@ -1638,7 +1769,7 @@ async function updateLarkCardKitCard(
       data: {
         card: {
           type: 'card_json',
-          data: JSON.stringify(card),
+          data: JSON.stringify(applyLarkReplyMentionToCard(card, options ?? {})),
         },
         sequence,
       },
@@ -1727,6 +1858,8 @@ export function toLarkInboundMessage(event: LarkInboundEvent): ChannelInboundMes
     channel: 'lark',
     conversationKey: event.conversationKey,
     ...(event.userKey ? { userKey: event.userKey } : {}),
+    ...(event.senderOpenId ? { senderOpenId: event.senderOpenId } : {}),
+    ...(event.chatType ? { chatType: event.chatType } : {}),
     text: event.text,
     ...(event.platformMessageId ? { platformMessageId: event.platformMessageId } : {}),
   }
@@ -1836,6 +1969,9 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
           card: buildPermissionCard(record.runId, event.transaction.interaction),
           runId: record.runId,
           ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+          ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+          ...(record.chatType ? { chatType: record.chatType } : {}),
+          ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
           mode: 'create',
           preferRawCardFallback: true,
         }]
@@ -1846,6 +1982,9 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
         card: buildElicitationCard(record.runId, event.transaction.interaction),
         runId: record.runId,
         ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+        ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+        ...(record.chatType ? { chatType: record.chatType } : {}),
+        ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
         mode: 'create',
         preferRawCardFallback: true,
       }]
@@ -1865,6 +2004,9 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
           card: buildPermissionResolvedCard(decision, ok),
           runId: record.runId,
           ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+          ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+          ...(record.chatType ? { chatType: record.chatType } : {}),
+          ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
           mode: 'create',
           preferRawCardFallback: true,
         }]
@@ -1879,6 +2021,9 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
         card: buildElicitationResolvedCard(action, ok),
         runId: record.runId,
         ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+        ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+        ...(record.chatType ? { chatType: record.chatType } : {}),
+        ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
         mode: 'create',
         preferRawCardFallback: true,
       }]
@@ -1912,6 +2057,19 @@ export function buildLarkDeliveries(event: SessionEvent, record: RunRecord): Lar
   }
 }
 
+async function resolvePersistedFooter(record: RunRecord): Promise<Pick<DisplayAssistantFooter, 'stopReason' | 'model' | 'usage'> | null> {
+  if (!record.sessionId) return null
+  const messages = await getMessages(record.sessionId, 200)
+  const footer = getAssistantFooter(messages)
+  if (!footer) return null
+  if (!footer.stopReason && !footer.model && !footer.usage) return null
+  return {
+    stopReason: footer.stopReason ?? null,
+    model: footer.model ?? null,
+    usage: footer.usage ?? null,
+  }
+}
+
 function getOrCreateStreamingController(record: RunRecord): LarkStreamingController {
   const existing = getStreamingController(record.runId)
   if (existing) return existing
@@ -1921,10 +2079,26 @@ function getOrCreateStreamingController(record: RunRecord): LarkStreamingControl
     runId: record.runId,
     conversationKey: record.conversationKey,
     ...(record.sessionId ? { sessionId: record.sessionId } : {}),
-    buildCard: ({ answerText, thinkingText, toolCalls, toolResults, model, usage, elapsedMs, statusLabel, isFinal }) => buildAssistantStreamingCard({ answerText, thinkingText, toolCalls, toolResults, model, usage, elapsedMs, statusLabel, isFinal }),
-    createCardKitMessage: async (card) => await sendLarkCardKitMessage(record.conversationKey, card),
+    buildCard: ({ answerText, thinkingText, toolCalls, toolResults, footer, isFinal }) => buildAssistantStreamingCard({ answerText, thinkingText, toolCalls, toolResults, footer, isFinal }),
+    createCardKitMessage: async (card) => await sendLarkCardKitMessage(
+      record.conversationKey,
+      card,
+      toLarkReplyContext({
+        ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+        ...(record.chatType ? { chatType: record.chatType } : {}),
+        ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
+      }),
+    ),
     sendInteractiveCard: async (card) => {
-      const result = await sendLarkCardMessage(record.conversationKey, card)
+      const result = await sendLarkCardMessage(
+        record.conversationKey,
+        card,
+        toLarkReplyContext({
+          ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+          ...(record.chatType ? { chatType: record.chatType } : {}),
+          ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
+        }),
+      )
       return {
         delivered: result.delivered,
         messageId: result.delivered && result.response && typeof result.response === 'object' && 'data' in (result.response as Record<string, unknown>)
@@ -1947,12 +2121,29 @@ function getOrCreateStreamingController(record: RunRecord): LarkStreamingControl
       }, card)
     },
     updateInteractiveCard: async (messageId, card) => {
-      return await updateLarkCardMessage(messageId, card)
+      return await updateLarkCardMessage(
+        messageId,
+        card,
+        toLarkReplyContext({
+          ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+          ...(record.chatType ? { chatType: record.chatType } : {}),
+          ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
+        }),
+      )
     },
     finalizeCardKit: async (cardId, closeSequence, updateSequence, card) => {
       const closeResult = await setLarkCardKitStreamingMode(cardId, false, closeSequence)
       if (!closeResult.delivered) return closeResult
-      return await updateLarkCardKitCard(cardId, card, updateSequence)
+      return await updateLarkCardKitCard(
+        cardId,
+        card,
+        updateSequence,
+        toLarkReplyContext({
+          ...(record.inboundPlatformMessageId ? { replyToMessageId: record.inboundPlatformMessageId } : {}),
+          ...(record.chatType ? { chatType: record.chatType } : {}),
+          ...(record.senderOpenId ? { senderOpenId: record.senderOpenId } : {}),
+        }),
+      )
     },
     appendLog: async ({ eventName, payloadSummary, payload, rawPayload }) => {
       await appendLarkChannelLog({
@@ -1966,18 +2157,27 @@ function getOrCreateStreamingController(record: RunRecord): LarkStreamingControl
         ...(rawPayload !== undefined ? { rawPayload } : {}),
       })
     },
-    getFooterMetrics: () => ({
-      model: latestAssistantModelByRun.get(record.runId) ?? null,
-      usage: latestAssistantUsageByRun.get(record.runId) ?? null,
-      elapsedMs: Date.now() - (streamingControllerStartedAt.get(record.runId) ?? Date.now()),
-    }),
+    getFooterMetrics: async () => {
+      const startedAt = streamingControllerStartedAt.get(record.runId) ?? Date.now()
+      const completedAt = Date.now()
+      const deltaMs = Math.max(0, completedAt - startedAt)
+      const persistedFooter = await resolvePersistedFooter(record)
+      return {
+        stopReason: persistedFooter?.stopReason ?? (latestAssistantStopReasonByRun.get(record.runId) ?? null),
+        model: persistedFooter?.model ?? (latestAssistantModelByRun.get(record.runId) ?? null),
+        usage: persistedFooter?.usage ?? (latestAssistantUsageByRun.get(record.runId) ?? null),
+        executionDurationMs: deltaMs,
+        completedAt,
+        deltaMs,
+      }
+    },
   })
 
   larkStreamingControllers.set(record.runId, controller)
   return controller
 }
 
-export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRecord): Promise<void> {
+async function deliverLarkSessionEventNow(event: SessionEvent, record: RunRecord): Promise<void> {
   if (record.channel === 'lark') {
     if (event.type === 'session.sdk.stream_event') {
       await ensureTypingReactionStarted(record)
@@ -1992,6 +2192,10 @@ export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRe
       if (parsed?.role === 'assistant') {
         latestAssistantModelByRun.set(record.runId, getTranscriptAssistantModel(parsed))
         latestAssistantUsageByRun.set(record.runId, getTranscriptAssistantUsage(parsed))
+        const stopReason = getTranscriptStopReason(parsed)
+        if (stopReason) {
+          latestAssistantStopReasonByRun.set(record.runId, stopReason)
+        }
         const text = extractLarkAssistantText(event)
         if (text) {
           const controller = getOrCreateStreamingController(record)
@@ -2056,8 +2260,10 @@ export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRe
       payload: delivery.card ?? delivery.text,
     })
 
+    const replyContext = toLarkReplyContext(delivery)
+
     if (delivery.card) {
-      const result = await sendLarkCardMessage(delivery.conversationKey, delivery.card)
+      const result = await sendLarkCardMessage(delivery.conversationKey, delivery.card, replyContext)
       await appendLarkChannelLog({
         sessionId: delivery.sessionId,
         runId: delivery.runId,
@@ -2083,7 +2289,7 @@ export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRe
       continue
     }
     if (delivery.text) {
-      const result = await sendLarkTextMessage(delivery.conversationKey, delivery.text)
+      const result = await sendLarkTextMessage(delivery.conversationKey, delivery.text, replyContext)
       await appendLarkChannelLog({
         sessionId: delivery.sessionId,
         runId: delivery.runId,
@@ -2095,4 +2301,10 @@ export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRe
       })
     }
   }
+}
+
+export async function deliverLarkSessionEvent(event: SessionEvent, record: RunRecord): Promise<void> {
+  await larkDeliveryQueue.enqueue(record.runId, async () => {
+    await deliverLarkSessionEventNow(event, record)
+  })
 }

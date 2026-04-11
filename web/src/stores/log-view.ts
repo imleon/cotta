@@ -1,29 +1,15 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import type {
-  SessionChannelLogEntry,
   SessionPersistentLogEntry,
-  SessionRuntimeLogEntry,
+  SessionSdkRawLogEntry,
   SessionSummary,
-  SessionTransportLogEntry,
 } from '../../../shared/message-types.js'
 import { createDebugLogger } from '../lib/debug.js'
 import { useSessionStore } from './session'
 
-interface TransportLogsResponse {
-  items?: SessionTransportLogEntry[]
-  hasMore?: boolean
-  nextCursor?: number | null
-}
-
-interface RuntimeLogsResponse {
-  items?: SessionRuntimeLogEntry[]
-  hasMore?: boolean
-  nextCursor?: number | null
-}
-
-interface ChannelLogsResponse {
-  items?: SessionChannelLogEntry[]
+interface SdkRawLogsResponse {
+  items?: SessionSdkRawLogEntry[]
   hasMore?: boolean
   nextCursor?: number | null
 }
@@ -34,7 +20,7 @@ interface PersistentLogsResponse {
   nextCursor?: number | null
 }
 
-type LogTab = 'transport' | 'runtime' | 'channel' | 'persistent'
+type LogTab = 'sdk-raw' | 'persistent'
 
 const logger = createDebugLogger('log-view-store')
 const SESSION_LIST_REFRESH_INTERVAL_MS = 3000
@@ -74,26 +60,16 @@ function mergePersistentLogEntries(
 export const useLogViewStore = defineStore('log-view', () => {
   const sessionStore = useSessionStore()
   const selectedSessionId = ref<string | null>(null)
-  const selectedLogTab = ref<LogTab>('transport')
-  const transportLog = ref<SessionTransportLogEntry[]>([])
-  const transportLogHasMore = ref(false)
-  const transportLogCursor = ref<number | null>(null)
-  const transportLogLoading = ref(false)
-  const transportLogRefreshing = ref(false)
-  const transportLogFollowing = ref(false)
-  const transportLogLive = ref(true)
-  const runtimeLog = ref<SessionRuntimeLogEntry[]>([])
-  const runtimeLogHasMore = ref(false)
-  const runtimeLogCursor = ref<number | null>(null)
-  const runtimeLogLoading = ref(false)
-  const runtimeLogRefreshing = ref(false)
-  const runtimeLogFollowing = ref(false)
-  const channelLog = ref<SessionChannelLogEntry[]>([])
-  const channelLogHasMore = ref(false)
-  const channelLogCursor = ref<number | null>(null)
-  const channelLogLoading = ref(false)
-  const channelLogRefreshing = ref(false)
-  const channelLogFollowing = ref(false)
+  const selectedLogTab = ref<LogTab>('sdk-raw')
+  const logLive = ref(true)
+
+  const sdkRawLog = ref<SessionSdkRawLogEntry[]>([])
+  const sdkRawLogHasMore = ref(false)
+  const sdkRawLogCursor = ref<number | null>(null)
+  const sdkRawLogLoading = ref(false)
+  const sdkRawLogRefreshing = ref(false)
+  const sdkRawLogFollowing = ref(false)
+
   const persistentLog = ref<SessionPersistentLogEntry[]>([])
   const persistentLogHasMore = ref(false)
   const persistentLogCursor = ref<number | null>(null)
@@ -101,36 +77,19 @@ export const useLogViewStore = defineStore('log-view', () => {
   const persistentLogLoading = ref(false)
   const persistentLogRefreshing = ref(false)
   const persistentLogFollowing = ref(false)
-  let transportFollowTimer: number | null = null
-  let runtimeFollowTimer: number | null = null
-  let channelFollowTimer: number | null = null
+
+  let sdkRawFollowTimer: number | null = null
   let persistentFollowTimer: number | null = null
   let sessionListRefreshTimer: number | null = null
 
   const sessions = computed<SessionSummary[]>(() => sessionStore.sessions)
 
-  function stopTransportFollow() {
-    if (transportFollowTimer !== null) {
-      window.clearTimeout(transportFollowTimer)
-      transportFollowTimer = null
+  function stopSdkRawFollow() {
+    if (sdkRawFollowTimer !== null) {
+      window.clearTimeout(sdkRawFollowTimer)
+      sdkRawFollowTimer = null
     }
-    transportLogFollowing.value = false
-  }
-
-  function stopRuntimeFollow() {
-    if (runtimeFollowTimer !== null) {
-      window.clearTimeout(runtimeFollowTimer)
-      runtimeFollowTimer = null
-    }
-    runtimeLogFollowing.value = false
-  }
-
-  function stopChannelFollow() {
-    if (channelFollowTimer !== null) {
-      window.clearTimeout(channelFollowTimer)
-      channelFollowTimer = null
-    }
-    channelLogFollowing.value = false
+    sdkRawLogFollowing.value = false
   }
 
   function stopPersistentFollow() {
@@ -142,7 +101,10 @@ export const useLogViewStore = defineStore('log-view', () => {
   }
 
   function pauseSelectedLogFollow() {
-    if (selectedLogTab.value !== 'persistent') return
+    if (selectedLogTab.value === 'sdk-raw') {
+      stopSdkRawFollow()
+      return
+    }
     stopPersistentFollow()
   }
 
@@ -194,20 +156,20 @@ export const useLogViewStore = defineStore('log-view', () => {
     scheduleSessionListRefresh()
   }
 
-  async function loadTransportLogs(sessionId: string, options: { cursor?: number | null; append?: boolean; follow?: boolean } = {}) {
-    if (!sessionId || transportLogLoading.value) return false
+  async function loadSdkRawLogs(sessionId: string, options: { cursor?: number | null; append?: boolean; follow?: boolean } = {}) {
+    if (!sessionId || sdkRawLogLoading.value) return false
 
-    transportLogLoading.value = true
-    transportLogRefreshing.value = !options.append
+    sdkRawLogLoading.value = true
+    sdkRawLogRefreshing.value = !options.append
     try {
       const params = new URLSearchParams()
       params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
       if (!options.follow) params.set('full', '1')
       if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
       if (options.follow) params.set('follow', '1')
-      const res = await apiFetch(`/api/sessions/${sessionId}/transport-logs?${params.toString()}`)
+      const res = await apiFetch(`/api/sessions/${sessionId}/sdk-raw-logs?${params.toString()}`)
       if (!res.ok) {
-        logger.warn('transport:load:error', {
+        logger.warn('sdk-raw:load:error', {
           sessionId: shortId(sessionId),
           status: res.status,
           cursor: options.cursor,
@@ -215,141 +177,35 @@ export const useLogViewStore = defineStore('log-view', () => {
         })
         return false
       }
-      const data = await res.json() as TransportLogsResponse
+      const data = await res.json() as SdkRawLogsResponse
       const items = Array.isArray(data.items) ? data.items : []
       if (options.append) {
-        transportLog.value = [...items, ...transportLog.value]
+        sdkRawLog.value = [...items, ...sdkRawLog.value]
       } else if (options.follow) {
-        transportLog.value = [...transportLog.value, ...items]
+        sdkRawLog.value = [...sdkRawLog.value, ...items]
       } else {
-        transportLog.value = items
+        sdkRawLog.value = items
       }
-      transportLogHasMore.value = false
-      transportLogCursor.value = null
-      logger.info('transport:load:success', {
+      sdkRawLogHasMore.value = false
+      sdkRawLogCursor.value = null
+      logger.info('sdk-raw:load:success', {
         sessionId: shortId(sessionId),
         count: items.length,
-        total: transportLog.value.length,
-        hasMore: transportLogHasMore.value,
-        cursor: transportLogCursor.value,
+        total: sdkRawLog.value.length,
+        hasMore: sdkRawLogHasMore.value,
+        cursor: sdkRawLogCursor.value,
         follow: options.follow,
       })
       return true
     } catch (error) {
-      logger.error('transport:load:error', {
+      logger.error('sdk-raw:load:error', {
         sessionId: shortId(sessionId),
         error: error instanceof Error ? error.message : String(error),
       })
       return false
     } finally {
-      transportLogLoading.value = false
-      transportLogRefreshing.value = false
-    }
-  }
-
-  async function loadRuntimeLogs(sessionId: string, options: { cursor?: number | null; append?: boolean; follow?: boolean } = {}) {
-    if (!sessionId || runtimeLogLoading.value) return false
-
-    runtimeLogLoading.value = true
-    runtimeLogRefreshing.value = !options.append
-    try {
-      const params = new URLSearchParams()
-      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
-      if (!options.follow) params.set('full', '1')
-      if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
-      if (options.follow) params.set('follow', '1')
-      const res = await apiFetch(`/api/sessions/${sessionId}/runtime-logs?${params.toString()}`)
-      if (!res.ok) {
-        logger.warn('runtime:load:error', {
-          sessionId: shortId(sessionId),
-          status: res.status,
-          cursor: options.cursor,
-          follow: options.follow,
-        })
-        return false
-      }
-      const data = await res.json() as RuntimeLogsResponse
-      const items = Array.isArray(data.items) ? data.items : []
-      if (options.append) {
-        runtimeLog.value = [...items, ...runtimeLog.value]
-      } else if (options.follow) {
-        runtimeLog.value = [...runtimeLog.value, ...items]
-      } else {
-        runtimeLog.value = items
-      }
-      runtimeLogHasMore.value = false
-      runtimeLogCursor.value = null
-      logger.info('runtime:load:success', {
-        sessionId: shortId(sessionId),
-        count: items.length,
-        total: runtimeLog.value.length,
-        hasMore: runtimeLogHasMore.value,
-        cursor: runtimeLogCursor.value,
-        follow: options.follow,
-      })
-      return true
-    } catch (error) {
-      logger.error('runtime:load:error', {
-        sessionId: shortId(sessionId),
-        error: error instanceof Error ? error.message : String(error),
-      })
-      return false
-    } finally {
-      runtimeLogLoading.value = false
-      runtimeLogRefreshing.value = false
-    }
-  }
-
-  async function loadChannelLogs(sessionId: string, options: { cursor?: number | null; append?: boolean; follow?: boolean } = {}) {
-    if (!sessionId || channelLogLoading.value) return false
-
-    channelLogLoading.value = true
-    channelLogRefreshing.value = !options.append
-    try {
-      const params = new URLSearchParams()
-      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
-      if (!options.follow) params.set('full', '1')
-      if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
-      if (options.follow) params.set('follow', '1')
-      const res = await apiFetch(`/api/sessions/${sessionId}/channel-logs?${params.toString()}`)
-      if (!res.ok) {
-        logger.warn('channel:load:error', {
-          sessionId: shortId(sessionId),
-          status: res.status,
-          cursor: options.cursor,
-          follow: options.follow,
-        })
-        return false
-      }
-      const data = await res.json() as ChannelLogsResponse
-      const items = Array.isArray(data.items) ? data.items : []
-      if (options.append) {
-        channelLog.value = [...items, ...channelLog.value]
-      } else if (options.follow) {
-        channelLog.value = [...channelLog.value, ...items]
-      } else {
-        channelLog.value = items
-      }
-      channelLogHasMore.value = false
-      channelLogCursor.value = null
-      logger.info('channel:load:success', {
-        sessionId: shortId(sessionId),
-        count: items.length,
-        total: channelLog.value.length,
-        hasMore: channelLogHasMore.value,
-        cursor: channelLogCursor.value,
-        follow: options.follow,
-      })
-      return true
-    } catch (error) {
-      logger.error('channel:load:error', {
-        sessionId: shortId(sessionId),
-        error: error instanceof Error ? error.message : String(error),
-      })
-      return false
-    } finally {
-      channelLogLoading.value = false
-      channelLogRefreshing.value = false
+      sdkRawLogLoading.value = false
+      sdkRawLogRefreshing.value = false
     }
   }
 
@@ -411,41 +267,15 @@ export const useLogViewStore = defineStore('log-view', () => {
     }
   }
 
-  async function reloadTransportLogs() {
-    transportLog.value = []
-    transportLogHasMore.value = false
-    transportLogCursor.value = null
-    stopTransportFollow()
+  async function reloadSdkRawLogs() {
+    sdkRawLog.value = []
+    sdkRawLogHasMore.value = false
+    sdkRawLogCursor.value = null
+    stopSdkRawFollow()
     if (!selectedSessionId.value) return false
-    const loaded = await loadTransportLogs(selectedSessionId.value)
-    if (loaded && transportLogLive.value) {
-      scheduleTransportFollow()
-    }
-    return loaded
-  }
-
-  async function reloadRuntimeLogs() {
-    runtimeLog.value = []
-    runtimeLogHasMore.value = false
-    runtimeLogCursor.value = null
-    stopRuntimeFollow()
-    if (!selectedSessionId.value) return false
-    const loaded = await loadRuntimeLogs(selectedSessionId.value)
-    if (loaded && transportLogLive.value) {
-      scheduleRuntimeFollow()
-    }
-    return loaded
-  }
-
-  async function reloadChannelLogs() {
-    channelLog.value = []
-    channelLogHasMore.value = false
-    channelLogCursor.value = null
-    stopChannelFollow()
-    if (!selectedSessionId.value) return false
-    const loaded = await loadChannelLogs(selectedSessionId.value)
-    if (loaded && transportLogLive.value) {
-      scheduleChannelFollow()
+    const loaded = await loadSdkRawLogs(selectedSessionId.value)
+    if (loaded && logLive.value) {
+      scheduleSdkRawFollow()
     }
     return loaded
   }
@@ -458,28 +288,16 @@ export const useLogViewStore = defineStore('log-view', () => {
     stopPersistentFollow()
     if (!selectedSessionId.value) return false
     const loaded = await loadPersistentLogs(selectedSessionId.value)
-    if (loaded && transportLogLive.value) {
+    if (loaded && logLive.value) {
       schedulePersistentFollow()
     }
     return loaded
   }
 
-  async function refreshTransportLogs() {
+  async function refreshSdkRawLogs() {
     if (!selectedSessionId.value) return false
-    const lastCursor = transportLog.value.length > 0 ? transportLog.value[transportLog.value.length - 1]?.cursor ?? null : null
-    return loadTransportLogs(selectedSessionId.value, { cursor: lastCursor, follow: true })
-  }
-
-  async function refreshRuntimeLogs() {
-    if (!selectedSessionId.value) return false
-    const lastCursor = runtimeLog.value.length > 0 ? runtimeLog.value[runtimeLog.value.length - 1]?.cursor ?? null : null
-    return loadRuntimeLogs(selectedSessionId.value, { cursor: lastCursor, follow: true })
-  }
-
-  async function refreshChannelLogs() {
-    if (!selectedSessionId.value) return false
-    const lastCursor = channelLog.value.length > 0 ? channelLog.value[channelLog.value.length - 1]?.cursor ?? null : null
-    return loadChannelLogs(selectedSessionId.value, { cursor: lastCursor, follow: true })
+    const lastCursor = sdkRawLog.value.length > 0 ? sdkRawLog.value[sdkRawLog.value.length - 1]?.cursor ?? null : null
+    return loadSdkRawLogs(selectedSessionId.value, { cursor: lastCursor, follow: true })
   }
 
   async function refreshPersistentLogs() {
@@ -489,15 +307,7 @@ export const useLogViewStore = defineStore('log-view', () => {
     return loadPersistentLogs(selectedSessionId.value, { cursor: lastCursor, follow: true })
   }
 
-  async function loadOlderTransportLogs() {
-    return false
-  }
-
-  async function loadOlderRuntimeLogs() {
-    return false
-  }
-
-  async function loadOlderChannelLogs() {
+  async function loadOlderSdkRawLogs() {
     return false
   }
 
@@ -506,39 +316,19 @@ export const useLogViewStore = defineStore('log-view', () => {
     return loadPersistentLogs(selectedSessionId.value, { cursor: persistentLogCursor.value, append: true })
   }
 
-  function scheduleTransportFollow() {
-    stopTransportFollow()
-    if (!selectedSessionId.value || !transportLogLive.value) return
-    transportLogFollowing.value = true
-    transportFollowTimer = window.setTimeout(async () => {
-      await refreshTransportLogs()
-      scheduleTransportFollow()
-    }, 1500)
-  }
-
-  function scheduleRuntimeFollow() {
-    stopRuntimeFollow()
-    if (!selectedSessionId.value || !transportLogLive.value) return
-    runtimeLogFollowing.value = true
-    runtimeFollowTimer = window.setTimeout(async () => {
-      await refreshRuntimeLogs()
-      scheduleRuntimeFollow()
-    }, 1500)
-  }
-
-  function scheduleChannelFollow() {
-    stopChannelFollow()
-    if (!selectedSessionId.value || !transportLogLive.value) return
-    channelLogFollowing.value = true
-    channelFollowTimer = window.setTimeout(async () => {
-      await refreshChannelLogs()
-      scheduleChannelFollow()
+  function scheduleSdkRawFollow() {
+    stopSdkRawFollow()
+    if (!selectedSessionId.value || !logLive.value) return
+    sdkRawLogFollowing.value = true
+    sdkRawFollowTimer = window.setTimeout(async () => {
+      await refreshSdkRawLogs()
+      scheduleSdkRawFollow()
     }, 1500)
   }
 
   function schedulePersistentFollow() {
     stopPersistentFollow()
-    if (!selectedSessionId.value || !transportLogLive.value) return
+    if (!selectedSessionId.value || !logLive.value) return
     persistentLogFollowing.value = true
     persistentFollowTimer = window.setTimeout(async () => {
       await refreshPersistentLogs()
@@ -546,31 +336,25 @@ export const useLogViewStore = defineStore('log-view', () => {
     }, 1500)
   }
 
-  async function setTransportLive(enabled: boolean) {
-    transportLogLive.value = enabled
+  async function setLogLive(enabled: boolean) {
+    logLive.value = enabled
     if (!enabled) {
-      stopTransportFollow()
-      stopRuntimeFollow()
-      stopChannelFollow()
+      stopSdkRawFollow()
       stopPersistentFollow()
       return false
     }
     if (!selectedSessionId.value) return false
-    const [transportLoaded, runtimeLoaded, channelLoaded, persistentLoaded] = await Promise.all([
-      refreshTransportLogs(),
-      refreshRuntimeLogs(),
-      refreshChannelLogs(),
+    const [sdkRawLoaded, persistentLoaded] = await Promise.all([
+      refreshSdkRawLogs(),
       refreshPersistentLogs(),
     ])
-    scheduleTransportFollow()
-    scheduleRuntimeFollow()
-    scheduleChannelFollow()
+    scheduleSdkRawFollow()
     schedulePersistentFollow()
-    return transportLoaded || runtimeLoaded || channelLoaded || persistentLoaded
+    return sdkRawLoaded || persistentLoaded
   }
 
-  async function toggleTransportLive() {
-    return setTransportLive(!transportLogLive.value)
+  async function toggleLogLive() {
+    return setLogLive(!logLive.value)
   }
 
   async function selectSession(sessionId: string) {
@@ -585,9 +369,7 @@ export const useLogViewStore = defineStore('log-view', () => {
   watch(selectedSessionId, async (next, prev) => {
     if (next && next !== prev) {
       await Promise.all([
-        reloadTransportLogs(),
-        reloadRuntimeLogs(),
-        reloadChannelLogs(),
+        reloadSdkRawLogs(),
         reloadPersistentLogs(),
       ])
     }
@@ -597,22 +379,12 @@ export const useLogViewStore = defineStore('log-view', () => {
     sessions,
     selectedSessionId,
     selectedLogTab,
-    transportLog,
-    transportLogHasMore,
-    transportLogLoading,
-    transportLogRefreshing,
-    transportLogFollowing,
-    transportLogLive,
-    runtimeLog,
-    runtimeLogHasMore,
-    runtimeLogLoading,
-    runtimeLogRefreshing,
-    runtimeLogFollowing,
-    channelLog,
-    channelLogHasMore,
-    channelLogLoading,
-    channelLogRefreshing,
-    channelLogFollowing,
+    logLive,
+    sdkRawLog,
+    sdkRawLogHasMore,
+    sdkRawLogLoading,
+    sdkRawLogRefreshing,
+    sdkRawLogFollowing,
     persistentLog,
     persistentLogHasMore,
     persistentLogLoading,
@@ -624,24 +396,16 @@ export const useLogViewStore = defineStore('log-view', () => {
     stopSessionListRefresh,
     selectSession,
     selectLogTab,
-    reloadTransportLogs,
-    reloadRuntimeLogs,
-    reloadChannelLogs,
+    reloadSdkRawLogs,
     reloadPersistentLogs,
-    refreshTransportLogs,
-    refreshRuntimeLogs,
-    refreshChannelLogs,
+    refreshSdkRawLogs,
     refreshPersistentLogs,
-    loadOlderTransportLogs,
-    loadOlderRuntimeLogs,
-    loadOlderChannelLogs,
+    loadOlderSdkRawLogs,
     loadOlderPersistentLogs,
     pauseSelectedLogFollow,
-    stopTransportFollow,
-    stopRuntimeFollow,
-    stopChannelFollow,
+    stopSdkRawFollow,
     stopPersistentFollow,
-    setTransportLive,
-    toggleTransportLive,
+    setLogLive,
+    toggleLogLive,
   }
 })

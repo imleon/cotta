@@ -30,6 +30,8 @@ export type RunRecord = {
   conversationKey: string
   userKey?: string
   inboundPlatformMessageId?: string
+  chatType?: 'p2p' | 'group'
+  senderOpenId?: string
   typingReaction?: { sourceMessageId: string; reactionId?: string | null; started?: boolean; cleared?: boolean } | null
   handle: AgentRunHandle | null
   abortController: AbortController
@@ -105,6 +107,8 @@ export class RunCoordinator {
       conversationKey: message.conversationKey,
       ...(message.userKey ? { userKey: message.userKey } : {}),
       ...(message.platformMessageId ? { inboundPlatformMessageId: message.platformMessageId } : {}),
+      ...(message.chatType ? { chatType: message.chatType } : {}),
+      ...(message.senderOpenId ? { senderOpenId: message.senderOpenId } : {}),
       typingReaction: message.platformMessageId ? { sourceMessageId: message.platformMessageId, started: false, cleared: false } : null,
       handle: null,
       abortController,

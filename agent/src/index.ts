@@ -13,6 +13,8 @@ import type {
   SdkControlEnvelope,
   SdkControlRequestEnvelope,
   SdkControlResponseEnvelope,
+  SdkRawLogDirection,
+  SdkRawLogKind,
   SessionStreamEvent,
   SdkTransportEvent,
   StreamEventEnvelope,
@@ -56,6 +58,28 @@ function writeTransportEvent(event: Omit<SdkTransportEvent, 'source'>): void {
     event: {
       source: 'sdk-transport',
       ...event,
+    },
+  })
+}
+
+function writeSdkRawEvent(input: {
+  kind: SdkRawLogKind
+  direction: SdkRawLogDirection
+  message: SDKMessage | SdkControlEnvelope
+  requestId?: string
+  subtype?: string
+  envelope?: RuntimeEnvelopeBase
+}): void {
+  writeRuntimeEvent({
+    type: 'sdk.raw',
+    event: {
+      source: 'sdk-raw',
+      kind: input.kind,
+      direction: input.direction,
+      ...(input.requestId ? { requestId: input.requestId } : {}),
+      ...(input.subtype ? { subtype: input.subtype } : {}),
+      message: input.message,
+      ...(input.envelope ?? nextEnvelope(currentSessionId)),
     },
   })
 }
@@ -408,6 +432,7 @@ function emitInteractiveControlRequest(input: {
     ...maybeTransportPayload(input.payload),
     ...nextEnvelope(currentSessionId),
   })
+  const rawEnvelope = nextEnvelope(currentSessionId)
   writeTransportEvent({
     direction: 'outbound',
     eventName: 'control.request',
@@ -417,7 +442,15 @@ function emitInteractiveControlRequest(input: {
     ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
     payloadSummary: input.payloadSummary,
     ...maybeTransportPayload(envelope),
-    ...nextEnvelope(currentSessionId),
+    ...rawEnvelope,
+  })
+  writeSdkRawEvent({
+    kind: 'control_request',
+    direction: 'sdk_to_host',
+    message: envelope,
+    requestId: input.requestId,
+    subtype: input.subtype,
+    envelope: rawEnvelope,
   })
   emitControlRuntimeEvent('control.message', transaction, {
     direction: 'sdk_to_host',
@@ -449,6 +482,7 @@ function emitInteractiveControlResponse(input: {
     direction: 'host_to_sdk',
     message: envelope,
   })
+  const rawEnvelope = nextEnvelope(currentSessionId)
   writeTransportEvent({
     direction: 'inbound',
     eventName: 'control.response',
@@ -458,7 +492,15 @@ function emitInteractiveControlResponse(input: {
     ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
     payloadSummary: input.payloadSummary,
     ...maybeTransportPayload(envelope),
-    ...nextEnvelope(currentSessionId),
+    ...rawEnvelope,
+  })
+  writeSdkRawEvent({
+    kind: 'control_response',
+    direction: 'host_to_sdk',
+    message: envelope,
+    requestId: input.requestId,
+    subtype: input.subtype,
+    envelope: rawEnvelope,
   })
   emitControlRuntimeEvent('control.responded', respondedTransaction, { payload: input.response })
   emitControlRuntimeEvent(terminalTransaction.status === 'cancelled' ? 'control.cancelled' : 'control.completed', terminalTransaction, {
@@ -497,6 +539,7 @@ function createHostControlRequestEnvelope(requestId: string, request: HostContro
 
 async function executeHostControlRequest(requestId: string, request: HostControlRequestCommand): Promise<void> {
   const { envelope, transaction } = createHostControlRequestEnvelope(requestId, request)
+  const rawEnvelope = nextEnvelope(currentSessionId)
   writeTransportEvent({
     direction: 'inbound',
     eventName: 'control.request',
@@ -505,7 +548,15 @@ async function executeHostControlRequest(requestId: string, request: HostControl
     requestId,
     payloadSummary: request.subtype,
     ...maybeTransportPayload(envelope),
-    ...nextEnvelope(currentSessionId),
+    ...rawEnvelope,
+  })
+  writeSdkRawEvent({
+    kind: 'control_request',
+    direction: 'host_to_sdk',
+    message: envelope,
+    requestId,
+    subtype: request.subtype,
+    envelope: rawEnvelope,
   })
   emitControlRuntimeEvent('control.message', transaction, {
     direction: 'host_to_sdk',
@@ -919,24 +970,33 @@ function handleCommand(command: RunnerCommand) {
       break
     }
     case 'control.cancel': {
+      const cancelEnvelope: SdkControlCancelEnvelope = {
+        type: 'control_cancel_request',
+        request_id: command.requestId,
+      }
       const transaction = createControlTransaction({
         requestId: command.requestId,
         subtype: 'unknown',
         direction: 'host_to_sdk',
         status: 'cancel_requested',
-        cancel: {
-          type: 'control_cancel_request',
-          request_id: command.requestId,
-        },
+        cancel: cancelEnvelope,
       })
+      const rawEnvelope = nextEnvelope(currentSessionId)
       writeTransportEvent({
         direction: 'inbound',
         eventName: 'control.cancel_request',
         sdkType: 'control_cancel_request',
         requestId: command.requestId,
         payloadSummary: 'cancel requested',
-        ...maybeTransportPayload(transaction.cancel),
-        ...nextEnvelope(currentSessionId),
+        ...maybeTransportPayload(cancelEnvelope),
+        ...rawEnvelope,
+      })
+      writeSdkRawEvent({
+        kind: 'control_cancel_request',
+        direction: 'host_to_sdk',
+        message: cancelEnvelope,
+        requestId: command.requestId,
+        envelope: rawEnvelope,
       })
       emitControlRuntimeEvent('control.cancel_requested', transaction, {
         payload: transaction.cancel,
@@ -1142,6 +1202,7 @@ function handleSdkMessage(message: SDKMessage) {
   const previousSessionId = currentSessionId
   currentSessionId = extractSessionId(message) ?? currentSessionId
   sdkMessageCount += 1
+  const rawEnvelope = nextEnvelope(currentSessionId)
 
   if (currentSessionId !== previousSessionId) {
     logAgent('info', 'agent:session:updated', {
@@ -1157,7 +1218,14 @@ function handleSdkMessage(message: SDKMessage) {
     sdkSubtype: 'subtype' in message && typeof message.subtype === 'string' ? message.subtype : undefined,
     payloadSummary: summarizeSdkMessage(message),
     ...maybeTransportPayload(message),
-    ...nextEnvelope(currentSessionId),
+    ...rawEnvelope,
+  })
+  writeSdkRawEvent({
+    kind: 'sdk_message',
+    direction: 'sdk_outbound',
+    message,
+    subtype: 'subtype' in message && typeof message.subtype === 'string' ? message.subtype : undefined,
+    envelope: rawEnvelope,
   })
 
   if (message.type === 'system' && message.subtype === 'session_state_changed') {

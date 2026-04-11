@@ -5,6 +5,7 @@ import type { ChannelConversationRef, ChannelInboundMessage, SessionBinding } fr
 const SESSION_BINDINGS_PATH = './data/session-bindings.json'
 
 type BindingExtras = Partial<Pick<SessionBinding, 'lastRunId' | 'activeInteractionId' | 'lastInboundPlatformMessageId'>>
+type BindingRef = ChannelConversationRef & Pick<Partial<SessionBinding>, 'chatType'>
 
 type StoredBindings = {
   bindings?: SessionBinding[]
@@ -72,7 +73,7 @@ export class SessionBindingStore {
     return deleted
   }
 
-  async bindSession(ref: ChannelConversationRef, sessionId: string, extras: BindingExtras = {}): Promise<SessionBinding> {
+  async bindSession(ref: BindingRef, sessionId: string, extras: BindingExtras = {}): Promise<SessionBinding> {
     await this.ready
     const current = this.bindings.get(keyFor(ref))
     const next: SessionBinding = {
@@ -80,6 +81,7 @@ export class SessionBindingStore {
       ...ref,
       sessionId,
       updatedAt: Date.now(),
+      ...(ref.chatType ? { chatType: ref.chatType } : {}),
       ...(extras.lastRunId ? { lastRunId: extras.lastRunId } : {}),
       ...(extras.activeInteractionId ? { activeInteractionId: extras.activeInteractionId } : {}),
       ...(extras.lastInboundPlatformMessageId ? { lastInboundPlatformMessageId: extras.lastInboundPlatformMessageId } : {}),
@@ -96,6 +98,7 @@ export class SessionBindingStore {
     const next: SessionBinding = {
       ...current,
       ...(message.userKey ? { userKey: message.userKey } : {}),
+      ...(message.chatType ? { chatType: message.chatType } : {}),
       updatedAt: Date.now(),
       ...(extras.lastRunId ? { lastRunId: extras.lastRunId } : {}),
       ...(extras.activeInteractionId ? { activeInteractionId: extras.activeInteractionId } : {}),

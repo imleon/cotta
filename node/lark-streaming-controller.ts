@@ -11,8 +11,7 @@ import {
   type LarkStreamingTextState,
   type LarkTerminalReason,
 } from './lark-streaming-types.js'
-import type { SessionStreamEvent, StreamPreviewState } from '../shared/message-types.js'
-import type { TranscriptAssistantUsage } from '../shared/transcript-normalizer.js'
+import type { DisplayAssistantFooter, SessionStreamEvent, StreamPreviewState } from '../shared/message-types.js'
 import { reduceStreamPreviewEvent, renderStreamPreviewText } from '../shared/transcript-normalizer.js'
 
 const logger = createLogger('lark-streaming-controller')
@@ -40,10 +39,7 @@ type BuildCardParams = {
   thinkingText?: string
   toolCalls?: string[]
   toolResults?: string[]
-  model?: string | null
-  usage?: TranscriptAssistantUsage | null
-  elapsedMs?: number
-  statusLabel?: 'Processing' | 'Completed' | 'Error' | 'Stopped'
+  footer?: DisplayAssistantFooter
   isFinal?: boolean
 }
 
@@ -65,7 +61,7 @@ type StreamingControllerDeps = {
   updateInteractiveCard: (messageId: string, card: unknown) => Promise<UpdateResult>
   finalizeCardKit: (cardId: string, closeSequence: number, updateSequence: number, card: unknown) => Promise<UpdateResult>
   appendLog: (params: ChannelLogParams) => Promise<void>
-  getFooterMetrics: () => { model?: string | null; usage?: TranscriptAssistantUsage | null; elapsedMs: number }
+  getFooterMetrics: () => Promise<DisplayAssistantFooter>
 }
 
 export class LarkStreamingController {
@@ -75,8 +71,6 @@ export class LarkStreamingController {
   private dispatchFullyComplete = false
   private cardCreationPromise: Promise<void> | null = null
   private readonly flush: LarkFlushController
-  private readonly dispatchStartTime = Date.now()
-
   private readonly card: LarkCardState = {
     cardKitCardId: null,
     originalCardKitCardId: null,
@@ -219,15 +213,12 @@ export class LarkStreamingController {
     if (!this.card.cardMessageId) return
 
     const finalText = this.text.completedText || this.text.accumulatedText || LARK_EMPTY_REPLY_FALLBACK_TEXT
-    const footer = this.deps.getFooterMetrics()
+    const footer = await this.deps.getFooterMetrics()
     const finalCard = this.deps.buildCard({
       answerText: finalText,
       thinkingText: this.thinkingText || undefined,
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
-      model: footer.model,
-      usage: footer.usage,
-      elapsedMs: footer.elapsedMs,
-      statusLabel: 'Completed',
+      footer,
       isFinal: true,
     })
 
@@ -250,15 +241,12 @@ export class LarkStreamingController {
     const finalText = this.text.accumulatedText
       ? `${this.text.accumulatedText}\n\n---\nError: ${error}`
       : `Error: ${error}`
-    const footer = this.deps.getFooterMetrics()
+    const footer = await this.deps.getFooterMetrics()
     const finalCard = this.deps.buildCard({
       answerText: finalText,
       thinkingText: this.thinkingText || undefined,
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
-      model: footer.model,
-      usage: footer.usage,
-      elapsedMs: footer.elapsedMs,
-      statusLabel: 'Error',
+      footer,
       isFinal: true,
     })
 
@@ -279,15 +267,12 @@ export class LarkStreamingController {
     if (!this.card.cardMessageId) return
 
     const finalText = this.text.accumulatedText || 'Aborted.'
-    const footer = this.deps.getFooterMetrics()
+    const footer = await this.deps.getFooterMetrics()
     const finalCard = this.deps.buildCard({
       answerText: finalText,
       thinkingText: this.thinkingText || undefined,
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
-      model: footer.model,
-      usage: footer.usage,
-      elapsedMs: footer.elapsedMs,
-      statusLabel: 'Stopped',
+      footer,
       isFinal: true,
     })
 
@@ -321,7 +306,7 @@ export class LarkStreamingController {
 
     this.createEpoch += 1
     const epoch = this.createEpoch
-    const initialCard = this.deps.buildCard({ answerText: '', statusLabel: 'Processing', isFinal: false })
+    const initialCard = this.deps.buildCard({ answerText: '', isFinal: false })
 
     this.cardCreationPromise = (async () => {
       try {
@@ -404,7 +389,7 @@ export class LarkStreamingController {
       return
     }
 
-    const card = this.deps.buildCard({ answerText: displayText, statusLabel: 'Processing', isFinal: false })
+    const card = this.deps.buildCard({ answerText: displayText, isFinal: false })
     const result = await this.deps.updateInteractiveCard(this.card.cardMessageId, card)
     await this.deps.appendLog({
       eventName: result.delivered ? 'message.delivered' : 'message.failed',

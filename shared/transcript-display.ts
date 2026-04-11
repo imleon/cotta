@@ -59,7 +59,7 @@ function getLinkage(message: TranscriptMessage): TranscriptLinkage {
   }
 }
 
-function getAssistantFooter(messages: SessionMessage[], executionDurationMs?: number | null): DisplayAssistantFooter | undefined {
+export function getAssistantFooter(messages: SessionMessage[], executionDurationMs?: number | null): DisplayAssistantFooter | undefined {
   const source = [...messages].reverse().find((message) => {
     const stopReason = getTranscriptStopReason(message)
     const usage = getTranscriptAssistantUsage(message)

@@ -134,6 +134,8 @@ function createControlTransaction(input: {
   }
 }
 
+type ControlEventSuffix = 'opened' | 'awaiting_user' | 'responded' | 'completed' | 'cancel_requested' | 'cancelled' | 'failed'
+
 function emitControlRuntimeEvent(type: Extract<RunnerRuntimeEvent['type'], 'control.message' | 'control.opened' | 'control.awaiting_user' | 'control.responded' | 'control.completed' | 'control.cancel_requested' | 'control.cancelled' | 'control.failed'>, transaction: ControlTransaction, options?: {
   direction?: ControlDirection
   message?: SdkControlEnvelope
@@ -167,6 +169,15 @@ function emitInteractiveRuntimeEvent(type: Extract<RunnerRuntimeEvent['type'], '
     ...(payload !== undefined ? { payload } : {}),
     ...nextEnvelope(currentSessionId),
   })
+}
+
+const INTERACTIVE_SUFFIXES = new Set<ControlEventSuffix>(['opened', 'awaiting_user', 'responded', 'completed', 'cancelled', 'failed'])
+
+function emitControlAndInteractive(suffix: ControlEventSuffix, transaction: ControlTransaction, payload?: unknown): void {
+  emitControlRuntimeEvent(`control.${suffix}`, transaction, { payload })
+  if (INTERACTIVE_SUFFIXES.has(suffix)) {
+    emitInteractiveRuntimeEvent(`interactive.${suffix}` as Extract<RunnerRuntimeEvent['type'], `interactive.${string}`>, transaction, payload)
+  }
 }
 
 function handleControlRespondCommand(requestId: string, response: ControlResponseCommand): void {
@@ -364,10 +375,8 @@ function emitInteractiveControlRequest(input: {
     direction: 'sdk_to_host',
     message: envelope,
   })
-  emitControlRuntimeEvent('control.opened', transaction, { payload: input.payload })
-  emitControlRuntimeEvent('control.awaiting_user', transaction, { payload: input.payload })
-  emitInteractiveRuntimeEvent('interactive.opened', transaction, input.payload)
-  emitInteractiveRuntimeEvent('interactive.awaiting_user', transaction, input.payload)
+  emitControlAndInteractive('opened', transaction, input.payload)
+  emitControlAndInteractive('awaiting_user', transaction, input.payload)
   writeRuntimeEvent({
     type: 'run.state_changed',
     state: 'requires_action',
@@ -399,12 +408,9 @@ function emitInteractiveControlResponse(input: {
     subtype: input.subtype,
     envelope: rawEnvelope,
   })
-  emitControlRuntimeEvent('control.responded', respondedTransaction, { payload: input.response })
-  emitControlRuntimeEvent(terminalTransaction.status === 'cancelled' ? 'control.cancelled' : 'control.completed', terminalTransaction, {
-    payload: input.response,
-  })
-  emitInteractiveRuntimeEvent('interactive.responded', respondedTransaction, input.response)
-  emitInteractiveRuntimeEvent(terminalTransaction.status === 'cancelled' ? 'interactive.cancelled' : 'interactive.completed', terminalTransaction, input.response)
+  emitControlAndInteractive('responded', respondedTransaction, input.response)
+  const terminalSuffix: ControlEventSuffix = terminalTransaction.status === 'cancelled' ? 'cancelled' : 'completed'
+  emitControlAndInteractive(terminalSuffix, terminalTransaction, input.response)
   writeRuntimeEvent({
     type: 'run.state_changed',
     state: terminalTransaction.status === 'cancelled' ? 'cancelled' : 'running',
@@ -463,38 +469,21 @@ async function executeHostControlRequest(requestId: string, request: HostControl
         await activeQuery?.mcpServerStatus?.()
         break
     }
-    emitControlRuntimeEvent('control.completed', {
-      ...transaction,
-      direction: 'sdk_to_host',
-      status: 'completed',
-      updatedAt: Date.now(),
-    }, { payload: request })
-    emitInteractiveRuntimeEvent('interactive.completed', {
+    emitControlAndInteractive('completed', {
       ...transaction,
       direction: 'sdk_to_host',
       status: 'completed',
       updatedAt: Date.now(),
     }, request)
   } catch (error) {
-    emitControlRuntimeEvent('control.failed', {
+    const failedTransaction = {
       ...transaction,
-      direction: 'sdk_to_host',
-      status: 'failed',
+      direction: 'sdk_to_host' as const,
+      status: 'failed' as const,
       updatedAt: Date.now(),
       error: error instanceof Error ? error.message : String(error),
-    }, {
-      payload: {
-        request,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    })
-    emitInteractiveRuntimeEvent('interactive.failed', {
-      ...transaction,
-      direction: 'sdk_to_host',
-      status: 'failed',
-      updatedAt: Date.now(),
-      error: error instanceof Error ? error.message : String(error),
-    }, {
+    }
+    emitControlAndInteractive('failed', failedTransaction, {
       request,
       error: error instanceof Error ? error.message : String(error),
     })

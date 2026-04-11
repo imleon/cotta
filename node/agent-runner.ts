@@ -6,6 +6,7 @@ import { createOutputParser, type AgentEvent } from './agent-output-parser.js'
 import type {
   ControlTransactionSummary,
   RunnerRuntimeEvent,
+  RuntimeEnvelopeBase,
   SessionEvent,
   PermissionSuggestion,
 } from '../shared/message-types.js'
@@ -65,27 +66,39 @@ function writeCommand(child: ChildProcess, message: unknown) {
   child.stdin.write(`${JSON.stringify(message)}\n`)
 }
 
+const RUNNER_RUNTIME_EVENT_TYPES = new Set([
+  'run.started', 'run.state_changed', 'run.completed', 'run.failed', 'run.cancelled',
+  'sdk.message', 'sdk.stream_event', 'sdk.raw',
+  'control.message', 'control.opened', 'control.awaiting_user', 'control.responded',
+  'control.completed', 'control.cancel_requested', 'control.cancelled', 'control.failed',
+  'interactive.opened', 'interactive.awaiting_user', 'interactive.responded',
+  'interactive.completed', 'interactive.cancelled', 'interactive.failed',
+])
+
 function isRunnerRuntimeEvent(value: unknown): value is RunnerRuntimeEvent {
   if (!value || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
-  return typeof record.type === 'string' && (
-    record.type === 'run.started' ||
-    record.type === 'run.state_changed' ||
-    record.type === 'run.completed' ||
-    record.type === 'run.failed' ||
-    record.type === 'run.cancelled' ||
-    record.type === 'sdk.message' ||
-    record.type === 'sdk.stream_event' ||
-    record.type === 'control.message' ||
-    record.type === 'control.opened' ||
-    record.type === 'control.awaiting_user' ||
-    record.type === 'control.responded' ||
-    record.type === 'control.completed' ||
-    record.type === 'control.cancel_requested' ||
-    record.type === 'control.cancelled' ||
-    record.type === 'control.failed' ||
-    record.type === 'sdk.raw'
-  )
+  return typeof record.type === 'string' && RUNNER_RUNTIME_EVENT_TYPES.has(record.type)
+}
+
+const CONTROL_EVENT_TYPE_MAP: Record<string, ServerEvent['type']> = {
+  'control.opened': 'session.control.opened',
+  'control.awaiting_user': 'session.control.awaiting_user',
+  'control.responded': 'session.control.responded',
+  'control.completed': 'session.control.completed',
+  'control.cancel_requested': 'session.control.cancel_requested',
+  'control.cancelled': 'session.control.cancelled',
+  'control.failed': 'session.control.failed',
+  'interactive.opened': 'session.interactive.opened',
+  'interactive.awaiting_user': 'session.interactive.awaiting_user',
+  'interactive.responded': 'session.interactive.responded',
+  'interactive.completed': 'session.interactive.completed',
+  'interactive.cancelled': 'session.interactive.cancelled',
+  'interactive.failed': 'session.interactive.failed',
+}
+
+function optionalSessionId(sessionId?: string): { sessionId: string } | Record<string, never> {
+  return sessionId ? { sessionId } : {}
 }
 
 function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | null {
@@ -95,7 +108,7 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
         type: 'session.run.state_changed',
         runId,
         state: event.state,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        ...optionalSessionId(event.sessionId),
       }
     case 'sdk.message': {
       const payloadType = typeof event.payload === 'object' && event.payload && 'type' in event.payload
@@ -117,7 +130,7 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
         ...(parsed ? { parsed } : {}),
         receivedAt: event.receivedAt,
         sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        ...optionalSessionId(event.sessionId),
       }
     }
     case 'sdk.stream_event':
@@ -127,7 +140,7 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
         event: event.event,
         receivedAt: event.receivedAt,
         sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        ...optionalSessionId(event.sessionId),
       }
     case 'control.message':
       return {
@@ -138,140 +151,22 @@ function toServerEvent(runId: string, event: RunnerRuntimeEvent): ServerEvent | 
         transaction: event.transaction,
         receivedAt: event.receivedAt,
         sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        ...optionalSessionId(event.sessionId),
       }
-    case 'control.opened':
+    default: {
+      const mappedType = CONTROL_EVENT_TYPE_MAP[event.type]
+      if (!mappedType) return null
+      const envelope = event as { transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase
       return {
-        type: 'session.control.opened',
+        type: mappedType,
         runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'interactive.opened':
-      return {
-        type: 'session.interactive.opened',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'control.awaiting_user':
-      return {
-        type: 'session.control.awaiting_user',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'interactive.awaiting_user':
-      return {
-        type: 'session.interactive.awaiting_user',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'control.responded':
-      return {
-        type: 'session.control.responded',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'interactive.responded':
-      return {
-        type: 'session.interactive.responded',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'control.completed':
-      return {
-        type: 'session.control.completed',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'interactive.completed':
-      return {
-        type: 'session.interactive.completed',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'control.cancel_requested':
-      return {
-        type: 'session.control.cancel_requested',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'control.cancelled':
-      return {
-        type: 'session.control.cancelled',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'interactive.cancelled':
-      return {
-        type: 'session.interactive.cancelled',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'control.failed':
-      return {
-        type: 'session.control.failed',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    case 'interactive.failed':
-      return {
-        type: 'session.interactive.failed',
-        runId,
-        transaction: event.transaction,
-        ...(event.payload !== undefined ? { payload: event.payload } : {}),
-        receivedAt: event.receivedAt,
-        sequence: event.sequence,
-        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      }
-    default:
-      return null
+        transaction: envelope.transaction,
+        ...(envelope.payload !== undefined ? { payload: envelope.payload } : {}),
+        receivedAt: envelope.receivedAt,
+        sequence: envelope.sequence,
+        ...optionalSessionId(envelope.sessionId),
+      } as ServerEvent
+    }
   }
 }
 

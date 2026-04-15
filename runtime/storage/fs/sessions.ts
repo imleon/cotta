@@ -63,7 +63,10 @@ function getBeforeOffset(messages: SessionMessage[], before: string | null): num
   return index >= 0 ? index : messages.length
 }
 
-async function readAllMessages(sessionId: string, projectDirs: string[] = [ENV.workspacePath]): Promise<SessionMessage[]> {
+export async function readAllSessionMessages(
+  sessionId: string,
+  projectDirs: string[] = [ENV.workspacePath],
+): Promise<SessionMessage[]> {
   const sdk = await import('@anthropic-ai/claude-agent-sdk')
   if (typeof sdk.getSessionMessages !== 'function') {
     console.warn('[Sessions] getSessionMessages not available in SDK, returning empty')
@@ -93,7 +96,7 @@ export async function getMessagesPage(
   try {
     const limit = normalizeLimit(options.limit ?? 50)
     const before = normalizeBefore(options.before)
-    const allMessages = (await readAllMessages(sessionId, options.projectDirs)).map((message) => normalizeStoredTranscriptMessage(message))
+    const allMessages = (await readAllSessionMessages(sessionId, options.projectDirs)).map((message) => normalizeStoredTranscriptMessage(message))
     const endExclusive = getBeforeOffset(allMessages, before)
     const start = Math.max(0, endExclusive - limit)
     const messages = allMessages.slice(start, endExclusive)

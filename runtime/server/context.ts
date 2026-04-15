@@ -1,4 +1,4 @@
-import { getSession, listAllSessions, getMessagesPage, listSessionsByProjectDirs } from '../storage/fs/sessions.js'
+import { getSession, listAllSessions, getMessagesPage, listSessionsByProjectDir, listSessionsByProjectDirs } from '../storage/fs/sessions.js'
 import { readSessionPersistentLogs, readSessionSdkRawLogs } from '../storage/fs/transport-logs.js'
 import { DEFAULT_AGENT_ID, configRegistry, orchestrator, runRegistry, sessionRegistry } from '../app/index.js'
 import { LarkIntegrationService } from '../integrations/lark/service.js'
@@ -29,6 +29,7 @@ export function createServerContext() {
     larkIntegration,
     getSession,
     listAllSessions,
+    listSessionsByProjectDir,
     getMessagesPage,
     listSessionsByProjectDirs,
     readSessionPersistentLogs,

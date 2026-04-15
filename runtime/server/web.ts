@@ -11,6 +11,8 @@ import { registerRunRoutes } from './http/routes/runs.js'
 import { registerSessionRoutes } from './http/routes/sessions.js'
 import { registerInteractiveRoutes } from './http/routes/interactive.js'
 import { registerLogRoutes } from './http/routes/logs.js'
+import { registerSettingsRoutes } from './http/routes/settings.js'
+import { registerStatusRoutes } from './http/routes/status.js'
 
 export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
   const context = createServerContext()
@@ -47,6 +49,17 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
     logger: context.logger,
     readSessionSdkRawLogs: context.readSessionSdkRawLogs,
     readSessionPersistentLogs: context.readSessionPersistentLogs,
+  })
+  registerSettingsRoutes(app, { logger: context.logger })
+  registerStatusRoutes(app, {
+    logger: context.logger,
+    config: context.config,
+    configRegistry: context.configRegistry,
+    sessionRegistry: context.sessionRegistry,
+    runRegistry: context.runRegistry,
+    listAllSessions: context.listAllSessions,
+    listSessionsByProjectDir: context.listSessionsByProjectDir,
+    listSessionsByProjectDirs: context.listSessionsByProjectDirs,
   })
 
   app.use('/ws', createWsAuthMiddleware({ config: context.config, logger: context.logger }))

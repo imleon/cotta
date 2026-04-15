@@ -2,12 +2,14 @@ import { mkdir, appendFile, readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type {
+  SessionMessage,
   SessionPersistentLogEntry,
   SessionPersistentLogPage,
   SessionSdkRawLogEntry,
   SessionSdkRawLogPage,
   SdkRawLogEvent,
 } from '../../protocol/message-types.js'
+import { readAllSessionMessages } from './sessions.js'
 
 const LOG_DIR = './data/logs'
 const DEFAULT_LOG_PAGE_SIZE = 100
@@ -184,6 +186,23 @@ function parseSdkRawLogLine(line: string, cursor: number): SessionSdkRawLogEntry
   }
 }
 
+function getSessionMessageUuid(message: SessionMessage): string | null {
+  const raw = message.raw
+  if (!raw || typeof raw !== 'object') return null
+  return typeof (raw as Record<string, unknown>).uuid === 'string'
+    ? (raw as Record<string, unknown>).uuid as string
+    : null
+}
+
+function buildSdkMessageUuidSet(messages: SessionMessage[]): Set<string> {
+  const uuids = new Set<string>()
+  for (const message of messages) {
+    const uuid = getSessionMessageUuid(message)
+    if (uuid) uuids.add(uuid)
+  }
+  return uuids
+}
+
 function extractPersistentLogTimestamp(line: string): number | null {
   try {
     const parsed = JSON.parse(line)
@@ -208,11 +227,34 @@ function extractPersistentLogTimestamp(line: string): number | null {
   }
 }
 
-function readPersistentLogLine(line: string, cursor: number): SessionPersistentLogEntry {
+function extractPersistentLogUuid(line: string): string | null {
+  try {
+    const parsed = JSON.parse(line)
+    if (!parsed || typeof parsed !== 'object') return null
+    return typeof (parsed as Record<string, unknown>).uuid === 'string'
+      ? (parsed as Record<string, unknown>).uuid as string
+      : null
+  } catch {
+    return null
+  }
+}
+
+function buildPersistentLogTags(line: string, sdkMessageUuids: Set<string>): string[] | undefined {
+  const uuid = extractPersistentLogUuid(line)
+  if (!uuid || !sdkMessageUuids.has(uuid)) return undefined
+  return [`SDK UUID ${uuid.slice(0, 8)}`]
+}
+
+function readPersistentLogLine(
+  line: string,
+  cursor: number,
+  sdkMessageUuids: Set<string>,
+): SessionPersistentLogEntry {
   return {
     cursor,
     loggedAt: extractPersistentLogTimestamp(line),
     line,
+    tags: buildPersistentLogTags(line, sdkMessageUuids),
   }
 }
 
@@ -234,7 +276,9 @@ export async function readSessionPersistentLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  return paginateLogLines(content, cursor, safeLimit, follow, readPersistentLogLine)
+  const sdkMessages = await readAllSessionMessages(safeSessionId)
+  const sdkMessageUuids = buildSdkMessageUuidSet(sdkMessages)
+  return paginateLogLines(content, cursor, safeLimit, follow, (line, lineCursor) => readPersistentLogLine(line, lineCursor, sdkMessageUuids))
 }
 
 export async function readSessionSdkRawLogs(

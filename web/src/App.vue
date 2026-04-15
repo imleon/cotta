@@ -4,12 +4,14 @@ import SessionList from './components/SessionList.vue'
 import MessageList from './components/MessageList.vue'
 import InputBar from './components/InputBar.vue'
 import TransportLogView from './components/TransportLogView.vue'
+import SettingsView from './components/SettingsView.vue'
+import StatusView from './components/StatusView.vue'
 import logoUrl from './lib/logo.png'
 import { useSessionStore } from './stores/session'
 
 const session = useSessionStore()
 const tokenInput = ref(session.authToken)
-const activeView = ref<'session' | 'log'>('session')
+const activeView = ref<'session' | 'log' | 'settings' | 'status'>('session')
 const sessionDrawerOpen = ref(false)
 
 function submitToken() {
@@ -23,6 +25,11 @@ function clearToken() {
 
 function closeSessionDrawer() {
   sessionDrawerOpen.value = false
+}
+
+function openSessionFromStatus(sessionId: string) {
+  activeView.value = 'session'
+  session.selectSession(sessionId)
 }
 
 onMounted(() => {
@@ -99,6 +106,20 @@ onMounted(() => {
                 >
                   Log
                 </button>
+                <button
+                  class="rounded-xl px-4 py-2 text-sm font-medium transition-colors"
+                  :class="activeView === 'settings' ? 'bg-[var(--tt-card)] text-[var(--tt-accent)] shadow-sm ring-1 ring-[var(--tt-border)]' : 'text-[var(--tt-text-subtle)] hover:text-[var(--tt-accent)]'"
+                  @click="activeView = 'settings'"
+                >
+                  Settings
+                </button>
+                <button
+                  class="rounded-xl px-4 py-2 text-sm font-medium transition-colors"
+                  :class="activeView === 'status' ? 'bg-[var(--tt-card)] text-[var(--tt-accent)] shadow-sm ring-1 ring-[var(--tt-border)]' : 'text-[var(--tt-text-subtle)] hover:text-[var(--tt-accent)]'"
+                  @click="activeView = 'status'"
+                >
+                  Status
+                </button>
               </div>
             </div>
 
@@ -141,6 +162,14 @@ onMounted(() => {
 
           <div v-else-if="activeView === 'log'" class="h-full">
             <TransportLogView class="h-full" />
+          </div>
+
+          <div v-else-if="activeView === 'settings'" class="h-full">
+            <SettingsView class="h-full" />
+          </div>
+
+          <div v-else-if="activeView === 'status'" class="h-full">
+            <StatusView class="h-full" @open-session="openSessionFromStatus" />
           </div>
 
         </main>

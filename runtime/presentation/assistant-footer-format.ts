@@ -44,14 +44,21 @@ export function formatPair(left?: number | null, right?: number | null, prefix: 
   return `${prefix}${l}/${r}`
 }
 
-export function buildAssistantFooterText(footer?: DisplayAssistantFooter | null): string {
+export function buildAssistantFooterText(
+  footer?: DisplayAssistantFooter | null,
+  options?: { includeTimestamp?: boolean },
+): string {
   const usage: TranscriptAssistantUsage | null | undefined = footer?.usage
-  return [
-    formatTimestamp(footer?.completedAt),
+  const includeTimestamp = options?.includeTimestamp ?? true
+  const segments = [
     footer?.stopReason ?? '-',
     formatDelta(footer?.deltaMs),
     `↑↓ ${formatPair(usage?.inputTokens, usage?.outputTokens)}`,
     `RW ${formatPair(usage?.cacheReadTokens, usage?.cacheWriteTokens)}`,
     getCompactModel(footer?.model),
-  ].join(' · ')
+  ]
+  if (includeTimestamp) {
+    segments.unshift(formatTimestamp(footer?.completedAt))
+  }
+  return segments.join(' · ')
 }

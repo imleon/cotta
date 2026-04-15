@@ -20,6 +20,16 @@ interface PersistentLogsResponse {
   nextCursor?: number | null
 }
 
+interface AgentDescriptor {
+  agentId: string
+  projectDir?: string
+}
+
+interface AgentsResponse {
+  defaultAgentId?: string
+  agents?: AgentDescriptor[]
+}
+
 type LogTab = 'messages' | 'control' | 'persistent'
 
 const logger = createDebugLogger('log-view-store')
@@ -29,6 +39,22 @@ const FULL_LOG_PAGE_SIZE = 200
 
 function shortId(value?: string | null): string | undefined {
   return value ? value.slice(0, 8) : undefined
+}
+
+function resolveSelectedAgentId(input: {
+  agents: AgentDescriptor[]
+  preferredAgentId?: string | null
+  defaultAgentId?: string | null
+}): string {
+  const preferredAgentId = input.preferredAgentId?.trim() || ''
+  if (preferredAgentId && input.agents.some((agent) => agent.agentId === preferredAgentId)) {
+    return preferredAgentId
+  }
+  const defaultAgentId = input.defaultAgentId?.trim() || ''
+  if (defaultAgentId && input.agents.some((agent) => agent.agentId === defaultAgentId)) {
+    return defaultAgentId
+  }
+  return input.agents[0]?.agentId ?? ''
 }
 
 function sortPersistentLogEntries(entries: SessionPersistentLogEntry[]): SessionPersistentLogEntry[] {
@@ -59,6 +85,8 @@ function mergePersistentLogEntries(
 
 export const useLogViewStore = defineStore('log-view', () => {
   const sessionStore = useSessionStore()
+  const agents = ref<AgentDescriptor[]>([])
+  const selectedAgentId = ref('')
   const selectedSessionId = ref<string | null>(null)
   const selectedLogTab = ref<LogTab>('messages')
   const logLive = ref(true)
@@ -83,6 +111,34 @@ export const useLogViewStore = defineStore('log-view', () => {
   let sessionListRefreshTimer: number | null = null
 
   const sessions = computed<SessionSummary[]>(() => sessionStore.sessions)
+  const filteredSessions = computed<SessionSummary[]>(() => {
+    if (!selectedAgentId.value) return []
+    return sessions.value.filter((session) => session.agentId === selectedAgentId.value)
+  })
+
+  function resetLoadedLogs() {
+    sdkRawLog.value = []
+    sdkRawLogHasMore.value = false
+    sdkRawLogCursor.value = null
+    persistentLog.value = []
+    persistentLogHasMore.value = false
+    persistentLogCursor.value = null
+    persistentFollowCursor.value = null
+  }
+
+  function syncSelectedSessionToFilter() {
+    if (filteredSessions.value.length === 0) {
+      selectedSessionId.value = null
+      resetLoadedLogs()
+      stopSdkRawFollow()
+      stopPersistentFollow()
+      return
+    }
+    if (selectedSessionId.value && filteredSessions.value.some((session) => session.id === selectedSessionId.value)) {
+      return
+    }
+    selectedSessionId.value = filteredSessions.value[0]!.id
+  }
 
   function stopSdkRawFollow() {
     if (sdkRawFollowTimer !== null) {
@@ -127,21 +183,52 @@ export const useLogViewStore = defineStore('log-view', () => {
   }
 
   async function ensureSessionsLoaded() {
+    await fetchAgents()
     if (sessions.value.length === 0) {
       await sessionStore.fetchSessions()
     }
-    if (!selectedSessionId.value && sessions.value.length > 0) {
-      selectedSessionId.value = sessions.value[0]!.id
-    }
+    syncSelectedSessionToFilter()
   }
 
   async function refreshSessionList() {
-    const loaded = await sessionStore.fetchSessions()
+    const [agentsLoaded, sessionsLoaded] = await Promise.all([
+      fetchAgents(),
+      sessionStore.fetchSessions(),
+    ])
+    const loaded = agentsLoaded || sessionsLoaded
     if (!loaded) return false
-    if (!selectedSessionId.value && sessions.value.length > 0) {
-      selectedSessionId.value = sessions.value[0]!.id
-    }
+    syncSelectedSessionToFilter()
     return true
+  }
+
+  async function fetchAgents() {
+    try {
+      const res = await apiFetch('/api/agents')
+      if (!res.ok) return false
+      const data = await res.json() as AgentsResponse
+      const nextAgents = Array.isArray(data.agents)
+        ? data.agents
+          .map((agent) => ({
+            agentId: typeof agent?.agentId === 'string' ? agent.agentId.trim() : '',
+            ...(typeof agent?.projectDir === 'string' && agent.projectDir.trim()
+              ? { projectDir: agent.projectDir.trim() }
+              : {}),
+          }))
+          .filter((agent) => agent.agentId)
+        : []
+      agents.value = nextAgents
+      selectedAgentId.value = resolveSelectedAgentId({
+        agents: nextAgents,
+        preferredAgentId: selectedAgentId.value,
+        defaultAgentId: typeof data.defaultAgentId === 'string' ? data.defaultAgentId : '',
+      })
+      return true
+    } catch (error) {
+      logger.warn('agents:load:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
   }
 
   function scheduleSessionListRefresh() {
@@ -362,11 +449,28 @@ export const useLogViewStore = defineStore('log-view', () => {
     selectedSessionId.value = sessionId
   }
 
+  function selectAgent(agentId: string) {
+    const nextAgentId = agentId.trim()
+    if (!nextAgentId) return
+    if (selectedAgentId.value === nextAgentId) return
+    selectedAgentId.value = nextAgentId
+  }
+
   function selectLogTab(tab: LogTab) {
     selectedLogTab.value = tab
   }
 
+  watch([selectedAgentId, sessions], () => {
+    syncSelectedSessionToFilter()
+  })
+
   watch(selectedSessionId, async (next, prev) => {
+    if (!next) {
+      resetLoadedLogs()
+      stopSdkRawFollow()
+      stopPersistentFollow()
+      return
+    }
     if (next && next !== prev) {
       await Promise.all([
         reloadSdkRawLogs(),
@@ -376,7 +480,10 @@ export const useLogViewStore = defineStore('log-view', () => {
   })
 
   return {
+    agents,
     sessions,
+    filteredSessions,
+    selectedAgentId,
     selectedSessionId,
     selectedLogTab,
     logLive,
@@ -391,9 +498,11 @@ export const useLogViewStore = defineStore('log-view', () => {
     persistentLogRefreshing,
     persistentLogFollowing,
     ensureSessionsLoaded,
+    fetchAgents,
     refreshSessionList,
     startSessionListRefresh,
     stopSessionListRefresh,
+    selectAgent,
     selectSession,
     selectLogTab,
     reloadSdkRawLogs,

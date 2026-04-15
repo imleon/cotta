@@ -661,6 +661,7 @@ export interface SessionPersistentLogEntry {
   cursor: number
   loggedAt: number | null
   line: string
+  tags?: string[]
 }
 
 export interface SessionPersistentLogPage {

@@ -17,7 +17,7 @@ const activeItems = computed(() => {
   return persistentItems.value
 })
 const sortedSessions = computed(() => (
-  [...logView.sessions].sort((left, right) => {
+  [...logView.filteredSessions].sort((left, right) => {
     const leftTime = typeof left.updatedAt === 'number' && Number.isFinite(left.updatedAt) ? left.updatedAt : 0
     const rightTime = typeof right.updatedAt === 'number' && Number.isFinite(right.updatedAt) ? right.updatedAt : 0
     return rightTime - leftTime
@@ -78,6 +78,11 @@ function formatSessionActivity(timestamp?: number): string {
     minute: '2-digit',
     hour12: false,
   }).format(date).replace(/\//g, '/')
+}
+
+function formatAgentLabel(agent: { agentId: string; projectDir?: string }): string {
+  if (agent.projectDir) return `${agent.agentId}  ${agent.projectDir}`
+  return agent.agentId
 }
 
 function getRawDirectionLabel(direction: string): string {
@@ -215,9 +220,100 @@ function getPersistentType(line: string): string {
   return typeof record?.type === 'string' ? record.type : '-'
 }
 
+function isPersistentPrimaryUser(line: string): boolean {
+  const record = getPersistentRecord(line)
+  if (record?.type !== 'user') return false
+  if (record.isReplay === true) return false
+  if (record.isSynthetic === true) return false
+  if (record.parent_tool_use_id != null || record.parentToolUseId != null) return false
+  if (record.tool_use_result != null || record.toolUseResult != null) return false
+  return true
+}
+
+function hasPersistentStopReason(line: string): boolean {
+  const record = getPersistentRecord(line)
+  const message = record?.message && typeof record.message === 'object'
+    ? record.message as Record<string, unknown>
+    : null
+  const stopReason = message && 'stop_reason' in message ? (message as Record<string, unknown>).stop_reason : null
+  return (typeof stopReason === 'string' && stopReason.trim().length > 0)
+    || (stopReason !== null && stopReason !== undefined && stopReason !== '')
+}
+
+function getPersistentRowClass(line: string): string {
+  if (hasPersistentStopReason(line)) {
+    return 'bg-[color:color-mix(in_srgb,var(--tt-warning)_12%,white)] hover:bg-[color:color-mix(in_srgb,var(--tt-warning)_18%,white)]'
+  }
+  if (isPersistentPrimaryUser(line)) {
+    return 'bg-[color:color-mix(in_srgb,var(--tt-accent)_8%,white)] hover:bg-[color:color-mix(in_srgb,var(--tt-accent)_14%,white)]'
+  }
+  return 'hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]'
+}
+
+function getPersistentKind(line: string): string {
+  const record = getPersistentRecord(line)
+  const message = record?.message && typeof record.message === 'object'
+    ? record.message as Record<string, unknown>
+    : null
+  const content = Array.isArray(message?.content) ? message.content : null
+  const firstContent = content?.[0] && typeof content[0] === 'object'
+    ? content[0] as Record<string, unknown>
+    : null
+  if (typeof firstContent?.type === 'string' && firstContent.type.trim()) return firstContent.type
+  const attachment = record?.attachment && typeof record.attachment === 'object'
+    ? record.attachment as Record<string, unknown>
+    : null
+  if (typeof attachment?.type === 'string' && attachment.type.trim()) return attachment.type
+  if (typeof record?.subtype === 'string' && record.subtype.trim()) return record.subtype
+  if (typeof message?.role === 'string' && message.role.trim()) return message.role
+  if (typeof record?.operation === 'string' && record.operation.trim()) return record.operation
+  return '-'
+}
+
+function getPersistentContent(line: string): string {
+  const record = getPersistentRecord(line)
+  const message = record?.message && typeof record.message === 'object'
+    ? record.message as Record<string, unknown>
+    : null
+  const content = Array.isArray(message?.content) ? message.content : null
+  const firstContent = content?.[0] && typeof content[0] === 'object'
+    ? content[0] as Record<string, unknown>
+    : null
+
+  if (typeof firstContent?.text === 'string' && firstContent.text.trim()) return firstContent.text
+  if (typeof firstContent?.content === 'string' && firstContent.content.trim()) return firstContent.content
+  if (typeof firstContent?.thinking === 'string' && firstContent.thinking.trim()) return firstContent.thinking
+
+  const attachment = record?.attachment && typeof record.attachment === 'object'
+    ? record.attachment as Record<string, unknown>
+    : null
+  const attachmentContent = attachment?.content && typeof attachment.content === 'object'
+    ? attachment.content as Record<string, unknown>
+    : null
+  if (typeof attachmentContent?.content === 'string' && attachmentContent.content.trim()) return attachmentContent.content
+
+  const toolName = typeof firstContent?.name === 'string' ? firstContent.name.trim() : ''
+  const input = firstContent?.input && typeof firstContent.input === 'object'
+    ? firstContent.input as Record<string, unknown>
+    : null
+  const command = typeof input?.command === 'string' ? input.command.trim() : ''
+  if (toolName && command) return `${toolName}(${command})`
+  if (toolName && input != null) {
+    const rendered = stringifyStructuredValue(input)
+    if (rendered.trim()) return `${toolName}(${rendered})`
+    return toolName
+  }
+
+  return '-'
+}
+
 function formatPersistentJson(line: string): string {
   const record = getPersistentRecord(line)
   return record ? JSON.stringify(record, null, 2) : line
+}
+
+function getPersistentTagClass(): string {
+  return 'border-[color:color-mix(in_srgb,var(--tt-accent)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-accent)_10%,white)] text-[var(--tt-accent)]'
 }
 
 const liveButtonClass = computed(() => (
@@ -323,11 +419,22 @@ onBeforeUnmount(() => {
       <div class="flex items-center justify-between gap-2 pb-1">
         <div class="flex min-w-0 items-center gap-2">
           <select
+            :value="logView.selectedAgentId"
+            :disabled="logView.agents.length === 0"
+            class="min-w-[18rem] max-w-[24rem] rounded border border-[var(--tt-border-strong)] bg-white/90 px-2 py-1 font-mono text-[11px] text-[var(--tt-text-muted)]"
+            @change="logView.selectAgent(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="" disabled>{{ logView.agents.length > 0 ? '选择 Agent' : '无可用 Agent' }}</option>
+            <option v-for="agent in logView.agents" :key="agent.agentId" :value="agent.agentId">
+              {{ formatAgentLabel(agent) }}
+            </option>
+          </select>
+          <select
             :value="logView.selectedSessionId || ''"
             class="min-w-[22rem] max-w-[28rem] rounded border border-[var(--tt-border-strong)] bg-white/90 px-2 py-1 font-mono text-[11px] text-[var(--tt-text-muted)]"
             @change="logView.selectSession(($event.target as HTMLSelectElement).value)"
           >
-            <option value="" disabled>选择 session</option>
+            <option value="" disabled>{{ sortedSessions.length > 0 ? '选择 session' : '当前 Agent 下无 session' }}</option>
             <option v-for="item in sortedSessions" :key="item.id" :value="item.id">
               {{ formatSessionActivity(item.updatedAt) }}  {{ item.id }}  {{ item.title }}
             </option>
@@ -356,6 +463,9 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div class="truncate text-[11px] text-[var(--tt-text-subtle)]">
+            <span class="text-[var(--tt-text-subtle)]">agent:</span>
+            <span class="ml-1 text-[var(--tt-accent)]">{{ logView.selectedAgentId || 'none' }}</span>
+            <span class="mx-2 text-[var(--tt-text-subtle)]">|</span>
             <span class="text-[var(--tt-text-subtle)]">session:</span>
             <span class="ml-1 text-[var(--tt-accent)]">{{ logView.selectedSessionId || 'none' }}</span>
           </div>
@@ -368,6 +478,13 @@ onBeforeUnmount(() => {
         >
           {{ liveButtonLabel }}
         </button>
+      </div>
+
+      <div
+        v-if="logView.selectedLogTab === 'persistent'"
+        class="pb-1 text-[10px] leading-5 text-[var(--tt-text-subtle)]"
+      >
+        备注：当前视图已过滤 <span class="font-mono">type === 'last-prompt'</span> 与 <span class="font-mono">type === 'permission-mode'</span>。
       </div>
 
       <div class="min-h-0 flex-1 overflow-hidden rounded border border-[var(--tt-border)] bg-[var(--tt-card)] font-mono">
@@ -462,18 +579,35 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else ref="scrollContainer" class="h-full overflow-auto" @scroll="handleScroll">
-            <div class="sticky top-0 z-10 grid grid-cols-[28ch_20ch_minmax(36ch,1fr)] gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]">
+            <div class="sticky top-0 z-10 grid grid-cols-[28ch_18ch_22ch_minmax(28ch,40ch)_minmax(36ch,1fr)] gap-3 border-b border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_74%,white)] px-3 py-2 text-[10px] uppercase tracking-wide text-[var(--tt-text-subtle)]">
               <div>Time</div>
               <div>Type</div>
+              <div>Kind</div>
+              <div>Content</div>
               <div>JSON</div>
             </div>
             <div
               v-for="item in persistentItems"
               :key="`persistent-${item.cursor}`"
-              class="grid grid-cols-[28ch_20ch_minmax(36ch,1fr)] gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0 hover:bg-[color:color-mix(in_srgb,var(--tt-surface)_44%,white)]"
+              class="grid grid-cols-[28ch_18ch_22ch_minmax(28ch,40ch)_minmax(36ch,1fr)] gap-3 border-b border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] px-3 py-2 text-[11px] leading-5 transition-colors last:border-b-0"
+              :class="getPersistentRowClass(item.line)"
             >
               <div class="shrink-0 whitespace-nowrap text-[var(--tt-text-subtle)]">{{ getPersistentTimestamp(item) }}</div>
-              <div class="truncate text-[var(--tt-text-muted)]">{{ getPersistentType(item.line) }}</div>
+              <div class="min-w-0">
+                <div class="truncate text-[var(--tt-text-muted)]">{{ getPersistentType(item.line) }}</div>
+                <div v-if="item.tags?.length" class="mt-1 flex flex-wrap gap-1">
+                  <span
+                    v-for="tag in item.tags"
+                    :key="`${item.cursor}-${tag}`"
+                    class="inline-flex whitespace-nowrap rounded border px-1.5 py-0 font-medium align-top"
+                    :class="getPersistentTagClass()"
+                  >
+                    {{ tag }}
+                  </span>
+                </div>
+              </div>
+              <div class="truncate text-[var(--tt-text-muted)]">{{ getPersistentKind(item.line) }}</div>
+              <div class="truncate text-[var(--tt-text-muted)]" :title="getPersistentContent(item.line)">{{ getPersistentContent(item.line) }}</div>
               <details class="rounded border border-[color:color-mix(in_srgb,var(--tt-border)_72%,white)] bg-[color:color-mix(in_srgb,var(--tt-surface)_72%,white)] px-2 py-1">
                 <summary class="cursor-pointer text-[var(--tt-text-muted)] hover:text-[var(--tt-accent)]">Formatted JSON</summary>
                 <pre class="mt-1 overflow-x-auto whitespace-pre text-[var(--tt-accent)]">{{ formatPersistentJson(item.line) }}</pre>

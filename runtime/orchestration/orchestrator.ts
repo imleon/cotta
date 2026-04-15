@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ConfigRegistry } from '../config/registry.js'
+import type { SdkRawLogEvent } from '../protocol/message-types.js'
 import type {
   AgentTemplate,
   PendingActionRecord,
@@ -45,6 +46,7 @@ export interface SessionLifecycleResult {
 export class Orchestrator {
   private readonly subscribers = new Map<string, OrchestratorSubscriber>()
   private readonly attachedWorkers = new Set<string>()
+  private sdkRawSequence = 0
 
   constructor(
     private readonly deps: {
@@ -52,6 +54,7 @@ export class Orchestrator {
       sessionRegistry: SessionRegistry
       runRegistry: RunRegistry
       workerManager: WorkerManager
+      sdkRawLogWriter?: (runId: string, event: SdkRawLogEvent) => Promise<void>
     },
   ) {}
 
@@ -110,6 +113,12 @@ export class Orchestrator {
     const runId = randomUUID()
     this.deps.runRegistry.create(input.sessionId, runId)
     this.deps.sessionRegistry.setActiveRun(input.sessionId, runId)
+
+    await this.persistSyntheticUserMessage({
+      sessionId: input.sessionId,
+      runId,
+      text: input.text,
+    })
 
     await worker.input.write({
       type: 'query',
@@ -267,7 +276,7 @@ export class Orchestrator {
     void (async () => {
       try {
         for await (const event of handle.output) {
-          this.handleWorkerOutput(event)
+          await this.handleWorkerOutput(event)
         }
       } finally {
         this.attachedWorkers.delete(handle.workerRef)
@@ -277,7 +286,7 @@ export class Orchestrator {
     })()
   }
 
-  private handleWorkerOutput(event: WorkerOutputEvent): void {
+  private async handleWorkerOutput(event: WorkerOutputEvent): Promise<void> {
     switch (event.kind) {
       case 'control_transaction':
         this.handleControlTransaction(event)
@@ -323,12 +332,112 @@ export class Orchestrator {
         this.deps.sessionRegistry.detachWorker(event.sessionId)
         break
 
+      case 'control_message':
       case 'sdk_message':
       case 'sdk_stream_event':
         break
     }
 
+    await this.persistSdkRawEvent(event)
     this.broadcast(event)
+  }
+
+  private async persistSdkRawEvent(event: WorkerOutputEvent): Promise<void> {
+    const runId = typeof event.runId === 'string' ? event.runId : ''
+    if (!runId || !this.deps.sdkRawLogWriter) return
+
+    const sdkRawEvent = this.toSdkRawLogEvent(event)
+    if (!sdkRawEvent) return
+
+    try {
+      await this.deps.sdkRawLogWriter(runId, sdkRawEvent)
+    } catch (error) {
+      console.warn('[orchestrator] failed to append sdk raw log', {
+        sessionId: event.sessionId,
+        runId,
+        kind: event.kind,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  private async persistSyntheticUserMessage(input: {
+    sessionId: string
+    runId: string
+    text: string
+  }): Promise<void> {
+    if (!this.deps.sdkRawLogWriter) return
+    try {
+      await this.deps.sdkRawLogWriter(input.runId, {
+        source: 'sdk-raw',
+        kind: 'sdk_message',
+        direction: 'host_to_sdk',
+        sessionId: input.sessionId,
+        receivedAt: Date.now(),
+        sequence: this.nextSdkRawSequence(),
+        message: {
+          type: 'synthetic_user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: input.text }],
+          },
+        },
+      })
+    } catch (error) {
+      console.warn('[orchestrator] failed to append synthetic user sdk raw log', {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  private toSdkRawLogEvent(event: WorkerOutputEvent): SdkRawLogEvent | null {
+    if (event.kind === 'sdk_message') {
+      return {
+        source: 'sdk-raw',
+        kind: 'sdk_message',
+        direction: 'sdk_to_host',
+        sessionId: event.sessionId,
+        receivedAt: event.receivedAt,
+        sequence: this.nextSdkRawSequence(),
+        message: event.payload,
+      }
+    }
+
+    if (event.kind === 'control_message') {
+      const kind = this.toSdkRawControlKind(event.message)
+      if (!kind) return null
+      return {
+        source: 'sdk-raw',
+        kind,
+        direction: event.direction,
+        sessionId: event.sessionId,
+        receivedAt: event.receivedAt,
+        sequence: this.nextSdkRawSequence(),
+        requestId: event.transaction.requestId,
+        subtype: event.transaction.subtype,
+        message: event.message,
+      }
+    }
+
+    return null
+  }
+
+  private toSdkRawControlKind(message: unknown): SdkRawLogEvent['kind'] | null {
+    if (!message || typeof message !== 'object') return null
+    const type = typeof (message as { type?: unknown }).type === 'string'
+      ? (message as { type: string }).type
+      : ''
+    if (type === 'control_request') return 'control_request'
+    if (type === 'control_response') return 'control_response'
+    if (type === 'control_cancel_request') return 'control_cancel_request'
+    return null
+  }
+
+  private nextSdkRawSequence(): number {
+    this.sdkRawSequence += 1
+    return this.sdkRawSequence
   }
 
   private handleControlTransaction(event: Extract<WorkerOutputEvent, { kind: 'control_transaction' }>): void {

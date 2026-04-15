@@ -7,6 +7,7 @@ import { SdkSessionWorkerFactory } from '../execution/sdk-session-worker.js'
 import { DEFAULT_AGENT_ID as CONFIG_DEFAULT_AGENT_ID, DEFAULT_RUNTIME_SETTINGS_PATH, loadRuntimeConfigSync } from '../config/load.js'
 import { applyColdStartClaimPlans, buildColdStartClaimPlans } from '../orchestration/cold-start.js'
 import { ENV } from '../config/env.js'
+import { appendSessionSdkRawLog } from '../storage/fs/transport-logs.js'
 
 export type RuntimeContext = {
   defaultAgentId: string
@@ -36,6 +37,7 @@ export function createRuntime(input?: { runtimeSettingsPath?: string }): Runtime
     sessionRegistry,
     runRegistry,
     workerManager,
+    sdkRawLogWriter: appendSessionSdkRawLog,
   })
 
   return {

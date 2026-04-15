@@ -169,7 +169,7 @@ function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
     }
   }
 
-  const footerText = buildAssistantFooterText(item.footer)
+  const footerText = buildAssistantFooterText(item.footer, { includeTimestamp: false })
   if (footerText.trim()) {
     elements.push({ tag: 'hr' })
     elements.push({
@@ -189,7 +189,7 @@ function buildLarkGroupedToolUseElements(item: GroupedToolUseDisplayItem): unkno
     elements.push(createLarkToolPanel(tool.name, tool.input, resultText || undefined))
   }
 
-  const footerText = buildAssistantFooterText(item.footer)
+  const footerText = buildAssistantFooterText(item.footer, { includeTimestamp: false })
   if (footerText.trim()) {
     elements.push({ tag: 'hr' })
     elements.push({
@@ -209,7 +209,7 @@ function buildLarkCollapsedToolBatchElements(item: CollapsedToolBatchDisplayItem
   ]
 
   const elements: unknown[] = [createLarkSectionMarkdown('Tool Batch', lines.join('\n'))]
-  const footerText = buildAssistantFooterText(item.footer)
+  const footerText = buildAssistantFooterText(item.footer, { includeTimestamp: false })
   if (footerText.trim()) {
     elements.push({ tag: 'hr' })
     elements.push({
@@ -255,7 +255,7 @@ export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams
     }
   }
 
-  const footerText = params.footer ? buildAssistantFooterText(params.footer) : ''
+  const footerText = params.footer ? buildAssistantFooterText(params.footer, { includeTimestamp: false }) : ''
   if (footerText.trim().length > 0) {
     elements.push({ tag: 'hr' })
     elements.push({

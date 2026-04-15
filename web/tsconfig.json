@@ -15,5 +15,11 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "env.d.ts", "../shared/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "env.d.ts",
+    "../runtime/protocol/**/*.ts",
+    "../runtime/presentation/**/*.ts"
+  ]
 }

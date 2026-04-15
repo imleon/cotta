@@ -2,7 +2,7 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
-import type { DisplayFragmentSummary } from '../../../shared/message-types.js'
+import type { DisplayFragmentSummary } from '../../../runtime/protocol/message-types.js'
 
 const props = defineProps<{
   fragment: DisplayFragmentSummary

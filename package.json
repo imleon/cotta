@@ -4,18 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "postinstall": "cd agent && npm install && cd ../web && npm install",
-    "dev": "tsx watch node/index.ts",
+    "postinstall": "cd web && npm install",
+    "dev": "tsx watch runtime/server/index.ts",
     "dev:web": "cd web && npm run dev",
     "build": "tsc -p tsconfig.json",
-    "build:agent": "cd agent && npm run build",
     "build:web": "cd web && npm run build",
-    "build:all": "npm run build && npm run build:agent && npm run build:web",
-    "start": "node dist/node/index.js",
-    "test:cli": "tsx node/cli-test.ts"
+    "build:all": "npm run build && npm run build:web",
+    "start": "node dist/runtime/server/index.js",
+    "test:cli": "echo \"test:cli removed (legacy agent runner)\""
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.101",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.105",
     "@hono/node-server": "^1.14.0",
     "@hono/node-ws": "^1.1.0",
     "@larksuiteoapi/node-sdk": "^1.60.0",

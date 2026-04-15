@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { DisplayFragmentText } from '../../../shared/message-types.js'
+import type { DisplayFragmentText } from '../../../runtime/protocol/message-types.js'
 
 const props = defineProps<{
   fragment: DisplayFragmentText

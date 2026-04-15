@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSessionStore } from '../stores/session'
-import type { DisplayFragmentToolUse, SdkElicitationInteraction, PermissionInteraction } from '../../../shared/message-types.js'
-import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
+import type { DisplayFragmentToolUse, SdkElicitationInteraction, PermissionInteraction } from '../../../runtime/protocol/message-types.js'
+import { stringifyStructuredValue } from '../../../runtime/protocol/transcript-normalizer.js'
 import TimelineCanUseToolInteractionBlock from './TimelineCanUseToolInteractionBlock.vue'
 import TimelineElicitationInteractionBlock from './TimelineElicitationInteractionBlock.vue'
 

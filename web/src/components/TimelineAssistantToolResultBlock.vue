@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
-import type { DisplayFragmentToolResult, ToolResultDisplayMeta } from '../../../shared/message-types.js'
-import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
+import type { DisplayFragmentToolResult, ToolResultDisplayMeta } from '../../../runtime/protocol/message-types.js'
+import { stringifyStructuredValue } from '../../../runtime/protocol/transcript-normalizer.js'
 
 const props = withDefaults(defineProps<{
   fragment?: DisplayFragmentToolResult

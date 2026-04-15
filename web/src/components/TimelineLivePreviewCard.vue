@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
-import type { TimelineLivePreviewItem } from '../../../shared/message-types.js'
+import type { TimelineLivePreviewItem } from '../../../runtime/protocol/message-types.js'
 
 const props = withDefaults(defineProps<{
   item: TimelineLivePreviewItem

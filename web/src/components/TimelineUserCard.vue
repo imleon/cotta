@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { UserDisplayItem } from '../../../shared/message-types.js'
-import TimelineAtomDebugMeta from './TimelineAtomDebugMeta.vue'
+import type { UserDisplayItem } from '../../../runtime/protocol/message-types.js'
 
 type AnsiSegment = {
   text: string
@@ -14,7 +13,6 @@ type AnsiLine = AnsiSegment[]
 
 const props = defineProps<{
   item: UserDisplayItem
-  showDebugMeta?: boolean
 }>()
 
 const COMMAND_INPUT_TAGS = ['command-name', 'command-message', 'bash-input'] as const
@@ -143,43 +141,6 @@ function getAnsiSegmentClass(segment: AnsiSegment): string {
   ].filter(Boolean).join(' ')
 }
 
-function getCompactModel(model?: string | null): string {
-  if (!model) return '-'
-  const parts = model.split('/')
-  return parts[parts.length - 1] || model
-}
-
-function formatTimestamp(timestamp: number): string {
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return String(timestamp)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
-}
-
-function formatDebug(debug?: UserDisplayItem['debug']): string {
-  if (!debug) return ''
-  const usage = debug.assistant?.usage
-  return [
-    `uuid=${debug.uuid || 'unknown'}`,
-    `role=${debug.role}`,
-    `kind=${debug.semanticKind}`,
-    `time=${formatTimestamp(debug.order.timestamp)}`,
-    debug.order.sequence !== undefined ? `seq=${debug.order.sequence}` : '',
-    `idx=${debug.order.sourceIndex}`,
-    `src=${debug.source}`,
-    debug.assistant?.stopReason ? `stop=${debug.assistant.stopReason}` : 'stop=-',
-    `model=${getCompactModel(debug.assistant?.model)}`,
-    usage ? `usage in=${usage.inputTokens ?? '-'} out=${usage.outputTokens ?? '-'} read=${usage.cacheReadTokens ?? '-'} write=${usage.cacheWriteTokens ?? '-'}` : 'usage=-',
-    debug.linkage.toolUseIds.length ? `toolUse=${debug.linkage.toolUseIds.join(',')}` : 'toolUse=-',
-    debug.linkage.toolResultForIds.length ? `toolResultFor=${debug.linkage.toolResultForIds.join(',')}` : 'toolResultFor=-',
-  ].filter(Boolean).join(' · ')
-}
-
 function formatFooterTimestamp(timestamp?: number | null): string {
   if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return '-'
   const date = new Date(timestamp)
@@ -217,6 +178,5 @@ const commandOutputLines = computed(() => parseAnsiOutput(getCommandOutput(props
     </div>
     <div v-else class="whitespace-pre-wrap text-[15px] leading-7 text-[var(--tt-text)]">{{ item.message.content }}</div>
     <div class="text-[11px] leading-4 text-[var(--tt-text-subtle)]">{{ formatFooterTimestamp(item.timestamp) }}</div>
-    <div v-if="showDebugMeta && item.debug" class="timeline-cli-meta">{{ formatDebug(item.debug) }}</div>
   </div>
 </template>

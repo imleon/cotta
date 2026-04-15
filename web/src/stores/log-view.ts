@@ -4,7 +4,7 @@ import type {
   SessionPersistentLogEntry,
   SessionSdkRawLogEntry,
   SessionSummary,
-} from '../../../shared/message-types.js'
+} from '../../../runtime/protocol/message-types.js'
 import { createDebugLogger } from '../lib/debug.js'
 import { useSessionStore } from './session'
 

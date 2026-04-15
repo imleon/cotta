@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { SessionMessage } from '../stores/session'
-import type { DisplayAssistantFooter } from '../../../shared/message-types.js'
+import type { DisplayAssistantFooter } from '../../../runtime/protocol/message-types.js'
 import {
   getTranscriptAssistantModel,
   getTranscriptAssistantUsage,
   getTranscriptStopReason,
-} from '../../../shared/transcript-normalizer.js'
+} from '../../../runtime/protocol/transcript-normalizer.js'
 
 const props = withDefaults(defineProps<{
   message: SessionMessage

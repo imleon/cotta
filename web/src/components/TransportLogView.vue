@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useLogViewStore } from '../stores/log-view'
-import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
+import { stringifyStructuredValue } from '../../../runtime/protocol/transcript-normalizer.js'
 
 const logView = useLogViewStore()
 const sdkRawItems = computed(() => logView.sdkRawLog)

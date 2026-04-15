@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { SessionMessage, SessionMessageBlock } from '../stores/session'
-import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
+import { stringifyStructuredValue } from '../../../runtime/protocol/transcript-normalizer.js'
 
 interface HistoryMessageNodeItem {
   key: string

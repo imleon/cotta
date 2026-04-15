@@ -5,10 +5,7 @@ import TimelineCanUseToolInteractionBlock from './TimelineCanUseToolInteractionB
 import TimelineElicitationInteractionBlock from './TimelineElicitationInteractionBlock.vue'
 import TimelineRow from './TimelineRow.vue'
 import { useSessionStore } from '../stores/session'
-import {
-  stringifyStructuredValue,
-} from '../../../shared/transcript-normalizer.js'
-import type { AssistantDisplayItem, SdkElicitationInteraction, PermissionInteraction } from '../../../shared/message-types.js'
+import type { SdkElicitationInteraction, PermissionInteraction } from '../../../runtime/protocol/message-types.js'
 import type { TimelineItem } from '../stores/session'
 
 const session = useSessionStore()
@@ -16,97 +13,7 @@ const container = ref<HTMLElement>()
 const preservingOlderScroll = ref(false)
 const initialHistoryAutoScrollPending = ref(true)
 const pendingAutoScrollFrame = ref<number | null>(null)
-const debugMetaVisible = computed({
-  get: () => session.debugTimelineVisible,
-  set: (value: boolean) => session.setDebugTimelineVisible(value),
-})
-const observabilityItems = computed(() => session.observabilityEvents.slice().reverse())
-const recentControlTransactions = computed(() => session.recentControlTransactions)
 const visibleTimelineItems = computed(() => session.timeline)
-const debugExperimentTimestamp = ref(Date.now())
-const debugExperimentContent = 'Run failed · Error During Execution\n\nMock error: tool sandbox rejected the request while the stream was still active.'
-const debugExperimentSummary = computed(() => ({
-  runState: session.runState,
-  timelineCount: session.timeline.length,
-  previewCount: session.livePreviewItems.length,
-  observabilityCount: session.observabilityEvents.length,
-  controlCount: session.recentControlTransactions.length,
-}))
-const debugExperimentCard = computed<AssistantDisplayItem>(() => ({
-  kind: 'assistant',
-  id: 'debug-experiment-error-result',
-  key: 'debug-experiment-error-result',
-  timestamp: debugExperimentTimestamp.value,
-  atomIds: ['debug-experiment-error-result'],
-  messages: [{
-    role: 'assistant',
-    content: debugExperimentContent,
-    timestamp: debugExperimentTimestamp.value,
-    blocks: [{
-      type: 'text',
-      text: debugExperimentContent,
-      raw: debugExperimentContent,
-    }],
-    raw: {
-      type: 'result',
-      subtype: 'error_during_execution',
-      isErrorResult: true,
-      message: {
-        id: 'debug-experiment-error-result',
-        stop_reason: 'error',
-        model: 'claude-sonnet-4-5',
-        usage: {
-          input_tokens: 1234,
-          output_tokens: 321,
-          cache_read_input_tokens: 0,
-          cache_creation_input_tokens: 0,
-        },
-      },
-    },
-  }],
-  anchorMessage: {
-    role: 'assistant',
-    content: debugExperimentContent,
-    timestamp: debugExperimentTimestamp.value,
-    blocks: [{
-      type: 'text',
-      text: debugExperimentContent,
-      raw: debugExperimentContent,
-    }],
-    raw: {
-      type: 'result',
-      subtype: 'error_during_execution',
-      isErrorResult: true,
-      message: {
-        id: 'debug-experiment-error-result',
-        stop_reason: 'error',
-        model: 'claude-sonnet-4-5',
-        usage: {
-          input_tokens: 1234,
-          output_tokens: 321,
-          cache_read_input_tokens: 0,
-          cache_creation_input_tokens: 0,
-        },
-      },
-    },
-  },
-  fragments: [{
-    type: 'text',
-    text: debugExperimentContent,
-  }],
-  footer: {
-    stopReason: 'error',
-    model: 'claude-sonnet-4-5',
-    usage: {
-      inputTokens: 1234,
-      outputTokens: 321,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    },
-    completedAt: debugExperimentTimestamp.value,
-    deltaMs: 4200,
-  },
-}))
 const pendingPermissionInteraction = computed<PermissionInteraction | null>(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction : null
 )
@@ -137,25 +44,6 @@ const isPendingElicitationAttached = computed(() => {
   if (!toolUseId) return false
   return visibleTimelineItems.value.some((item) => itemHasToolUseId(item, toolUseId))
 })
-
-function getEventMeta(item: { sequence: number; receivedAt: number }): string {
-  return `seq=${item.sequence} time=${item.receivedAt}`
-}
-
-function getEventPayload(item: { payload: unknown }): string {
-  return stringifyStructuredValue(item.payload)
-}
-
-function getControlTransactionMeta(item: { requestId: string; subtype: string; status: string; family: string; direction: string; updatedAt: number }) {
-  return `${item.subtype} · ${item.status} · ${item.direction} · ${new Date(item.updatedAt).toLocaleTimeString()}`
-}
-
-function renderObservabilityTitle(payload: Record<string, unknown> | null | undefined): string {
-  if (!payload || typeof payload !== 'object') return 'unknown'
-  const type = typeof payload.type === 'string' ? payload.type : 'unknown'
-  const subtype = typeof payload.subtype === 'string' ? payload.subtype : ''
-  return subtype ? `${type}.${subtype}` : type
-}
 
 function isNearBottom(): boolean {
   const el = container.value
@@ -223,7 +111,7 @@ watch(
 )
 
 watch(
-  () => [session.timeline.length, session.observabilityEvents.length, session.pendingInteraction?.id],
+  () => [session.timeline.length, session.pendingInteraction?.id],
   async () => {
     if (preservingOlderScroll.value || session.historyMessagesLoadingOlder) return
     if (!isNearBottom()) return
@@ -258,7 +146,6 @@ watch(
       v-for="item in visibleTimelineItems"
       :key="item.key"
       :item="item"
-      :show-debug-meta="debugMetaVisible"
     />
 
     <div v-if="pendingPermissionInteraction && !isPendingPermissionAttached" class="pl-7">
@@ -268,54 +155,6 @@ watch(
     <div v-if="pendingElicitationInteraction && !isPendingElicitationAttached" class="pl-7">
       <TimelineElicitationInteractionBlock :interaction="pendingElicitationInteraction" />
     </div>
-
-    <div v-if="debugMetaVisible" class="space-y-2">
-      <div class="timeline-cli-meta">Debug experiment</div>
-      <TimelineRow :item="debugExperimentCard" />
-      <TimelineCliSubrow muted>
-        <div class="min-w-0 flex-1 space-y-1">
-          <div class="timeline-cli-meta">
-            run={{ debugExperimentSummary.runState }} · timeline={{ debugExperimentSummary.timelineCount }} · overlays={{ debugExperimentSummary.previewCount }} · observability={{ debugExperimentSummary.observabilityCount }} · controls={{ debugExperimentSummary.controlCount }}
-          </div>
-          <div class="text-xs text-slate-500">内容为 mock，但样式与生产 assistant/error 卡片路径一致；不参与 live mainline 语义。</div>
-        </div>
-      </TimelineCliSubrow>
-    </div>
-
-    <div v-if="recentControlTransactions.length > 0" class="space-y-2">
-      <div class="timeline-cli-meta">Control transactions</div>
-      <div
-        v-for="item in recentControlTransactions"
-        :key="`control-${item.requestId}`"
-        class="space-y-1"
-      >
-        <TimelineCliSubrow muted>
-          <div class="min-w-0 flex-1 space-y-1">
-            <div class="text-slate-600">{{ item.requestId }}</div>
-            <div class="timeline-cli-meta">{{ getControlTransactionMeta(item) }}</div>
-            <pre v-if="item.interaction" class="whitespace-pre-wrap text-xs text-slate-500">{{ stringifyStructuredValue(item.interaction) }}</pre>
-          </div>
-        </TimelineCliSubrow>
-      </div>
-    </div>
-
-    <div v-if="observabilityItems.length > 0" class="space-y-2">
-      <div class="timeline-cli-meta">Observability events</div>
-      <div
-        v-for="item in observabilityItems"
-        :key="`telemetry-${item.sequence}`"
-        class="space-y-1"
-      >
-        <TimelineCliSubrow muted>
-          <div class="min-w-0 flex-1 space-y-1">
-            <div class="text-slate-600">{{ renderObservabilityTitle(item.payload as Record<string, unknown> | undefined) }}</div>
-            <div class="timeline-cli-meta">{{ getEventMeta(item) }}</div>
-            <pre class="whitespace-pre-wrap text-xs text-slate-500">{{ getEventPayload(item) }}</pre>
-          </div>
-        </TimelineCliSubrow>
-      </div>
-    </div>
-
     <TimelineCliSubrow v-if="session.isLoading" muted>
       <div class="flex space-x-1.5 pt-0.5">
         <div class="h-2 w-2 rounded-full bg-gray-400 animate-bounce" style="animation-delay: 0ms" />

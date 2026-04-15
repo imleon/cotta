@@ -5,15 +5,12 @@ import type {
   AssistantDisplayItem,
   CollapsedToolBatchDisplayItem,
   GroupedToolUseDisplayItem,
-} from '../../../shared/message-types.js'
+} from '../../../runtime/protocol/message-types.js'
 import TimelineMessageContent from './TimelineMessageContent.vue'
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   item: TimelineItem
-  showDebugMeta?: boolean
-}>(), {
-  showDebugMeta: false,
-})
+}>()
 
 function getAnchorMessage(item: TimelineItem) {
   switch (item.kind) {
@@ -100,7 +97,7 @@ const rowStatus = computed(() => {
   <div :class="['timeline-cli-row', getRowClass(item)]">
     <span :class="getPrefixClass(item)">{{ getPrefix(item) }}</span>
     <div class="timeline-cli-content">
-      <TimelineMessageContent :item="item" :show-debug-meta="props.showDebugMeta" />
+      <TimelineMessageContent :item="item" />
     </div>
   </div>
 </template>

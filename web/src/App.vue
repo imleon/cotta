@@ -4,14 +4,12 @@ import SessionList from './components/SessionList.vue'
 import MessageList from './components/MessageList.vue'
 import InputBar from './components/InputBar.vue'
 import TransportLogView from './components/TransportLogView.vue'
-import StaticMetadataView from './components/StaticMetadataView.vue'
-import ConfigureSessionBindingView from './components/ConfigureSessionBindingView.vue'
 import logoUrl from './lib/logo.png'
 import { useSessionStore } from './stores/session'
 
 const session = useSessionStore()
 const tokenInput = ref(session.authToken)
-const activeView = ref<'session' | 'log' | 'metadata' | 'configure'>('session')
+const activeView = ref<'session' | 'log'>('session')
 const sessionDrawerOpen = ref(false)
 
 function submitToken() {
@@ -101,20 +99,6 @@ onMounted(() => {
                 >
                   Log
                 </button>
-                <button
-                  class="rounded-xl px-4 py-2 text-sm font-medium transition-colors"
-                  :class="activeView === 'metadata' ? 'bg-[var(--tt-card)] text-[var(--tt-accent)] shadow-sm ring-1 ring-[var(--tt-border)]' : 'text-[var(--tt-text-subtle)] hover:text-[var(--tt-accent)]'"
-                  @click="activeView = 'metadata'"
-                >
-                  Metadata
-                </button>
-                <button
-                  class="rounded-xl px-4 py-2 text-sm font-medium transition-colors"
-                  :class="activeView === 'configure' ? 'bg-[var(--tt-card)] text-[var(--tt-accent)] shadow-sm ring-1 ring-[var(--tt-border)]' : 'text-[var(--tt-text-subtle)] hover:text-[var(--tt-accent)]'"
-                  @click="activeView = 'configure'"
-                >
-                  Configure
-                </button>
               </div>
             </div>
 
@@ -159,13 +143,6 @@ onMounted(() => {
             <TransportLogView class="h-full" />
           </div>
 
-          <div v-else-if="activeView === 'metadata'" class="h-full">
-            <StaticMetadataView class="h-full" />
-          </div>
-
-          <div v-else class="h-full">
-            <ConfigureSessionBindingView class="h-full" />
-          </div>
         </main>
       </div>
     </template>

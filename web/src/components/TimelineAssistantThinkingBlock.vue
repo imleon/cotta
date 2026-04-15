@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { DisplayFragmentThinking } from '../../../shared/message-types.js'
+import type { DisplayFragmentThinking } from '../../../runtime/protocol/message-types.js'
 
 const props = defineProps<{
   fragment: DisplayFragmentThinking

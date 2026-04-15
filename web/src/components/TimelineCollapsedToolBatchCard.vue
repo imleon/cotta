@@ -3,14 +3,11 @@ import { computed, ref, watch } from 'vue'
 import TimelineAssistantCard from './TimelineAssistantCard.vue'
 import TimelineGroupedToolUseCard from './TimelineGroupedToolUseCard.vue'
 import TimelineLivePreviewCard from './TimelineLivePreviewCard.vue'
-import type { CollapsedToolBatchDisplayItem } from '../../../shared/message-types.js'
+import type { CollapsedToolBatchDisplayItem } from '../../../runtime/protocol/message-types.js'
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   item: CollapsedToolBatchDisplayItem
-  showDebugMeta?: boolean
-}>(), {
-  showDebugMeta: false,
-})
+}>()
 
 const expanded = ref(props.item.status === 'streaming')
 
@@ -50,8 +47,8 @@ const toggleLabel = computed(() => (expanded.value ? 'Collapse' : 'Expand'))
     </div>
     <div v-if="expanded" class="space-y-3">
       <template v-for="child in item.items" :key="child.key">
-        <TimelineGroupedToolUseCard v-if="child.kind === 'grouped_tool_use'" :item="child" hide-footer :show-debug-meta="showDebugMeta" />
-        <TimelineAssistantCard v-else :item="child" hide-footer :show-debug-meta="showDebugMeta" />
+        <TimelineGroupedToolUseCard v-if="child.kind === 'grouped_tool_use'" :item="child" hide-footer />
+        <TimelineAssistantCard v-else :item="child" hide-footer />
       </template>
     </div>
   </div>

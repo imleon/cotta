@@ -1,9 +1,11 @@
 export {
   buildElicitationContent,
+  buildElicitationContentForObject,
   inferElicitationRenderer,
-} from '../../../shared/elicitation-renderer.js'
+} from '../../../runtime/presentation/elicitation-renderer.js'
 
 export type {
   ElicitationOption,
+  ElicitationFormField,
   ElicitationRenderer,
-} from '../../../shared/elicitation-renderer.js'
+} from '../../../runtime/presentation/elicitation-renderer.js'

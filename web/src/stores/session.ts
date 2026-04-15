@@ -9,7 +9,6 @@ import type {
   LiveLaneKind,
   PendingInteraction,
   PermissionSuggestion,
-  SessionBindingStatus,
   SessionEvent,
   SessionMessage,
   SessionMessageBlock,
@@ -21,27 +20,25 @@ import type {
   TimelineLivePreviewItem,
   TimelineRenderableItem,
   TranscriptAtom,
-} from '../../../shared/message-types.js'
+} from '../../../runtime/protocol/message-types.js'
 import {
   classifySdkMessageLane,
-  getSdkMessageLayer,
-} from '../../../shared/message-types.js'
+} from '../../../runtime/protocol/message-types.js'
 import {
   buildDisplayItems,
   buildHistoryDisplayItems,
   buildTranscriptAtom,
-} from '../../../shared/transcript-display.js'
+} from '../../../runtime/presentation/transcript-display.js'
 import {
   advanceStreamAnimationCursor,
   createStreamAnimationCursor,
   reduceStreamPreviewEvent,
   renderStreamPreviewState,
-  getTranscriptMessageId,
   getTranscriptResponseId,
   getTranscriptStopReason,
-} from '../../../shared/transcript-normalizer.js'
+  normalizeSdkEnvelopeMessage,
+} from '../../../runtime/protocol/transcript-normalizer.js'
 import { createDebugLogger } from '../lib/debug.js'
-import { elicitationFixtures } from '../lib/elicitation-fixtures.js'
 
 export type {
   TimelineRenderableItem as TimelineItem,
@@ -61,28 +58,33 @@ interface HealthResponse {
   authEnabled?: boolean
 }
 
+function generateUuid(): string {
+  const cryptoApi = (globalThis as unknown as { crypto?: Crypto }).crypto
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID()
+  return `uuid-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 interface SessionMessagesResponse {
   messages?: unknown[]
   hasMore?: boolean
   nextBefore?: string | null
 }
 
-interface SessionBindingStatusResponse {
-  ref?: SessionBindingStatus['ref']
-  binding?: SessionBindingStatus['binding']
-  session?: SessionBindingStatus['session']
-  activeRun?: SessionBindingStatus['activeRun']
+interface AgentDescriptor {
+  agentId: string
+  projectDir?: string
 }
 
-interface SessionBindingsListResponse {
-  bindings?: SessionBindingStatusResponse[]
+interface AgentsResponse {
+  defaultAgentId?: string
+  agents?: AgentDescriptor[]
 }
 
 type RuntimeSdkMessageEvent = Extract<SessionEvent, { type: 'session.sdk.message' }>
 type LiveLaneBuckets = Record<LiveLaneKind, RuntimeSdkMessageEvent[]>
 
 const AUTH_TOKEN_STORAGE_KEY = 'cotta-auth-token'
-const ELICITATION_FIXTURE_STORAGE_KEY = 'cotta-elicitation-fixture'
+const AGENT_ID_STORAGE_KEY = 'cotta.agentId'
 const DEFAULT_HISTORY_PAGE_SIZE = 100
 const logger = createDebugLogger('session-store')
 const EVENT_LOG_INTERVAL = 20
@@ -98,6 +100,13 @@ function normalizeSession(item: any): SessionSummary {
     id: typeof item?.id === 'string' ? item.id : '',
     title: typeof item?.title === 'string' && item.title ? item.title : (typeof item?.id === 'string' ? item.id.slice(0, 8) : 'Untitled'),
     updatedAt: typeof item?.updatedAt === 'number' ? item.updatedAt : Date.now(),
+    ...(typeof item?.agentId === 'string' && item.agentId ? { agentId: item.agentId } : {}),
+    ...(typeof item?.channelId === 'string' && item.channelId ? { channelId: item.channelId } : {}),
+    ...(typeof item?.workerRef === 'string' && item.workerRef ? { workerRef: item.workerRef } : {}),
+    ...(item?.sessionStatus === 'idle' || item?.sessionStatus === 'running' || item?.sessionStatus === 'requires_action'
+      ? { sessionStatus: item.sessionStatus }
+      : {}),
+    ...(typeof item?.activeRunId === 'string' && item.activeRunId ? { activeRunId: item.activeRunId } : {}),
   }
 }
 
@@ -106,7 +115,27 @@ function getEventRunId(event: SessionEvent): string | null {
 }
 
 function isRunScopedEvent(event: SessionEvent): boolean {
-  return event.type !== 'session.error' || typeof event.runId === 'string'
+  switch (event.type) {
+    case 'session.control.message':
+    case 'session.control.opened':
+    case 'session.control.awaiting_user':
+    case 'session.control.responded':
+    case 'session.control.completed':
+    case 'session.control.cancel_requested':
+    case 'session.control.cancelled':
+    case 'session.control.failed':
+    case 'session.interactive.opened':
+    case 'session.interactive.awaiting_user':
+    case 'session.interactive.responded':
+    case 'session.interactive.completed':
+    case 'session.interactive.cancelled':
+    case 'session.interactive.failed':
+      return typeof event.runId === 'string'
+    case 'session.error':
+      return typeof event.runId === 'string'
+    default:
+      return true
+  }
 }
 
 function shortId(value?: string | null): string | undefined {
@@ -377,20 +406,12 @@ export const useSessionStore = defineStore('session', () => {
   const runState = ref<SessionRunState>('idle')
   const authToken = ref(localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || '')
   const authError = ref('')
+  const sessionNotice = ref('')
   const authRequired = ref(false)
   const authChecked = ref(false)
   const activeRunId = ref<string | null>(null)
-  const fixtureInteractionId = ref(localStorage.getItem(ELICITATION_FIXTURE_STORAGE_KEY) || '')
   const controlTransactionsById = ref<Record<string, ControlTransactionSummary>>({})
   const activeControlOrder = ref<string[]>([])
-  const bindingChannel = ref<'lark' | 'web' | 'discord'>('lark')
-  const bindingConversationKey = ref('')
-  const bindingStatus = ref<SessionBindingStatus | null>(null)
-  const bindingCandidates = ref<SessionSummary[]>([])
-  const bindingList = ref<SessionBindingStatus[]>([])
-  const bindingLoading = ref(false)
-  const bindingError = ref('')
-  const bindingTargetSessionId = ref('')
   const eventLog = ref<Array<Extract<SessionEvent, { type: 'session.sdk.message' }>>>([])
   const streamPreviewStates = ref<Record<string, StreamPreviewState>>({})
   const streamAnimationCursors = ref<Record<string, StreamAnimationCursor>>({})
@@ -406,22 +427,13 @@ export const useSessionStore = defineStore('session', () => {
     }
     return null
   })
-  const recentControlTransactions = computed<ControlTransactionSummary[]>(() =>
-    activeControlOrder.value
-      .map((requestId) => controlTransactionsById.value[requestId])
-      .filter((transaction): transaction is ControlTransactionSummary => Boolean(transaction))
-      .slice()
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, 8)
-  )
-  const fixtureInteraction = computed<PendingInteraction | null>(() =>
-    elicitationFixtures.find((fixture) => fixture.id === fixtureInteractionId.value) ?? null,
-  )
-  const pendingInteraction = computed<PendingInteraction | null>(() => fixtureInteraction.value ?? activeInteractiveControl.value?.interaction ?? null)
+  const pendingInteraction = computed<PendingInteraction | null>(() => activeInteractiveControl.value?.interaction ?? null)
   const isAwaitingApproval = computed(() => pendingInteraction.value?.kind === 'permission' && pendingInteraction.value?.status === 'pending')
   const isAwaitingInteraction = computed(() => pendingInteraction.value?.status === 'pending')
   const hasActiveRun = computed(() => awaitingRunStart || activeRunId.value !== null)
-  const bindingSummary = computed(() => bindingStatus.value?.binding?.sessionId || '未绑定')
+  const currentSessionSummary = computed<SessionSummary | null>(() =>
+    sessions.value.find((item) => item.id === currentSessionId.value) ?? null,
+  )
   const sdkMessageLaneBuckets = computed(() => {
     const user: RuntimeSdkMessageEvent[] = []
     const liveUser: RuntimeSdkMessageEvent[] = []
@@ -496,11 +508,6 @@ export const useSessionStore = defineStore('session', () => {
   const userLaneEvents = computed(() => sdkMessageLaneBuckets.value.user)
   const liveLaneEvents = computed(() => sdkMessageLaneBuckets.value.live)
   const sessionLaneEvents = computed(() => sdkMessageLaneBuckets.value.session)
-  const observabilityEvents = computed(() => sessionLaneEvents.value.filter((event) => {
-    if (getSdkMessageLayer(event.payload) !== 'debug-observability') return false
-    return !(event.payload?.type === 'system' && event.payload?.subtype === 'init')
-  }))
-  const debugTimelineVisible = ref(false)
   const liveAssistantResponseIdsCoveredByPreview = computed<Set<string>>(() => {
     const ids = new Set<string>()
     for (const preview of Object.values(streamPreviewStates.value)) {
@@ -647,6 +654,12 @@ export const useSessionStore = defineStore('session', () => {
   })
 
   let ws: WebSocket | null = null
+  let eventSequence = 0
+  let wsSessionFilter: string | null = null
+  const terminalRunIds = new Set<string>()
+  const activeStreamMessageIds = new Map<string, string>()
+  let agentIdCache: string | null = null
+  let agentIdPromise: Promise<string> | null = null
   let awaitingRunStart = false
   let observedEventCount = 0
   let optimisticMessageCount = 0
@@ -745,6 +758,10 @@ export const useSessionStore = defineStore('session', () => {
     runState.value = nextState
   }
 
+  function clearSessionNotice() {
+    sessionNotice.value = ''
+  }
+
   function clearConnection() {
     if (ws) {
       logger.info('ws:clear-connection', {
@@ -754,6 +771,7 @@ export const useSessionStore = defineStore('session', () => {
       ws.close()
       ws = null
     }
+    wsSessionFilter = null
     isConnected.value = false
   }
 
@@ -822,8 +840,11 @@ export const useSessionStore = defineStore('session', () => {
       receivedAt: timelineReceivedAt,
       ...(parsedMessage ? { parsed: parsedMessage } : {}),
     }
-    const layer = getSdkMessageLayer(timelineEvent.payload)
-    const shouldIncludeInMainline = layer === 'business-message' || isErrorResultPayload(timelineEvent.payload)
+    const messageType = timelineEvent.payload?.type
+    const shouldIncludeInMainline =
+      messageType === 'assistant'
+      || messageType === 'user'
+      || isErrorResultPayload(timelineEvent.payload)
 
     if (!shouldIncludeInMainline) {
       syncSessionId(timelineEvent.sessionId)
@@ -971,11 +992,11 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'session.run.completed':
-        streamPreviewStates.value = {}
-        streamAnimationCursors.value = {}
-        runState.value = 'completed'
-        activeRunId.value = null
-        awaitingRunStart = false
+        // Legacy runner can report completion with non-zero exit code. Treat it as failed to
+        // avoid wiping the UI state (history/messages) by reloading an empty/new session.
+        const hasFailure = Boolean(event.error)
+          || (typeof event.exitCode === 'number' && event.exitCode !== 0)
+        clearRunState(hasFailure ? 'failed' : 'completed')
         syncSessionId(event.sessionId)
         logger.info('chat:done', {
           runId: shortId(event.runId),
@@ -983,10 +1004,6 @@ export const useSessionStore = defineStore('session', () => {
           exitCode: event.exitCode,
           hasError: Boolean(event.error),
         })
-        fetchSessions()
-        if (event.sessionId && currentSessionId.value === event.sessionId) {
-          loadSessionMessages(event.sessionId, { reset: true })
-        }
         break
 
       case 'session.run.failed':
@@ -995,6 +1012,7 @@ export const useSessionStore = defineStore('session', () => {
           sessionId: shortId(event.sessionId),
           error: event.error,
         })
+        sessionNotice.value = event.error
         clearRunState('failed')
         syncSessionId(event.sessionId)
         break
@@ -1097,7 +1115,416 @@ export const useSessionStore = defineStore('session', () => {
     return res
   }
 
-  function connect() {
+  async function ensureAgentId(): Promise<string> {
+    if (agentIdCache) return agentIdCache
+    if (agentIdPromise) return await agentIdPromise
+
+    agentIdPromise = (async () => {
+      const stored = (() => {
+        try {
+          const value = localStorage.getItem(AGENT_ID_STORAGE_KEY)
+          return value && value.trim() ? value.trim() : null
+        } catch {
+          return null
+        }
+      })()
+
+      try {
+        const res = await apiFetch('/api/agents')
+        if (!res.ok) {
+          agentIdCache = stored ?? 'local-dev'
+          return agentIdCache
+        }
+        const data = await res.json() as AgentsResponse
+        const agents = Array.isArray(data.agents) ? data.agents : []
+        const agentIds = agents
+          .map((agent) => (typeof agent?.agentId === 'string' ? agent.agentId.trim() : ''))
+          .filter((id) => Boolean(id))
+
+        const defaultFromServer = typeof data.defaultAgentId === 'string' ? data.defaultAgentId.trim() : ''
+        const chosen = (stored && agentIds.includes(stored))
+          ? stored
+          : (defaultFromServer && agentIds.includes(defaultFromServer))
+            ? defaultFromServer
+            : agentIds[0] ?? stored ?? 'local-dev'
+
+        agentIdCache = chosen
+        try {
+          localStorage.setItem(AGENT_ID_STORAGE_KEY, chosen)
+        } catch {
+          // ignore storage failures
+        }
+        return chosen
+      } catch {
+        agentIdCache = stored ?? 'local-dev'
+        return agentIdCache
+      } finally {
+        agentIdPromise = null
+      }
+    })()
+
+    return await agentIdPromise
+  }
+
+  function buildWsUrl(sessionId?: string | null): URL {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = new URL(`${protocol}//${location.host}/ws`)
+    if (hasAuthToken.value) {
+      wsUrl.searchParams.set('auth', authToken.value)
+    }
+    if (sessionId) {
+      wsUrl.searchParams.set('sessionId', sessionId)
+    }
+    return wsUrl
+  }
+
+  function isWorkerOutputEvent(value: unknown): value is {
+    kind: string
+    sessionId: string
+    runId?: string
+    receivedAt: number
+    payload?: unknown
+    state?: unknown
+    subtype?: unknown
+    error?: unknown
+  } {
+    if (!value || typeof value !== 'object') return false
+    const record = value as Record<string, unknown>
+    return typeof record.kind === 'string'
+      && typeof record.sessionId === 'string'
+      && typeof record.receivedAt === 'number'
+  }
+
+  function toV2SessionStreamEvent(input: {
+    payload: unknown
+    runId: string
+    sessionId: string
+    receivedAt: number
+    sequence: number
+  }): SessionStreamEvent | null {
+    const payload = input.payload && typeof input.payload === 'object'
+      ? input.payload as Record<string, unknown>
+      : null
+    if (!payload || payload.type !== 'stream_event') return null
+
+    const rawEvent = payload.event && typeof payload.event === 'object'
+      ? payload.event as Record<string, unknown>
+      : null
+    const eventType = typeof rawEvent?.type === 'string'
+      ? rawEvent.type as SessionStreamEvent['event']['type']
+      : null
+    if (!rawEvent || !eventType) return null
+
+    const parentToolUseId = typeof payload.parent_tool_use_id === 'string'
+      ? payload.parent_tool_use_id
+      : payload.parent_tool_use_id === null
+        ? null
+        : undefined
+    const index = typeof rawEvent.index === 'number' ? rawEvent.index : undefined
+
+    const directMessage = rawEvent.message && typeof rawEvent.message === 'object'
+      ? rawEvent.message as Record<string, unknown>
+      : null
+    const directMessageId = typeof directMessage?.id === 'string' ? directMessage.id : undefined
+
+    let messageId = directMessageId
+    if (messageId) {
+      activeStreamMessageIds.set(input.sessionId, messageId)
+    } else {
+      messageId = activeStreamMessageIds.get(input.sessionId)
+    }
+    if (eventType === 'message_stop') {
+      activeStreamMessageIds.delete(input.sessionId)
+    }
+
+    const scope: SessionStreamEvent['scope'] = messageId
+      ? {
+          scopeKey: `${input.sessionId}:message:${messageId}`,
+          anchorKind: 'message',
+          anchorId: messageId,
+          messageId,
+          ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
+          ...(index !== undefined ? { index } : {}),
+        }
+      : typeof parentToolUseId === 'string'
+        ? {
+            scopeKey: `${input.sessionId}:tool_use:${parentToolUseId}`,
+            anchorKind: 'tool_use',
+            anchorId: parentToolUseId,
+            parentToolUseId,
+            ...(index !== undefined ? { index } : {}),
+          }
+        : {
+            scopeKey: `${input.sessionId}:ephemeral:${input.sequence}`,
+            anchorKind: 'ephemeral',
+            anchorId: `${input.sessionId}:ephemeral:${input.sequence}`,
+            ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
+            ...(index !== undefined ? { index } : {}),
+          }
+
+    let normalized: SessionStreamEvent['normalized']
+    if (eventType === 'content_block_start') {
+      const block = rawEvent.content_block && typeof rawEvent.content_block === 'object'
+        ? rawEvent.content_block as Record<string, unknown>
+        : null
+      if (block?.type === 'text') {
+        normalized = { blockKind: 'text', text: typeof block.text === 'string' ? block.text : '' }
+      } else if (block?.type === 'thinking') {
+        normalized = { blockKind: 'thinking', thinking: typeof block.thinking === 'string' ? block.thinking : '', redacted: false }
+      } else if (block?.type === 'redacted_thinking') {
+        normalized = { blockKind: 'thinking', redacted: true }
+      } else if (block?.type === 'tool_use') {
+        normalized = {
+          blockKind: 'tool_use',
+          toolName: typeof block.name === 'string' ? block.name : 'unknown_tool',
+          toolUseId: typeof block.id === 'string' ? block.id : undefined,
+          partialJson: typeof block.input === 'string' ? block.input : undefined,
+        }
+      }
+    } else if (eventType === 'content_block_delta') {
+      const delta = rawEvent.delta && typeof rawEvent.delta === 'object'
+        ? rawEvent.delta as Record<string, unknown>
+        : null
+      const deltaType = typeof delta?.type === 'string' ? delta.type : null
+      if (delta && deltaType === 'text_delta') {
+        normalized = { blockKind: 'text', deltaKind: 'text_delta', text: typeof delta.text === 'string' ? delta.text : '' }
+      } else if (delta && deltaType === 'thinking_delta') {
+        normalized = { blockKind: 'thinking', deltaKind: 'thinking_delta', thinking: typeof delta.thinking === 'string' ? delta.thinking : '' }
+      } else if (delta && deltaType === 'input_json_delta') {
+        normalized = { blockKind: 'tool_use', deltaKind: 'input_json_delta', partialJson: typeof delta.partial_json === 'string' ? delta.partial_json : '' }
+      }
+    }
+
+    return {
+      type: 'session.sdk.stream_event',
+      runId: input.runId,
+      sessionId: input.sessionId,
+      receivedAt: input.receivedAt,
+      sequence: input.sequence,
+      scope,
+      event: { type: eventType },
+      ...(normalized ? { normalized } : {}),
+      raw: input.payload,
+    }
+  }
+
+  function patchLastAssistantMessageFooterFromResult(input: {
+    sessionId: string
+    runId: string
+    resultPayload: unknown
+  }): void {
+    const resultRecord = input.resultPayload && typeof input.resultPayload === 'object'
+      ? input.resultPayload as Record<string, unknown>
+      : null
+    if (!resultRecord) return
+
+    // SDKResultMessage shape: { stop_reason, usage, modelUsage, ... } (no nested message)
+    const stopReason = typeof resultRecord.stop_reason === 'string'
+      ? resultRecord.stop_reason
+      : null
+    const usage = resultRecord.usage && typeof resultRecord.usage === 'object'
+      ? resultRecord.usage as Record<string, unknown>
+      : null
+    const modelUsage = resultRecord.modelUsage && typeof resultRecord.modelUsage === 'object'
+      ? resultRecord.modelUsage as Record<string, unknown>
+      : null
+    const model = modelUsage
+      ? Object.keys(modelUsage).find((key) => key.trim().length > 0) ?? null
+      : null
+
+    if (!stopReason && !model && !usage) return
+
+    // Find the most recent assistant message for this run and augment its raw.message.
+    for (let i = eventLog.value.length - 1; i >= 0; i -= 1) {
+      const event = eventLog.value[i]
+      if (event.runId !== input.runId) continue
+      if (event.sessionId !== input.sessionId) continue
+      if (!event.parsed || event.parsed.role !== 'assistant') continue
+      if (!event.parsed.raw || typeof event.parsed.raw !== 'object') continue
+
+      const raw = event.parsed.raw as Record<string, unknown>
+      const rawMessage = (raw.message && typeof raw.message === 'object')
+        ? raw.message as Record<string, unknown>
+        : {}
+      const nextRawMessage: Record<string, unknown> = {
+        ...rawMessage,
+        ...(stopReason ? { stop_reason: stopReason } : {}),
+        ...(model ? { model } : {}),
+        ...(usage ? { usage } : {}),
+      }
+
+      const nextParsed = {
+        ...event.parsed,
+        raw: {
+          ...raw,
+          message: nextRawMessage,
+        },
+      }
+
+      eventLog.value = eventLog.value.map((entry, idx) => idx === i ? { ...entry, parsed: nextParsed } : entry)
+      return
+    }
+  }
+
+  function applyWireEvent(wire: unknown) {
+    if (!isWorkerOutputEvent(wire)) return
+
+    const sessionId = wire.sessionId
+    const runId = typeof wire.runId === 'string' && wire.runId ? wire.runId : null
+    const receivedAt = Number.isFinite(wire.receivedAt) ? wire.receivedAt : Date.now()
+    const sequence = ++eventSequence
+    const kind = wire.kind
+
+    // Keep UI sessionId in sync even if we drop the event.
+    syncSessionId(sessionId)
+
+    if (runId && terminalRunIds.has(runId) && kind === 'session_state_changed' && wire.state === 'idle') {
+      // Avoid overriding "completed/failed" with "idle" after terminal result.
+      return
+    }
+
+    if (kind === 'session_state_changed') {
+      if (!runId) return
+      const state = wire.state === 'running' || wire.state === 'requires_action' || wire.state === 'idle'
+        ? wire.state
+        : 'running'
+      if (state === 'running') {
+        applyEvent({ type: 'session.run.started', runId, sessionId })
+      }
+      applyEvent({ type: 'session.run.state_changed', runId, sessionId, state })
+      return
+    }
+
+    if (kind === 'sdk_message') {
+      if (!runId) return
+      const parsed = normalizeSdkEnvelopeMessage((wire as { payload?: unknown }).payload)
+      applyEvent({
+        type: 'session.sdk.message',
+        runId,
+        payload: (wire as { payload?: any }).payload,
+        ...(parsed ? { parsed } : {}),
+        receivedAt,
+        sequence,
+        sessionId,
+      })
+      return
+    }
+
+    if (kind === 'sdk_stream_event') {
+      if (!runId) return
+      const streamEvent = toV2SessionStreamEvent({
+        payload: (wire as { payload?: unknown }).payload,
+        runId,
+        sessionId,
+        receivedAt,
+        sequence,
+      })
+      if (!streamEvent) return
+      applyEvent({
+        type: 'session.sdk.stream_event',
+        runId,
+        event: streamEvent,
+        receivedAt,
+        sequence,
+        sessionId,
+      })
+      return
+    }
+
+    if (kind === 'control_transaction') {
+      const transaction = (wire as { transaction?: ControlTransactionSummary }).transaction
+      if (!transaction) return
+      const payload = (wire as { payload?: unknown }).payload
+      const phase = (wire as { phase?: unknown }).phase
+      const effectiveRunId = typeof transaction.runId === 'string' && transaction.runId
+        ? transaction.runId
+        : runId
+      const targetSessionId = transaction.sessionId ?? sessionId
+      const envelopeBase = {
+        ...(effectiveRunId ? { runId: effectiveRunId } : {}),
+        sessionId: targetSessionId,
+        transaction,
+        receivedAt,
+        sequence,
+        ...(payload !== undefined ? { payload } : {}),
+      }
+      switch (phase) {
+        case 'opened':
+          applyEvent({ type: 'session.control.opened', ...envelopeBase })
+          break
+        case 'awaiting_user':
+          applyEvent({ type: 'session.control.awaiting_user', ...envelopeBase })
+          break
+        case 'responded':
+          applyEvent({ type: 'session.control.responded', ...envelopeBase })
+          break
+        case 'cancel_requested':
+          applyEvent({ type: 'session.control.cancel_requested', ...envelopeBase })
+          break
+        case 'cancelled':
+          applyEvent({ type: 'session.control.cancelled', ...envelopeBase })
+          break
+        case 'completed':
+          applyEvent({ type: 'session.control.completed', ...envelopeBase })
+          break
+        case 'failed':
+          applyEvent({ type: 'session.control.failed', ...envelopeBase })
+          break
+        default:
+          applyInteractiveTransaction(transaction)
+          syncSessionId(targetSessionId)
+          break
+      }
+      return
+    }
+
+    if (kind === 'result') {
+      if (!runId) return
+      terminalRunIds.add(runId)
+
+      const payload = (wire as { payload?: any }).payload
+      const parsed = normalizeSdkEnvelopeMessage(payload)
+      // Surface result as an SDK message so error results render in the timeline.
+      applyEvent({
+        type: 'session.sdk.message',
+        runId,
+        payload,
+        ...(parsed ? { parsed } : {}),
+        receivedAt,
+        sequence,
+        sessionId,
+      })
+
+      // Footer (stop_reason/model/usage) often arrives on the result message rather than
+      // the assistant message. Patch the last assistant message so footer can render.
+      patchLastAssistantMessageFooterFromResult({
+        sessionId,
+        runId,
+        resultPayload: payload,
+      })
+
+      const subtype = typeof wire.subtype === 'string' ? wire.subtype : 'error_during_execution'
+      if (subtype === 'success') {
+        applyEvent({ type: 'session.run.completed', runId, sessionId })
+      } else {
+        applyEvent({ type: 'session.run.failed', runId, sessionId, error: `Run failed (${subtype})` })
+      }
+      return
+    }
+
+    if (kind === 'worker_error') {
+      const errorText = typeof wire.error === 'string' ? wire.error : 'Worker error'
+      applyEvent({ type: 'session.error', ...(runId ? { runId } : {}), error: errorText })
+      if (runId) {
+        terminalRunIds.add(runId)
+        applyEvent({ type: 'session.run.failed', runId, sessionId, error: errorText })
+      }
+    }
+
+    // sdk_stream_event / worker_closed: currently ignored by the main chat UI.
+  }
+
+  function connectSocket() {
     if (authRequired.value && !hasAuthToken.value) {
       authError.value = '请输入访问令牌。'
       logger.warn('ws:connect:blocked', {
@@ -1109,29 +1536,31 @@ export const useSessionStore = defineStore('session', () => {
 
     clearConnection()
     authError.value = ''
+    eventSequence = 0
 
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = new URL(`${protocol}//${location.host}/ws`)
-    if (hasAuthToken.value) {
-      wsUrl.searchParams.set('auth', authToken.value)
-    }
+    const sessionId = currentSessionId.value
+    wsSessionFilter = sessionId
 
+    const wsUrl = buildWsUrl(sessionId)
     logger.info('ws:connect:start', {
       url: redactUrl(wsUrl),
       hasAuthToken: hasAuthToken.value,
       authRequired: authRequired.value,
+      sessionId: shortId(sessionId),
     })
+
     ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
       isConnected.value = true
       authError.value = ''
-      logger.info('ws:open')
+      logger.info('ws:open', { sessionId: shortId(sessionId) })
     }
 
-    ws.onclose = (event) => {
+    ws.onclose = (event: CloseEvent) => {
       isConnected.value = false
       ws = null
+      wsSessionFilter = null
       logger.warn('ws:close', {
         code: event.code,
         reason: event.reason,
@@ -1154,9 +1583,10 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
-    ws.onmessage = (evt) => {
+    ws.onmessage = (evt: MessageEvent) => {
       try {
-        applyEvent(JSON.parse(evt.data) as SessionEvent)
+        const parsed = JSON.parse(String(evt.data))
+        applyWireEvent(parsed)
       } catch (error) {
         logger.warn('ws:message:parse-error', {
           error: error instanceof Error ? error.message : String(error),
@@ -1164,19 +1594,37 @@ export const useSessionStore = defineStore('session', () => {
         })
       }
     }
+
+    void ensureAgentId()
   }
 
-  function sendMessage(prompt: string) {
+  function connect() {
+    connectSocket()
+  }
+
+  async function sendMessageImpl(prompt: string) {
     const trimmed = prompt.trim()
-    if (!ws || ws.readyState !== WebSocket.OPEN || !trimmed || isAwaitingInteraction.value || hasActiveRun.value) {
+    if (!trimmed || isAwaitingInteraction.value || hasActiveRun.value) {
       logger.warn('chat:send:blocked', {
-        connected: Boolean(ws && ws.readyState === WebSocket.OPEN),
         hasPrompt: Boolean(trimmed),
         awaitingInteraction: isAwaitingInteraction.value,
         hasActiveRun: hasActiveRun.value,
       })
       return
     }
+    clearSessionNotice()
+
+    const hadSession = Boolean(currentSessionId.value)
+    const sessionId = currentSessionId.value || generateUuid()
+    currentSessionId.value = sessionId
+
+    // Ensure WS is connected and filtered to this session.
+    if (!ws || ws.readyState !== WebSocket.OPEN || wsSessionFilter !== sessionId) {
+      connectSocket()
+    }
+
+    const agentId = await ensureAgentId()
+    const mode = hadSession ? 'resume' : 'new'
 
     awaitingRunStart = true
     activeRunId.value = null
@@ -1194,19 +1642,62 @@ export const useSessionStore = defineStore('session', () => {
         localId: `optimistic-${optimisticMessageCount}`,
       },
     ]
+
     logger.info('chat:send', {
+      sessionId: shortId(sessionId),
+      agentId,
+      mode,
       promptLength: trimmed.length,
-      sessionId: shortId(currentSessionId.value),
-      hasActiveRun: hasActiveRun.value,
     })
 
-    ws.send(
-      JSON.stringify({
-        action: 'message.create',
-        prompt: trimmed,
-        ...(currentSessionId.value ? { sessionId: currentSessionId.value } : {}),
+    try {
+      const res = await apiFetch('/api/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          agentId,
+          text: trimmed,
+          mode,
+        }),
       })
-    )
+      const data = await res.json().catch(() => null) as any
+      if (!res.ok) {
+        const message = data && typeof data === 'object' && 'error' in data ? String(data.error) : `HTTP ${res.status}`
+        if (res.status === 409 && data && typeof data === 'object' && data.error === 'session_busy') {
+          const activeRun = typeof data.activeRunId === 'string' && data.activeRunId ? shortId(data.activeRunId) : undefined
+          const status = typeof data.sessionStatus === 'string' ? data.sessionStatus : 'running'
+          sessionNotice.value = activeRun
+            ? `当前 Session 正忙（${status}，run ${activeRun}），请先等待，或执行中断 / 重建。`
+            : `当前 Session 正忙（${status}），请先等待，或执行中断 / 重建。`
+        } else {
+          sessionNotice.value = message
+        }
+        applyEvent({ type: 'session.run.failed', sessionId, error: message })
+        return
+      }
+
+      const runId = typeof data?.runId === 'string' ? data.runId : null
+      if (!runId) {
+        applyEvent({ type: 'session.run.failed', sessionId, error: 'Run accepted but missing runId' })
+        return
+      }
+
+      // Claim the run immediately; the runtime does not emit a separate "queued" event.
+      awaitingRunStart = false
+      activeRunId.value = runId
+      applyEvent({ type: 'session.run.queued', runId, sessionId })
+    } catch (error) {
+      applyEvent({
+        type: 'session.run.failed',
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  function sendMessage(prompt: string) {
+    void sendMessageImpl(prompt)
   }
 
   async function fetchSessions(): Promise<boolean> {
@@ -1231,165 +1722,66 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function fetchBindingCandidates(limit: number = 20): Promise<boolean> {
+  async function stopSession(sessionId: string): Promise<boolean> {
+    const trimmed = sessionId.trim()
+    if (!trimmed) return false
     try {
-      const res = await apiFetch(`/api/session-candidates?limit=${limit}`)
-      if (!res.ok) return false
-      const data = await res.json()
-      bindingCandidates.value = (data.sessions || []).map((s: any) => normalizeSession(s)).filter((s: SessionSummary) => s.id)
+      const res = await apiFetch(`/api/sessions/${encodeURIComponent(trimmed)}/stop`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        logger.warn('session:stop:error', {
+          sessionId: shortId(trimmed),
+          status: res.status,
+        })
+        return false
+      }
+      logger.info('session:stop:success', {
+        sessionId: shortId(trimmed),
+      })
+      if (currentSessionId.value === trimmed) {
+        clearRunState('idle')
+      }
+      await fetchSessions()
       return true
     } catch (error) {
-      logger.error('binding:candidates:error', {
+      logger.error('session:stop:error', {
+        sessionId: shortId(trimmed),
         error: error instanceof Error ? error.message : String(error),
       })
       return false
     }
   }
 
-  async function fetchBindingList(): Promise<boolean> {
-    bindingLoading.value = true
-    bindingError.value = ''
+  async function rebuildSession(sessionId: string): Promise<boolean> {
+    const trimmed = sessionId.trim()
+    if (!trimmed) return false
     try {
-      const res = await apiFetch(`/api/channels/${bindingChannel.value}/bindings`)
-      if (!res.ok) {
-        bindingError.value = `加载 bindings 列表失败 (${res.status})`
-        return false
-      }
-      const data = await res.json() as SessionBindingsListResponse
-      bindingList.value = (data.bindings || []).map((item) => ({
-        ref: item.ref ?? { channel: bindingChannel.value, conversationKey: '' },
-        binding: item.binding ?? null,
-        session: item.session ?? null,
-        activeRun: item.activeRun ?? null,
-      }))
-      return true
-    } catch (error) {
-      bindingError.value = error instanceof Error ? error.message : String(error)
-      return false
-    } finally {
-      bindingLoading.value = false
-    }
-  }
-
-  async function fetchBindingStatus(): Promise<boolean> {
-    const conversationKey = bindingConversationKey.value.trim()
-    if (!conversationKey) {
-      bindingStatus.value = null
-      bindingError.value = ''
-      return false
-    }
-
-    bindingLoading.value = true
-    bindingError.value = ''
-    try {
-      const res = await apiFetch(`/api/channels/${bindingChannel.value}/conversations/${encodeURIComponent(conversationKey)}/binding`)
-      if (!res.ok) {
-        bindingError.value = `加载 binding 失败 (${res.status})`
-        return false
-      }
-      const data = await res.json() as SessionBindingStatusResponse
-      bindingStatus.value = {
-        ref: data.ref ?? { channel: bindingChannel.value, conversationKey },
-        binding: data.binding ?? null,
-        session: data.session ?? null,
-        activeRun: data.activeRun ?? null,
-      }
-      bindingTargetSessionId.value = bindingStatus.value.binding?.sessionId || ''
-      return true
-    } catch (error) {
-      bindingError.value = error instanceof Error ? error.message : String(error)
-      return false
-    } finally {
-      bindingLoading.value = false
-    }
-  }
-
-  async function bindConversationToSession(sessionId: string): Promise<boolean> {
-    const conversationKey = bindingConversationKey.value.trim()
-    const targetSessionId = sessionId.trim()
-    if (!conversationKey || !targetSessionId) return false
-
-    bindingLoading.value = true
-    bindingError.value = ''
-    try {
-      const res = await apiFetch(`/api/channels/${bindingChannel.value}/conversations/${encodeURIComponent(conversationKey)}/binding`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: targetSessionId }),
+      const res = await apiFetch(`/api/sessions/${encodeURIComponent(trimmed)}/rebuild`, {
+        method: 'POST',
       })
       if (!res.ok) {
-        bindingError.value = `更新 binding 失败 (${res.status})`
+        logger.warn('session:rebuild:error', {
+          sessionId: shortId(trimmed),
+          status: res.status,
+        })
         return false
       }
-      const data = await res.json() as SessionBindingStatusResponse
-      bindingStatus.value = {
-        ref: data.ref ?? { channel: bindingChannel.value, conversationKey },
-        binding: data.binding ?? null,
-        session: data.session ?? null,
-        activeRun: data.activeRun ?? null,
-      }
-      bindingTargetSessionId.value = bindingStatus.value.binding?.sessionId || targetSessionId
-      return true
-    } catch (error) {
-      bindingError.value = error instanceof Error ? error.message : String(error)
-      return false
-    } finally {
-      bindingLoading.value = false
-    }
-  }
-
-  async function clearBindingStatus(): Promise<boolean> {
-    const conversationKey = bindingConversationKey.value.trim()
-    if (!conversationKey) return false
-
-    bindingLoading.value = true
-    bindingError.value = ''
-    try {
-      const res = await apiFetch(`/api/channels/${bindingChannel.value}/conversations/${encodeURIComponent(conversationKey)}/binding`, {
-        method: 'DELETE',
+      logger.info('session:rebuild:success', {
+        sessionId: shortId(trimmed),
       })
-      if (!res.ok) {
-        bindingError.value = `清除 binding 失败 (${res.status})`
-        return false
+      if (currentSessionId.value === trimmed) {
+        clearRunState('idle')
       }
-      const data = await res.json() as SessionBindingStatusResponse
-      bindingStatus.value = {
-        ref: data.ref ?? { channel: bindingChannel.value, conversationKey },
-        binding: data.binding ?? null,
-        session: data.session ?? null,
-        activeRun: data.activeRun ?? null,
-      }
-      bindingTargetSessionId.value = ''
+      await fetchSessions()
       return true
     } catch (error) {
-      bindingError.value = error instanceof Error ? error.message : String(error)
+      logger.error('session:rebuild:error', {
+        sessionId: shortId(trimmed),
+        error: error instanceof Error ? error.message : String(error),
+      })
       return false
-    } finally {
-      bindingLoading.value = false
     }
-  }
-
-  function setBindingChannel(channel: 'lark' | 'web' | 'discord') {
-    bindingChannel.value = channel
-  }
-
-  function setBindingConversationKey(value: string) {
-    bindingConversationKey.value = value
-  }
-
-  function setBindingTargetSessionId(value: string) {
-    bindingTargetSessionId.value = value
-  }
-
-  function applyBindingCandidate(sessionId: string) {
-    bindingTargetSessionId.value = sessionId
-  }
-
-  function selectBindingEntry(entry: SessionBindingStatus) {
-    bindingChannel.value = entry.ref.channel
-    bindingConversationKey.value = entry.ref.conversationKey
-    bindingStatus.value = entry
-    bindingTargetSessionId.value = entry.binding?.sessionId || ''
   }
 
   function newChat() {
@@ -1516,59 +1908,72 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function requestControl(subtype: 'interrupt' | 'get_context_usage' | 'mcp_status') {
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeRunId.value) {
-      logger.warn('chat:control-request:blocked', {
-        hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),
-        activeRunId: shortId(activeRunId.value),
+    const controlPath = currentSessionId.value
+      ? `/api/sessions/${encodeURIComponent(currentSessionId.value)}/control`
+      : null
+
+    if (!controlPath) {
+      logger.warn('chat:control:blocked', {
         subtype,
+        activeRunId: shortId(activeRunId.value),
+        sessionId: shortId(currentSessionId.value),
       })
       return
     }
 
     logger.info('chat:control-request', {
       subtype,
-      runId: shortId(activeRunId.value),
+      sessionId: shortId(currentSessionId.value),
     })
-    ws.send(JSON.stringify({
-      action: 'control.request',
-      runId: activeRunId.value,
-      subtype,
-      ...(currentSessionId.value ? { sessionId: currentSessionId.value } : {}),
-    }))
+    clearSessionNotice()
+    void apiFetch(controlPath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subtype }),
+    }).then(async (res) => {
+      if (res.ok) return
+      const data = await res.json().catch(() => null) as any
+      const error = data && typeof data === 'object' && 'error' in data
+        ? String(data.error)
+        : `HTTP ${res.status}`
+      sessionNotice.value = error
+      logger.warn('chat:control-request:error', {
+        subtype,
+        sessionId: shortId(currentSessionId.value),
+        error,
+      })
+    }).catch((error) => {
+      sessionNotice.value = error instanceof Error ? error.message : String(error)
+      logger.warn('chat:control-request:error', {
+        subtype,
+        sessionId: shortId(currentSessionId.value),
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
   }
 
   function respondToInteraction(response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) {
-    if (fixtureInteraction.value && pendingInteraction.value?.id === fixtureInteraction.value.id) {
-      logger.info('chat:interactive:fixture-resolved', {
-        kind: response.kind,
-        interactionId: shortId(fixtureInteraction.value.id),
-        action: response.kind === 'permission' ? response.decision : response.action,
-      })
-      setFixtureInteraction('')
-      return
-    }
-
-    if (!ws || ws.readyState !== WebSocket.OPEN || !pendingInteraction.value || !activeRunId.value) {
+    if (!currentSessionId.value || !pendingInteraction.value) {
       logger.warn('chat:interactive:blocked', {
-        hasSocket: Boolean(ws && ws.readyState === WebSocket.OPEN),
-        interactionKind: pendingInteraction.value?.kind,
-        activeRunId: shortId(activeRunId.value),
+        kind: response.kind,
+        sessionId: shortId(currentSessionId.value),
+        interactionId: shortId(pendingInteraction.value?.id),
       })
       return
     }
-
 
     logger.info('chat:interactive:respond', {
       kind: response.kind,
       interactionId: shortId(pendingInteraction.value.id),
-      runId: shortId(activeRunId.value),
+      sessionId: shortId(currentSessionId.value),
     })
+    clearSessionNotice()
 
-    ws.send(
-      JSON.stringify({
-        action: 'interactive.respond',
-        runId: activeRunId.value,
-        interactionId: pendingInteraction.value.id,
+    void apiFetch(`/api/sessions/${encodeURIComponent(currentSessionId.value)}/control/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: pendingInteraction.value.id,
         kind: response.kind,
         response: response.kind === 'permission'
           ? {
@@ -1580,9 +1985,71 @@ export const useSessionStore = defineStore('session', () => {
               action: response.action,
               ...(response.content ? { content: response.content } : {}),
             },
-        ...(currentSessionId.value ? { sessionId: currentSessionId.value } : {}),
+      }),
+    }).then(async (res) => {
+      if (res.ok) return
+      const data = await res.json().catch(() => null) as any
+      const error = data && typeof data === 'object' && 'error' in data
+        ? String(data.error)
+        : `HTTP ${res.status}`
+      sessionNotice.value = error
+      logger.warn('chat:interactive:respond:error', {
+        kind: response.kind,
+        sessionId: shortId(currentSessionId.value),
+        interactionId: shortId(pendingInteraction.value?.id),
+        error,
       })
-    )
+    }).catch((error) => {
+      sessionNotice.value = error instanceof Error ? error.message : String(error)
+      logger.warn('chat:interactive:respond:error', {
+        kind: response.kind,
+        sessionId: shortId(currentSessionId.value),
+        interactionId: shortId(pendingInteraction.value?.id),
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+  }
+
+  function cancelPendingInteraction() {
+    if (!currentSessionId.value || !pendingInteraction.value) {
+      logger.warn('chat:interactive:cancel:blocked', {
+        sessionId: shortId(currentSessionId.value),
+        interactionId: shortId(pendingInteraction.value?.id),
+      })
+      return
+    }
+
+    logger.info('chat:interactive:cancel', {
+      sessionId: shortId(currentSessionId.value),
+      interactionId: shortId(pendingInteraction.value.id),
+    })
+    clearSessionNotice()
+    void apiFetch(`/api/sessions/${encodeURIComponent(currentSessionId.value)}/control/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: pendingInteraction.value.id,
+      }),
+    }).then(async (res) => {
+      if (res.ok) return
+      const data = await res.json().catch(() => null) as any
+      const error = data && typeof data === 'object' && 'error' in data
+        ? String(data.error)
+        : `HTTP ${res.status}`
+      sessionNotice.value = error
+      logger.warn('chat:interactive:cancel:error', {
+        sessionId: shortId(currentSessionId.value),
+        interactionId: shortId(pendingInteraction.value?.id),
+        error,
+      })
+    }).catch((error) => {
+      sessionNotice.value = error instanceof Error ? error.message : String(error)
+      logger.warn('chat:interactive:cancel:error', {
+        sessionId: shortId(currentSessionId.value),
+        interactionId: shortId(pendingInteraction.value?.id),
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
   }
 
 
@@ -1594,16 +2061,12 @@ export const useSessionStore = defineStore('session', () => {
     if (!authRequired.value) {
       connect()
       await fetchSessions()
-      await fetchBindingCandidates()
-      await fetchBindingList()
       return
     }
 
     if (hasAuthToken.value) {
       const ok = await fetchSessions()
       if (ok) {
-        await fetchBindingCandidates()
-        await fetchBindingList()
         connect()
       }
     }
@@ -1617,15 +2080,11 @@ export const useSessionStore = defineStore('session', () => {
     if (!authRequired.value) {
       connect()
       await fetchSessions()
-      await fetchBindingCandidates()
-      await fetchBindingList()
       return
     }
 
     const ok = await fetchSessions()
     if (ok) {
-      await fetchBindingCandidates()
-      await fetchBindingList()
       connect()
     }
   }
@@ -1635,6 +2094,7 @@ export const useSessionStore = defineStore('session', () => {
     persistAuthToken('')
     clearConnection()
     authError.value = ''
+    sessionNotice.value = ''
     currentSessionId.value = null
     historyMessages.value = []
     optimisticUserMessages.value = []
@@ -1643,31 +2103,12 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoadingOlder.value = false
     historyMessagesBeforeCursor.value = null
     sessions.value = []
-    bindingStatus.value = null
-    bindingCandidates.value = []
-    bindingList.value = []
-    bindingConversationKey.value = ''
-    bindingTargetSessionId.value = ''
-    bindingError.value = ''
     eventLog.value = []
     streamPreviewStates.value = {}
     streamAnimationCursors.value = {}
     observedEventCount = 0
     optimisticMessageCount = 0
     clearRunState('idle')
-  }
-
-  function setDebugTimelineVisible(visible: boolean) {
-    debugTimelineVisible.value = visible
-  }
-
-  function setFixtureInteraction(id: string) {
-    fixtureInteractionId.value = id
-    if (id) {
-      localStorage.setItem(ELICITATION_FIXTURE_STORAGE_KEY, id)
-      return
-    }
-    localStorage.removeItem(ELICITATION_FIXTURE_STORAGE_KEY)
   }
 
   return {
@@ -1682,7 +2123,6 @@ export const useSessionStore = defineStore('session', () => {
     streamPreviewStates,
     streamAnimationCursors,
     livePreviewItems,
-    debugTimelineVisible,
     historyMessagesHasMore,
     historyMessagesLoading,
     historyMessagesLoadingOlder,
@@ -1692,52 +2132,34 @@ export const useSessionStore = defineStore('session', () => {
     isConnected,
     isLoading,
     runState,
+    currentSessionSummary,
     authToken,
     authError,
+    sessionNotice,
     authRequired,
     authChecked,
     hasAuthToken,
     hasActiveRun,
     activeRunId,
-    fixtureInteraction,
     pendingInteraction,
     controlTransactionsById,
     activeControlOrder,
-    recentControlTransactions,
-    bindingChannel,
-    bindingConversationKey,
-    bindingStatus,
-    bindingCandidates,
-    bindingList,
-    bindingLoading,
-    bindingError,
-    bindingTargetSessionId,
-    bindingSummary,
-    observabilityEvents,
     eventLog,
     isAwaitingApproval,
     isAwaitingInteraction,
     connect,
     sendMessage,
     respondToInteraction,
+    cancelPendingInteraction,
     requestControl,
+    stopSession,
+    rebuildSession,
     fetchSessions,
-    fetchBindingCandidates,
-    fetchBindingList,
-    fetchBindingStatus,
-    bindConversationToSession,
-    clearBindingStatus,
-    setBindingChannel,
-    setBindingConversationKey,
-    setBindingTargetSessionId,
-    applyBindingCandidate,
-    selectBindingEntry,
     newChat,
     selectSession,
     loadOlderSessionMessages,
     initialize,
-    setDebugTimelineVisible,
-    setFixtureInteraction,
+    clearSessionNotice,
     setAuthToken,
     clearAuthToken,
   }

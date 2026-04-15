@@ -2,19 +2,16 @@
 import { computed, ref, watch } from 'vue'
 import TimelineAssistantToolResultBlock from './TimelineAssistantToolResultBlock.vue'
 import TimelineAssistantToolUseBlock from './TimelineAssistantToolUseBlock.vue'
-import TimelineAtomDebugMeta from './TimelineAtomDebugMeta.vue'
 import TimelineLivePreviewCard from './TimelineLivePreviewCard.vue'
 import TimelineCliSubrow from './TimelineCliSubrow.vue'
-import type { DisplayFragmentToolUse } from '../../../shared/message-types.js'
-import type { GroupedToolUseDisplayItem, ToolResultDisplayMeta } from '../../../shared/message-types.js'
+import type { DisplayFragmentToolUse } from '../../../runtime/protocol/message-types.js'
+import type { GroupedToolUseDisplayItem, ToolResultDisplayMeta } from '../../../runtime/protocol/message-types.js'
 
 const props = withDefaults(defineProps<{
   item: GroupedToolUseDisplayItem
   hideFooter?: boolean
-  showDebugMeta?: boolean
 }>(), {
   hideFooter: false,
-  showDebugMeta: false,
 })
 
 const expanded = ref(props.item.status === 'streaming')
@@ -74,7 +71,6 @@ const toggleLabel = computed(() => (expanded.value ? 'collapse' : 'expand'))
           :trailing-toggle-label="getToolResultToggleLabel(toolIndex, tool.resultDisplay)"
           @toggle="toggleToolResult(toolIndex, tool.resultDisplay)"
         />
-        <TimelineAtomDebugMeta v-if="showDebugMeta" :debug="tool.debug" />
         <TimelineAssistantToolResultBlock
           v-if="tool.result !== undefined"
           :output="tool.result"

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useSessionStore } from '../stores/session'
-import type { DisplayFragmentToolUse, PermissionInteraction, PermissionSuggestion } from '../../../shared/message-types.js'
-import { stringifyStructuredValue } from '../../../shared/transcript-normalizer.js'
+import type { DisplayFragmentToolUse, PermissionInteraction, PermissionSuggestion } from '../../../runtime/protocol/message-types.js'
+import { stringifyStructuredValue } from '../../../runtime/protocol/transcript-normalizer.js'
 
 const props = defineProps<{
   interaction: PermissionInteraction
@@ -171,6 +171,13 @@ watch(
         @click="submitPermission('deny')"
       >
         {{ submittedDecision === 'deny' ? 'Denied' : 'Deny' }}
+      </button>
+      <button
+        class="rounded-md border border-[var(--tt-border)] bg-white px-2.5 py-1.5 text-[var(--tt-text-muted)] transition-colors hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)]"
+        :disabled="isSubmitted"
+        @click="session.cancelPendingInteraction()"
+      >
+        Cancel interaction
       </button>
     </div>
   </div>

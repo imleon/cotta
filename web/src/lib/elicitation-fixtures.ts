@@ -1,4 +1,4 @@
-import type { PendingInteraction } from '../../../shared/message-types.js'
+import type { PendingInteraction } from '../../../runtime/protocol/message-types.js'
 
 const baseSource = {
   kind: 'control' as const,

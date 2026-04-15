@@ -1,19 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { elicitationFixtures } from '../lib/elicitation-fixtures.js'
 import { useSessionStore } from '../stores/session'
 
 const session = useSessionStore()
 const input = ref('')
-const selectedFixtureId = computed({
-  get: () => session.fixtureInteraction?.id || '',
-  set: (value: string) => session.setFixtureInteraction(value),
-})
-const debugMetaVisible = computed({
-  get: () => session.debugTimelineVisible,
-  set: (value: boolean) => session.setDebugTimelineVisible(value),
-})
-const canRequestControl = computed(() => session.isConnected && session.hasActiveRun)
+const currentSessionSummary = computed(() => session.currentSessionSummary)
+const canInterrupt = computed(() => session.isConnected && session.hasActiveRun)
+const canRequestSessionControl = computed(() => session.isConnected && Boolean(session.currentSessionId))
 
 function send() {
   const text = input.value.trim()
@@ -26,14 +19,6 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     send()
-  }
-}
-
-function toggleDebugTools() {
-  const next = !debugMetaVisible.value
-  debugMetaVisible.value = next
-  if (!next) {
-    session.setFixtureInteraction('')
   }
 }
 </script>
@@ -57,47 +42,29 @@ function toggleDebugTools() {
         >
           Send
         </button>
-        <label v-if="debugMetaVisible" class="flex items-center gap-2 rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm">
-          <span>Fixture</span>
-          <select
-            v-model="selectedFixtureId"
-            class="bg-transparent text-[12px] text-[var(--tt-text)] outline-none"
-          >
-            <option value="">None</option>
-            <option v-for="fixture in elicitationFixtures" :key="fixture.id" :value="fixture.id">
-              {{ fixture.id }}
-            </option>
-          </select>
-        </label>
         <div class="flex items-center gap-2">
           <button
             class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)] disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!canRequestControl"
+            :disabled="!canInterrupt"
             @click="session.requestControl('interrupt')"
           >
             Interrupt
           </button>
           <button
             class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)] disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!canRequestControl"
+            :disabled="!canRequestSessionControl"
             @click="session.requestControl('get_context_usage')"
           >
             Context
           </button>
           <button
             class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)] disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!canRequestControl"
+            :disabled="!canRequestSessionControl"
             @click="session.requestControl('mcp_status')"
           >
             MCP
           </button>
         </div>
-        <button
-          class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[12px] font-medium text-[var(--tt-text-muted)] shadow-sm transition hover:border-[var(--tt-border-strong)] hover:text-[var(--tt-accent)]"
-          @click="toggleDebugTools"
-        >
-          {{ debugMetaVisible ? 'Hide debug' : 'Show debug' }}
-        </button>
       </div>
     </div>
     <div v-if="session.authRequired && !session.hasAuthToken" class="mt-2 text-center text-xs text-[var(--tt-warning)]">
@@ -108,6 +75,24 @@ function toggleDebugTools() {
     </div>
     <div v-else-if="!session.isConnected" class="mt-2 text-center text-xs text-[var(--tt-danger)]">
       Disconnected — reconnecting...
+    </div>
+    <div v-if="currentSessionSummary" class="mt-3 rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-[11px] text-[var(--tt-text-subtle)]">
+      <div class="flex flex-wrap items-center gap-2">
+        <span>session {{ currentSessionSummary.id.slice(0, 8) }}</span>
+        <span v-if="currentSessionSummary.sessionStatus">· {{ currentSessionSummary.sessionStatus }}</span>
+        <span v-if="currentSessionSummary.activeRunId">· run {{ currentSessionSummary.activeRunId.slice(0, 8) }}</span>
+        <span v-if="currentSessionSummary.workerRef">· worker {{ currentSessionSummary.workerRef.slice(0, 8) }}</span>
+      </div>
+      <div v-if="currentSessionSummary.agentId || currentSessionSummary.channelId" class="mt-1">
+        <span v-if="currentSessionSummary.agentId">{{ currentSessionSummary.agentId }}</span>
+        <span v-if="currentSessionSummary.channelId"> · {{ currentSessionSummary.channelId }}</span>
+      </div>
+    </div>
+    <div v-if="session.sessionNotice" class="mt-2 rounded-xl border border-[color:color-mix(in_srgb,var(--tt-warning)_38%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_12%,white)] px-3 py-2 text-xs text-[var(--tt-text)]">
+      <div class="flex items-start justify-between gap-3">
+        <span>{{ session.sessionNotice }}</span>
+        <button class="shrink-0 text-[var(--tt-text-subtle)] hover:text-[var(--tt-accent)]" @click="session.clearSessionNotice()">关闭</button>
+      </div>
     </div>
   </div>
 </template>

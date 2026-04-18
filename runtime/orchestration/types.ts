@@ -1,4 +1,5 @@
 export type SessionStatus = 'idle' | 'running' | 'requires_action'
+export type SessionScope = 'managed' | 'foreign'
 
 export type RunTerminalStatus =
   | 'success'
@@ -24,8 +25,10 @@ export interface AgentTemplate {
 export interface SessionRecord {
   sessionId: string
   agentId: string
+  sessionScope: SessionScope
   channelId?: string
   workerRef?: string
+  workerConfigSig?: string
   sessionStatus?: SessionStatus
   activeRunId?: string
   createdAt: number
@@ -71,5 +74,5 @@ export interface ChannelClaimPlan {
   agentId: string
   sessionId: string
   mode: ChannelClaimMode
-  reason: 'existing_binding' | 'latest_unclaimed_session' | 'generated_new_session'
+  reason: 'existing_claim' | 'persisted_claim' | 'latest_unclaimed_session' | 'generated_new_session'
 }

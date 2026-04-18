@@ -6,6 +6,7 @@ import type { Orchestrator } from '../../orchestration/orchestrator.js'
 import type { SessionRegistry } from '../../orchestration/session-registry.js'
 import type { WorkerOutputEvent } from '../../execution/types.js'
 import { getMessagesPage, getSession } from '../../storage/fs/sessions.js'
+import { removeChannelClaim, setExclusiveChannelClaim } from '../../storage/fs/channel-claims.js'
 import type {
   DisplayAssistantFooter,
   PermissionInteraction,
@@ -463,6 +464,7 @@ function buildPermissionCard(sessionId: string, interaction: {
 }
 
 export class LarkIntegrationService {
+  private readonly subscriberKey = 'lark-integration'
   private readonly clients = new Map<string, Lark.Client>()
   private readonly dispatchers = new Map<string, Lark.EventDispatcher>()
   private readonly wsClients = new Map<string, any>()
@@ -496,7 +498,7 @@ export class LarkIntegrationService {
   start(): void {
     if (this.started) return
     this.started = true
-    this.deps.orchestrator.subscribe('lark-integration', (event) => {
+    this.deps.orchestrator.subscribe(this.subscriberKey, (event) => {
       void this.handleWorkerEvent(event).catch((error) => {
         this.deps.logger.error('lark:worker-event:error', {
           error: error instanceof Error ? error.message : String(error),
@@ -511,6 +513,39 @@ export class LarkIntegrationService {
         })
       })
     }
+  }
+
+  async stop(): Promise<void> {
+    if (!this.started) return
+    this.started = false
+    this.deps.orchestrator.unsubscribe(this.subscriberKey)
+
+    // Best-effort shutdown of long connections. The upstream SDK has changed
+    // APIs over time, so we use duck-typing to avoid hard dependencies.
+    const stops: Array<Promise<unknown>> = []
+    for (const wsClient of this.wsClients.values()) {
+      try {
+        if (wsClient && typeof wsClient.stop === 'function') {
+          const result = wsClient.stop()
+          stops.push(Promise.resolve(result))
+          continue
+        }
+        if (wsClient && typeof wsClient.close === 'function') {
+          const result = wsClient.close()
+          stops.push(Promise.resolve(result))
+          continue
+        }
+        if (wsClient && wsClient.ws && typeof wsClient.ws.close === 'function') {
+          wsClient.ws.close()
+        }
+      } catch (error) {
+        this.deps.logger.warn('lark:ws:stop:error', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    await Promise.allSettled(stops)
   }
 
   isConfigured(): boolean {
@@ -752,7 +787,8 @@ export class LarkIntegrationService {
       }
 
       if (command.action === 'clear' || command.action === 'new') {
-        this.deps.sessionRegistry.unbindChannel(channel.channelId)
+        this.deps.sessionRegistry.releaseChannel(channel.channelId)
+        await removeChannelClaim(channel.channelId)
         await this.sendTextToChannel(
           channel,
           command.action === 'new'
@@ -774,7 +810,12 @@ export class LarkIntegrationService {
         return
       }
       this.deps.sessionRegistry.ensure(sessionId, channel.agentId)
-      this.deps.sessionRegistry.bindChannel(sessionId, channel.channelId)
+      this.deps.sessionRegistry.claimChannel(sessionId, channel.channelId)
+      await setExclusiveChannelClaim({
+        channelId: channel.channelId,
+        agentId: channel.agentId,
+        sessionId,
+      })
       await this.sendTextToChannel(
         channel,
         `Bound this chat to session ${sessionId}${persisted.title ? ` (${persisted.title})` : ''}.`,
@@ -978,6 +1019,11 @@ export class LarkIntegrationService {
       const sessionId = randomUUID()
       runtimeSession = this.deps.sessionRegistry.ensure(sessionId, channel.agentId, {
         channelId: channel.channelId,
+      })
+      await setExclusiveChannelClaim({
+        channelId: channel.channelId,
+        agentId: channel.agentId,
+        sessionId,
       })
     }
 

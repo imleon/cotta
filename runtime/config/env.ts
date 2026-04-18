@@ -25,6 +25,18 @@ export const ENV = {
   agentTimeoutMs: getInt('AGENT_TIMEOUT_MS', 600_000),
   defaultModel: getString('DEFAULT_MODEL', ''),
 
+  // Worker lifecycle governance.
+  // - Set to 0 to disable idle timeout reaping.
+  workerIdleTimeoutMs: getInt('WORKER_IDLE_TIMEOUT_MS', 15 * 60 * 1000),
+  workerIdleSweepIntervalMs: getInt('WORKER_IDLE_SWEEP_INTERVAL_MS', 60 * 1000),
+  // Worker health check (best-effort).
+  // - Set to 0 to disable periodic health checks.
+  workerHealthCheckIntervalMs: getInt('WORKER_HEALTH_CHECK_INTERVAL_MS', 5 * 60 * 1000),
+  workerHealthCheckTimeoutMs: getInt('WORKER_HEALTH_CHECK_TIMEOUT_MS', 2_000),
+  // Auto rebuild on unhealthy/error (best-effort).
+  // - Set to 0 to disable automatic rebuilds.
+  workerAutoRebuildCooldownMs: getInt('WORKER_AUTO_REBUILD_COOLDOWN_MS', 5 * 60 * 1000),
+
   authToken: getString('APP_AUTH_TOKEN', ''),
   authEnabled: getString('APP_AUTH_TOKEN', '').length > 0,
 

@@ -4,6 +4,7 @@ import type {
   AssistantDisplayItem,
   CollapsedToolBatchDisplayItem,
   ControlTransactionSummary,
+  DisplayFragment,
   DisplayItem,
   GroupedToolUseDisplayItem,
   LiveLaneKind,
@@ -20,6 +21,7 @@ import type {
   TimelineLivePreviewItem,
   TimelineRenderableItem,
   TranscriptAtom,
+  UserDisplayItem,
 } from '../../../runtime/protocol/message-types.js'
 import {
   classifySdkMessageLane,
@@ -393,6 +395,192 @@ function attachOverlaysToDisplayItems(
   }
 }
 
+function buildSyntheticAssistantMessage(anchorId: string, timestamp: number): SessionMessage {
+  // Provides a stable "assistant message" shape so TimelineAssistantCard/footer can render
+  // while we only have streaming overlays (no materialized assistant message yet).
+  return {
+    role: 'assistant',
+    content: '',
+    timestamp,
+    blocks: [],
+    raw: {
+      type: 'assistant',
+      uuid: `synthetic-${anchorId}`,
+      message: {
+        id: anchorId,
+        content: [],
+      },
+    },
+  }
+}
+
+function synthesizeOverlayHosts(unattached: TimelineLivePreviewItem[]): AssistantDisplayItem[] {
+  if (!unattached.length) return []
+
+  const byKey = new Map<string, TimelineLivePreviewItem[]>()
+  for (const overlay of unattached) {
+    const messageId = overlay.anchor.messageId
+      ?? (overlay.anchor.anchorKind === 'message' ? overlay.anchor.anchorId : null)
+    const key = messageId
+      ? `message:${messageId}`
+      : overlay.anchor.parentToolUseId
+        ? `tool:${overlay.anchor.parentToolUseId}`
+        : `scope:${overlay.anchor.scopeKey}`
+    byKey.set(key, [...(byKey.get(key) || []), overlay])
+  }
+
+  const synthetic: AssistantDisplayItem[] = []
+  for (const [groupKey, overlays] of byKey.entries()) {
+    const timestamp = overlays.reduce((min, item) => Math.min(min, item.timestamp), overlays[0]!.timestamp)
+    const anchorId = (() => {
+      const messageId = overlays.find((o) => typeof o.anchor.messageId === 'string' && o.anchor.messageId)?.anchor.messageId
+      if (typeof messageId === 'string' && messageId) return messageId
+      const messageAnchor = overlays.find((o) => o.anchor.anchorKind === 'message')?.anchor.anchorId
+      return messageAnchor ?? groupKey
+    })()
+
+    synthetic.push({
+      kind: 'assistant',
+      id: `synthetic-assistant-${groupKey}`,
+      key: `synthetic-assistant-${groupKey}`,
+      timestamp,
+      atomIds: [],
+      messages: [],
+      anchorMessage: buildSyntheticAssistantMessage(anchorId, timestamp),
+      fragments: [],
+      overlays,
+      footer: undefined,
+    })
+  }
+
+  return synthetic
+}
+
+function toAssistantContribution(item: Exclude<DisplayItem, UserDisplayItem>): AssistantDisplayItem {
+  if (item.kind === 'assistant') {
+    return item
+  }
+
+  if (item.kind === 'summary') {
+    const fragments: DisplayFragment[] = [{
+      type: 'summary',
+      text: item.content,
+      defaultCollapsed: item.defaultCollapsed,
+    }]
+    return {
+      kind: 'assistant',
+      id: `summary-output-${item.id}`,
+      key: `summary-output-${item.key}`,
+      timestamp: item.timestamp,
+      atomIds: [...item.atomIds],
+      messages: [item.anchorMessage],
+      anchorMessage: item.anchorMessage,
+      fragments,
+    }
+  }
+
+  if (item.kind === 'grouped_tool_use') {
+    const fragments: DisplayFragment[] = item.toolUses.flatMap((tool) => {
+      const result: DisplayFragment[] = [{
+        type: 'tool_use',
+        name: tool.name,
+        toolUseId: tool.toolUseId,
+        input: tool.input,
+      }]
+      if (tool.result !== undefined) {
+        result.push({
+          type: 'tool_result',
+          toolUseId: tool.toolUseId,
+          output: tool.result,
+          attachedToParent: true,
+          display: tool.resultDisplay,
+          defaultCollapsed: !(tool.resultDisplay?.defaultExpanded ?? false),
+        })
+      }
+      return result
+    })
+
+    return {
+      kind: 'assistant',
+      id: `grouped-output-${item.id}`,
+      key: `grouped-output-${item.key}`,
+      timestamp: item.timestamp,
+      atomIds: [...item.atomIds],
+      messages: [item.anchorMessage],
+      anchorMessage: item.anchorMessage,
+      fragments,
+      footer: item.footer,
+      overlays: item.overlays,
+    }
+  }
+
+  const fragments: DisplayFragment[] = item.items.flatMap((child) => toAssistantContribution(child).fragments)
+  const messages = item.items.flatMap((child) => toAssistantContribution(child).messages)
+  const overlays = item.items.flatMap((child) => toAssistantContribution(child).overlays || [])
+
+  return {
+    kind: 'assistant',
+    id: `collapsed-output-${item.id}`,
+    key: `collapsed-output-${item.key}`,
+    timestamp: item.timestamp,
+    atomIds: [...item.atomIds],
+    messages,
+    anchorMessage: item.anchorMessage,
+    fragments,
+    footer: item.footer,
+    overlays: overlays.length > 0 ? overlays : item.overlays,
+  }
+}
+
+function mergeAssistantOutputItems(
+  current: AssistantDisplayItem | null,
+  nextItem: Exclude<DisplayItem, UserDisplayItem>,
+): AssistantDisplayItem {
+  const next = toAssistantContribution(nextItem)
+  if (!current) return next
+
+  const overlays = [...(current.overlays || []), ...(next.overlays || [])]
+    .slice()
+    .sort((left, right) => {
+      if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp
+      return left.key.localeCompare(right.key)
+    })
+
+  return {
+    ...current,
+    atomIds: [...current.atomIds, ...next.atomIds],
+    messages: [...current.messages, ...next.messages],
+    anchorMessage: next.anchorMessage,
+    fragments: [...current.fragments, ...next.fragments],
+    footer: next.footer ?? current.footer,
+    overlays: overlays.length > 0 ? overlays : undefined,
+  }
+}
+
+function mergeTurnOutputItems(items: DisplayItem[]): DisplayItem[] {
+  const merged: DisplayItem[] = []
+  let pendingOutput: AssistantDisplayItem | null = null
+
+  const flushPending = () => {
+    if (!pendingOutput) return
+    merged.push(pendingOutput)
+    pendingOutput = null
+  }
+
+  for (const item of items) {
+    if (item.kind === 'user') {
+      flushPending()
+      merged.push(item)
+      continue
+    }
+
+    pendingOutput = mergeAssistantOutputItems(pendingOutput, item)
+  }
+
+  flushPending()
+  return merged
+}
+
 export const useSessionStore = defineStore('session', () => {
   const historyMessages = ref<SessionMessage[]>([])
   const optimisticUserMessages = ref<OptimisticUserMessage[]>([])
@@ -635,17 +823,15 @@ export const useSessionStore = defineStore('session', () => {
       visibleItems,
       livePreviewItems.value,
     )
-    const lastVisibleTimestamp = itemsWithOverlays.length > 0
-      ? Math.max(...itemsWithOverlays.map((item) => item.timestamp))
-      : null
-    const positionedUnattachedOverlays = lastVisibleTimestamp === null
-      ? unattachedOverlays
-      : unattachedOverlays.map((overlay, index) => ({
-          ...overlay,
-          timestamp: Math.max(overlay.timestamp, lastVisibleTimestamp + index + 1),
-        }))
-
-    return [...itemsWithOverlays, ...positionedUnattachedOverlays]
+    const syntheticOverlayHosts = synthesizeOverlayHosts(unattachedOverlays)
+    return mergeTurnOutputItems(
+      [...itemsWithOverlays, ...syntheticOverlayHosts]
+        .slice()
+        .sort((left, right) => {
+          if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp
+          return left.key.localeCompare(right.key)
+        })
+    )
       .slice()
       .sort((left, right) => {
         if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp

@@ -36,6 +36,7 @@ const logger = createDebugLogger('log-view-store')
 const SESSION_LIST_REFRESH_INTERVAL_MS = 3000
 const DEFAULT_LOG_PAGE_SIZE = 100
 const FULL_LOG_PAGE_SIZE = 200
+const ALL_AGENTS_ID = '__all__'
 
 function shortId(value?: string | null): string | undefined {
   return value ? value.slice(0, 8) : undefined
@@ -112,6 +113,7 @@ export const useLogViewStore = defineStore('log-view', () => {
 
   const sessions = computed<SessionSummary[]>(() => sessionStore.sessions)
   const filteredSessions = computed<SessionSummary[]>(() => {
+    if (selectedAgentId.value === ALL_AGENTS_ID) return sessions.value
     if (!selectedAgentId.value) return []
     return sessions.value.filter((session) => session.agentId === selectedAgentId.value)
   })
@@ -216,9 +218,9 @@ export const useLogViewStore = defineStore('log-view', () => {
           }))
           .filter((agent) => agent.agentId)
         : []
-      agents.value = nextAgents
+      agents.value = [{ agentId: ALL_AGENTS_ID, projectDir: 'ALL sessions' }, ...nextAgents]
       selectedAgentId.value = resolveSelectedAgentId({
-        agents: nextAgents,
+        agents: agents.value,
         preferredAgentId: selectedAgentId.value,
         defaultAgentId: typeof data.defaultAgentId === 'string' ? data.defaultAgentId : '',
       })

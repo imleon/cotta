@@ -22,13 +22,13 @@ function renderMarkdown(content: string): string {
 const overlayToneClass = computed(() => {
   switch (props.item.overlayKind) {
     case 'streaming_thinking':
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-accent)]'
+      return 'text-[var(--tt-accent)]'
     case 'streaming_tool_use':
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-primary)]'
+      return 'text-[var(--tt-primary)]'
     case 'streaming_progress':
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-coral)]'
+      return 'text-[var(--tt-coral)]'
     default:
-      return 'timeline-cli-dot timeline-cli-dot-streaming text-[var(--tt-primary)]'
+      return 'text-[var(--tt-primary)]'
   }
 })
 
@@ -57,8 +57,7 @@ const combinedPreviewText = computed(() =>
 <template>
   <div class="space-y-2">
     <div class="flex items-start gap-3 text-[var(--tt-text)]">
-      <span :class="overlayToneClass">●</span>
-      <span class="font-medium">{{ overlayLabel }}…</span>
+      <span :class="['font-medium', overlayToneClass]">{{ overlayLabel }}…</span>
     </div>
     <div v-for="block in item.preview.blocks" :key="`${item.key}-preview-${block.kind}-${block.index}`" class="space-y-2">
       <TimelineCliSubrow v-if="block.kind === 'text'" muted>

@@ -7,6 +7,7 @@ import type { RunRegistry } from '../../../orchestration/run-registry.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { RunRecord, SessionRecord } from '../../../orchestration/types.js'
 import { getLarkConfigStatus, getProjectDirs } from '../helpers.js'
+import type { WorkerHealthSnapshot } from '../../../orchestration/worker-governance-service.js'
 
 type Logger = {
   error: (event: string, fields?: Record<string, unknown>) => void
@@ -81,6 +82,7 @@ function toRuntimeSessionSnapshot(runtime: SessionRecord | null) {
   if (!runtime) return null
   return {
     agentId: runtime.agentId,
+    sessionScope: runtime.sessionScope,
     ...(runtime.channelId ? { channelId: runtime.channelId } : {}),
     ...(runtime.workerRef ? { workerRef: runtime.workerRef } : {}),
     ...(runtime.sessionStatus ? { sessionStatus: runtime.sessionStatus } : {}),
@@ -99,6 +101,7 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
   listAllSessions: () => Promise<SessionSummary[]>
   listSessionsByProjectDir: (dir: string) => Promise<SessionSummary[]>
   listSessionsByProjectDirs: (dirs: string[]) => Promise<SessionSummary[]>
+  getWorkerHealthBySessionId?: () => Record<string, WorkerHealthSnapshot>
 }) {
   app.get('/api/status', async (c) => {
     const startedAt = Date.now()
@@ -118,6 +121,7 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
       const runtimeBySessionId = new Map(runtimeSessions.map((record) => [record.sessionId, record]))
       const lastRunBySessionId = getLastRunBySessionId(input.runRegistry)
       const configuredAgentIds = new Set(configuredAgents.map((agent) => agent.agentId))
+      const workerHealthBySessionId = input.getWorkerHealthBySessionId?.() ?? {}
 
       const runs = input.runRegistry.list()
       let activeRuns = 0
@@ -204,7 +208,14 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
                 }
               : {}),
             ...(lastRun ? { lastRun } : {}),
-            ...(runtime ? { runtime: toRuntimeSessionSnapshot(runtime) } : {}),
+            ...(runtime
+              ? {
+                  runtime: {
+                    ...toRuntimeSessionSnapshot(runtime),
+                    ...(workerHealthBySessionId[runtime.sessionId] ? { workerHealth: workerHealthBySessionId[runtime.sessionId] } : {}),
+                  },
+                }
+              : {}),
           }
         })
           .slice()

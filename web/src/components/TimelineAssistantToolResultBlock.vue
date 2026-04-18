@@ -11,8 +11,10 @@ const props = withDefaults(defineProps<{
   attachedToParent?: boolean
   showInlineMore?: boolean
   expanded?: boolean
+  framed?: boolean
 }>(), {
   showInlineMore: true,
+  framed: true,
 })
 
 const emit = defineEmits<{
@@ -71,7 +73,12 @@ const showInlineMore = computed(() => props.showInlineMore && showToggle.value &
 <template>
   <TimelineCliSubrow muted>
     <div class="space-y-1.5">
-      <div class="min-w-0 rounded-xl border border-slate-200/70 bg-slate-50/80 px-3 py-2 text-[12px] leading-5 text-slate-500">
+      <div
+        :class="[
+          'min-w-0 text-[12px] leading-5 text-slate-500',
+          props.framed ? 'rounded-xl border border-slate-200/70 bg-slate-50/80 px-3 py-2' : '',
+        ]"
+      >
         <div
           v-if="expanded && resolvedOutput !== undefined"
           class="whitespace-pre-wrap text-inherit"

@@ -9,7 +9,7 @@ const messageItems = computed(() => sdkRawItems.value.filter((item) => item.even
 const controlItems = computed(() => sdkRawItems.value.filter((item) => item.event.kind !== 'sdk_message'))
 const persistentItems = computed(() => logView.persistentLog.filter((item) => {
   const type = getPersistentType(item.line)
-  return type !== 'last-prompt' && type !== 'permission-mode'
+  return type !== 'last-prompt' && type !== 'permission-mode' && type !== 'custom-title' && type !== 'agent-name'
 }))
 const activeItems = computed(() => {
   if (logView.selectedLogTab === 'messages') return messageItems.value
@@ -283,6 +283,10 @@ function getPersistentContent(line: string): string {
   if (typeof firstContent?.text === 'string' && firstContent.text.trim()) return firstContent.text
   if (typeof firstContent?.content === 'string' && firstContent.content.trim()) return firstContent.content
   if (typeof firstContent?.thinking === 'string' && firstContent.thinking.trim()) return firstContent.thinking
+  if (message?.content != null) {
+    const rendered = stringifyStructuredValue(message.content)
+    if (rendered.trim()) return rendered
+  }
 
   const attachment = record?.attachment && typeof record.attachment === 'object'
     ? record.attachment as Record<string, unknown>
@@ -484,7 +488,7 @@ onBeforeUnmount(() => {
         v-if="logView.selectedLogTab === 'persistent'"
         class="pb-1 text-[10px] leading-5 text-[var(--tt-text-subtle)]"
       >
-        备注：当前视图已过滤 <span class="font-mono">type === 'last-prompt'</span> 与 <span class="font-mono">type === 'permission-mode'</span>。
+        备注：当前视图已过滤 <span class="font-mono">type === 'last-prompt'</span>、<span class="font-mono">type === 'permission-mode'</span>、<span class="font-mono">type === 'custom-title'</span> 与 <span class="font-mono">type === 'agent-name'</span>。
       </div>
 
       <div class="min-h-0 flex-1 overflow-hidden rounded border border-[var(--tt-border)] bg-[var(--tt-card)] font-mono">

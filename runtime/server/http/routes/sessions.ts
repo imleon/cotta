@@ -47,6 +47,7 @@ export function registerSessionRoutes(app: Hono<any, any, any>, input: {
           const runtime = runtimeBySessionId.get(session.id)
           return {
             ...session,
+            sessionScope: runtime?.sessionScope ?? 'foreign',
             ...(runtime
               ? {
                   agentId: runtime.agentId,
@@ -71,7 +72,7 @@ export function registerSessionRoutes(app: Hono<any, any, any>, input: {
   app.get('/api/sessions/:id', (c) => {
     const id = c.req.param('id')
     const session = input.sessionRegistry.get(id)
-    return c.json({ session })
+    return c.json({ session: session ? { ...session, sessionScope: session.sessionScope ?? 'managed' } : null })
   })
 
   app.get('/api/sessions/:id/messages', async (c) => {
@@ -150,6 +151,25 @@ export function registerSessionRoutes(app: Hono<any, any, any>, input: {
         error: error instanceof Error ? error.message : String(error),
       })
       return c.json({ error: error instanceof Error ? error.message : 'Failed to rebuild session' }, 500)
+    }
+  })
+
+  // Standard recovery workflow: interrupt -> stop -> rebuild.
+  app.post('/api/sessions/:id/recover', async (c) => {
+    try {
+      const id = c.req.param('id')
+      if (!id.trim()) {
+        return c.json({ error: 'sessionId is required' }, 400)
+      }
+      const body = await c.req.json().catch(() => null)
+      const interruptTimeoutMs = typeof body?.interruptTimeoutMs === 'number' ? body.interruptTimeoutMs : undefined
+      const result = await input.orchestrator.recoverSession(id.trim(), { interruptTimeoutMs })
+      return c.json(result)
+    } catch (error) {
+      input.logger.error('http:sessions:recover:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return c.json({ error: error instanceof Error ? error.message : 'Failed to recover session' }, 500)
     }
   })
 

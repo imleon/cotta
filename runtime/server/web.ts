@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { UpgradeWebSocket } from 'hono/ws'
-import { createServerContext } from './context.js'
+import type { ServerContext } from './context.js'
 import { createWebSocketHandler } from './ws.js'
 import { createApiAuthMiddleware, createWsAuthMiddleware } from './http/auth.js'
 import { registerMiscRoutes } from './http/routes/misc.js'
@@ -14,8 +14,7 @@ import { registerLogRoutes } from './http/routes/logs.js'
 import { registerSettingsRoutes } from './http/routes/settings.js'
 import { registerStatusRoutes } from './http/routes/status.js'
 
-export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
-  const context = createServerContext()
+export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: ServerContext) {
   const app = new Hono()
 
   app.use('*', cors())
@@ -60,11 +59,12 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket) {
     listAllSessions: context.listAllSessions,
     listSessionsByProjectDir: context.listSessionsByProjectDir,
     listSessionsByProjectDirs: context.listSessionsByProjectDirs,
+    getWorkerHealthBySessionId: context.getWorkerHealthBySessionId,
   })
 
   app.use('/ws', createWsAuthMiddleware({ config: context.config, logger: context.logger }))
 
-  app.get('/ws', createWebSocketHandler(upgradeWebSocket))
+  app.get('/ws', createWebSocketHandler(upgradeWebSocket, { orchestrator: context.orchestrator }))
 
   return app
 }

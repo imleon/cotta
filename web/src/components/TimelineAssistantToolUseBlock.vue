@@ -30,14 +30,14 @@ const toolLabel = computed(() => {
   return `${name}(${compact})`
 })
 
-const statusDotClass = computed(() => {
+const statusTextClass = computed(() => {
   switch (props.status) {
     case 'streaming':
-      return 'timeline-cli-dot timeline-cli-dot-streaming'
+      return 'text-[var(--tt-primary)]'
     case 'errored':
-      return 'timeline-cli-dot timeline-cli-dot-errored'
+      return 'text-[var(--tt-danger)]'
     default:
-      return 'timeline-cli-dot timeline-cli-dot-completed'
+      return 'text-[var(--tt-text-muted)]'
   }
 })
 
@@ -59,9 +59,8 @@ const pendingElicitationInteraction = computed<SdkElicitationInteraction | null>
 <template>
   <div class="space-y-2">
     <div class="flex items-start gap-3 text-[var(--tt-text)]">
-      <span :class="statusDotClass">●</span>
       <span class="min-w-0 flex-1">
-        <span>{{ toolLabel }}</span>
+        <span :class="statusTextClass">{{ toolLabel }}</span>
         <button
           v-if="trailingToggleLabel"
           class="timeline-cli-button ml-2 inline align-baseline"

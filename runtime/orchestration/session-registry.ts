@@ -41,6 +41,7 @@ export class SessionRegistry {
     const created: SessionRecord = {
       sessionId,
       agentId,
+      sessionScope: 'managed',
       ...extras,
       createdAt: now(),
       updatedAt: now(),
@@ -49,7 +50,7 @@ export class SessionRegistry {
     return created
   }
 
-  bindChannel(sessionId: string, channelId: string): SessionRecord | null {
+  claimChannel(sessionId: string, channelId: string): SessionRecord | null {
     const existing = this.records.get(sessionId)
     if (!existing) return null
 
@@ -72,7 +73,7 @@ export class SessionRegistry {
     return next
   }
 
-  unbindChannel(channelId: string): SessionRecord | null {
+  releaseChannel(channelId: string): SessionRecord | null {
     const existing = this.findByChannelId(channelId)
     if (!existing) return null
 
@@ -98,6 +99,19 @@ export class SessionRegistry {
     return next
   }
 
+  setWorkerConfigSig(sessionId: string, workerConfigSig?: string): SessionRecord | null {
+    const existing = this.records.get(sessionId)
+    if (!existing) return null
+
+    const next: SessionRecord = {
+      ...existing,
+      workerConfigSig,
+      updatedAt: now(),
+    }
+    this.records.set(sessionId, next)
+    return next
+  }
+
   detachWorker(sessionId: string): SessionRecord | null {
     const existing = this.records.get(sessionId)
     if (!existing) return null
@@ -105,6 +119,7 @@ export class SessionRegistry {
     const next: SessionRecord = {
       ...existing,
       workerRef: undefined,
+      workerConfigSig: undefined,
       sessionStatus: undefined,
       activeRunId: undefined,
       updatedAt: now(),

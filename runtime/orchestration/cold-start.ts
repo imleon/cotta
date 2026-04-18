@@ -1,12 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { ConfigRegistry } from '../config/registry.js'
 import type { SessionRegistry } from './session-registry.js'
-import type { ChannelClaimPlan, SessionCandidate } from './types.js'
-import { listSessionsByProjectDir } from '../storage/fs/sessions.js'
-
-function sortByUpdatedAtDesc(items: SessionCandidate[]): SessionCandidate[] {
-  return items.slice().sort((a, b) => b.updatedAt - a.updatedAt)
-}
+import type { ChannelClaimPlan } from './types.js'
+import { getChannelClaim, setExclusiveChannelClaim } from '../storage/fs/channel-claims.js'
 
 export async function buildColdStartClaimPlans(input: {
   config: ConfigRegistry
@@ -29,7 +25,7 @@ export async function buildColdStartClaimPlans(input: {
         agentId: channel.agentId,
         sessionId: bound.sessionId,
         mode: 'resume',
-        reason: 'existing_binding',
+        reason: 'existing_claim',
       })
       claimedSessionIds.add(bound.sessionId)
       continue
@@ -40,34 +36,25 @@ export async function buildColdStartClaimPlans(input: {
       throw new Error(`Agent not found for channel ${channel.channelId}: ${channel.agentId}`)
     }
 
-    const projectSessions = await listSessionsByProjectDir(agent.projectDir)
-    const sortedCandidates = sortByUpdatedAtDesc(projectSessions.map((s) => ({
-      sessionId: s.id,
-      title: s.title,
-      updatedAt: s.updatedAt,
-    })))
-
-    // Pick the newest unclaimed session under the channel's agent.projectDir.
-    let picked: SessionCandidate | null = null
-    for (const candidate of sortedCandidates) {
-      if (claimedSessionIds.has(candidate.sessionId)) continue
-      picked = candidate
-      break
-    }
-
-    if (picked) {
+    // Prefer a persisted channel -> session claim over projectDir heuristics.
+    const persistedClaim = await getChannelClaim(channel.channelId)
+    if (
+      persistedClaim
+      && persistedClaim.agentId === channel.agentId
+      && !claimedSessionIds.has(persistedClaim.sessionId)
+    ) {
       plans.push({
         channelId: channel.channelId,
         agentId: channel.agentId,
-        sessionId: picked.sessionId,
+        sessionId: persistedClaim.sessionId,
         mode: 'resume',
-        reason: 'latest_unclaimed_session',
+        reason: 'persisted_claim',
       })
-      claimedSessionIds.add(picked.sessionId)
+      claimedSessionIds.add(persistedClaim.sessionId)
       continue
     }
 
-    // No candidate: allocate a new session id for this channel.
+    // No persisted claim: allocate a new session id for this channel (avoid projectDir heuristics).
     const newSessionId = randomUUID()
     plans.push({
       channelId: channel.channelId,
@@ -89,6 +76,16 @@ export function applyColdStartClaimPlans(input: {
   for (const plan of input.plans) {
     input.sessions.ensure(plan.sessionId, plan.agentId, {
       channelId: plan.channelId,
+    })
+  }
+}
+
+export async function persistColdStartClaimPlans(plans: ChannelClaimPlan[]): Promise<void> {
+  for (const plan of plans) {
+    await setExclusiveChannelClaim({
+      channelId: plan.channelId,
+      agentId: plan.agentId,
+      sessionId: plan.sessionId,
     })
   }
 }

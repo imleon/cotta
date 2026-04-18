@@ -6,6 +6,11 @@ type ResultSubtype = Extract<
   { kind: 'result' }
 >['subtype']
 
+function extractSdkSessionId(message: SDKMessage): string | null {
+  const raw = message as unknown as { session_id?: unknown }
+  return typeof raw?.session_id === 'string' && raw.session_id.trim() ? raw.session_id : null
+}
+
 function isResultSubtype(value: unknown): value is ResultSubtype {
   return value === 'success'
     || value === 'error_during_execution'
@@ -20,6 +25,17 @@ export function adaptSdkMessage(
   runId?: string,
 ): WorkerOutputEvent {
   const receivedAt = Date.now()
+  const sdkSessionId = extractSdkSessionId(message)
+  if (sdkSessionId && sdkSessionId !== sessionId) {
+    // Invariant check: under normal conditions, SDK output session_id should match
+    // the worker's expected sessionId. We only log here; do not change behavior.
+    console.warn('[sdk-event-adapter] session_id mismatch', {
+      expectedSessionId: sessionId,
+      actualSessionId: sdkSessionId,
+      type: (message as any).type,
+      subtype: (message as any).subtype,
+    })
+  }
 
   if (message.type === 'system' && message.subtype === 'session_state_changed') {
     return {
@@ -28,7 +44,9 @@ export function adaptSdkMessage(
       runId,
       receivedAt,
       state: message.state,
-      payload: message,
+      payload: sdkSessionId && sdkSessionId !== sessionId
+        ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
+        : message,
     }
   }
 
@@ -43,7 +61,9 @@ export function adaptSdkMessage(
       runId,
       receivedAt,
       subtype,
-      payload: message,
+      payload: sdkSessionId && sdkSessionId !== sessionId
+        ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
+        : message,
     }
   }
 
@@ -53,7 +73,9 @@ export function adaptSdkMessage(
       sessionId,
       runId,
       receivedAt,
-      payload: message,
+      payload: sdkSessionId && sdkSessionId !== sessionId
+        ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
+        : message,
     }
   }
 
@@ -62,6 +84,8 @@ export function adaptSdkMessage(
     sessionId,
     runId,
     receivedAt,
-    payload: message,
+    payload: sdkSessionId && sdkSessionId !== sessionId
+      ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
+      : message,
   }
 }

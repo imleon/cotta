@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { UpgradeWebSocket } from 'hono/ws'
 import type { WorkerOutputEvent } from '../execution/types.js'
-import { orchestrator } from '../app/index.js'
+import type { Orchestrator } from '../orchestration/orchestrator.js'
 import { createLogger, shortId } from './logger.js'
 
 const logger = createLogger('websocket')
@@ -26,7 +26,11 @@ function matchesFilter(
   return true
 }
 
-export function createWebSocketHandler(upgradeWebSocket: UpgradeWebSocket) {
+export function createWebSocketHandler(
+  upgradeWebSocket: UpgradeWebSocket,
+  input: { orchestrator: Orchestrator },
+) {
+  const { orchestrator } = input
   return upgradeWebSocket((c) => {
     const connId = shortId(randomUUID())
     const subscriberKey = `web:${connId}`

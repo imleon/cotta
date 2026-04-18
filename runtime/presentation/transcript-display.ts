@@ -765,16 +765,30 @@ function buildPrimaryDisplayItems(
   attachedResultAtomIds: Set<string>,
 ): DisplayItem[] {
   const items: DisplayItem[] = []
-  const responseGroups = buildAssistantResponseGroups(atoms)
   let previousVisibleTimestamp: number | null = null
 
-  for (const group of responseGroups) {
-    const atom = group[0]!
+  for (const atom of atoms) {
 
     if (attachedResultAtomIds.has(atom.id)) continue
 
     if (atom.semanticKind === 'summary') {
-      items.push(createSummaryDisplayItem(atom, mode))
+      // UI wants "one output card per turn". Treat summary as part of the prior assistant
+      // output when possible, instead of emitting a standalone SummaryDisplayItem.
+      const last = items[items.length - 1]
+      if (last && last.kind === 'assistant') {
+        const summaryFragments = createFragments(atom, { mode })
+        const mergedMessages = [...last.messages, atom.message]
+        const merged: AssistantDisplayItem = {
+          ...last,
+          atomIds: [...last.atomIds, atom.id],
+          messages: mergedMessages,
+          fragments: [...last.fragments, ...summaryFragments],
+          footer: getAssistantFooter(mergedMessages),
+        }
+        items[items.length - 1] = merged
+      } else {
+        items.push(createSummaryDisplayItem(atom, mode))
+      }
       continue
     }
 
@@ -805,7 +819,7 @@ function buildPrimaryDisplayItems(
       continue
     }
 
-    const item = createAssistantDisplayItem(group, mode, attachedResultAtomsByOwnerId.get(atom.id) || [])
+    const item = createAssistantDisplayItem([atom], mode, attachedResultAtomsByOwnerId.get(atom.id) || [])
     if (item.fragments.length > 0) {
       const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
       items.push(timed)
@@ -876,5 +890,7 @@ export function buildDisplayItems(atoms: TranscriptAtom[], options: BuildDisplay
 export function buildHistoryDisplayItems(messages: SessionMessage[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {
   const atoms = buildHistoryAtoms(messages)
   const items = buildDisplayItems(atoms, options)
-  return collapseLowSignalTools(items)
+  // Disable low-signal collapsing: always return the fully expanded items so the UI can
+  // decide how to present details per-turn.
+  return items
 }

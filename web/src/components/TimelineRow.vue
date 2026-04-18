@@ -29,7 +29,7 @@ function getAnchorMessage(item: TimelineItem) {
 function getPrefix(item: TimelineItem): string {
   if (item.kind === 'user') return '❯'
   if (shouldHidePrefix(item)) return ''
-  return '●'
+  return ''
 }
 
 function getPrefixClass(item: TimelineItem): string {
@@ -47,7 +47,7 @@ function getFirstVisibleAssistantFragment(item: AssistantDisplayItem) {
 }
 
 function shouldHidePrefix(item: TimelineItem): boolean {
-  if (item.kind === 'grouped_tool_use' || item.kind === 'live_preview') return true
+  if (item.kind !== 'user') return true
   if (!isAssistantItem(item)) return false
   return getFirstVisibleAssistantFragment(item)?.type === 'tool_use'
 }

@@ -228,6 +228,7 @@ export interface DisplayFragmentToolResult {
   type: 'tool_result'
   toolUseId?: string
   output?: unknown
+  raw?: unknown
   attachedToParent?: boolean
   defaultCollapsed?: boolean
   display?: ToolResultDisplayMeta
@@ -401,7 +402,7 @@ export interface ChannelOutboundMessage extends ChannelConversationRef {
   replyToMessageId?: string
 }
 
-export interface SessionBinding extends ChannelConversationRef {
+export interface SessionClaim extends ChannelConversationRef {
   sessionId: string
   updatedAt: number
   chatType?: 'p2p' | 'group'
@@ -416,9 +417,9 @@ export interface ActiveRunSummary {
   sessionId?: string
 }
 
-export interface SessionBindingStatus {
+export interface SessionClaimStatus {
   ref: ChannelConversationRef
-  binding: SessionBinding | null
+  claim: SessionClaim | null
   session: SessionSummary | null
   activeRun: ActiveRunSummary | null
 }

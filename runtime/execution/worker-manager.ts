@@ -25,6 +25,10 @@ export class WorkerManager {
     return [...this.active.values()]
   }
 
+  listSessionIds(): string[] {
+    return [...new Set([...this.active.keys(), ...this.starting.keys()])]
+  }
+
   remove(sessionId: string): void {
     this.active.delete(sessionId)
     this.starting.delete(sessionId)
@@ -72,5 +76,18 @@ export class WorkerManager {
     await existing.close()
     this.remove(sessionId)
     return true
+  }
+
+  async shutdown(): Promise<void> {
+    const sessionIds = this.listSessionIds()
+    await Promise.allSettled(sessionIds.map(async (sessionId) => {
+      await this.stop(sessionId)
+    }))
+    this.active.clear()
+    this.starting.clear()
+  }
+
+  async dispose(): Promise<void> {
+    await this.shutdown()
   }
 }

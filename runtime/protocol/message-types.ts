@@ -279,53 +279,6 @@ export interface AssistantDisplayItem {
   overlays?: TimelineOverlayItem[]
 }
 
-export interface GroupedToolUseEntry {
-  toolUseId?: string
-  name: string
-  input?: unknown
-  result?: unknown
-  resultDisplay?: ToolResultDisplayMeta
-}
-
-export type DisplayLifecycleStatus = 'streaming' | 'completed' | 'errored'
-
-export interface GroupedToolUseDisplayItem {
-  kind: 'grouped_tool_use'
-  id: string
-  key: string
-  timestamp: number
-  atomIds: string[]
-  toolName: string
-  toolUses: GroupedToolUseEntry[]
-  anchorMessage: SessionMessage
-  footer?: DisplayAssistantFooter
-  status: DisplayLifecycleStatus
-  overlays?: TimelineOverlayItem[]
-}
-
-export interface CollapsedToolBatchSummary {
-  readCount: number
-  searchCount: number
-  listCount: number
-  bashCount: number
-  latestHint?: string
-}
-
-export interface CollapsedToolBatchDisplayItem {
-  kind: 'collapsed_tool_batch'
-  id: string
-  key: string
-  timestamp: number
-  atomIds: string[]
-  batchKind: 'read_search' | 'meta_ops'
-  summary: CollapsedToolBatchSummary
-  items: Array<AssistantDisplayItem | GroupedToolUseDisplayItem>
-  anchorMessage: SessionMessage
-  footer?: DisplayAssistantFooter
-  status: DisplayLifecycleStatus
-  overlays?: TimelineOverlayItem[]
-}
-
 export interface SummaryDisplayItem {
   kind: 'summary'
   id: string
@@ -373,8 +326,6 @@ export interface TranscriptLookup {
 export type DisplayItem =
   | UserDisplayItem
   | AssistantDisplayItem
-  | GroupedToolUseDisplayItem
-  | CollapsedToolBatchDisplayItem
   | SummaryDisplayItem
 
 

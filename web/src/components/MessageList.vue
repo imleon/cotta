@@ -24,12 +24,6 @@ function itemHasToolUseId(item: TimelineItem, toolUseId: string): boolean {
   if (item.kind === 'assistant') {
     return item.fragments.some((fragment) => fragment.type === 'tool_use' && fragment.toolUseId === toolUseId)
   }
-  if (item.kind === 'grouped_tool_use') {
-    return item.toolUses.some((tool) => tool.toolUseId === toolUseId)
-  }
-  if (item.kind === 'collapsed_tool_batch') {
-    return item.items.some((child) => itemHasToolUseId(child, toolUseId))
-  }
   return false
 }
 
@@ -123,7 +117,6 @@ watch(
 
 <template>
   <div ref="container" class="flex-1 overflow-y-auto bg-slate-50/70 px-3 py-4 md:px-6 md:py-6 space-y-3" @scroll="handleScroll">
-
     <div
       v-if="session.historyMessagesLoadingOlder"
       class="flex justify-center text-xs text-gray-400"

@@ -1,10 +1,8 @@
 import type {
   AssistantDisplayItem,
-  CollapsedToolBatchDisplayItem,
   DisplayAssistantFooter,
   DisplayFragment,
   DisplayItem,
-  GroupedToolUseDisplayItem,
   SessionMessage,
   SummaryDisplayItem,
   TranscriptAtom,
@@ -134,38 +132,13 @@ function compareAtoms(left: TranscriptAtom, right: TranscriptAtom): number {
   return left.order.sourceIndex - right.order.sourceIndex
 }
 
-function isReadSearchLikeTool(name?: string): { isSearch: boolean; isRead: boolean; isList: boolean; isBash: boolean } {
-  const normalized = (name || '').toLowerCase()
-  return {
-    isSearch: normalized === 'grep' || normalized === 'glob' || normalized.includes('search'),
-    isRead: normalized === 'read' || normalized.includes('read'),
-    isList: normalized === 'ls' || normalized.includes('list'),
-    isBash: normalized === 'bash',
-  }
-}
-
-function isLowSignalToolName(name?: string): boolean {
-  const toolInfo = isReadSearchLikeTool(name)
-  return toolInfo.isRead || toolInfo.isSearch || toolInfo.isList || toolInfo.isBash
-}
-
 function getToolUseBlocks(atom: TranscriptAtom): TranscriptBlock[] {
   return (atom.message.blocks || []).filter((block) => block.type === 'tool_use')
 }
 
-function getToolUseNames(atom: TranscriptAtom): string[] {
-  return getToolUseBlocks(atom).map((block) => block.name || 'unknown_tool')
-}
-
-function getAtomGroupingScope(atom: TranscriptAtom): string {
-  const raw = atom.message.raw
-  const parentToolUseId = raw && typeof raw === 'object' && 'parent_tool_use_id' in raw && typeof (raw as Record<string, unknown>).parent_tool_use_id === 'string'
-    ? (raw as Record<string, unknown>).parent_tool_use_id as string
-    : null
-
-  return parentToolUseId
-    ?? atom.linkage.messageId
-    ?? `${atom.source}:${atom.order.sequence ?? 'noseq'}:${atom.order.sourceIndex}`
+function getToolUseNameById(atom: TranscriptAtom, toolUseId: string): string {
+  const block = getToolUseBlocks(atom).find((candidate) => candidate.toolUseId === toolUseId)
+  return block?.name || 'unknown_tool'
 }
 
 function getToolResultDisplayMeta(output: unknown, attachedToParent = false) {
@@ -256,6 +229,7 @@ function createFragments(
         type: 'tool_result',
         toolUseId: block.toolUseId,
         output: block.output,
+        raw: message.raw ?? block.raw,
         attachedToParent,
         defaultCollapsed: options.mode !== 'transcript' && !display.defaultExpanded,
         display,
@@ -359,26 +333,22 @@ function createSummaryDisplayItem(atom: TranscriptAtom, mode: 'default' | 'trans
 function createAssistantDisplayItem(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
-  attachedToolResultAtoms: TranscriptAtom[] = [],
+  attachedToolResultsByOwnerId: Map<string, TranscriptAtom[]> = new Map(),
 ): AssistantDisplayItem {
   const anchorAtom = atoms[atoms.length - 1] ?? atoms[0]!
   const anchor = anchorAtom.message
   const atomIds = atoms.map((atom) => atom.id)
   const fragments: DisplayFragment[] = []
 
-  const orderedAtoms = atoms.slice().sort((left, right) => {
-    const leftThinking = left.semanticKind === 'thinking' || isTranscriptRedactedThinkingMessage(left.message)
-    const rightThinking = right.semanticKind === 'thinking' || isTranscriptRedactedThinkingMessage(right.message)
-    if (leftThinking !== rightThinking) return leftThinking ? -1 : 1
-    return left.order.sourceIndex - right.order.sourceIndex
-  })
+  const orderedAtoms = atoms.slice().sort((left, right) => left.order.sourceIndex - right.order.sourceIndex)
 
   for (const atom of orderedAtoms) {
     fragments.push(...createFragments(atom, { mode }))
-  }
-  for (const atom of attachedToolResultAtoms) {
-    atomIds.push(atom.id)
-    fragments.push(...createFragments(atom, { mode, attachToolResultsToParent: true }))
+    const attachedAtoms = attachedToolResultsByOwnerId.get(atom.id) || []
+    for (const attachedAtom of attachedAtoms) {
+      atomIds.push(attachedAtom.id)
+      fragments.push(...createFragments(attachedAtom, { mode, attachToolResultsToParent: true }))
+    }
   }
 
   return {
@@ -391,100 +361,6 @@ function createAssistantDisplayItem(
     anchorMessage: anchor,
     fragments,
     footer: getAssistantFooter(atoms.map((atom) => atom.message)),
-  }
-}
-
-function createGroupedToolUseDisplayItem(
-  group: TranscriptAtom[],
-  lookups: TranscriptLookup,
-): GroupedToolUseDisplayItem {
-  const first = group[0]!
-  const toolUses = group.flatMap((atom) =>
-    getToolUseBlocks(atom).map((block) => {
-      const result = typeof block.toolUseId === 'string'
-        ? lookups.toolResultAtomsByToolUseId.get(block.toolUseId)?.message.blocks?.find((item) => item.type === 'tool_result')?.output
-        : undefined
-
-      return {
-        toolUseId: block.toolUseId,
-        name: block.name || 'unknown_tool',
-        input: block.input,
-        result,
-        resultDisplay: result !== undefined ? getToolResultDisplayMeta(result, true) : undefined,
-      }
-    })
-  )
-
-  const status = toolUses.every((tool) => !tool.toolUseId || lookups.resolvedToolUseIds.has(tool.toolUseId))
-    ? 'completed'
-    : 'streaming'
-
-  return {
-    kind: 'grouped_tool_use',
-    id: `grouped-${first.id}`,
-    key: `grouped-${first.id}`,
-    timestamp: first.order.timestamp,
-    atomIds: group.map((atom) => atom.id),
-    toolName: toolUses[0]?.name || 'unknown_tool',
-    toolUses,
-    anchorMessage: first.message,
-    footer: getAssistantFooter(group.map((atom) => atom.message)),
-    status,
-  }
-}
-
-function createCollapsedToolBatchDisplayItem(
-  items: Array<AssistantDisplayItem | GroupedToolUseDisplayItem>,
-): CollapsedToolBatchDisplayItem {
-  const first = items[0]!
-  const summary = {
-    readCount: 0,
-    searchCount: 0,
-    listCount: 0,
-    bashCount: 0,
-    latestHint: '',
-  }
-
-  for (const item of items) {
-    if (item.kind === 'grouped_tool_use') {
-      for (const tool of item.toolUses) {
-        const toolInfo = isReadSearchLikeTool(tool.name)
-        if (toolInfo.isRead) summary.readCount += 1
-        if (toolInfo.isSearch) summary.searchCount += 1
-        if (toolInfo.isList) summary.listCount += 1
-        if (toolInfo.isBash) summary.bashCount += 1
-        summary.latestHint = tool.name
-      }
-      continue
-    }
-
-    for (const fragment of item.fragments) {
-      if (fragment.type !== 'tool_use') continue
-      const toolInfo = isReadSearchLikeTool(fragment.name)
-      if (toolInfo.isRead) summary.readCount += 1
-      if (toolInfo.isSearch) summary.searchCount += 1
-      if (toolInfo.isList) summary.listCount += 1
-      if (toolInfo.isBash) summary.bashCount += 1
-      summary.latestHint = fragment.name
-    }
-  }
-
-  const status = items.some((item) => item.kind === 'grouped_tool_use' && item.status !== 'completed')
-    ? 'streaming'
-    : 'completed'
-
-  return {
-    kind: 'collapsed_tool_batch',
-    id: `collapsed-${first.id}`,
-    key: `collapsed-${first.id}`,
-    timestamp: first.timestamp,
-    atomIds: items.flatMap((item) => item.atomIds),
-    batchKind: 'read_search',
-    summary,
-    items,
-    anchorMessage: first.anchorMessage,
-    footer: getAssistantFooter(items.flatMap((item) => item.kind === 'grouped_tool_use' ? [item.anchorMessage] : item.messages)),
-    status,
   }
 }
 
@@ -596,78 +472,6 @@ function deriveAttachedToolResultPolicy(atoms: TranscriptAtom[], lookups: Transc
   }
 }
 
-function isAssistantResponseFragmentAtom(atom: TranscriptAtom): boolean {
-  if (atom.role !== 'assistant') return false
-  if (atom.semanticKind !== 'assistant' && atom.semanticKind !== 'thinking') return false
-  if (atom.linkage.toolUseIds.length > 0) return false
-  if (atom.linkage.toolResultForIds.length > 0) return false
-  return true
-}
-
-function canMergeAssistantSiblingAtoms(group: TranscriptAtom[], candidate: TranscriptAtom): boolean {
-  const first = group[0]
-  if (!first) return false
-  if (!isAssistantResponseFragmentAtom(first) || !isAssistantResponseFragmentAtom(candidate)) return false
-
-  const firstResponseId = getTranscriptResponseId(first.message)
-  const candidateResponseId = getTranscriptResponseId(candidate.message)
-  if (!firstResponseId || !candidateResponseId) return false
-  if (firstResponseId !== candidateResponseId) return false
-
-  return getTranscriptStopReason(first.message) == null && getTranscriptStopReason(candidate.message) == null
-}
-
-function canGroupToolUseAtoms(group: TranscriptAtom[], candidate: TranscriptAtom): boolean {
-  const first = group[0]
-  if (!first) return false
-  if (candidate.role !== 'assistant' || candidate.semanticKind === 'tool_result') return false
-
-  const firstToolNames = getToolUseNames(first)
-  const candidateToolNames = getToolUseNames(candidate)
-  if (!firstToolNames.length || !candidateToolNames.length) return false
-  if (new Set(firstToolNames).size !== 1 || new Set(candidateToolNames).size !== 1) return false
-  if (firstToolNames[0] !== candidateToolNames[0]) return false
-  if (getAtomGroupingScope(first) !== getAtomGroupingScope(candidate)) return false
-
-  return true
-}
-
-function isAssistantResponseScopedAtom(atom: TranscriptAtom): boolean {
-  return atom.role === 'assistant'
-}
-
-function isThinkingLikeAtom(atom: TranscriptAtom): boolean {
-  return atom.semanticKind === 'thinking' || isTranscriptRedactedThinkingMessage(atom.message)
-}
-
-function comparableAssistantMessageWithoutContent(message: SessionMessage): string | null {
-  const rawMessage = getTranscriptRawMessage(message)
-  if (!rawMessage) return null
-  const comparable = { ...rawMessage }
-  delete comparable.content
-  return JSON.stringify(comparable)
-}
-
-function canKeepTerminalAssistantSiblingsTogether(left: TranscriptAtom, right: TranscriptAtom): boolean {
-  if (left.role !== 'assistant' || right.role !== 'assistant') return false
-
-  const leftResponseId = getTranscriptResponseId(left.message)
-  const rightResponseId = getTranscriptResponseId(right.message)
-  if (!leftResponseId || !rightResponseId || leftResponseId !== rightResponseId) return false
-  if (!isThinkingLikeAtom(left) && !isThinkingLikeAtom(right)) return false
-
-  const leftComparable = comparableAssistantMessageWithoutContent(left.message)
-  const rightComparable = comparableAssistantMessageWithoutContent(right.message)
-  if (!leftComparable || !rightComparable) return false
-
-  return leftComparable === rightComparable
-}
-
-function isTerminalBoundaryMessage(atom: TranscriptAtom): boolean {
-  if (atom.role !== 'assistant') return false
-  return getTranscriptStopReason(atom.message) != null
-}
-
 function isBridgeMessage(atom: TranscriptAtom): boolean {
   if (atom.role === 'assistant') return true
 
@@ -694,138 +498,47 @@ function isBridgeMessage(atom: TranscriptAtom): boolean {
   return false
 }
 
-function isTailBridgeMessage(atom: TranscriptAtom): boolean {
-  if (atom.role === 'assistant') return false
-  const raw = atom.message.raw
-  if (raw && typeof raw === 'object') {
-    const type = typeof (raw as Record<string, unknown>).type === 'string'
-      ? (raw as Record<string, unknown>).type as string
-      : null
-    return type === 'system' || type === 'file-history-snapshot' || type === 'progress' || type === 'queue-operation' || type === 'last-prompt'
-  }
-  return false
-}
-
-function buildAssistantResponseGroups(atoms: TranscriptAtom[]): TranscriptAtom[][] {
-  const groups: TranscriptAtom[][] = []
-  let index = 0
-
-  while (index < atoms.length) {
-    const atom = atoms[index]!
-    const responseId = atom.role === 'assistant' ? getTranscriptResponseId(atom.message) : null
-
-    if (!isAssistantResponseScopedAtom(atom) || !responseId) {
-      groups.push([atom])
-      index += 1
-      continue
-    }
-
-    const group: TranscriptAtom[] = []
-    let seenTerminal = false
-    let currentIndex = index
-    let currentResponseId = responseId
-
-    while (currentIndex < atoms.length) {
-      const current = atoms[currentIndex]!
-      const nextResponseId = current.role === 'assistant' ? getTranscriptResponseId(current.message) : null
-
-      if (seenTerminal) {
-        if (current.role === 'assistant' && canKeepTerminalAssistantSiblingsTogether(group[group.length - 1]!, current)) {
-          // Keep terminal assistant siblings with matching response envelope together.
-        } else if (!isTailBridgeMessage(current)) {
-          break
-        }
-      } else if (current.role === 'assistant' && nextResponseId && nextResponseId !== currentResponseId) {
-        currentResponseId = nextResponseId
-      } else if (currentIndex !== index && !isBridgeMessage(current)) {
-        break
-      }
-
-      group.push(current)
-
-      if (isTerminalBoundaryMessage(current)) {
-        seenTerminal = true
-      }
-
-      currentIndex += 1
-    }
-
-    groups.push(group)
-    index = currentIndex
-  }
-
-  return groups
+function isPrimaryUserTurnAtom(atom: TranscriptAtom): boolean {
+  return atom.role === 'user' && !isBridgeMessage(atom)
 }
 
 function buildPrimaryDisplayItems(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
-  lookups: TranscriptLookup,
   attachedResultAtomsByOwnerId: Map<string, TranscriptAtom[]>,
   attachedResultAtomIds: Set<string>,
 ): DisplayItem[] {
   const items: DisplayItem[] = []
   let previousVisibleTimestamp: number | null = null
 
-  for (const atom of atoms) {
+  let pendingTurnAtoms: TranscriptAtom[] = []
 
-    if (attachedResultAtomIds.has(atom.id)) continue
+  const flushPendingTurn = () => {
+    const visibleAtoms = pendingTurnAtoms.filter((atom) => !attachedResultAtomIds.has(atom.id))
+    pendingTurnAtoms = []
+    if (!visibleAtoms.length) return
 
-    if (atom.semanticKind === 'summary') {
-      // UI wants "one output card per turn". Treat summary as part of the prior assistant
-      // output when possible, instead of emitting a standalone SummaryDisplayItem.
-      const last = items[items.length - 1]
-      if (last && last.kind === 'assistant') {
-        const summaryFragments = createFragments(atom, { mode })
-        const mergedMessages = [...last.messages, atom.message]
-        const merged: AssistantDisplayItem = {
-          ...last,
-          atomIds: [...last.atomIds, atom.id],
-          messages: mergedMessages,
-          fragments: [...last.fragments, ...summaryFragments],
-          footer: getAssistantFooter(mergedMessages),
-        }
-        items[items.length - 1] = merged
-      } else {
-        items.push(createSummaryDisplayItem(atom, mode))
-      }
-      continue
+    const item = createAssistantDisplayItem(visibleAtoms, mode, attachedResultAtomsByOwnerId)
+    if (item.fragments.length > 0 || item.overlays?.length) {
+      const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
+      items.push(timed)
+      previousVisibleTimestamp = timed.timestamp
     }
+  }
 
-    if (atom.semanticKind === 'user') {
+  for (const atom of atoms) {
+    if (isPrimaryUserTurnAtom(atom)) {
+      flushPendingTurn()
       const item = createUserDisplayItem(atom)
       items.push(item)
       previousVisibleTimestamp = item.timestamp
       continue
     }
 
-    if (atom.semanticKind === 'tool_result') {
-      const item = createAssistantDisplayItem([atom], mode)
-      if (item.fragments.length > 0) {
-        const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
-        items.push(timed)
-        previousVisibleTimestamp = timed.timestamp
-      }
-      continue
-    }
-
-    if (atom.role !== 'assistant') {
-      const item = createAssistantDisplayItem([atom], mode)
-      if (item.fragments.length > 0) {
-        const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
-        items.push(timed)
-        previousVisibleTimestamp = timed.timestamp
-      }
-      continue
-    }
-
-    const item = createAssistantDisplayItem([atom], mode, attachedResultAtomsByOwnerId.get(atom.id) || [])
-    if (item.fragments.length > 0) {
-      const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
-      items.push(timed)
-      previousVisibleTimestamp = timed.timestamp
-    }
+    pendingTurnAtoms.push(atom)
   }
+
+  flushPendingTurn()
 
   return items
 }
@@ -836,49 +549,7 @@ function applyDisplayPoliciesAndTransforms(
 ): DisplayItem[] {
   const lookups = buildTranscriptLookups(atoms)
   const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = deriveAttachedToolResultPolicy(atoms, lookups)
-  return buildPrimaryDisplayItems(atoms, mode, lookups, attachedResultAtomsByOwnerId, attachedResultAtomIds)
-}
-
-function isCollapsibleToolItem(item: DisplayItem): item is AssistantDisplayItem | GroupedToolUseDisplayItem {
-  if (item.kind === 'grouped_tool_use') {
-    return item.toolUses.every((tool) => isLowSignalToolName(tool.name))
-  }
-
-  if (item.kind === 'assistant') {
-    const toolUseFragments = item.fragments.filter((fragment) => fragment.type === 'tool_use')
-    return toolUseFragments.length > 0 && toolUseFragments.every((fragment) => isLowSignalToolName(fragment.name))
-  }
-
-  return false
-}
-
-export function collapseLowSignalTools(items: DisplayItem[]): DisplayItem[] {
-  const collapsed: DisplayItem[] = []
-
-  for (let index = 0; index < items.length; index += 1) {
-    const item = items[index]!
-    if (!isCollapsibleToolItem(item)) {
-      collapsed.push(item)
-      continue
-    }
-
-    const group: Array<AssistantDisplayItem | GroupedToolUseDisplayItem> = [item]
-    let cursor = index + 1
-    while (cursor < items.length && isCollapsibleToolItem(items[cursor]!)) {
-      group.push(items[cursor] as AssistantDisplayItem | GroupedToolUseDisplayItem)
-      cursor += 1
-    }
-
-    if (group.length >= 2) {
-      collapsed.push(createCollapsedToolBatchDisplayItem(group))
-      index = cursor - 1
-      continue
-    }
-
-    collapsed.push(item)
-  }
-
-  return collapsed
+  return buildPrimaryDisplayItems(atoms, mode, attachedResultAtomsByOwnerId, attachedResultAtomIds)
 }
 
 export function buildDisplayItems(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {

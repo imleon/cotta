@@ -2,11 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type {
   AssistantDisplayItem,
-  CollapsedToolBatchDisplayItem,
   ControlTransactionSummary,
-  DisplayFragment,
   DisplayItem,
-  GroupedToolUseDisplayItem,
   LiveLaneKind,
   PendingInteraction,
   PermissionSuggestion,
@@ -21,7 +18,6 @@ import type {
   TimelineLivePreviewItem,
   TimelineRenderableItem,
   TranscriptAtom,
-  UserDisplayItem,
 } from '../../../runtime/protocol/message-types.js'
 import {
   classifySdkMessageLane,
@@ -307,24 +303,16 @@ function getLivePreviewOverlayKind(preview: StreamPreviewState): TimelineLivePre
   }
 }
 
-function isOverlayHostItem(item: DisplayItem): item is AssistantDisplayItem | GroupedToolUseDisplayItem | CollapsedToolBatchDisplayItem {
-  return item.kind === 'assistant' || item.kind === 'grouped_tool_use' || item.kind === 'collapsed_tool_batch'
+function isOverlayHostItem(item: DisplayItem): item is AssistantDisplayItem {
+  return item.kind === 'assistant'
 }
 
-function getDisplayItemToolUseIds(item: AssistantDisplayItem | GroupedToolUseDisplayItem | CollapsedToolBatchDisplayItem): string[] {
-  if (item.kind === 'grouped_tool_use') {
-    return item.toolUses.flatMap((tool) => typeof tool.toolUseId === 'string' ? [tool.toolUseId] : [])
-  }
-
-  if (item.kind === 'collapsed_tool_batch') {
-    return item.items.flatMap((child) => getDisplayItemToolUseIds(child))
-  }
-
+function getDisplayItemToolUseIds(item: AssistantDisplayItem): string[] {
   return item.fragments.flatMap((fragment) => fragment.type === 'tool_use' && typeof fragment.toolUseId === 'string' ? [fragment.toolUseId] : [])
 }
 
 function shouldAttachOverlayToItem(
-  item: AssistantDisplayItem | GroupedToolUseDisplayItem | CollapsedToolBatchDisplayItem,
+  item: AssistantDisplayItem,
   overlay: TimelineLivePreviewItem,
 ): boolean {
   if (overlay.anchor.anchorKind === 'tool_use') {
@@ -347,19 +335,15 @@ function shouldAttachOverlayToItem(
 }
 
 function getOverlayHostPriority(
-  item: AssistantDisplayItem | GroupedToolUseDisplayItem | CollapsedToolBatchDisplayItem,
+  item: AssistantDisplayItem,
   overlay: TimelineLivePreviewItem,
 ): number {
   if (!shouldAttachOverlayToItem(item, overlay)) return -1
   if (overlay.anchor.anchorKind === 'tool_use' || overlay.anchor.parentToolUseId) {
-    if (item.kind === 'grouped_tool_use') return 3
-    if (item.kind === 'collapsed_tool_batch') return 2
     return 1
   }
   if (overlay.anchor.anchorKind === 'message' || overlay.anchor.messageId) {
     if (item.kind === 'assistant') return 3
-    if (item.kind === 'grouped_tool_use') return 2
-    if (item.kind === 'collapsed_tool_batch') return 1
   }
   return 0
 }
@@ -456,87 +440,26 @@ function synthesizeOverlayHosts(unattached: TimelineLivePreviewItem[]): Assistan
   return synthetic
 }
 
-function toAssistantContribution(item: Exclude<DisplayItem, UserDisplayItem>): AssistantDisplayItem {
-  if (item.kind === 'assistant') {
-    return item
-  }
+function isDetachedToolResultAssistant(item: AssistantDisplayItem): boolean {
+  if (item.fragments.length === 0) return false
+  return item.fragments.every((fragment) => fragment.type === 'tool_result')
+}
 
-  if (item.kind === 'summary') {
-    const fragments: DisplayFragment[] = [{
-      type: 'summary',
-      text: item.content,
-      defaultCollapsed: item.defaultCollapsed,
-    }]
-    return {
-      kind: 'assistant',
-      id: `summary-output-${item.id}`,
-      key: `summary-output-${item.key}`,
-      timestamp: item.timestamp,
-      atomIds: [...item.atomIds],
-      messages: [item.anchorMessage],
-      anchorMessage: item.anchorMessage,
-      fragments,
-    }
-  }
+function isOverlayOnlyAssistant(item: AssistantDisplayItem): boolean {
+  return item.fragments.length === 0 && Boolean(item.overlays?.length)
+}
 
-  if (item.kind === 'grouped_tool_use') {
-    const fragments: DisplayFragment[] = item.toolUses.flatMap((tool) => {
-      const result: DisplayFragment[] = [{
-        type: 'tool_use',
-        name: tool.name,
-        toolUseId: tool.toolUseId,
-        input: tool.input,
-      }]
-      if (tool.result !== undefined) {
-        result.push({
-          type: 'tool_result',
-          toolUseId: tool.toolUseId,
-          output: tool.result,
-          attachedToParent: true,
-          display: tool.resultDisplay,
-          defaultCollapsed: !(tool.resultDisplay?.defaultExpanded ?? false),
-        })
-      }
-      return result
-    })
-
-    return {
-      kind: 'assistant',
-      id: `grouped-output-${item.id}`,
-      key: `grouped-output-${item.key}`,
-      timestamp: item.timestamp,
-      atomIds: [...item.atomIds],
-      messages: [item.anchorMessage],
-      anchorMessage: item.anchorMessage,
-      fragments,
-      footer: item.footer,
-      overlays: item.overlays,
-    }
-  }
-
-  const fragments: DisplayFragment[] = item.items.flatMap((child) => toAssistantContribution(child).fragments)
-  const messages = item.items.flatMap((child) => toAssistantContribution(child).messages)
-  const overlays = item.items.flatMap((child) => toAssistantContribution(child).overlays || [])
-
-  return {
-    kind: 'assistant',
-    id: `collapsed-output-${item.id}`,
-    key: `collapsed-output-${item.key}`,
-    timestamp: item.timestamp,
-    atomIds: [...item.atomIds],
-    messages,
-    anchorMessage: item.anchorMessage,
-    fragments,
-    footer: item.footer,
-    overlays: overlays.length > 0 ? overlays : item.overlays,
-  }
+function canMergeAssistantOutputItems(current: AssistantDisplayItem | null, next: AssistantDisplayItem): boolean {
+  if (!current) return true
+  if (isDetachedToolResultAssistant(current) || isDetachedToolResultAssistant(next)) return false
+  if (isOverlayOnlyAssistant(current) || isOverlayOnlyAssistant(next)) return false
+  return true
 }
 
 function mergeAssistantOutputItems(
   current: AssistantDisplayItem | null,
-  nextItem: Exclude<DisplayItem, UserDisplayItem>,
+  next: AssistantDisplayItem,
 ): AssistantDisplayItem {
-  const next = toAssistantContribution(nextItem)
   if (!current) return next
 
   const overlays = [...(current.overlays || []), ...(next.overlays || [])]
@@ -572,6 +495,16 @@ function mergeTurnOutputItems(items: DisplayItem[]): DisplayItem[] {
       flushPending()
       merged.push(item)
       continue
+    }
+
+    if (item.kind === 'summary') {
+      flushPending()
+      merged.push(item)
+      continue
+    }
+
+    if (!canMergeAssistantOutputItems(pendingOutput, item)) {
+      flushPending()
     }
 
     pendingOutput = mergeAssistantOutputItems(pendingOutput, item)

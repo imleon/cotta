@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { TimelineItem } from '../stores/session'
-import type {
-  AssistantDisplayItem,
-  CollapsedToolBatchDisplayItem,
-  GroupedToolUseDisplayItem,
-} from '../../../runtime/protocol/message-types.js'
+import type { AssistantDisplayItem } from '../../../runtime/protocol/message-types.js'
 import TimelineMessageContent from './TimelineMessageContent.vue'
 
 const props = defineProps<{
@@ -15,8 +11,6 @@ const props = defineProps<{
 function getAnchorMessage(item: TimelineItem) {
   switch (item.kind) {
     case 'assistant':
-    case 'grouped_tool_use':
-    case 'collapsed_tool_batch':
     case 'summary':
       return item.anchorMessage
     case 'user':
@@ -52,14 +46,6 @@ function shouldHidePrefix(item: TimelineItem): boolean {
   return getFirstVisibleAssistantFragment(item)?.type === 'tool_use'
 }
 
-function isGroupedItem(item: TimelineItem): item is GroupedToolUseDisplayItem {
-  return item.kind === 'grouped_tool_use'
-}
-
-function isCollapsedItem(item: TimelineItem): item is CollapsedToolBatchDisplayItem {
-  return item.kind === 'collapsed_tool_batch'
-}
-
 function isAssistantItem(item: TimelineItem): item is AssistantDisplayItem {
   return item.kind === 'assistant'
 }
@@ -80,9 +66,6 @@ function getRowClass(item: TimelineItem): string {
 }
 
 const rowStatus = computed(() => {
-  if (isGroupedItem(props.item) || isCollapsedItem(props.item)) {
-    return props.item.status
-  }
   if (isAssistantItem(props.item) && props.item.overlays?.length) {
     return 'streaming'
   }

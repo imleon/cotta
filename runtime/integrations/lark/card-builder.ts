@@ -1,9 +1,7 @@
 import type {
   AssistantDisplayItem,
-  CollapsedToolBatchDisplayItem,
   DisplayAssistantFooter,
   DisplayFragment,
-  GroupedToolUseDisplayItem,
   SessionMessage,
 } from '../../protocol/message-types.js'
 import { stringifyStructuredValue } from '../../protocol/transcript-normalizer.js'
@@ -182,45 +180,6 @@ function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
   return elements
 }
 
-function buildLarkGroupedToolUseElements(item: GroupedToolUseDisplayItem): unknown[] {
-  const elements: unknown[] = []
-  for (const tool of item.toolUses) {
-    const resultText = tool.resultDisplay?.previewText ?? stringifyStructuredValue(tool.result).trim()
-    elements.push(createLarkToolPanel(tool.name, tool.input, resultText || undefined))
-  }
-
-  const footerText = buildAssistantFooterText(item.footer, { includeTimestamp: false })
-  if (footerText.trim()) {
-    elements.push({ tag: 'hr' })
-    elements.push({
-      tag: 'markdown',
-      content: footerText,
-      text_size: 'notation',
-    })
-  }
-  return elements
-}
-
-function buildLarkCollapsedToolBatchElements(item: CollapsedToolBatchDisplayItem): unknown[] {
-  const totalOps = item.summary.readCount + item.summary.searchCount + item.summary.listCount + item.summary.bashCount
-  const lines = [
-    `${totalOps} low-signal tool calls${item.summary.latestHint ? ` · ${item.summary.latestHint}` : ''}`,
-    `Read ${item.summary.readCount} · Search ${item.summary.searchCount} · List ${item.summary.listCount} · Bash ${item.summary.bashCount}`,
-  ]
-
-  const elements: unknown[] = [createLarkSectionMarkdown('Tool Batch', lines.join('\n'))]
-  const footerText = buildAssistantFooterText(item.footer, { includeTimestamp: false })
-  if (footerText.trim()) {
-    elements.push({ tag: 'hr' })
-    elements.push({
-      tag: 'markdown',
-      content: footerText,
-      text_size: 'notation',
-    })
-  }
-  return elements
-}
-
 export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams): Record<string, unknown> {
   const mainContent = optimizeLarkMarkdownStyle(
     params.answerText || params.thinkingText || (params.isFinal ? 'Done.' : 'Processing...'),
@@ -288,16 +247,11 @@ export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams
 
 export function buildLarkFinalCardFromHistory(messages: SessionMessage[], footer: DisplayAssistantFooter): Record<string, unknown> | null {
   const items = buildHistoryDisplayItems(messages, { mode: 'default', includeHiddenAtoms: false })
-    .filter((item): item is AssistantDisplayItem | GroupedToolUseDisplayItem | CollapsedToolBatchDisplayItem =>
-      item.kind === 'assistant' || item.kind === 'grouped_tool_use' || item.kind === 'collapsed_tool_batch')
+    .filter((item): item is AssistantDisplayItem => item.kind === 'assistant')
   const target = items[items.length - 1]
   if (!target) return null
 
-  const elements = target.kind === 'assistant'
-    ? buildLarkAssistantElements({ ...target, footer })
-    : target.kind === 'grouped_tool_use'
-      ? buildLarkGroupedToolUseElements({ ...target, footer })
-      : buildLarkCollapsedToolBatchElements({ ...target, footer })
+  const elements = buildLarkAssistantElements({ ...target, footer })
 
   if (elements.length === 0) return null
 

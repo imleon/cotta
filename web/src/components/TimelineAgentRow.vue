@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import MarkdownContent from './MarkdownContent.vue'
 
 const props = withDefaults(defineProps<{
   subtitle?: string
   prompt?: string
+  resultText?: string
 }>(), {
   subtitle: '',
   prompt: '',
+  resultText: '',
 })
 
 const expanded = ref(false)
@@ -38,6 +41,8 @@ const expanded = ref(false)
       <div class="max-h-56 overflow-auto pr-1 space-y-1">
         <div class="text-[12px] font-semibold leading-5 text-slate-700">prompt</div>
         <div class="whitespace-pre-wrap font-mono text-[12px] leading-5 text-slate-500">{{ prompt }}</div>
+        <div v-if="resultText" class="pt-2 text-[12px] font-semibold leading-5 text-slate-700">result</div>
+        <MarkdownContent v-if="resultText" :content="resultText" muted />
       </div>
     </div>
   </div>

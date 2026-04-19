@@ -6,6 +6,7 @@ import type { SDKSessionInfo, SessionMessage as SDKSessionMessage } from '@anthr
 import type { SessionMessage, SessionSummary } from '../../protocol/message-types.js'
 import {
   extractTimestamp,
+  getTranscriptSemanticKind,
   normalizeStoredTranscriptMessage,
   normalizeTranscriptMessage,
 } from '../../protocol/transcript-normalizer.js'
@@ -63,6 +64,33 @@ function getBeforeOffset(messages: SessionMessage[], before: string | null): num
   return index >= 0 ? index : messages.length
 }
 
+function isBridgeUserMessage(message: SessionMessage): boolean {
+  if (message.role !== 'user') return false
+  const hasToolResult = message.blocks?.some((block) => block.type === 'tool_result')
+  if (hasToolResult) return true
+
+  const content = message.content.trim()
+  return content.includes('<local-command-stdout>')
+    || content.includes('<local-command-stderr>')
+    || content.includes('<bash-stdout>')
+    || content.includes('<bash-stderr>')
+    || content.includes('<tool_result>')
+}
+
+function isPrimaryUserTurnMessage(message: SessionMessage): boolean {
+  return getTranscriptSemanticKind(message) === 'user' && !isBridgeUserMessage(message)
+}
+
+function expandStartToTurnBoundary(messages: SessionMessage[], tentativeStart: number): number {
+  if (tentativeStart <= 0) return 0
+
+  for (let index = tentativeStart; index >= 0; index -= 1) {
+    if (isPrimaryUserTurnMessage(messages[index]!)) return index
+  }
+
+  return 0
+}
+
 export async function readAllSessionMessages(
   sessionId: string,
   projectDirs: string[] = [ENV.workspacePath],
@@ -98,7 +126,8 @@ export async function getMessagesPage(
     const before = normalizeBefore(options.before)
     const allMessages = (await readAllSessionMessages(sessionId, options.projectDirs)).map((message) => normalizeStoredTranscriptMessage(message))
     const endExclusive = getBeforeOffset(allMessages, before)
-    const start = Math.max(0, endExclusive - limit)
+    const tentativeStart = Math.max(0, endExclusive - limit)
+    const start = expandStartToTurnBoundary(allMessages, tentativeStart)
     const messages = allMessages.slice(start, endExclusive)
     const hasMore = start > 0
     const nextBefore = hasMore ? getMessageUuid(allMessages[start]) : null

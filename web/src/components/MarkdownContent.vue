@@ -10,7 +10,11 @@ const props = withDefaults(defineProps<{
 })
 
 function renderMarkdown(content: string): string {
-  const html = marked.parse(content, { async: false }) as string
+  const html = marked.parse(content, {
+    async: false,
+    breaks: true,
+    gfm: true,
+  }) as string
   return DOMPurify.sanitize(html, {
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
   })

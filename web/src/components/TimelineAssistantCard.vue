@@ -7,9 +7,11 @@ import TimelineBashToolRow from './TimelineBashToolRow.vue'
 import TimelineEditToolRow from './TimelineEditToolRow.vue'
 import TimelineEnterPlanModeRow from './TimelineEnterPlanModeRow.vue'
 import TimelineExitPlanModeRow from './TimelineExitPlanModeRow.vue'
+import TimelineFallbackToolRow from './TimelineFallbackToolRow.vue'
 import TimelineReadToolRow from './TimelineReadToolRow.vue'
 import TimelineSkillRow from './TimelineSkillRow.vue'
 import TimelineTaskCreateRow from './TimelineTaskCreateRow.vue'
+import TimelineTaskListRow from './TimelineTaskListRow.vue'
 import TimelineTaskUpdateRow from './TimelineTaskUpdateRow.vue'
 import TimelineWebFetchRow from './TimelineWebFetchRow.vue'
 import TimelineWebSearchRow from './TimelineWebSearchRow.vue'
@@ -69,7 +71,7 @@ type DetailEntry =
     }
   | {
       key: string
-      kind: 'tool' | 'agent' | 'taskcreate' | 'taskupdate' | 'bash' | 'read' | 'glob' | 'grep' | 'edit' | 'skill' | 'write' | 'websearch' | 'webfetch' | 'askuserquestion' | 'enterplanmode' | 'exitplanmode'
+      kind: 'tool' | 'agent' | 'taskcreate' | 'taskupdate' | 'tasklist' | 'bash' | 'read' | 'glob' | 'grep' | 'edit' | 'skill' | 'write' | 'websearch' | 'webfetch' | 'askuserquestion' | 'enterplanmode' | 'exitplanmode'
       icon: string
       title: string
       summary: string
@@ -496,6 +498,16 @@ function buildOverlayDetailEntries(overlay: TimelineLivePreviewItem): DetailEntr
           result: null,
         }
       }
+      if (syntheticToolUse.name === 'TaskList') {
+        return {
+          key: `${overlay.id}-tool-${index}`,
+          kind: 'tasklist',
+          icon: '📋',
+          title: 'TaskList',
+          summary: '',
+          result: null,
+        }
+      }
       if (syntheticToolUse.name === 'ExitPlanMode') {
         return {
           key: `${overlay.id}-tool-${index}`,
@@ -575,6 +587,7 @@ function buildOverlayDetailEntries(overlay: TimelineLivePreviewItem): DetailEntr
         title: getToolTitle(syntheticToolUse),
         summary: getToolSummary(syntheticToolUse),
         result: null,
+        input: syntheticToolUse.input,
       }
     }
 
@@ -770,6 +783,18 @@ const contentEntries = computed<DetailEntry[]>(() => {
         })
         continue
       }
+      if (toolUseFragment.name === 'TaskList') {
+        entries.push({
+          key: `${props.item.key}-tool-${index}`,
+          kind: 'tasklist',
+          icon: '📋',
+          title: 'TaskList',
+          summary: '',
+          result: toolResult,
+          outputValue: toolResult?.output,
+        })
+        continue
+      }
       if (toolUseFragment.name === 'ExitPlanMode') {
         entries.push({
           key: `${props.item.key}-tool-${index}`,
@@ -857,6 +882,8 @@ const contentEntries = computed<DetailEntry[]>(() => {
         title: getToolTitle(toolUseFragment),
         summary: getToolSummary(toolUseFragment),
         result: toolResult,
+        input: toolUseFragment.input,
+        outputValue: toolResult?.output,
       })
       continue
     }
@@ -972,6 +999,11 @@ const hasAnyContent = computed(() => contentEntries.value.length > 0)
             :output="entry.outputValue"
             :raw="entry.result?.raw"
           />
+          <TimelineTaskListRow
+            v-else-if="entry.kind === 'tasklist'"
+            :output="entry.outputValue"
+            :raw="entry.result?.raw"
+          />
           <TimelineExitPlanModeRow
             v-else-if="entry.kind === 'exitplanmode'"
             :plan-file-path="entry.subtitle"
@@ -1000,6 +1032,13 @@ const hasAnyContent = computed(() => contentEntries.value.length > 0)
             :file-path="entry.filePath"
             :content="entry.contentValue"
           />
+          <TimelineFallbackToolRow
+            v-else-if="entry.kind === 'tool'"
+            :title="entry.title"
+            :input="entry.input"
+            :output="entry.outputValue"
+            :raw="entry.result?.raw"
+          />
           <TimelineAssistantDetailRow
             v-else
             :icon="entry.icon"
@@ -1009,7 +1048,7 @@ const hasAnyContent = computed(() => contentEntries.value.length > 0)
             content-mode="plain"
           >
             <TimelineAssistantToolResultBlock
-              v-if="entry.kind === 'tool' && entry.result"
+              v-if="entry.result"
               :fragment="entry.result"
               :expanded="true"
               :show-inline-more="false"

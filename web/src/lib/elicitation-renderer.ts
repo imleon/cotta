@@ -2,10 +2,10 @@ export {
   buildElicitationContent,
   buildElicitationContentForObject,
   inferElicitationRenderer,
-} from '../../../runtime/presentation/elicitation-renderer.js'
+} from '../contract/runtime'
 
 export type {
   ElicitationOption,
   ElicitationFormField,
   ElicitationRenderer,
-} from '../../../runtime/presentation/elicitation-renderer.js'
+} from '../contract/runtime'

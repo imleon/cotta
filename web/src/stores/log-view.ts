@@ -4,31 +4,16 @@ import type {
   SessionPersistentLogEntry,
   SessionSdkRawLogEntry,
   SessionSummary,
-} from '../../../runtime/protocol/message-types.js'
+} from '../contract/runtime'
+import { fetchAgentsRequest } from '../api/agents'
+import { apiFetch as baseApiFetch } from '../api/http'
+import {
+  fetchPersistentLogsRequest,
+  fetchSdkRawLogsRequest,
+} from '../api/logs'
+import type { AgentDescriptor } from '../api/types'
 import { createDebugLogger } from '../lib/debug.js'
 import { useSessionStore } from './session'
-
-interface SdkRawLogsResponse {
-  items?: SessionSdkRawLogEntry[]
-  hasMore?: boolean
-  nextCursor?: number | null
-}
-
-interface PersistentLogsResponse {
-  items?: SessionPersistentLogEntry[]
-  hasMore?: boolean
-  nextCursor?: number | null
-}
-
-interface AgentDescriptor {
-  agentId: string
-  projectDir?: string
-}
-
-interface AgentsResponse {
-  defaultAgentId?: string
-  agents?: AgentDescriptor[]
-}
 
 type LogTab = 'messages' | 'control' | 'persistent'
 
@@ -174,13 +159,8 @@ export const useLogViewStore = defineStore('log-view', () => {
   }
 
   async function apiFetch(input: string, init: RequestInit = {}) {
-    const headers = new Headers(init.headers || undefined)
-    if (sessionStore.hasAuthToken) {
-      headers.set('Authorization', `Bearer ${sessionStore.authToken}`)
-    }
-    return fetch(input, {
-      ...init,
-      headers,
+    return await baseApiFetch(input, init, {
+      authToken: sessionStore.authToken,
     })
   }
 
@@ -205,24 +185,14 @@ export const useLogViewStore = defineStore('log-view', () => {
 
   async function fetchAgents() {
     try {
-      const res = await apiFetch('/api/agents')
-      if (!res.ok) return false
-      const data = await res.json() as AgentsResponse
-      const nextAgents = Array.isArray(data.agents)
-        ? data.agents
-          .map((agent) => ({
-            agentId: typeof agent?.agentId === 'string' ? agent.agentId.trim() : '',
-            ...(typeof agent?.projectDir === 'string' && agent.projectDir.trim()
-              ? { projectDir: agent.projectDir.trim() }
-              : {}),
-          }))
-          .filter((agent) => agent.agentId)
-        : []
+      const result = await fetchAgentsRequest(apiFetch)
+      if (!result.ok) return false
+      const nextAgents = result.data.agents
       agents.value = [{ agentId: ALL_AGENTS_ID, projectDir: 'ALL sessions' }, ...nextAgents]
       selectedAgentId.value = resolveSelectedAgentId({
         agents: agents.value,
         preferredAgentId: selectedAgentId.value,
-        defaultAgentId: typeof data.defaultAgentId === 'string' ? data.defaultAgentId : '',
+        defaultAgentId: result.data.defaultAgentId,
       })
       return true
     } catch (error) {
@@ -251,23 +221,22 @@ export const useLogViewStore = defineStore('log-view', () => {
     sdkRawLogLoading.value = true
     sdkRawLogRefreshing.value = !options.append
     try {
-      const params = new URLSearchParams()
-      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
-      if (!options.follow) params.set('full', '1')
-      if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
-      if (options.follow) params.set('follow', '1')
-      const res = await apiFetch(`/api/sessions/${sessionId}/sdk-raw-logs?${params.toString()}`)
-      if (!res.ok) {
+      const result = await fetchSdkRawLogsRequest(apiFetch, sessionId, {
+        limit: options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE,
+        full: !options.follow,
+        cursor: options.cursor,
+        follow: options.follow,
+      })
+      if (!result.ok) {
         logger.warn('sdk-raw:load:error', {
           sessionId: shortId(sessionId),
-          status: res.status,
+          status: result.status,
           cursor: options.cursor,
           follow: options.follow,
         })
         return false
       }
-      const data = await res.json() as SdkRawLogsResponse
-      const items = Array.isArray(data.items) ? data.items : []
+      const items = result.data.items
       if (options.append) {
         sdkRawLog.value = [...items, ...sdkRawLog.value]
       } else if (options.follow) {
@@ -304,34 +273,33 @@ export const useLogViewStore = defineStore('log-view', () => {
     persistentLogLoading.value = true
     persistentLogRefreshing.value = !options.append
     try {
-      const params = new URLSearchParams()
-      params.set('limit', String(options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE))
-      if (!options.follow) params.set('full', '1')
-      if (typeof options.cursor === 'number') params.set('cursor', String(options.cursor))
-      if (options.follow) params.set('follow', '1')
-      const res = await apiFetch(`/api/sessions/${sessionId}/persistent-logs?${params.toString()}`)
-      if (!res.ok) {
+      const result = await fetchPersistentLogsRequest(apiFetch, sessionId, {
+        limit: options.follow ? DEFAULT_LOG_PAGE_SIZE : FULL_LOG_PAGE_SIZE,
+        full: !options.follow,
+        cursor: options.cursor,
+        follow: options.follow,
+      })
+      if (!result.ok) {
         logger.warn('persistent:load:error', {
           sessionId: shortId(sessionId),
-          status: res.status,
+          status: result.status,
           cursor: options.cursor,
           follow: options.follow,
         })
         return false
       }
-      const data = await res.json() as PersistentLogsResponse
-      const items = Array.isArray(data.items) ? data.items : []
+      const items = result.data.items
       if (options.append || options.follow) {
         persistentLog.value = mergePersistentLogEntries(persistentLog.value, items)
       } else {
         persistentLog.value = sortPersistentLogEntries(items)
       }
-      const nextCursor = typeof data.nextCursor === 'number' ? data.nextCursor : null
+      const nextCursor = result.data.nextCursor
       const tailCursor = persistentLog.value.length > 0 ? persistentLog.value[persistentLog.value.length - 1]?.cursor ?? null : null
       if (options.follow) {
         persistentFollowCursor.value = nextCursor ?? tailCursor
       } else {
-        persistentLogHasMore.value = Boolean(data.hasMore)
+        persistentLogHasMore.value = result.data.hasMore
         persistentLogCursor.value = nextCursor
         persistentFollowCursor.value = tailCursor
       }

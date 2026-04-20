@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import SessionList from './components/SessionList.vue'
-import MessageList from './components/MessageList.vue'
-import InputBar from './components/InputBar.vue'
-import TransportLogView from './components/TransportLogView.vue'
-import SettingsView from './components/SettingsView.vue'
-import StatusView from './components/StatusView.vue'
 import logoUrl from './lib/logo.png'
+import LogPage from './pages/LogPage.vue'
+import SessionPage from './pages/SessionPage.vue'
+import SettingsPage from './pages/SettingsPage.vue'
+import StatusPage from './pages/StatusPage.vue'
 import { useSessionStore } from './stores/session'
 
 const session = useSessionStore()
@@ -137,41 +135,14 @@ onMounted(() => {
         </header>
 
         <main class="flex-1 min-h-0">
-          <div v-if="activeView === 'session'" class="flex h-full min-w-0 bg-[color:color-mix(in_srgb,var(--tt-surface)_68%,white)]">
-            <div
-              v-if="sessionDrawerOpen"
-              class="fixed inset-0 z-40 bg-[color:color-mix(in_srgb,var(--tt-accent)_32%,transparent)] backdrop-blur-[1px] md:hidden"
-              @click="closeSessionDrawer"
-            />
-
-            <aside class="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] -translate-x-full border-r border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_96%,white)] text-[var(--tt-text)] shadow-2xl transition-transform md:static md:z-auto md:w-72 md:max-w-none md:translate-x-0 md:flex md:flex-col md:shadow-none"
-              :class="sessionDrawerOpen ? 'translate-x-0' : ''"
-            >
-              <div class="flex items-center justify-between border-b border-[var(--tt-border)] px-4 py-3 md:hidden">
-                <span class="text-sm font-medium text-[var(--tt-accent)]">Sessions</span>
-                <button class="rounded-lg border border-[var(--tt-border)] bg-white/80 px-2 py-1 text-xs text-[var(--tt-text-muted)]" @click="closeSessionDrawer">Close</button>
-              </div>
-              <SessionList class="flex-1 overflow-y-auto" :on-select="closeSessionDrawer" />
-            </aside>
-
-            <section class="flex-1 flex flex-col min-w-0 bg-[color:color-mix(in_srgb,var(--tt-card)_86%,white)] backdrop-blur-[1px] md:border-l md:border-[var(--tt-border)]">
-              <MessageList class="flex-1 overflow-y-auto" />
-              <InputBar class="border-t border-[var(--tt-border)]" />
-            </section>
-          </div>
-
-          <div v-else-if="activeView === 'log'" class="h-full">
-            <TransportLogView class="h-full" />
-          </div>
-
-          <div v-else-if="activeView === 'settings'" class="h-full">
-            <SettingsView class="h-full" />
-          </div>
-
-          <div v-else-if="activeView === 'status'" class="h-full">
-            <StatusView class="h-full" @open-session="openSessionFromStatus" />
-          </div>
-
+          <SessionPage
+            v-if="activeView === 'session'"
+            :session-drawer-open="sessionDrawerOpen"
+            @close-session-drawer="closeSessionDrawer"
+          />
+          <LogPage v-else-if="activeView === 'log'" />
+          <SettingsPage v-else-if="activeView === 'settings'" />
+          <StatusPage v-else-if="activeView === 'status'" @open-session="openSessionFromStatus" />
         </main>
       </div>
     </template>

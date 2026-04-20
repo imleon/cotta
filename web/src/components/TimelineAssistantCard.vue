@@ -1,26 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import TimelineAssistantDetailRow from './TimelineAssistantDetailRow.vue'
-import TimelineAgentRow from './TimelineAgentRow.vue'
-import TimelineAskUserQuestionRow from './TimelineAskUserQuestionRow.vue'
-import TimelineBashToolRow from './TimelineBashToolRow.vue'
-import TimelineEditToolRow from './TimelineEditToolRow.vue'
-import TimelineEnterPlanModeRow from './TimelineEnterPlanModeRow.vue'
-import TimelineExitPlanModeRow from './TimelineExitPlanModeRow.vue'
-import TimelineFallbackToolRow from './TimelineFallbackToolRow.vue'
-import TimelineReadToolRow from './TimelineReadToolRow.vue'
-import TimelineSkillRow from './TimelineSkillRow.vue'
-import TimelineTaskCreateRow from './TimelineTaskCreateRow.vue'
-import TimelineTaskListRow from './TimelineTaskListRow.vue'
-import TimelineTaskUpdateRow from './TimelineTaskUpdateRow.vue'
-import TimelineWebFetchRow from './TimelineWebFetchRow.vue'
-import TimelineWebSearchRow from './TimelineWebSearchRow.vue'
-import TimelineThinkingRow from './TimelineThinkingRow.vue'
-import TimelineWriteToolRow from './TimelineWriteToolRow.vue'
+import TimelineAssistantDetailEntry from './TimelineAssistantDetailEntry.vue'
 import TimelineAssistantFooterLine from './TimelineAssistantFooterLine.vue'
-import TimelineAssistantSummaryBlock from './TimelineAssistantSummaryBlock.vue'
-import TimelineAssistantTextBlock from './TimelineAssistantTextBlock.vue'
-import TimelineAssistantToolResultBlock from './TimelineAssistantToolResultBlock.vue'
+import TimelineToolGroupRow from './TimelineToolGroupRow.vue'
 import type {
   AssistantDisplayItem,
   DisplayFragmentThinking,
@@ -87,6 +69,21 @@ type DetailEntry =
       contentValue?: unknown
       outputValue?: unknown
     }
+
+type RenderEntryGroup =
+  | {
+      key: string
+      kind: 'entry'
+      entry: DetailEntry
+    }
+  | {
+      key: string
+      kind: 'tool_group'
+      summary: string
+      entries: DetailEntry[]
+    }
+
+type ToolDetailEntry = Extract<DetailEntry, { title: string }>
 
 function compactString(value: string, head = 10, tail = 8): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
@@ -904,6 +901,89 @@ const contentEntries = computed<DetailEntry[]>(() => {
   return entries
 })
 
+const TOOL_ENTRY_KINDS = new Set<DetailEntry['kind']>([
+  'tool',
+  'agent',
+  'taskcreate',
+  'taskupdate',
+  'tasklist',
+  'bash',
+  'read',
+  'glob',
+  'grep',
+  'edit',
+  'skill',
+  'write',
+  'websearch',
+  'webfetch',
+  'askuserquestion',
+  'enterplanmode',
+  'exitplanmode',
+])
+
+function isToolEntry(entry: DetailEntry): entry is ToolDetailEntry {
+  return TOOL_ENTRY_KINDS.has(entry.kind)
+}
+
+function buildToolGroupSummary(entries: ToolDetailEntry[]): string {
+  const counts = new Map<string, number>()
+  const order: string[] = []
+  for (const entry of entries) {
+    const title = entry.title || 'Tool'
+    if (!counts.has(title)) order.push(title)
+    counts.set(title, (counts.get(title) ?? 0) + 1)
+  }
+  return order
+    .map((title, index) => `${index === 0 ? '调用 ' : ''}${counts.get(title) ?? 0} 次 ${title} 工具`)
+    .join('、')
+}
+
+const renderGroups = computed<RenderEntryGroup[]>(() => {
+  const groups: RenderEntryGroup[] = []
+  let index = 0
+
+  while (index < contentEntries.value.length) {
+    const entry = contentEntries.value[index]!
+    if (!isToolEntry(entry)) {
+      groups.push({
+        key: `entry-${entry.key}`,
+        kind: 'entry',
+        entry,
+      })
+      index += 1
+      continue
+    }
+
+    const toolEntries: ToolDetailEntry[] = []
+    let cursor = index
+    while (cursor < contentEntries.value.length) {
+      const candidate = contentEntries.value[cursor]!
+      if (!isToolEntry(candidate)) break
+      toolEntries.push(candidate)
+      cursor += 1
+    }
+
+    if (toolEntries.length >= 2) {
+      groups.push({
+        key: `tool-group-${toolEntries[0]!.key}`,
+        kind: 'tool_group',
+        summary: buildToolGroupSummary(toolEntries),
+        entries: toolEntries,
+      })
+    } else {
+      groups.push({
+        key: `entry-${entry.key}`,
+        kind: 'entry',
+        entry,
+      })
+    }
+
+    index = cursor
+  }
+
+  return groups
+})
+
 const hasAnyContent = computed(() => contentEntries.value.length > 0)
 
 </script>
@@ -911,152 +991,19 @@ const hasAnyContent = computed(() => contentEntries.value.length > 0)
 <template>
   <div class="space-y-3">
     <div v-if="hasAnyContent" class="space-y-3">
-      <template v-for="entry in contentEntries" :key="entry.key">
-        <div class="space-y-1">
-          <TimelineThinkingRow
-            v-if="entry.kind === 'thinking'"
-            :text="entry.content"
-            :redacted="Boolean(entry.redacted)"
-          />
-          <TimelineAssistantTextBlock
-            v-else-if="entry.kind === 'text'"
-            :fragment="entry.fragment"
-          />
-          <TimelineAssistantSummaryBlock
-            v-else-if="entry.kind === 'summary_block'"
-            :fragment="entry.fragment"
-          />
-          <TimelineBashToolRow
-            v-else-if="entry.kind === 'bash'"
-            tool-name="Bash"
-            :description="entry.description"
-            :command="entry.command || ''"
-            :result-content="entry.resultContent || ''"
-          />
-          <TimelineAgentRow
-            v-else-if="entry.kind === 'agent'"
-            :subtitle="entry.subtitle"
-            :prompt="entry.prompt"
-            :result-text="entry.result ? stringifyStructuredValue(entry.result.output) : ''"
-          />
-          <TimelineReadToolRow
-            v-else-if="entry.kind === 'read'"
-            :file-path="entry.filePath"
-          >
-            <div
-              v-if="entry.result"
-              class="whitespace-pre-wrap font-mono text-[12px] leading-5 text-slate-500"
-            >{{ stringifyStructuredValue(entry.result.output) }}</div>
-          </TimelineReadToolRow>
-          <TimelineReadToolRow
-            v-else-if="entry.kind === 'glob'"
-            icon="🔎"
-            title="Glob"
-            :file-path="entry.filePath"
-          >
-            <div
-              v-if="entry.result"
-              class="whitespace-pre-wrap font-mono text-[12px] leading-5 text-slate-500"
-            >{{ stringifyStructuredValue(entry.result.output) }}</div>
-          </TimelineReadToolRow>
-          <TimelineReadToolRow
-            v-else-if="entry.kind === 'grep'"
-            icon="🧭"
-            title="Grep"
-            :file-path="entry.filePath"
-          >
-            <div
-              v-if="entry.result"
-              class="whitespace-pre-wrap font-mono text-[12px] leading-5 text-slate-500"
-            >{{ stringifyStructuredValue(entry.result.output) }}</div>
-          </TimelineReadToolRow>
-          <TimelineEditToolRow
-            v-else-if="entry.kind === 'edit'"
-            :file-path="entry.filePath"
-            :input="entry.input"
-          />
-          <TimelineSkillRow
-            v-else-if="entry.kind === 'skill'"
-            :subtitle="entry.subtitle"
-            :args="entry.args"
-          />
-          <TimelineWebSearchRow
-            v-else-if="entry.kind === 'websearch'"
-            :query="entry.subtitle"
-            :input="entry.input"
-            :output="entry.outputValue"
-            :raw="entry.result?.raw"
-          />
-          <TimelineWebFetchRow
-            v-else-if="entry.kind === 'webfetch'"
-            :url="entry.subtitle"
-            :input="entry.input"
-            :output="entry.outputValue"
-            :raw="entry.result?.raw"
-          />
-          <TimelineEnterPlanModeRow
-            v-else-if="entry.kind === 'enterplanmode'"
-            :output="entry.outputValue"
-            :raw="entry.result?.raw"
-          />
-          <TimelineTaskListRow
-            v-else-if="entry.kind === 'tasklist'"
-            :output="entry.outputValue"
-            :raw="entry.result?.raw"
-          />
-          <TimelineExitPlanModeRow
-            v-else-if="entry.kind === 'exitplanmode'"
-            :plan-file-path="entry.subtitle"
-            :input="entry.input"
-          />
-          <TimelineAskUserQuestionRow
-            v-else-if="entry.kind === 'askuserquestion'"
-            :subtitle="entry.subtitle"
-            :input="entry.input"
-            :output="entry.outputValue"
-            :raw="entry.result?.raw"
-          />
-          <TimelineTaskCreateRow
-            v-else-if="entry.kind === 'taskcreate'"
-            :subtitle="entry.subtitle"
-            :raw="entry.result?.raw"
-            :output="entry.result?.output"
-            debug
-          />
-          <TimelineTaskUpdateRow
-            v-else-if="entry.kind === 'taskupdate'"
-            :subtitle="entry.subtitle"
-          />
-          <TimelineWriteToolRow
-            v-else-if="entry.kind === 'write'"
-            :file-path="entry.filePath"
-            :content="entry.contentValue"
-          />
-          <TimelineFallbackToolRow
-            v-else-if="entry.kind === 'tool'"
-            :title="entry.title"
-            :input="entry.input"
-            :output="entry.outputValue"
-            :raw="entry.result?.raw"
-          />
-          <TimelineAssistantDetailRow
-            v-else
-            :icon="entry.icon"
-            :title="entry.title"
-            :summary="entry.summary"
-            :content="''"
-            content-mode="plain"
-          >
-            <TimelineAssistantToolResultBlock
-              v-if="entry.result"
-              :fragment="entry.result"
-              :expanded="true"
-              :show-inline-more="false"
-              :framed="false"
-            />
-          </TimelineAssistantDetailRow>
-
-        </div>
+      <template v-for="group in renderGroups" :key="group.key">
+        <TimelineToolGroupRow
+          v-if="group.kind === 'tool_group'"
+          :summary="group.summary"
+        >
+          <template v-for="entry in group.entries" :key="entry.key">
+            <TimelineAssistantDetailEntry :entry="entry" />
+          </template>
+        </TimelineToolGroupRow>
+        <TimelineAssistantDetailEntry
+          v-else
+          :entry="group.entry"
+        />
       </template>
     </div>
 

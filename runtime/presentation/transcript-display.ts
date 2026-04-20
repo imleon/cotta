@@ -251,11 +251,17 @@ function createFragments(
   }
 
   if (isTranscriptSummaryMessage(message) && structured.answerText) {
-    fragments.push({
-      type: 'summary',
-      text: structured.answerText,
-      defaultCollapsed: options.mode !== 'transcript',
-    })
+    // Compact summaries are persisted as special messages. When they come from an assistant-role
+    // message, render them as normal text to avoid creating a "summary" UI surface for them.
+    if (message.role === 'assistant') {
+      fragments.push({ type: 'text', text: structured.answerText })
+    } else {
+      fragments.push({
+        type: 'summary',
+        text: structured.answerText,
+        defaultCollapsed: options.mode !== 'transcript',
+      })
+    }
   }
 
   return fragments
@@ -409,7 +415,9 @@ function shouldHideMetaMessage(message: TranscriptMessage, mode: 'default' | 'tr
 }
 
 function shouldHideSummaryMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
-  return mode !== 'transcript' && isTranscriptSummaryMessage(message)
+  // Only hide user-origin compact summaries in default mode; assistant-origin summaries are
+  // rendered as normal text fragments.
+  return mode !== 'transcript' && isTranscriptSummaryMessage(message) && message.role === 'user'
 }
 
 function shouldHideThinkingMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {

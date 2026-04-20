@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { computed } from 'vue'
+import MarkdownContent from './MarkdownContent.vue'
+import ToolRowShell from './ToolRowShell.vue'
 
 const props = withDefaults(defineProps<{
   text: string
@@ -11,15 +11,6 @@ const props = withDefaults(defineProps<{
   redacted: false,
   maxHeightClass: 'max-h-56',
 })
-
-const expanded = ref(false)
-
-function renderMarkdown(content: string): string {
-  const html = marked.parse(content, { async: false }) as string
-  return DOMPurify.sanitize(html, {
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
-  })
-}
 
 function extractSubtitle(raw: string, maxChars = 36): string {
   const text = raw.trim()
@@ -42,37 +33,29 @@ const subtitle = computed(() => {
   if (props.redacted) return 'redacted'
   return extractSubtitle(props.text)
 })
+
+const thinkingText = computed(() => props.redacted ? 'redacted thinking' : props.text)
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200/70 overflow-hidden">
-    <button
-      type="button"
-      class="group flex w-full cursor-pointer items-center gap-1 bg-slate-50/80 px-3 py-2 text-left text-[13px] leading-6 text-slate-700 hover:bg-slate-100/60"
-      @click="expanded = !expanded"
-    >
-      <span class="shrink-0 inline-flex h-6 w-6 items-center justify-center text-[15px] leading-6 text-slate-600">✨</span>
-      <span class="min-w-0 flex-1 flex items-center">
-        <span class="font-medium text-slate-900">Thinking</span>
-        <span v-if="!expanded && subtitle" class="ml-2 text-slate-500 truncate">{{ subtitle }}</span>
-        <span
-          class="ml-2 inline-flex h-6 w-4 items-center justify-center text-slate-400"
-          :class="expanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
-        >
-          <svg v-if="expanded" class="block" viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
-            <path d="M6 15l6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-          <svg v-else class="block" viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
-            <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </span>
-      </span>
-    </button>
-
-    <div v-if="expanded" class="min-w-0 border-t border-slate-200/70 bg-white px-3 py-2">
-      <div :class="[maxHeightClass, 'overflow-auto pr-1']">
-        <div class="markdown-body prose prose-sm max-w-none text-slate-600" v-html="renderMarkdown(redacted ? 'redacted thinking' : text)" />
-      </div>
+  <ToolRowShell
+    title="思考中"
+    :subtitle="subtitle"
+    subtitle-visibility="collapsed"
+    :default-expanded="false"
+  >
+    <template #icon>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+        <path d="M9.5 4.5c-1.3 0-2.3.9-2.5 2.1A3.2 3.2 0 0 0 4 9.8c0 1 .4 1.9 1.1 2.5a3 3 0 0 0-.5 1.6c0 1.7 1.3 3 3 3 .2 1.3 1.3 2.3 2.7 2.3 1 0 1.8-.4 2.4-1.1.5.7 1.4 1.1 2.4 1.1 1.4 0 2.5-1 2.7-2.3 1.7 0 3-1.3 3-3 0-.6-.2-1.2-.5-1.7a3.2 3.2 0 0 0 1-2.4c0-1.6-1.2-3-2.8-3.2-.2-1.2-1.3-2.1-2.5-2.1-.9 0-1.8.4-2.3 1-.5-.6-1.4-1-2.3-1Z" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round" />
+        <path d="M9.3 7.8c-.7.4-1.1 1-1.1 1.8 0 .6.3 1.2.8 1.6" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" />
+        <path d="M14.7 7.8c.7.4 1.1 1 1.1 1.8 0 .6-.3 1.2-.8 1.6" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" />
+        <path d="M12 5.8v11.4" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" />
+        <path d="M8.9 12.3c.5-.4 1.1-.6 1.7-.6.5 0 1 .2 1.4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" />
+        <path d="M15.1 12.3c-.5-.4-1.1-.6-1.7-.6-.5 0-1 .2-1.4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" />
+      </svg>
+    </template>
+    <div :class="[maxHeightClass, 'overflow-auto pr-1']">
+      <MarkdownContent :content="thinkingText" muted />
     </div>
-  </div>
+  </ToolRowShell>
 </template>

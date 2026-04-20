@@ -742,7 +742,8 @@ export function getTranscriptAssistantUsage(message: TranscriptMessage | null | 
 
 export function getTranscriptSemanticKind(message: TranscriptMessage | null | undefined): TranscriptSemanticKind {
   if (!message) return 'unknown'
-  if (isTranscriptSummaryMessage(message)) return 'summary'
+  // Treat assistant-origin compact summaries as normal assistant messages.
+  if (isTranscriptSummaryMessage(message) && message.role === 'user') return 'summary'
   if (isTranscriptMetaMessage(message)) return 'meta'
   if (isTranscriptRedactedThinkingMessage(message)) return 'thinking'
   if (message.blocks?.some((block) => block.type === 'thinking')) return 'thinking'

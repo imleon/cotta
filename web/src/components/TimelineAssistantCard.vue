@@ -53,7 +53,7 @@ type DetailEntry =
     }
   | {
       key: string
-      kind: 'tool' | 'agent' | 'taskcreate' | 'taskupdate' | 'tasklist' | 'bash' | 'read' | 'glob' | 'grep' | 'edit' | 'skill' | 'write' | 'websearch' | 'webfetch' | 'askuserquestion' | 'enterplanmode' | 'exitplanmode'
+      kind: 'tool' | 'agent' | 'taskcreate' | 'bash' | 'read' | 'glob' | 'grep' | 'edit' | 'skill' | 'write'
       icon: string
       title: string
       summary: string
@@ -67,23 +67,15 @@ type DetailEntry =
       prompt?: string
       args?: unknown
       contentValue?: unknown
-      outputValue?: unknown
-    }
-
-type RenderEntryGroup =
-  | {
-      key: string
-      kind: 'entry'
-      entry: DetailEntry
     }
   | {
       key: string
       kind: 'tool_group'
       summary: string
-      entries: DetailEntry[]
+      entries: ToolEntry[]
     }
 
-type ToolDetailEntry = Extract<DetailEntry, { title: string }>
+type ToolEntry = Extract<DetailEntry, { kind: 'tool' | 'agent' | 'taskcreate' | 'bash' | 'read' | 'glob' | 'grep' | 'edit' | 'skill' | 'write' }>
 
 function compactString(value: string, head = 10, tail = 8): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
@@ -109,15 +101,12 @@ function compactValue(value: unknown): string {
   return entries.join(', ')
 }
 
-function getToolKind(fragment: DisplayFragmentToolUse): 'agent' | 'taskcreate' | 'taskupdate' | 'tool' {
+function getToolKind(fragment: DisplayFragmentToolUse): 'agent' | 'taskcreate' | 'tool' {
   const normalizedName = (fragment.name || '').toLowerCase()
   const input = fragment.input && typeof fragment.input === 'object'
     ? fragment.input as Record<string, unknown>
     : null
 
-  if (normalizedName.includes('taskupdate') || normalizedName.includes('task_update')) {
-    return 'taskupdate'
-  }
   if (normalizedName.includes('taskcreate') || normalizedName.includes('task_create')) {
     return 'taskcreate'
   }
@@ -130,14 +119,12 @@ function getToolKind(fragment: DisplayFragmentToolUse): 'agent' | 'taskcreate' |
 function getToolTitle(fragment: DisplayFragmentToolUse): string {
   const kind = getToolKind(fragment)
   if (kind === 'agent') return 'Agent'
-  if (kind === 'taskupdate') return 'TaskUpdate'
   if (kind === 'taskcreate') return 'TaskCreate'
   return fragment.name || 'Tool'
 }
 
-function getToolIcon(kind: 'agent' | 'taskcreate' | 'taskupdate' | 'tool'): string {
+function getToolIcon(kind: 'agent' | 'taskcreate' | 'tool'): string {
   if (kind === 'agent') return '🤖'
-  if (kind === 'taskupdate') return '📋'
   if (kind === 'taskcreate') return '📝'
   return '🔧'
 }
@@ -155,7 +142,7 @@ function getToolSummary(fragment: DisplayFragmentToolUse): string {
   const preferredKeys = kind === 'agent'
     ? ['subagent_type', 'query', 'description']
     : ['description', 'query']
-  const hiddenKeys = new Set(kind === 'taskcreate' || kind === 'taskupdate' ? ['description'] : [])
+  const hiddenKeys = new Set(kind === 'taskcreate' ? ['description'] : [])
 
   const orderedEntries = [
     ...preferredKeys
@@ -204,34 +191,6 @@ function getSkillArgs(input: unknown): unknown {
   return (input as Record<string, unknown>).args
 }
 
-function getWebSearchQuery(input: unknown): string {
-  return getStringField(input, 'query')
-}
-
-function getWebFetchUrl(input: unknown): string {
-  return getStringField(input, 'url')
-}
-
-function getAskUserQuestionSubtitle(input: unknown): string {
-  if (!input || typeof input !== 'object') return ''
-  const questions = (input as Record<string, unknown>).questions
-  if (!Array.isArray(questions)) return ''
-  return questions
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-    .map((item) => {
-      const header = typeof item.header === 'string' ? item.header.trim() : ''
-      const question = typeof item.question === 'string' ? item.question.trim() : ''
-      if (header && question) return `${header}（${question}）`
-      return header || question
-    })
-    .filter(Boolean)
-    .join(' · ')
-}
-
-function getExitPlanModePlanFilePath(input: unknown): string {
-  return getStringField(input, 'planFilePath') || getStringField(input, 'plan_file_path')
-}
-
 function getNestedString(value: unknown, path: string[]): string {
   let current: unknown = value
   for (const segment of path) {
@@ -241,37 +200,11 @@ function getNestedString(value: unknown, path: string[]): string {
   return typeof current === 'string' ? current : ''
 }
 
-function getTaskIdFromResultPayload(value: unknown): string {
-  return getNestedString(value, ['toolUseResult', 'taskId'])
-    || getNestedString(value, ['tool_use_result', 'task_id'])
-    || getNestedString(value, ['toolUseResult', 'task', 'id'])
-}
-
-function getTaskIdFromResultMessage(value: unknown): string {
-  if (!value || typeof value !== 'object') return ''
-  const record = value as Record<string, unknown>
-  const message = record.message && typeof record.message === 'object'
-    ? record.message as Record<string, unknown>
-    : null
-  const content = Array.isArray(message?.content) ? message.content : []
-
-  for (const block of content) {
-    if (!block || typeof block !== 'object') continue
-    const blockRecord = block as Record<string, unknown>
-    if (blockRecord.type !== 'tool_result') continue
-    const text = typeof blockRecord.content === 'string' ? blockRecord.content : ''
-    const match = text.match(/\btask\s*#\s*(\d+)\b/i)
-    if (match?.[1]) return match[1]
-  }
-
-  return ''
-}
-
 function buildTaskCreateSubtitle(input: unknown, output: unknown): string {
-  const taskId = getTaskIdFromResultPayload(output)
+  const taskId = getNestedString(output, ['toolUseResult', 'task', 'id'])
   const subject = getStringField(input, 'subject')
   const description = getStringField(input, 'description')
-  const idPart = taskId ? `[#${taskId} 待创建]` : ''
+  const idPart = taskId ? `[#${taskId}]` : ''
   const subjectPart = subject || ''
   const descriptionPart = description ? `(${description})` : ''
   return [idPart, `${subjectPart}${descriptionPart}`.trim()].filter(Boolean).join(' ')
@@ -281,9 +214,8 @@ function buildTaskCreateSubtitleFromResult(
   input: unknown,
   result: DisplayFragmentToolResult | null,
 ): string {
-  const taskIdFromRaw = getTaskIdFromResultPayload(result?.raw)
-  const taskIdFromOutput = getTaskIdFromResultPayload(result?.output)
-  const taskIdFromMessage = getTaskIdFromResultMessage(result?.raw) || getTaskIdFromResultMessage(result?.output)
+  const taskIdFromRaw = getNestedString(result?.raw, ['toolUseResult', 'task', 'id'])
+  const taskIdFromOutput = getNestedString(result?.output, ['toolUseResult', 'task', 'id'])
   const taskIdFromText = (() => {
     const rawRecord = result?.raw && typeof result.raw === 'object' ? result.raw as Record<string, unknown> : null
     const candidates: Array<unknown> = [
@@ -301,41 +233,8 @@ function buildTaskCreateSubtitleFromResult(
   })()
   const subject = getStringField(input, 'subject')
   const description = getStringField(input, 'description')
-  const taskId = taskIdFromRaw || taskIdFromOutput || taskIdFromMessage || taskIdFromText
-  const idPart = taskId ? `[#${taskId} 待创建]` : ''
-  const subjectPart = subject || ''
-  const descriptionPart = description ? `(${description})` : ''
-  return [idPart, `${subjectPart}${descriptionPart}`.trim()].filter(Boolean).join(' ')
-}
-
-function getTaskStatusLabel(status: string): string {
-  if (status === 'in_progress') return '进行中'
-  if (status === 'completed') return '已完成'
-  return status
-}
-
-function buildTaskUpdateSubtitle(input: unknown, _output: unknown): string {
-  const taskId = getStringField(input, 'taskId')
-  const status = getStringField(input, 'status')
-  const subject = getStringField(input, 'subject')
-  const description = getStringField(input, 'description')
-  const statusLabel = getTaskStatusLabel(status)
-  const idPart = taskId && statusLabel ? `[#${taskId} ${statusLabel}]` : taskId ? `[#${taskId}]` : ''
-  const subjectPart = subject || ''
-  const descriptionPart = description ? `(${description})` : ''
-  return [idPart, `${subjectPart}${descriptionPart}`.trim()].filter(Boolean).join(' ')
-}
-
-function buildTaskUpdateSubtitleFromResult(
-  input: unknown,
-  _result: DisplayFragmentToolResult | null,
-): string {
-  const taskId = getStringField(input, 'taskId')
-  const status = getStringField(input, 'status')
-  const subject = getStringField(input, 'subject')
-  const description = getStringField(input, 'description')
-  const statusLabel = getTaskStatusLabel(status)
-  const idPart = taskId && statusLabel ? `[#${taskId} ${statusLabel}]` : taskId ? `[#${taskId}]` : ''
+  const taskId = taskIdFromRaw || taskIdFromOutput || taskIdFromText
+  const idPart = taskId ? `[#${taskId}]` : ''
   const subjectPart = subject || ''
   const descriptionPart = description ? `(${description})` : ''
   return [idPart, `${subjectPart}${descriptionPart}`.trim()].filter(Boolean).join(' ')
@@ -364,6 +263,32 @@ function extractBashResultContent(output: unknown): string {
   }
 
   return stringifyStructuredValue(output)
+}
+
+function isToolEntry(entry: DetailEntry): entry is ToolEntry {
+  return [
+    'tool',
+    'agent',
+    'taskcreate',
+    'bash',
+    'read',
+    'glob',
+    'grep',
+    'edit',
+    'skill',
+    'write',
+  ].includes(entry.kind)
+}
+
+function buildToolGroupSummary(entries: ToolEntry[]): string {
+  const counts = new Map<string, number>()
+  const order: string[] = []
+  for (const entry of entries) {
+    const title = entry.title
+    if (!counts.has(title)) order.push(title)
+    counts.set(title, (counts.get(title) ?? 0) + 1)
+  }
+  return order.map((title) => `${counts.get(title) ?? 0} 次 ${title}`).join('、')
 }
 
 function buildOverlayDetailEntries(overlay: TimelineLivePreviewItem): DetailEntry[] {
@@ -461,74 +386,6 @@ function buildOverlayDetailEntries(overlay: TimelineLivePreviewItem): DetailEntr
           args: getSkillArgs(syntheticToolUse.input),
         }
       }
-      if (syntheticToolUse.name === 'WebSearch') {
-        return {
-          key: `${overlay.id}-tool-${index}`,
-          kind: 'websearch',
-          icon: '🔍',
-          title: 'WebSearch',
-          summary: '',
-          result: null,
-          subtitle: getWebSearchQuery(syntheticToolUse.input),
-          input: syntheticToolUse.input,
-        }
-      }
-      if (syntheticToolUse.name === 'WebFetch') {
-        return {
-          key: `${overlay.id}-tool-${index}`,
-          kind: 'webfetch',
-          icon: '🔎',
-          title: 'WebFetch',
-          summary: '',
-          result: null,
-          subtitle: getWebFetchUrl(syntheticToolUse.input),
-          input: syntheticToolUse.input,
-        }
-      }
-      if (syntheticToolUse.name === 'EnterPlanMode') {
-        return {
-          key: `${overlay.id}-tool-${index}`,
-          kind: 'enterplanmode',
-          icon: '🗺️',
-          title: 'EnterPlanMode',
-          summary: '',
-          result: null,
-        }
-      }
-      if (syntheticToolUse.name === 'TaskList') {
-        return {
-          key: `${overlay.id}-tool-${index}`,
-          kind: 'tasklist',
-          icon: '📋',
-          title: 'TaskList',
-          summary: '',
-          result: null,
-        }
-      }
-      if (syntheticToolUse.name === 'ExitPlanMode') {
-        return {
-          key: `${overlay.id}-tool-${index}`,
-          kind: 'exitplanmode',
-          icon: '🗺️',
-          title: 'ExitPlanMode',
-          summary: '',
-          result: null,
-          subtitle: getExitPlanModePlanFilePath(syntheticToolUse.input),
-          input: syntheticToolUse.input,
-        }
-      }
-      if (syntheticToolUse.name === 'AskUserQuestion') {
-        return {
-          key: `${overlay.id}-tool-${index}`,
-          kind: 'askuserquestion',
-          icon: '❓',
-          title: 'AskUserQuestion',
-          summary: '',
-          result: null,
-          subtitle: getAskUserQuestionSubtitle(syntheticToolUse.input),
-          input: syntheticToolUse.input,
-        }
-      }
       if (toolKind === 'taskcreate') {
         return {
           key: `${overlay.id}-tool-${index}`,
@@ -538,17 +395,6 @@ function buildOverlayDetailEntries(overlay: TimelineLivePreviewItem): DetailEntr
           summary: '',
           result: null,
           subtitle: buildTaskCreateSubtitle(syntheticToolUse.input, undefined),
-        }
-      }
-      if (toolKind === 'taskupdate') {
-        return {
-          key: `${overlay.id}-tool-${index}`,
-          kind: 'taskupdate',
-          icon: '📋',
-          title: 'TaskUpdate',
-          summary: '',
-          result: null,
-          subtitle: buildTaskUpdateSubtitle(syntheticToolUse.input, undefined),
         }
       }
       if (syntheticToolUse.name === 'Write') {
@@ -584,7 +430,6 @@ function buildOverlayDetailEntries(overlay: TimelineLivePreviewItem): DetailEntr
         title: getToolTitle(syntheticToolUse),
         summary: getToolSummary(syntheticToolUse),
         result: null,
-        input: syntheticToolUse.input,
       }
     }
 
@@ -740,85 +585,6 @@ const contentEntries = computed<DetailEntry[]>(() => {
         })
         continue
       }
-      if (toolUseFragment.name === 'WebSearch') {
-        entries.push({
-          key: `${props.item.key}-tool-${index}`,
-          kind: 'websearch',
-          icon: '🔍',
-          title: 'WebSearch',
-          summary: '',
-          result: toolResult,
-          subtitle: getWebSearchQuery(toolUseFragment.input),
-          input: toolUseFragment.input,
-          outputValue: toolResult?.output,
-        })
-        continue
-      }
-      if (toolUseFragment.name === 'WebFetch') {
-        entries.push({
-          key: `${props.item.key}-tool-${index}`,
-          kind: 'webfetch',
-          icon: '🔎',
-          title: 'WebFetch',
-          summary: '',
-          result: toolResult,
-          subtitle: getWebFetchUrl(toolUseFragment.input),
-          input: toolUseFragment.input,
-          outputValue: toolResult?.output,
-        })
-        continue
-      }
-      if (toolUseFragment.name === 'EnterPlanMode') {
-        entries.push({
-          key: `${props.item.key}-tool-${index}`,
-          kind: 'enterplanmode',
-          icon: '🗺️',
-          title: 'EnterPlanMode',
-          summary: '',
-          result: toolResult,
-          outputValue: toolResult?.output,
-        })
-        continue
-      }
-      if (toolUseFragment.name === 'TaskList') {
-        entries.push({
-          key: `${props.item.key}-tool-${index}`,
-          kind: 'tasklist',
-          icon: '📋',
-          title: 'TaskList',
-          summary: '',
-          result: toolResult,
-          outputValue: toolResult?.output,
-        })
-        continue
-      }
-      if (toolUseFragment.name === 'ExitPlanMode') {
-        entries.push({
-          key: `${props.item.key}-tool-${index}`,
-          kind: 'exitplanmode',
-          icon: '🗺️',
-          title: 'ExitPlanMode',
-          summary: '',
-          result: toolResult,
-          subtitle: getExitPlanModePlanFilePath(toolUseFragment.input),
-          input: toolUseFragment.input,
-        })
-        continue
-      }
-      if (toolUseFragment.name === 'AskUserQuestion') {
-        entries.push({
-          key: `${props.item.key}-tool-${index}`,
-          kind: 'askuserquestion',
-          icon: '❓',
-          title: 'AskUserQuestion',
-          summary: '',
-          result: toolResult,
-          subtitle: getAskUserQuestionSubtitle(toolUseFragment.input),
-          input: toolUseFragment.input,
-          outputValue: toolResult?.output,
-        })
-        continue
-      }
       if (getToolKind(toolUseFragment) === 'taskcreate') {
         entries.push({
           key: `${props.item.key}-tool-${index}`,
@@ -828,18 +594,6 @@ const contentEntries = computed<DetailEntry[]>(() => {
           summary: '',
           result: toolResult,
           subtitle: buildTaskCreateSubtitleFromResult(toolUseFragment.input, toolResult),
-        })
-        continue
-      }
-      if (getToolKind(toolUseFragment) === 'taskupdate') {
-        entries.push({
-          key: `${props.item.key}-tool-${index}`,
-          kind: 'taskupdate',
-          icon: '📋',
-          title: 'TaskUpdate',
-          summary: '',
-          result: toolResult,
-          subtitle: buildTaskUpdateSubtitleFromResult(toolUseFragment.input, toolResult),
         })
         continue
       }
@@ -879,8 +633,6 @@ const contentEntries = computed<DetailEntry[]>(() => {
         title: getToolTitle(toolUseFragment),
         summary: getToolSummary(toolUseFragment),
         result: toolResult,
-        input: toolUseFragment.input,
-        outputValue: toolResult?.output,
       })
       continue
     }
@@ -898,90 +650,35 @@ const contentEntries = computed<DetailEntry[]>(() => {
     }
   }
 
-  return entries
-})
+  const groupedEntries: DetailEntry[] = []
+  let pendingTools: ToolEntry[] = []
 
-const TOOL_ENTRY_KINDS = new Set<DetailEntry['kind']>([
-  'tool',
-  'agent',
-  'taskcreate',
-  'taskupdate',
-  'tasklist',
-  'bash',
-  'read',
-  'glob',
-  'grep',
-  'edit',
-  'skill',
-  'write',
-  'websearch',
-  'webfetch',
-  'askuserquestion',
-  'enterplanmode',
-  'exitplanmode',
-])
-
-function isToolEntry(entry: DetailEntry): entry is ToolDetailEntry {
-  return TOOL_ENTRY_KINDS.has(entry.kind)
-}
-
-function buildToolGroupSummary(entries: ToolDetailEntry[]): string {
-  const counts = new Map<string, number>()
-  const order: string[] = []
-  for (const entry of entries) {
-    const title = entry.title || 'Tool'
-    if (!counts.has(title)) order.push(title)
-    counts.set(title, (counts.get(title) ?? 0) + 1)
-  }
-  return order
-    .map((title, index) => `${index === 0 ? '调用 ' : ''}${counts.get(title) ?? 0} 次 ${title} 工具`)
-    .join('、')
-}
-
-const renderGroups = computed<RenderEntryGroup[]>(() => {
-  const groups: RenderEntryGroup[] = []
-  let index = 0
-
-  while (index < contentEntries.value.length) {
-    const entry = contentEntries.value[index]!
-    if (!isToolEntry(entry)) {
-      groups.push({
-        key: `entry-${entry.key}`,
-        kind: 'entry',
-        entry,
+  const flushPendingTools = () => {
+    if (pendingTools.length === 0) return
+    if (pendingTools.length === 1) {
+      groupedEntries.push(pendingTools[0]!)
+    } else {
+      groupedEntries.push({
+        key: `${pendingTools[0]!.key}-group`,
+        kind: 'tool_group',
+        summary: buildToolGroupSummary(pendingTools),
+        entries: [...pendingTools],
       })
-      index += 1
+    }
+    pendingTools = []
+  }
+
+  for (const entry of entries) {
+    if (isToolEntry(entry)) {
+      pendingTools.push(entry)
       continue
     }
-
-    const toolEntries: ToolDetailEntry[] = []
-    let cursor = index
-    while (cursor < contentEntries.value.length) {
-      const candidate = contentEntries.value[cursor]!
-      if (!isToolEntry(candidate)) break
-      toolEntries.push(candidate)
-      cursor += 1
-    }
-
-    if (toolEntries.length >= 2) {
-      groups.push({
-        key: `tool-group-${toolEntries[0]!.key}`,
-        kind: 'tool_group',
-        summary: buildToolGroupSummary(toolEntries),
-        entries: toolEntries,
-      })
-    } else {
-      groups.push({
-        key: `entry-${entry.key}`,
-        kind: 'entry',
-        entry,
-      })
-    }
-
-    index = cursor
+    flushPendingTools()
+    groupedEntries.push(entry)
   }
+  flushPendingTools()
 
-  return groups
+  return groupedEntries
 })
 
 const hasAnyContent = computed(() => contentEntries.value.length > 0)
@@ -991,19 +688,15 @@ const hasAnyContent = computed(() => contentEntries.value.length > 0)
 <template>
   <div class="space-y-3">
     <div v-if="hasAnyContent" class="space-y-3">
-      <template v-for="group in renderGroups" :key="group.key">
-        <TimelineToolGroupRow
-          v-if="group.kind === 'tool_group'"
-          :summary="group.summary"
-        >
-          <template v-for="entry in group.entries" :key="entry.key">
-            <TimelineAssistantDetailEntry :entry="entry" />
-          </template>
+      <template v-for="entry in contentEntries" :key="entry.key">
+        <TimelineToolGroupRow v-if="entry.kind === 'tool_group'" :summary="entry.summary">
+          <TimelineAssistantDetailEntry
+            v-for="child in entry.entries"
+            :key="child.key"
+            :entry="child"
+          />
         </TimelineToolGroupRow>
-        <TimelineAssistantDetailEntry
-          v-else
-          :entry="group.entry"
-        />
+        <TimelineAssistantDetailEntry v-else :entry="entry" />
       </template>
     </div>
 

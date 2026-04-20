@@ -4,19 +4,15 @@ import type {
   DisplayFragment,
   DisplayItem,
   SessionMessage,
-  SummaryDisplayItem,
   TranscriptAtom,
   TranscriptLinkage,
   TranscriptLookup,
   UserDisplayItem,
 } from '../protocol/message-types.js'
 import {
-  extractStructuredContentFromBlocks,
   getTranscriptAssistantModel,
   getTranscriptAssistantUsage,
   getTranscriptMessageId,
-  getTranscriptRawMessage,
-  getTranscriptResponseId,
   getTranscriptSemanticKind,
   getTranscriptStopReason,
   getTranscriptToolResultIds,
@@ -24,8 +20,6 @@ import {
   hasRenderableTranscriptContent,
   isTranscriptMetaMessage,
   isTranscriptRedactedThinkingMessage,
-  isTranscriptSummaryMessage,
-  type TranscriptBlock,
   type TranscriptMessage,
 } from '../protocol/transcript-normalizer.js'
 
@@ -99,6 +93,9 @@ export function buildTranscriptAtom(message: SessionMessage, options: BuildTrans
       ? message.timestamp
       : Date.now()
 
+  const semanticKind = getTranscriptSemanticKind(message)
+  const role: TranscriptAtom['role'] = message.role
+
   return {
     id: makeAtomId(message, options),
     source: options.source,
@@ -108,8 +105,8 @@ export function buildTranscriptAtom(message: SessionMessage, options: BuildTrans
       sourceIndex: options.sourceIndex,
     },
     message,
-    role: message.role,
-    semanticKind: getTranscriptSemanticKind(message),
+    role,
+    semanticKind,
     linkage: getLinkage(message),
     assistant: {
       stopReason: getTranscriptStopReason(message),
@@ -130,15 +127,6 @@ function compareAtoms(left: TranscriptAtom, right: TranscriptAtom): number {
     return left.order.sequence - right.order.sequence
   }
   return left.order.sourceIndex - right.order.sourceIndex
-}
-
-function getToolUseBlocks(atom: TranscriptAtom): TranscriptBlock[] {
-  return (atom.message.blocks || []).filter((block) => block.type === 'tool_use')
-}
-
-function getToolUseNameById(atom: TranscriptAtom, toolUseId: string): string {
-  const block = getToolUseBlocks(atom).find((candidate) => candidate.toolUseId === toolUseId)
-  return block?.name || 'unknown_tool'
 }
 
 function getToolResultDisplayMeta(output: unknown, attachedToParent = false) {
@@ -187,7 +175,6 @@ function createFragments(
   options: { mode: 'default' | 'transcript'; attachToolResultsToParent?: boolean } = { mode: 'default' },
 ): DisplayFragment[] {
   const message = atom.message
-  const structured = extractStructuredContentFromBlocks(message.blocks || [])
   const fragments: DisplayFragment[] = []
 
   for (const block of message.blocks || []) {
@@ -250,20 +237,6 @@ function createFragments(
     fragments.push({ type: 'text', text: message.content })
   }
 
-  if (isTranscriptSummaryMessage(message) && structured.answerText) {
-    // Compact summaries are persisted as special messages. When they come from an assistant-role
-    // message, render them as normal text to avoid creating a "summary" UI surface for them.
-    if (message.role === 'assistant') {
-      fragments.push({ type: 'text', text: structured.answerText })
-    } else {
-      fragments.push({
-        type: 'summary',
-        text: structured.answerText,
-        defaultCollapsed: options.mode !== 'transcript',
-      })
-    }
-  }
-
   return fragments
 }
 
@@ -320,20 +293,6 @@ function buildHistoryAtom(message: SessionMessage, index: number): TranscriptAto
 
 function buildHistoryAtoms(messages: SessionMessage[]): TranscriptAtom[] {
   return messages.map((message, index) => buildHistoryAtom(message, index))
-}
-
-function createSummaryDisplayItem(atom: TranscriptAtom, mode: 'default' | 'transcript'): SummaryDisplayItem {
-  return {
-    kind: 'summary',
-    id: atom.id,
-    key: atom.id,
-    timestamp: atom.order.timestamp,
-    atomIds: [atom.id],
-    content: atom.message.content,
-    summaryType: 'compact',
-    defaultCollapsed: mode !== 'transcript',
-    anchorMessage: atom.message,
-  }
 }
 
 function createAssistantDisplayItem(
@@ -414,10 +373,8 @@ function shouldHideMetaMessage(message: TranscriptMessage, mode: 'default' | 'tr
   return mode !== 'transcript' && isTranscriptMetaMessage(message)
 }
 
-function shouldHideSummaryMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {
-  // Only hide user-origin compact summaries in default mode; assistant-origin summaries are
-  // rendered as normal text fragments.
-  return mode !== 'transcript' && isTranscriptSummaryMessage(message) && message.role === 'user'
+function shouldHideSummaryMessage(_message: TranscriptMessage, _mode: 'default' | 'transcript'): boolean {
+  return false
 }
 
 function shouldHideThinkingMessage(message: TranscriptMessage, mode: 'default' | 'transcript'): boolean {

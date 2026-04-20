@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import MarkdownContent from './MarkdownContent.vue'
 import type { UserDisplayItem } from '../../../runtime/protocol/message-types.js'
 
 type AnsiSegment = {
@@ -176,7 +177,10 @@ const commandOutputLines = computed(() => parseAnsiOutput(getCommandOutput(props
         <span v-else>&nbsp;</span>
       </div>
     </div>
-    <div v-else class="whitespace-pre-wrap text-[15px] leading-7 text-[var(--tt-text)]">{{ item.message.content }}</div>
+    <MarkdownContent
+      v-else
+      :content="item.message.content"
+    />
     <div class="text-[11px] leading-4 text-[var(--tt-text-subtle)]">{{ formatFooterTimestamp(item.timestamp) }}</div>
   </div>
 </template>

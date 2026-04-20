@@ -116,10 +116,6 @@ function createLarkToolResultPanel(resultText: string): Record<string, unknown> 
   })
 }
 
-function createLarkSectionMarkdown(title: string, body: string): Record<string, unknown> {
-  return createLarkSectionPanel({ title, body, verticalSpacing: '4px' })
-}
-
 function buildLarkToolResultText(fragment: DisplayFragment & { type: 'tool_result' }): string {
   if (fragment.display?.previewText) return fragment.display.previewText
   return stringifyStructuredValue(fragment.output).trim()
@@ -161,10 +157,6 @@ function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
       continue
     }
 
-    if (fragment.type === 'summary') {
-      const text = fragment.text.trim()
-      if (text) elements.push(createLarkSectionMarkdown('Summary', text))
-    }
   }
 
   const footerText = buildAssistantFooterText(item.footer, { includeTimestamp: false })

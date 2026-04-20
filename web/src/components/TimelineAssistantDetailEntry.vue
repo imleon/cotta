@@ -4,7 +4,6 @@ import TimelineAssistantDetailRow from './TimelineAssistantDetailRow.vue'
 import TimelineSimpleToolRow from './TimelineSimpleToolRow.vue'
 import TimelineStructuredToolRow from './TimelineStructuredToolRow.vue'
 import TimelineThinkingRow from './TimelineThinkingRow.vue'
-import TimelineAssistantSummaryBlock from './TimelineAssistantSummaryBlock.vue'
 import TimelineAssistantTextBlock from './TimelineAssistantTextBlock.vue'
 import TimelineAssistantToolResultBlock from './TimelineAssistantToolResultBlock.vue'
 import {
@@ -296,10 +295,6 @@ const structuredToolConfig = computed(() => {
     />
     <TimelineAssistantTextBlock
       v-else-if="entry.kind === 'text'"
-      :fragment="entry.fragment"
-    />
-    <TimelineAssistantSummaryBlock
-      v-else-if="entry.kind === 'summary_block'"
       :fragment="entry.fragment"
     />
     <TimelineStructuredToolRow

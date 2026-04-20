@@ -234,18 +234,11 @@ export interface DisplayFragmentToolResult {
   display?: ToolResultDisplayMeta
 }
 
-export interface DisplayFragmentSummary {
-  type: 'summary'
-  text: string
-  defaultCollapsed: boolean
-}
-
 export type DisplayFragment =
   | DisplayFragmentText
   | DisplayFragmentThinking
   | DisplayFragmentToolUse
   | DisplayFragmentToolResult
-  | DisplayFragmentSummary
 
 export interface DisplayAssistantFooter {
   stopReason?: string | null
@@ -277,18 +270,6 @@ export interface AssistantDisplayItem {
   fragments: DisplayFragment[]
   footer?: DisplayAssistantFooter
   overlays?: TimelineOverlayItem[]
-}
-
-export interface SummaryDisplayItem {
-  kind: 'summary'
-  id: string
-  key: string
-  timestamp: number
-  atomIds: string[]
-  content: string
-  summaryType: 'post_turn' | 'compact' | 'synthetic'
-  defaultCollapsed: boolean
-  anchorMessage: SessionMessage
 }
 
 export type TimelineOverlayKind = 'streaming_text' | 'streaming_thinking' | 'streaming_tool_use' | 'streaming_progress'
@@ -326,7 +307,6 @@ export interface TranscriptLookup {
 export type DisplayItem =
   | UserDisplayItem
   | AssistantDisplayItem
-  | SummaryDisplayItem
 
 
 export type ChannelType = 'web' | 'lark' | 'discord'

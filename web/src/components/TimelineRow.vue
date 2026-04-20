@@ -1,24 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import type { TimelineItem } from '../stores/session'
 import type { AssistantDisplayItem } from '../../../runtime/protocol/message-types.js'
 import TimelineMessageContent from './TimelineMessageContent.vue'
 
-const props = defineProps<{
+defineProps<{
   item: TimelineItem
 }>()
-
-function getAnchorMessage(item: TimelineItem) {
-  switch (item.kind) {
-    case 'assistant':
-    case 'summary':
-      return item.anchorMessage
-    case 'user':
-      return item.message
-    case 'live_preview':
-      return null
-  }
-}
 
 function getPrefix(item: TimelineItem): string {
   if (item.kind === 'user') return '❯'
@@ -35,7 +22,6 @@ function getPrefixClass(item: TimelineItem): string {
 function getFirstVisibleAssistantFragment(item: AssistantDisplayItem) {
   return item.fragments.find((fragment) => {
     if (fragment.type === 'thinking') return !fragment.defaultHidden
-    if (fragment.type === 'summary') return !fragment.defaultCollapsed
     return true
   })
 }
@@ -65,15 +51,6 @@ function getRowClass(item: TimelineItem): string {
   return shouldHidePrefix(item) ? `${baseClass} timeline-cli-row-no-prefix` : baseClass
 }
 
-const rowStatus = computed(() => {
-  if (isAssistantItem(props.item) && props.item.overlays?.length) {
-    return 'streaming'
-  }
-  if (props.item.kind === 'live_preview') {
-    return 'streaming'
-  }
-  return 'completed'
-})
 </script>
 
 <template>

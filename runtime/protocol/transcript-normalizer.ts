@@ -1,4 +1,4 @@
-import type { SDKAssistantMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { SDKAssistantMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
   StreamAnimationCursor,
   StreamAnimationCursorBlock,
@@ -628,24 +628,7 @@ export function normalizeAssistantMessage(message: SDKAssistantMessage): Transcr
   return normalizeTranscriptMessage('assistant', message.message, message)
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? value as Record<string, unknown> : null
-}
-
-function getStreamEvent(payload: unknown): Record<string, unknown> | null {
-  const record = asRecord(payload)
-  const event = record?.event
-  return asRecord(event)
-}
-
-function getStreamEventIndex(payload: unknown): number | null {
-  const event = getStreamEvent(payload)
-  return typeof event?.index === 'number' ? event.index : null
-}
-
-
-
-export type TranscriptSemanticKind = 'user' | 'assistant' | 'tool_result' | 'thinking' | 'meta' | 'summary' | 'unknown'
+export type TranscriptSemanticKind = 'user' | 'assistant' | 'tool_result' | 'thinking' | 'meta' | 'unknown'
 
 export interface TranscriptAssistantUsage {
   inputTokens?: number | null
@@ -689,9 +672,8 @@ export function isTranscriptMetaMessage(message: TranscriptMessage | null | unde
   return raw?.isMeta === true
 }
 
-export function isTranscriptSummaryMessage(message: TranscriptMessage | null | undefined): boolean {
-  const raw = getTranscriptRawRecord(message)
-  return raw?.isCompactSummary === true
+export function isTranscriptSummaryMessage(_message: TranscriptMessage | null | undefined): boolean {
+  return false
 }
 
 export function isTranscriptRedactedThinkingMessage(message: TranscriptMessage | null | undefined): boolean {
@@ -742,8 +724,6 @@ export function getTranscriptAssistantUsage(message: TranscriptMessage | null | 
 
 export function getTranscriptSemanticKind(message: TranscriptMessage | null | undefined): TranscriptSemanticKind {
   if (!message) return 'unknown'
-  // Treat assistant-origin compact summaries as normal assistant messages.
-  if (isTranscriptSummaryMessage(message) && message.role === 'user') return 'summary'
   if (isTranscriptMetaMessage(message)) return 'meta'
   if (isTranscriptRedactedThinkingMessage(message)) return 'thinking'
   if (message.blocks?.some((block) => block.type === 'thinking')) return 'thinking'

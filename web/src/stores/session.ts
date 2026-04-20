@@ -497,12 +497,6 @@ function mergeTurnOutputItems(items: DisplayItem[]): DisplayItem[] {
       continue
     }
 
-    if (item.kind === 'summary') {
-      flushPending()
-      merged.push(item)
-      continue
-    }
-
     if (!canMergeAssistantOutputItems(pendingOutput, item)) {
       flushPending()
     }

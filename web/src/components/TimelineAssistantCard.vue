@@ -6,7 +6,6 @@ import TimelineToolGroupRow from './TimelineToolGroupRow.vue'
 import type {
   AssistantDisplayItem,
   DisplayFragmentThinking,
-  DisplayFragmentSummary,
   DisplayFragmentText,
   DisplayFragmentToolResult,
   DisplayFragmentToolUse,
@@ -45,11 +44,6 @@ type DetailEntry =
       key: string
       kind: 'text'
       fragment: DisplayFragmentText
-    }
-  | {
-      key: string
-      kind: 'summary_block'
-      fragment: DisplayFragmentSummary
     }
   | {
       key: string
@@ -487,15 +481,6 @@ const contentEntries = computed<DetailEntry[]>(() => {
         key: `${props.item.key}-text-${index}`,
         kind: 'text',
         fragment: fragment as DisplayFragmentText,
-      })
-      continue
-    }
-
-    if (fragment.type === 'summary') {
-      entries.push({
-        key: `${props.item.key}-summary-${index}`,
-        kind: 'summary_block',
-        fragment: fragment as DisplayFragmentSummary,
       })
       continue
     }

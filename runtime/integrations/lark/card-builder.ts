@@ -178,6 +178,10 @@ function createLarkCollapsiblePanel(params: {
 
   const iconColor = params.titleIcon?.color || 'grey'
 
+  const bodyElements = isTopLevel
+    ? elements
+    : [wrapNestedPanelBody(elements)]
+
   return {
     tag: 'collapsible_panel',
     expanded: params.expanded ?? false,
@@ -217,7 +221,7 @@ function createLarkCollapsiblePanel(params: {
     },
     vertical_spacing: '0px',
     padding: isTopLevel ? '8px 12px 8px 12px' : '4px 0px 4px 8px',
-    elements,
+    elements: bodyElements,
   }
 }
 
@@ -237,6 +241,25 @@ function wrapTopLevelPanelInContainer(element: Record<string, unknown>): Record<
   }
 }
 
+function wrapNestedPanelBody(elements: unknown[]): Record<string, unknown> {
+  // Grey rounded container for nested panel body only (header remains unchanged).
+  return {
+    tag: 'interactive_container',
+    width: 'fill',
+    height: 'auto',
+    direction: 'vertical',
+    margin: '4px 0px 0px 0px',
+    padding: '6px 10px 6px 10px',
+    vertical_spacing: '6px',
+    horizontal_spacing: '0px',
+    background_style: 'grey',
+    has_border: true,
+    border_color: 'grey',
+    corner_radius: '8px',
+    elements,
+  }
+}
+
 function createLarkDetailSectionWithOptions(
   label: string | undefined,
   content: string,
@@ -250,8 +273,11 @@ function createLarkDetailSectionWithOptions(
 
   if (mode === 'bash') {
     const shellLine = `<font color='red'>$</font> <font color='default'>${escapeHtml((command || '').trim())}</font>`
-    const body = optimizeLarkMarkdownStyle(normalized)
-    const combined = body ? `${shellLine}\n${body}` : shellLine
+    const body = normalized
+      .split('\n')
+      .map((line) => `<font color='grey'>${escapeHtml(line) || ' '}</font>`)
+      .join('<br>')
+    const combined = normalized ? `${shellLine}\n${body}` : shellLine
     if (options.forceQuoteMarkdown) {
       const quoted = toMarkdownQuote(combined, true)
       if (!quoted) return null
@@ -297,15 +323,15 @@ function createLarkDetailSectionWithOptions(
     return {
       tag: 'markdown',
       content: normalizedLabel
-        ? `<font color='grey'>${normalizedLabel}</font>\n${formatLarkCodeBlock(normalized)}`
-        : formatLarkCodeBlock(normalized),
+        ? `<font color='grey'>${normalizedLabel}</font>\n${optimizeLarkMarkdownStyle(normalized)}`
+        : optimizeLarkMarkdownStyle(normalized),
       text_size: LARK_COMPACT_TEXT_SIZE,
       margin: '0px 0px 0px 0px',
     }
   }
 
   const quoted = toMarkdownQuote(
-    normalizedLabel ? `${normalizedLabel}\n${formatLarkCodeBlock(normalized)}` : formatLarkCodeBlock(normalized),
+    normalizedLabel ? `${normalizedLabel}\n${optimizeLarkMarkdownStyle(normalized)}` : optimizeLarkMarkdownStyle(normalized),
     true,
   )
   if (!quoted) return null
@@ -377,7 +403,7 @@ function buildLarkGroupedChildElement(entry: AssistantGroupChildEntry): Record<s
   if (entry.kind === 'thinking') {
     return buildLarkAssistantEntryElement(entry, { topLevel: false })
   }
-  return buildLarkToolRowElement(entry, { forceQuoteMarkdown: true, topLevel: false })
+  return buildLarkToolRowElement(entry, { forceQuoteMarkdown: false, topLevel: false })
 }
 
 function buildLarkAssistantEntryElement(
@@ -400,7 +426,7 @@ function buildLarkAssistantEntryElement(
       elements: [
         {
           tag: 'markdown',
-          content: isTopLevel ? body : toMarkdownQuote(entry.content, true),
+          content: body,
           text_size: LARK_COMPACT_TEXT_SIZE,
         },
       ].filter(Boolean),
@@ -408,7 +434,7 @@ function buildLarkAssistantEntryElement(
       titleIcon: {
         tag: 'standard_icon',
         token: 'efficiency_outlined',
-        color: 'amber',
+        color: 'orange',
       },
     })
   }

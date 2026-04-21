@@ -81,7 +81,7 @@ const showInlineMore = computed(() => props.showInlineMore && showToggle.value &
       >
         <div
           v-if="expanded && resolvedOutput !== undefined"
-          class="whitespace-pre-wrap text-inherit"
+          class="max-h-72 overflow-auto whitespace-pre-wrap pr-1 text-inherit"
         >{{ resultText }}</div>
         <div v-else-if="resolvedDisplay.previewText" class="text-inherit">
           <span class="whitespace-pre-wrap">{{ resolvedDisplay.previewText }}</span>

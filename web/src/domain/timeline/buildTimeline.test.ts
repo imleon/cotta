@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildHistoryTimelineItems,
   buildLivePreviewItems,
   buildRenderableTimeline,
 } from './buildTimeline'
@@ -190,6 +191,69 @@ describe('buildRenderableTimeline', () => {
     expect(result).toHaveLength(1)
     expect(assistant.key).toBe('synthetic-assistant-message:message-42')
     expect(assistant.overlays?.[0]?.id).toBe('overlay-42')
+  })
+
+  it('preserves multiple thinking/tool_use/tool_result blocks within one assistant turn', () => {
+    const items = buildHistoryTimelineItems([
+      createUserMessage({ timestamp: 10, content: 'user ask' }),
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 20,
+        blocks: [
+          { type: 'thinking', text: 'first thinking' },
+          { type: 'tool_use', name: 'Read', toolUseId: 'tool-read', input: { file_path: '/tmp/a.ts' } },
+          { type: 'thinking', text: 'second thinking' },
+          { type: 'tool_use', name: 'Bash', toolUseId: 'tool-bash', input: { command: 'pwd' } },
+        ],
+        raw: {
+          type: 'assistant',
+          uuid: 'uuid-multi-assistant',
+          message: {
+            id: 'multi-assistant',
+            content: [
+              { type: 'thinking', thinking: 'first thinking' },
+              { type: 'tool_use', id: 'tool-read', name: 'Read', input: { file_path: '/tmp/a.ts' } },
+              { type: 'thinking', thinking: 'second thinking' },
+              { type: 'tool_use', id: 'tool-bash', name: 'Bash', input: { command: 'pwd' } },
+            ],
+          },
+        },
+      },
+      {
+        role: 'user',
+        content: '',
+        timestamp: 21,
+        blocks: [
+          { type: 'tool_result', toolUseId: 'tool-read', output: 'read-result' },
+          { type: 'tool_result', toolUseId: 'tool-bash', output: 'bash-result' },
+        ],
+        raw: {
+          type: 'user',
+          uuid: 'uuid-multi-result',
+          message: {
+            id: 'multi-result',
+            content: [
+              { type: 'tool_result', tool_use_id: 'tool-read', content: 'read-result' },
+              { type: 'tool_result', tool_use_id: 'tool-bash', content: 'bash-result' },
+            ],
+          },
+        },
+      },
+    ])
+
+    const assistant = expectAssistantItem(items[1])
+    expect(assistant.fragments.map((fragment) => fragment.type)).toEqual([
+      'thinking',
+      'tool_use',
+      'thinking',
+      'tool_use',
+      'tool_result',
+      'tool_result',
+    ])
+    expect(assistant.fragments.filter((fragment) => fragment.type === 'thinking')).toHaveLength(2)
+    expect(assistant.fragments.filter((fragment) => fragment.type === 'tool_use')).toHaveLength(2)
+    expect(assistant.fragments.filter((fragment) => fragment.type === 'tool_result')).toHaveLength(2)
   })
 })
 

@@ -37,7 +37,7 @@ function renderMarkdown(content: string): string {
     </div>
     <div
       v-if="hasExpandedContent"
-      class="min-w-0 pl-6"
+      class="max-h-72 min-w-0 overflow-auto pr-1 pl-6"
     >
       <slot>
         <div

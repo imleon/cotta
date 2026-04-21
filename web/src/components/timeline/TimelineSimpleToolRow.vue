@@ -25,6 +25,7 @@ const props = withDefaults(defineProps<{
         v-if="contentMode === 'markdown' && content"
         :content="content"
         muted
+        compact
       />
       <div
         v-else-if="content"

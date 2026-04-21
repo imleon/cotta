@@ -57,11 +57,12 @@ type SimpleToolConfig = {
 }
 
 type StructuredToolConfig = {
-  icon: string
+  iconName: AssistantToolRenderConfig['iconName']
   title: string
   subtitle: string
   maxHeightClass: string
   sections: ToolSection[]
+  expandable: boolean
 }
 
 const props = defineProps<{
@@ -74,18 +75,6 @@ function isToolEntry(entry: RenderableDetailEntry): entry is DetailToolEntry {
 
 function getPlanContent(input: unknown): string {
   return toDisplayText(getObject(input)?.plan)
-}
-
-function getStructuredToolIcon(entry: DetailToolEntry): string {
-  if (entry.kind === 'bash') return '⌘'
-  if (entry.kind === 'agent') return '🤖'
-  if (entry.kind === 'read') return '👁️'
-  if (entry.kind === 'glob') return '🔎'
-  if (entry.kind === 'grep') return '🧭'
-  if (entry.kind === 'edit') return '📝'
-  if (entry.kind === 'skill') return '🔧'
-  if (entry.kind === 'write') return '🖨️'
-  return '🔧'
 }
 
 type AskQuestion = {
@@ -211,22 +200,24 @@ const simpleToolConfig = computed<SimpleToolConfig | null>(() => {
 })
 
 const structuredToolConfig = computed<StructuredToolConfig | null>(() => {
-  if (isToolEntry(props.entry) && props.entry.kind !== 'taskcreate') {
+  if (isToolEntry(props.entry)) {
     const config: AssistantToolRenderConfig = buildAssistantToolRenderConfig(props.entry)
     return {
-      icon: getStructuredToolIcon(props.entry),
+      iconName: config.iconName,
       title: config.title,
       subtitle: config.subtitle,
       maxHeightClass: config.maxHeightClass,
       sections: config.sections,
+      expandable: config.expandable,
     }
   }
   if (props.entry.kind === 'websearch') {
     return {
-      icon: '🔍',
+      iconName: 'language_outlined',
       title: '调用 WebSearch',
       subtitle: props.entry.subtitle || '',
       maxHeightClass: 'max-h-72',
+      expandable: true,
       sections: [
         { label: 'allowed_domains', content: getStringArrayField(props.entry.input, 'allowed_domains').join('\n') || '[]', mode: 'plain' as const },
         { label: 'blocked_domains', content: getStringArrayField(props.entry.input, 'blocked_domains').join('\n') || '[]', mode: 'plain' as const },
@@ -237,10 +228,11 @@ const structuredToolConfig = computed<StructuredToolConfig | null>(() => {
   }
   if (props.entry.kind === 'webfetch') {
     return {
-      icon: '🔎',
+      iconName: 'browser-mac_outlined',
       title: '调用 WebFetch',
       subtitle: props.entry.subtitle || '',
       maxHeightClass: 'max-h-72',
+      expandable: true,
       sections: [
         { label: 'prompt', content: toDisplayText(getObject(props.entry.input)?.prompt), mode: 'plain' as const },
         { label: 'tool_result.content', content: getSimpleResultContent(props.entry.result?.raw, props.entry.outputValue), mode: 'markdown' as const },
@@ -249,10 +241,11 @@ const structuredToolConfig = computed<StructuredToolConfig | null>(() => {
   }
   if (props.entry.kind === 'askuserquestion') {
     return {
-      icon: '❓',
+      iconName: 'maybe_outlined',
       title: '调用 AskUserQuestion',
       subtitle: props.entry.subtitle || '',
       maxHeightClass: 'max-h-72',
+      expandable: true,
       sections: [
         { label: 'questions', content: buildQuestionsText(props.entry.input, props.entry.result?.raw, props.entry.outputValue), mode: 'plain' as const },
         { label: 'options', content: buildOptionsText(props.entry.input, props.entry.result?.raw, props.entry.outputValue), mode: 'plain' as const },
@@ -306,11 +299,12 @@ const fallbackToolEntry = computed<DetailToolEntry | null>(() => {
     />
     <TimelineStructuredToolRow
       v-else-if="structuredToolConfig"
-      :icon="structuredToolConfig.icon"
+      :icon-name="structuredToolConfig.iconName"
       :title="structuredToolConfig.title"
       :subtitle="structuredToolConfig.subtitle"
       :sections="structuredToolConfig.sections"
       :max-height-class="structuredToolConfig.maxHeightClass"
+      :expandable="structuredToolConfig.expandable"
     />
     <TimelineSimpleToolRow
       v-else-if="simpleToolConfig"

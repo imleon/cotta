@@ -298,7 +298,6 @@ function buildHistoryAtoms(messages: SessionMessage[]): TranscriptAtom[] {
 function createAssistantDisplayItem(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
-  attachedToolResultsByOwnerId: Map<string, TranscriptAtom[]> = new Map(),
 ): AssistantDisplayItem {
   const anchorAtom = atoms[atoms.length - 1] ?? atoms[0]!
   const anchor = anchorAtom.message
@@ -309,11 +308,6 @@ function createAssistantDisplayItem(
 
   for (const atom of orderedAtoms) {
     fragments.push(...createFragments(atom, { mode }))
-    const attachedAtoms = attachedToolResultsByOwnerId.get(atom.id) || []
-    for (const attachedAtom of attachedAtoms) {
-      atomIds.push(attachedAtom.id)
-      fragments.push(...createFragments(attachedAtom, { mode, attachToolResultsToParent: true }))
-    }
   }
 
   return {
@@ -408,35 +402,6 @@ export function orderAtomsForTimeline(atoms: TranscriptAtom[], options: BuildDis
     .filter((atom) => options.includeHiddenAtoms || !shouldHideMessage(atom.message, mode))
 }
 
-function deriveAttachedToolResultPolicy(atoms: TranscriptAtom[], lookups: TranscriptLookup): {
-  attachedResultAtomsByOwnerId: Map<string, TranscriptAtom[]>
-  attachedResultAtomIds: Set<string>
-} {
-  const attachedResultAtomsByOwnerId = new Map<string, TranscriptAtom[]>()
-  const attachedResultAtomIds = new Set<string>()
-
-  for (const atom of atoms) {
-    if (!atom.linkage.toolUseIds.length) continue
-
-    const attached = atom.linkage.toolUseIds.flatMap((toolUseId) => {
-      const resultAtom = lookups.toolResultAtomsByToolUseId.get(toolUseId)
-      return resultAtom ? [resultAtom] : []
-    })
-
-    if (!attached.length) continue
-
-    attachedResultAtomsByOwnerId.set(atom.id, attached)
-    for (const resultAtom of attached) {
-      attachedResultAtomIds.add(resultAtom.id)
-    }
-  }
-
-  return {
-    attachedResultAtomsByOwnerId,
-    attachedResultAtomIds,
-  }
-}
-
 function isBridgeMessage(atom: TranscriptAtom): boolean {
   if (atom.role === 'assistant') return true
 
@@ -470,8 +435,6 @@ function isPrimaryUserTurnAtom(atom: TranscriptAtom): boolean {
 function buildPrimaryDisplayItems(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
-  attachedResultAtomsByOwnerId: Map<string, TranscriptAtom[]>,
-  attachedResultAtomIds: Set<string>,
 ): DisplayItem[] {
   const items: DisplayItem[] = []
   let previousVisibleTimestamp: number | null = null
@@ -479,11 +442,11 @@ function buildPrimaryDisplayItems(
   let pendingTurnAtoms: TranscriptAtom[] = []
 
   const flushPendingTurn = () => {
-    const visibleAtoms = pendingTurnAtoms.filter((atom) => !attachedResultAtomIds.has(atom.id))
+    const visibleAtoms = pendingTurnAtoms
     pendingTurnAtoms = []
     if (!visibleAtoms.length) return
 
-    const item = createAssistantDisplayItem(visibleAtoms, mode, attachedResultAtomsByOwnerId)
+    const item = createAssistantDisplayItem(visibleAtoms, mode)
     if (item.fragments.length > 0 || item.overlays?.length) {
       const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
       items.push(timed)
@@ -512,9 +475,7 @@ function applyDisplayPoliciesAndTransforms(
   atoms: TranscriptAtom[],
   mode: 'default' | 'transcript',
 ): DisplayItem[] {
-  const lookups = buildTranscriptLookups(atoms)
-  const { attachedResultAtomsByOwnerId, attachedResultAtomIds } = deriveAttachedToolResultPolicy(atoms, lookups)
-  return buildPrimaryDisplayItems(atoms, mode, attachedResultAtomsByOwnerId, attachedResultAtomIds)
+  return buildPrimaryDisplayItems(atoms, mode)
 }
 
 export function buildDisplayItems(atoms: TranscriptAtom[], options: BuildDisplayItemsOptions = {}): DisplayItem[] {

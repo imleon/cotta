@@ -102,4 +102,85 @@ describe('buildToolGroupSummary', () => {
 
     expect(entries.map((entry) => entry.kind)).toEqual(['thinking', 'thinking', 'text'])
   })
+
+  it('matches each tool_use with its own tool_result without dropping sibling results', () => {
+    const item = createAssistantItem([
+      {
+        type: 'tool_use',
+        name: 'Read',
+        toolUseId: 'tool-read',
+        input: { file_path: '/tmp/a.ts' },
+      },
+      {
+        type: 'tool_use',
+        name: 'Bash',
+        toolUseId: 'tool-bash',
+        input: { command: 'pwd' },
+      },
+      {
+        type: 'tool_result',
+        toolUseId: 'tool-read',
+        output: 'read-result',
+      },
+      {
+        type: 'tool_result',
+        toolUseId: 'tool-bash',
+        output: 'bash-result',
+      },
+      { type: 'text', text: 'final answer' },
+    ])
+
+    const entries = buildAssistantDetailEntries(item)
+    const group = expectToolGroup(entries[0])
+    const readEntry = group.entries[0]
+    const bashEntry = group.entries[1]
+
+    expect(readEntry).toMatchObject({
+      kind: 'read',
+      result: { output: 'read-result' },
+    })
+    expect(bashEntry).toMatchObject({
+      kind: 'bash',
+      result: { output: 'bash-result' },
+    })
+    expect(entries[1]).toMatchObject({
+      kind: 'text',
+      fragment: { text: 'final answer' },
+    })
+  })
+
+  it('keeps unmatched tool_result as a fallback entry instead of losing it', () => {
+    const item = createAssistantItem([
+      {
+        type: 'tool_use',
+        name: 'Read',
+        toolUseId: 'tool-read',
+        input: { file_path: '/tmp/a.ts' },
+      },
+      {
+        type: 'tool_result',
+        toolUseId: 'tool-read',
+        output: 'matched-result',
+      },
+      {
+        type: 'tool_result',
+        toolUseId: 'tool-missing',
+        output: 'orphan-result',
+      },
+    ])
+
+    const entries = buildAssistantDetailEntries(item)
+    const group = expectToolGroup(entries[0])
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['tool_group'])
+    expect(group.entries[0]).toMatchObject({
+      kind: 'read',
+      result: { output: 'matched-result' },
+    })
+    expect(group.entries[1]).toMatchObject({
+      kind: 'tool',
+      title: 'ToolResult',
+      result: { output: 'orphan-result' },
+    })
+  })
 })

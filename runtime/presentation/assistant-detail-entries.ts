@@ -5,6 +5,7 @@ import type {
   DisplayFragmentToolUse,
 } from '../protocol/message-types.js'
 import { stringifyStructuredValue } from '../protocol/transcript-normalizer.js'
+import { THINKING_ROW_TITLE } from './assistant-row-semantics.js'
 
 export type AssistantToolEntryKind =
   | 'tool'
@@ -158,7 +159,7 @@ function buildGlobSubtitle(input: unknown): string {
 function buildAgentSubtitle(input: unknown): string {
   const subagentType = getStringField(input, 'subagent_type')
   const description = getStringField(input, 'description')
-  if (subagentType && description) return `${subagentType} (${description})`
+  if (subagentType && description) return `${subagentType} ${description}`
   return subagentType || description
 }
 
@@ -184,10 +185,10 @@ function getNestedString(value: unknown, path: string[]): string {
   return typeof current === 'string' ? current : ''
 }
 
-function buildTaskCreateSubtitleFromResult(
+function getTaskCreateMetadata(
   input: unknown,
   result: DisplayFragmentToolResult | null,
-): string {
+): { taskId: string; subject: string } {
   const taskIdFromRaw = getNestedString(result?.raw, ['toolUseResult', 'task', 'id'])
   const taskIdFromOutput = getNestedString(result?.output, ['toolUseResult', 'task', 'id'])
   const taskIdFromText = (() => {
@@ -205,12 +206,43 @@ function buildTaskCreateSubtitleFromResult(
     return ''
   })()
   const subject = getStringField(input, 'subject')
-  const description = getStringField(input, 'description')
   const taskId = taskIdFromRaw || taskIdFromOutput || taskIdFromText
-  const idPart = taskId ? `[#${taskId}]` : ''
-  const subjectPart = subject || ''
-  const descriptionPart = description ? `(${description})` : ''
-  return [idPart, `${subjectPart}${descriptionPart}`.trim()].filter(Boolean).join(' ')
+  return { taskId, subject }
+}
+
+function buildTaskCreateSubtitleFromResult(
+  input: unknown,
+  result: DisplayFragmentToolResult | null,
+): string {
+  const subject = getTaskCreateMetadata(input, result).subject || getStringField(input, 'subject')
+  return subject ? `待执行：${subject}` : ''
+}
+
+function buildTaskUpdateSubtitle(
+  input: unknown,
+  taskSubjectsById: Map<string, string>,
+): string {
+  const taskId = getStringField(input, 'taskId')
+  const status = getStringField(input, 'status')
+  const subject = taskSubjectsById.get(taskId) || getStringField(input, 'subject')
+
+  const statusLabelMap: Record<string, string> = {
+    in_progress: '执行中',
+    running: '执行中',
+    active: '执行中',
+    completed: '已完成',
+    done: '已完成',
+    success: '已完成',
+  }
+  const statusLabel = statusLabelMap[status] || status
+  const prefix = taskId ? `#${taskId}` : ''
+  const suffix = [statusLabel, subject ? `：${subject}` : ''].join('')
+  return [prefix, suffix].filter(Boolean).join(' ')
+}
+
+function buildTaskGetSubtitle(input: unknown): string {
+  const taskId = getStringField(input, 'taskId')
+  return taskId ? `#${taskId}` : ''
 }
 
 function extractBashResultContent(output: unknown): string {
@@ -282,6 +314,7 @@ function buildToolEntry(
   index: number,
   fragment: DisplayFragmentToolUse,
   result: DisplayFragmentToolResult | null,
+  taskSubjectsById: Map<string, string>,
 ): AssistantToolEntry {
   if (fragment.name === 'Bash') {
     const command = getStringField(fragment.input, 'command')
@@ -305,6 +338,7 @@ function buildToolEntry(
       title: 'Read',
       summary: '',
       result,
+      input: fragment.input,
       filePath: getStringField(fragment.input, 'file_path'),
     }
   }
@@ -316,6 +350,7 @@ function buildToolEntry(
       title: 'Glob',
       summary: '',
       result,
+      input: fragment.input,
       filePath: buildGlobSubtitle(fragment.input),
     }
   }
@@ -327,6 +362,7 @@ function buildToolEntry(
       title: 'Grep',
       summary: '',
       result,
+      input: fragment.input,
       filePath: buildGlobSubtitle(fragment.input),
     }
   }
@@ -362,6 +398,7 @@ function buildToolEntry(
       title: 'TaskCreate',
       summary: '',
       result,
+      input: fragment.input,
       subtitle: buildTaskCreateSubtitleFromResult(fragment.input, result),
     }
   }
@@ -392,6 +429,30 @@ function buildToolEntry(
     }
   }
 
+  if (fragment.name === 'TaskUpdate') {
+    return {
+      key: `${itemKey}-tool-${index}`,
+      kind: 'tool',
+      title: 'TaskUpdate',
+      summary: '',
+      result,
+      input: fragment.input,
+      subtitle: buildTaskUpdateSubtitle(fragment.input, taskSubjectsById),
+    }
+  }
+
+  if (fragment.name === 'TaskGet') {
+    return {
+      key: `${itemKey}-tool-${index}`,
+      kind: 'tool',
+      title: 'TaskGet',
+      summary: '',
+      result,
+      input: fragment.input,
+      subtitle: buildTaskGetSubtitle(fragment.input),
+    }
+  }
+
   const toolKind = getToolKind(fragment)
   return {
     key: `${itemKey}-tool-${index}`,
@@ -399,18 +460,35 @@ function buildToolEntry(
     title: getToolTitle(fragment),
     summary: getToolSummary(fragment),
     result,
+    input: fragment.input,
   }
 }
 
 export function buildAssistantDetailEntries(item: AssistantDisplayItem): AssistantDetailEntry[] {
   const entries: AssistantDetailEntry[] = []
-  const toolResultsByToolUseId = new Map<string, { fragment: DisplayFragmentToolResult; index: number }>()
+  const toolResultsByToolUseId = new Map<string, Array<{ fragment: DisplayFragmentToolResult; index: number }>>()
 
   for (let index = 0; index < item.fragments.length; index += 1) {
     const fragment = item.fragments[index]
     if (fragment?.type !== 'tool_result') continue
     if (!fragment.toolUseId) continue
-    toolResultsByToolUseId.set(fragment.toolUseId, { fragment, index })
+    const existing = toolResultsByToolUseId.get(fragment.toolUseId) ?? []
+    existing.push({ fragment, index })
+    toolResultsByToolUseId.set(fragment.toolUseId, existing)
+  }
+
+  const taskSubjectsById = new Map<string, string>()
+  for (const fragment of item.fragments) {
+    if (fragment?.type !== 'tool_use') continue
+    if (getToolKind(fragment) !== 'taskcreate') continue
+    const lookups = fragment.toolUseId
+      ? toolResultsByToolUseId.get(fragment.toolUseId)
+      : undefined
+    const matchedResult = lookups?.[0]?.fragment ?? null
+    const metadata = getTaskCreateMetadata(fragment.input, matchedResult)
+    if (metadata.taskId && metadata.subject) {
+      taskSubjectsById.set(metadata.taskId, metadata.subject)
+    }
   }
 
   const consumedToolResultIndexes = new Set<number>()
@@ -423,7 +501,7 @@ export function buildAssistantDetailEntries(item: AssistantDisplayItem): Assista
       entries.push({
         key: `${item.key}-thinking-${index}`,
         kind: 'thinking',
-        title: '思考中',
+        title: THINKING_ROW_TITLE,
         summary: fragment.redacted ? 'redacted' : compactString(fragment.text || ''),
         content: fragment.redacted ? 'redacted thinking' : (fragment.text || ''),
         redacted: fragment.redacted,
@@ -441,12 +519,13 @@ export function buildAssistantDetailEntries(item: AssistantDisplayItem): Assista
     }
 
     if (fragment.type === 'tool_use') {
-      const lookup = fragment.toolUseId
+      const lookups = fragment.toolUseId
         ? toolResultsByToolUseId.get(fragment.toolUseId)
         : undefined
+      const lookup = lookups?.find((candidate) => !consumedToolResultIndexes.has(candidate.index))
       const toolResult = lookup?.fragment ?? null
       if (lookup) consumedToolResultIndexes.add(lookup.index)
-      entries.push(buildToolEntry(item.key, index, fragment, toolResult))
+      entries.push(buildToolEntry(item.key, index, fragment, toolResult, taskSubjectsById))
       continue
     }
 

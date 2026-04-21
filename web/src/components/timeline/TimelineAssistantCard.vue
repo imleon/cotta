@@ -11,6 +11,7 @@ import {
   buildAssistantDetailEntries,
   type AssistantDetailEntry,
 } from '../../domain/timeline/assistantDetailEntries'
+import { THINKING_ROW_TITLE } from '../../domain/timeline/assistantRowSemantics'
 
 const props = withDefaults(defineProps<{
   item: TimelineAssistantItem
@@ -143,7 +144,7 @@ function buildOverlayDetailEntries(overlay: TimelineLivePreview): AssistantDetai
       return {
         key: `${overlay.id}-thinking-${index}`,
         kind: 'thinking',
-        title: '思考中',
+        title: THINKING_ROW_TITLE,
         summary: block.redacted ? 'redacted' : compactString(block.shownText || ''),
         content: block.redacted ? 'redacted thinking' : (block.shownText || ''),
         redacted: block.redacted,

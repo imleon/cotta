@@ -12,6 +12,7 @@ import {
   type AssistantGroupChildEntry,
   type AssistantToolEntry,
 } from '../../presentation/assistant-detail-entries.js'
+import { extractThinkingSubtitle } from '../../presentation/assistant-row-semantics.js'
 import { buildAssistantToolRenderConfig } from '../../presentation/assistant-tool-sections.js'
 import { optimizeLarkMarkdownStyle } from './markdown.js'
 import type { LarkStreamingBuildCardParams } from './streaming-controller.js'
@@ -23,6 +24,13 @@ export const STREAMING_CARD_ELEMENT_ID = 'streaming_content'
 function formatLarkCodeBlock(text: string): string {
   const trimmed = text.trim()
   return trimmed ? `\`\`\`\n${trimmed}\n\`\`\`` : ''
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
 }
 
 function createLarkSectionPanel(params: {
@@ -124,21 +132,6 @@ function createLarkToolResultPanel(resultText: string): Record<string, unknown> 
   })
 }
 
-function extractCollapsibleSubtitle(raw: string, maxChars = 36): string {
-  const text = raw.trim()
-  if (!text) return ''
-
-  const headingMatch = text.match(/^#{1,6}\s+(.+?)\s*#*\s*(?:\n|$)/)
-  if (headingMatch?.[1]) return headingMatch[1].trim()
-
-  const boldMatch = text.match(/^\*\*(.+?)\*\*(?:\s|:|：|\n|$)/)
-  if (boldMatch?.[1]) return boldMatch[1].trim()
-
-  const normalized = text.replace(/\s+/g, ' ').trim()
-  if (normalized.length <= maxChars) return normalized
-  return `${normalized.slice(0, maxChars)}...`
-}
-
 function createLarkMarkdownBlock(content: string, textSize: string = 'normal_v2'): Record<string, unknown> | null {
   const normalized = optimizeLarkMarkdownStyle(content.trim())
   if (!normalized) return null
@@ -183,6 +176,8 @@ function createLarkCollapsiblePanel(params: {
     ? `${params.title} <font color='grey'>${subtitle}</font>`
     : `${params.title}`
 
+  const iconColor = params.titleIcon?.color || 'grey'
+
   return {
     tag: 'collapsible_panel',
     expanded: params.expanded ?? false,
@@ -204,24 +199,24 @@ function createLarkCollapsiblePanel(params: {
         ...(params.titleIcon ? {
           icon: {
             ...params.titleIcon,
-            size: params.titleIcon.size ?? '12px 12px',
+            size: params.titleIcon.size ?? (isTopLevel ? '14px 14px' : '12px 12px'),
           },
         } : {}),
       },
       background_color: isTopLevel ? 'grey' : '',
       vertical_align: 'center',
-      padding: isTopLevel ? '6px 8px 6px 8px' : '0px 0px 0px 0px',
+      padding: isTopLevel ? '8px 12px 8px 12px' : '0px 0px 0px 0px',
       icon: {
         tag: 'standard_icon',
         token: 'down-small-ccm_outlined',
-        size: '14px 14px',
-        color: 'grey',
+        size: isTopLevel ? '16px 16px' : '14px 14px',
+        color: iconColor,
       },
-      icon_position: 'follow_text',
+      icon_position: 'right',
       icon_expanded_angle: -180,
     },
     vertical_spacing: '0px',
-    padding: isTopLevel ? '8px 8px 8px 8px' : '4px 0px 4px 8px',
+    padding: isTopLevel ? '8px 12px 8px 12px' : '4px 0px 4px 8px',
     elements,
   }
 }
@@ -232,7 +227,7 @@ function wrapTopLevelPanelInContainer(element: Record<string, unknown>): Record<
     width: 'fill',
     height: 'auto',
     direction: 'vertical',
-    margin: '0px 0px 0px 0px',
+    margin: '4px 0px 0px 0px',
     padding: '0px 0px 0px 0px',
     vertical_spacing: '0px',
     horizontal_spacing: '0px',
@@ -243,19 +238,43 @@ function wrapTopLevelPanelInContainer(element: Record<string, unknown>): Record<
 }
 
 function createLarkDetailSectionWithOptions(
-  label: string,
+  label: string | undefined,
   content: string,
-  mode: 'plain' | 'markdown',
+  mode: 'plain' | 'markdown' | 'bash',
   options: { forceQuoteMarkdown: boolean },
+  command?: string,
 ): Record<string, unknown> | null {
   const normalized = content.trim()
   if (!normalized) return null
+  const normalizedLabel = label?.trim() || ''
+
+  if (mode === 'bash') {
+    const shellLine = `<font color='red'>$</font> <font color='default'>${escapeHtml((command || '').trim())}</font>`
+    const body = optimizeLarkMarkdownStyle(normalized)
+    const combined = body ? `${shellLine}\n${body}` : shellLine
+    if (options.forceQuoteMarkdown) {
+      const quoted = toMarkdownQuote(combined, true)
+      if (!quoted) return null
+      return {
+        tag: 'markdown',
+        content: quoted,
+        text_size: LARK_COMPACT_TEXT_SIZE,
+        margin: '0px 0px 0px 0px',
+      }
+    }
+    return {
+      tag: 'markdown',
+      content: combined,
+      text_size: LARK_COMPACT_TEXT_SIZE,
+      margin: '0px 0px 0px 0px',
+    }
+  }
 
   if (mode === 'markdown') {
     const body = optimizeLarkMarkdownStyle(normalized)
     if (!body) return null
     if (options.forceQuoteMarkdown) {
-      const quoted = toMarkdownQuote(`${label}\n${body}`, true)
+      const quoted = toMarkdownQuote(normalizedLabel ? `${normalizedLabel}\n${body}` : body, true)
       if (!quoted) return null
       return {
         tag: 'markdown',
@@ -268,7 +287,7 @@ function createLarkDetailSectionWithOptions(
       tag: 'markdown',
       // Preserve markdown semantics for rich result blocks instead of flattening
       // them into a quoted plain-text shape.
-      content: `<font color='grey'>${label}</font>\n${body}`,
+      content: normalizedLabel ? `<font color='grey'>${normalizedLabel}</font>\n${body}` : body,
       text_size: LARK_COMPACT_TEXT_SIZE,
       margin: '0px 0px 0px 0px',
     }
@@ -277,13 +296,18 @@ function createLarkDetailSectionWithOptions(
   if (!options.forceQuoteMarkdown) {
     return {
       tag: 'markdown',
-      content: `<font color='grey'>${label}</font>\n${formatLarkCodeBlock(normalized)}`,
+      content: normalizedLabel
+        ? `<font color='grey'>${normalizedLabel}</font>\n${formatLarkCodeBlock(normalized)}`
+        : formatLarkCodeBlock(normalized),
       text_size: LARK_COMPACT_TEXT_SIZE,
       margin: '0px 0px 0px 0px',
     }
   }
 
-  const quoted = toMarkdownQuote(`${label}\n${formatLarkCodeBlock(normalized)}`, true)
+  const quoted = toMarkdownQuote(
+    normalizedLabel ? `${normalizedLabel}\n${formatLarkCodeBlock(normalized)}` : formatLarkCodeBlock(normalized),
+    true,
+  )
   if (!quoted) return null
   return {
     tag: 'markdown',
@@ -293,7 +317,11 @@ function createLarkDetailSectionWithOptions(
   }
 }
 
-function createLarkStaticDetailRow(title: string, subtitle?: string): Record<string, unknown> | null {
+function createLarkStaticDetailRow(
+  title: string,
+  subtitle?: string,
+  icon?: { tag: string; token: string; color: string },
+): Record<string, unknown> | null {
   const parts = [title]
   if (subtitle?.trim()) parts.push(optimizeLarkMarkdownStyle(subtitle.trim()))
   return {
@@ -301,6 +329,7 @@ function createLarkStaticDetailRow(title: string, subtitle?: string): Record<str
     content: parts.join('\n'),
     text_size: LARK_COMPACT_TEXT_SIZE,
     margin: '0px 0px 0px 0px',
+    ...(icon ? { icon } : {}),
   }
 }
 
@@ -308,32 +337,39 @@ function buildLarkToolRowElement(
   entry: AssistantToolEntry,
   options: { forceQuoteMarkdown?: boolean; topLevel?: boolean } = {},
 ): Record<string, unknown> | null {
-  if (entry.kind === 'taskcreate') {
-    return createLarkStaticDetailRow('调用 TaskCreate', entry.subtitle)
+  const config = buildAssistantToolRenderConfig(entry)
+  const toolIcon = {
+    tag: 'standard_icon' as const,
+    token: config.iconName,
+    color: 'blue',
   }
 
-  const config = buildAssistantToolRenderConfig(entry)
+  if (!config.expandable || config.sections.length === 0) {
+    return createLarkStaticDetailRow(
+      config.title,
+      config.subtitle,
+      toolIcon,
+    )
+  }
+
   const elements = config.sections
     .map((section) => createLarkDetailSectionWithOptions(
       section.label,
       section.content,
       section.mode || 'plain',
       { forceQuoteMarkdown: options.forceQuoteMarkdown === true },
+      section.command,
     ))
     .filter(Boolean)
   if (elements.length === 0) {
-    return createLarkStaticDetailRow(config.title, config.subtitle)
+    return createLarkStaticDetailRow(config.title, config.subtitle, toolIcon)
   }
   return createLarkCollapsiblePanel({
     title: config.title,
     subtitle: config.subtitle,
     elements,
     variant: options.topLevel ? 'top_level' : 'nested',
-    titleIcon: {
-      tag: 'standard_icon',
-      token: 'setting-inter_outlined',
-      color: 'grey',
-    },
+    titleIcon: toolIcon,
   })
 }
 
@@ -354,7 +390,7 @@ function buildLarkAssistantEntryElement(
   }
 
   if (entry.kind === 'thinking') {
-    const subtitle = entry.redacted ? 'redacted' : extractCollapsibleSubtitle(entry.content)
+    const subtitle = entry.redacted ? 'redacted' : extractThinkingSubtitle(entry.content)
     const body = entry.redacted
       ? 'redacted thinking'
       : optimizeLarkMarkdownStyle(entry.content)
@@ -372,7 +408,7 @@ function buildLarkAssistantEntryElement(
       titleIcon: {
         tag: 'standard_icon',
         token: 'efficiency_outlined',
-        color: 'grey',
+        color: 'amber',
       },
     })
   }
@@ -388,7 +424,7 @@ function buildLarkAssistantEntryElement(
       titleIcon: {
         tag: 'standard_icon',
         token: 'treelist_outlined',
-        color: 'grey',
+        color: 'indigo',
       },
     })
   }
@@ -416,7 +452,7 @@ function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
     elements.push({ tag: 'hr' })
     elements.push({
       tag: 'markdown',
-      content: footerText,
+      content: `<font color='grey'>${footerText}</font>`,
       text_size: 'notation',
     })
   }

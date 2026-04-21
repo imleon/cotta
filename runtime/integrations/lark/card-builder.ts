@@ -9,6 +9,7 @@ import { buildHistoryDisplayItems } from '../../presentation/transcript-display.
 import {
   buildAssistantDetailEntries,
   type AssistantDetailEntry,
+  type AssistantGroupChildEntry,
   type AssistantToolEntry,
 } from '../../presentation/assistant-detail-entries.js'
 import { buildAssistantToolRenderConfig } from '../../presentation/assistant-tool-sections.js'
@@ -168,10 +169,12 @@ function createLarkCollapsiblePanel(params: {
   elements: unknown[]
   expanded?: boolean
   titleIcon?: { tag: 'standard_icon'; token: string; color?: string; size?: string }
+  variant?: 'top_level' | 'nested'
 }): Record<string, unknown> | null {
   const elements = params.elements.filter(Boolean)
   if (elements.length === 0) return null
 
+  const isTopLevel = params.variant === 'top_level'
   const subtitle = params.subtitle?.trim()
     ? optimizeLarkMarkdownStyle(params.subtitle.trim()).replace(/\s+/g, ' ').trim()
     : ''
@@ -185,6 +188,14 @@ function createLarkCollapsiblePanel(params: {
     expanded: params.expanded ?? false,
     background_color: '',
     margin: '0px 0px 0px 0px',
+    ...(isTopLevel
+      ? {
+          border: {
+            color: 'grey',
+          },
+          corner_radius: '8px',
+        }
+      : {}),
     header: {
       title: {
         tag: 'markdown',
@@ -197,9 +208,9 @@ function createLarkCollapsiblePanel(params: {
           },
         } : {}),
       },
-      background_color: '',
+      background_color: isTopLevel ? 'grey' : '',
       vertical_align: 'center',
-      padding: '0px 0px 0px 0px',
+      padding: isTopLevel ? '6px 8px 6px 8px' : '0px 0px 0px 0px',
       icon: {
         tag: 'standard_icon',
         token: 'down-small-ccm_outlined',
@@ -210,7 +221,7 @@ function createLarkCollapsiblePanel(params: {
       icon_expanded_angle: -180,
     },
     vertical_spacing: '0px',
-    padding: '4px 0px 4px 8px',
+    padding: isTopLevel ? '8px 8px 8px 8px' : '4px 0px 4px 8px',
     elements,
   }
 }
@@ -263,6 +274,15 @@ function createLarkDetailSectionWithOptions(
     }
   }
 
+  if (!options.forceQuoteMarkdown) {
+    return {
+      tag: 'markdown',
+      content: `<font color='grey'>${label}</font>\n${formatLarkCodeBlock(normalized)}`,
+      text_size: LARK_COMPACT_TEXT_SIZE,
+      margin: '0px 0px 0px 0px',
+    }
+  }
+
   const quoted = toMarkdownQuote(`${label}\n${formatLarkCodeBlock(normalized)}`, true)
   if (!quoted) return null
   return {
@@ -286,7 +306,7 @@ function createLarkStaticDetailRow(title: string, subtitle?: string): Record<str
 
 function buildLarkToolRowElement(
   entry: AssistantToolEntry,
-  options: { forceQuoteMarkdown?: boolean } = {},
+  options: { forceQuoteMarkdown?: boolean; topLevel?: boolean } = {},
 ): Record<string, unknown> | null {
   if (entry.kind === 'taskcreate') {
     return createLarkStaticDetailRow('调用 TaskCreate', entry.subtitle)
@@ -308,6 +328,7 @@ function buildLarkToolRowElement(
     title: config.title,
     subtitle: config.subtitle,
     elements,
+    variant: options.topLevel ? 'top_level' : 'nested',
     titleIcon: {
       tag: 'standard_icon',
       token: 'setting-inter_outlined',
@@ -316,23 +337,38 @@ function buildLarkToolRowElement(
   })
 }
 
-function buildLarkAssistantEntryElement(entry: AssistantDetailEntry): Record<string, unknown> | null {
+function buildLarkGroupedChildElement(entry: AssistantGroupChildEntry): Record<string, unknown> | null {
+  if (entry.kind === 'thinking') {
+    return buildLarkAssistantEntryElement(entry, { topLevel: false })
+  }
+  return buildLarkToolRowElement(entry, { forceQuoteMarkdown: true, topLevel: false })
+}
+
+function buildLarkAssistantEntryElement(
+  entry: AssistantDetailEntry,
+  options: { topLevel?: boolean } = {},
+): Record<string, unknown> | null {
+  const isTopLevel = options.topLevel !== false
   if (entry.kind === 'text') {
     return createLarkMarkdownBlock(entry.fragment.text)
   }
 
   if (entry.kind === 'thinking') {
     const subtitle = entry.redacted ? 'redacted' : extractCollapsibleSubtitle(entry.content)
+    const body = entry.redacted
+      ? 'redacted thinking'
+      : optimizeLarkMarkdownStyle(entry.content)
     return createLarkCollapsiblePanel({
       title: entry.title,
       subtitle,
       elements: [
         {
           tag: 'markdown',
-          content: toMarkdownQuote(entry.content, true),
+          content: isTopLevel ? body : toMarkdownQuote(entry.content, true),
           text_size: LARK_COMPACT_TEXT_SIZE,
         },
       ].filter(Boolean),
+      variant: isTopLevel ? 'top_level' : 'nested',
       titleIcon: {
         tag: 'standard_icon',
         token: 'efficiency_outlined',
@@ -343,11 +379,12 @@ function buildLarkAssistantEntryElement(entry: AssistantDetailEntry): Record<str
 
   if (entry.kind === 'tool_group') {
     return createLarkCollapsiblePanel({
-      title: '调用工具',
-      subtitle: entry.summary,
+      title: entry.summary,
+      subtitle: '',
       elements: entry.entries
-        .map((toolEntry) => buildLarkToolRowElement(toolEntry, { forceQuoteMarkdown: true }))
+        .map((childEntry) => buildLarkGroupedChildElement(childEntry))
         .filter(Boolean),
+      variant: isTopLevel ? 'top_level' : 'nested',
       titleIcon: {
         tag: 'standard_icon',
         token: 'treelist_outlined',
@@ -356,7 +393,10 @@ function buildLarkAssistantEntryElement(entry: AssistantDetailEntry): Record<str
     })
   }
 
-  return buildLarkToolRowElement(entry, { forceQuoteMarkdown: true })
+  return buildLarkToolRowElement(entry, {
+    forceQuoteMarkdown: !isTopLevel,
+    topLevel: isTopLevel,
+  })
 }
 
 function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {

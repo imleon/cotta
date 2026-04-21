@@ -50,11 +50,15 @@ export type AssistantToolEntry = {
   contentValue?: unknown
 }
 
+export type AssistantGroupChildEntry =
+  | AssistantThinkingEntry
+  | AssistantToolEntry
+
 export type AssistantToolGroupEntry = {
   key: string
   kind: 'tool_group'
   summary: string
-  entries: AssistantToolEntry[]
+  entries: AssistantGroupChildEntry[]
 }
 
 export type AssistantDetailEntry =
@@ -249,15 +253,28 @@ function isToolEntry(entry: AssistantDetailEntry): entry is AssistantToolEntry {
   ].includes(entry.kind)
 }
 
-export function buildToolGroupSummary(entries: AssistantToolEntry[]): string {
+function isThinkingEntry(entry: AssistantDetailEntry): entry is AssistantThinkingEntry {
+  return entry.kind === 'thinking'
+}
+
+function isGroupableEntry(entry: AssistantDetailEntry): entry is AssistantGroupChildEntry {
+  return isThinkingEntry(entry) || isToolEntry(entry)
+}
+
+export function buildToolGroupSummary(entries: AssistantGroupChildEntry[]): string {
+  const thinkingCount = entries.filter((entry) => entry.kind === 'thinking').length
   const counts = new Map<string, number>()
   const order: string[] = []
   for (const entry of entries) {
+    if (entry.kind === 'thinking') continue
     const title = entry.title
     if (!counts.has(title)) order.push(title)
     counts.set(title, (counts.get(title) ?? 0) + 1)
   }
-  return order.map((title) => `${counts.get(title) ?? 0} 次 ${title}`).join('、')
+  const toolSummary = order.map((title) => `${title} ${counts.get(title) ?? 0} 次`).join('、')
+  if (thinkingCount > 0 && toolSummary) return `思考 ${thinkingCount} 次并调用工具 ${toolSummary}`
+  if (thinkingCount > 0) return `思考 ${thinkingCount} 次`
+  return `调用工具 ${toolSummary}`
 }
 
 function buildToolEntry(
@@ -446,32 +463,35 @@ export function buildAssistantDetailEntries(item: AssistantDisplayItem): Assista
   }
 
   const groupedEntries: AssistantDetailEntry[] = []
-  let pendingTools: AssistantToolEntry[] = []
+  let pendingGroupEntries: AssistantGroupChildEntry[] = []
 
-  const flushPendingTools = () => {
-    if (pendingTools.length === 0) return
-    if (pendingTools.length === 1) {
-      groupedEntries.push(pendingTools[0])
+  const flushPendingGroupEntries = () => {
+    if (pendingGroupEntries.length === 0) return
+    const toolCount = pendingGroupEntries.filter((entry) => entry.kind !== 'thinking').length
+    if (toolCount === 0) {
+      groupedEntries.push(...pendingGroupEntries)
+    } else if (pendingGroupEntries.length === 1) {
+      groupedEntries.push(pendingGroupEntries[0])
     } else {
       groupedEntries.push({
-        key: `${pendingTools[0].key}-group`,
+        key: `${pendingGroupEntries[0].key}-group`,
         kind: 'tool_group',
-        summary: buildToolGroupSummary(pendingTools),
-        entries: [...pendingTools],
+        summary: buildToolGroupSummary(pendingGroupEntries),
+        entries: [...pendingGroupEntries],
       })
     }
-    pendingTools = []
+    pendingGroupEntries = []
   }
 
   for (const entry of entries) {
-    if (isToolEntry(entry)) {
-      pendingTools.push(entry)
+    if (isGroupableEntry(entry)) {
+      pendingGroupEntries.push(entry)
       continue
     }
-    flushPendingTools()
+    flushPendingGroupEntries()
     groupedEntries.push(entry)
   }
-  flushPendingTools()
+  flushPendingGroupEntries()
 
   return groupedEntries
 }

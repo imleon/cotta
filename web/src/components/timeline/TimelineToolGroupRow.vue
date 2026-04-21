@@ -8,8 +8,8 @@ defineProps<{
 
 <template>
   <ToolRowShell
-    title="调用工具"
-    :subtitle="summary"
+    :title="summary"
+    subtitle=""
     subtitle-visibility="collapsed"
     :default-expanded="false"
   >

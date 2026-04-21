@@ -317,7 +317,6 @@ function mapAssistantFooter(footer: DisplayAssistantFooter | undefined): Timelin
     ...(footer.stopReason !== undefined ? { stopReason: footer.stopReason } : {}),
     ...(footer.model !== undefined ? { model: footer.model } : {}),
     ...(footer.usage !== undefined ? { usage: footer.usage } : {}),
-    ...(footer.executionDurationMs !== undefined ? { executionDurationMs: footer.executionDurationMs } : {}),
     ...(footer.completedAt !== undefined ? { completedAt: footer.completedAt } : {}),
     ...(footer.deltaMs !== undefined ? { deltaMs: footer.deltaMs } : {}),
   }

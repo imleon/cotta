@@ -53,7 +53,6 @@ export interface TimelineAssistantFooter {
   stopReason?: string | null
   model?: string | null
   usage?: TranscriptAssistantUsage | null
-  executionDurationMs?: number | null
   completedAt?: number | null
   deltaMs?: number | null
 }

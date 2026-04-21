@@ -211,7 +211,7 @@ function applyLarkReplyMentionToCard(card: Lark.InteractiveCard, context?: LarkR
   }
 }
 
-function buildFooterFromResultPayload(payload: unknown, completedAt: number, deltaMs?: number): DisplayAssistantFooter | null {
+function buildFooterFromResultPayload(payload: unknown, completedAt: number): DisplayAssistantFooter | null {
   const result = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null
   if (!result) return null
   const usage = result.usage && typeof result.usage === 'object'
@@ -223,7 +223,6 @@ function buildFooterFromResultPayload(payload: unknown, completedAt: number, del
   const model = modelUsage ? Object.keys(modelUsage).find((key) => key.trim().length > 0) ?? undefined : undefined
   return {
     completedAt,
-    ...(typeof deltaMs === 'number' ? { deltaMs } : {}),
     ...(typeof result.stop_reason === 'string' ? { stopReason: result.stop_reason } : {}),
     ...(usage ? {
       usage: {
@@ -1571,13 +1570,11 @@ export class LarkIntegrationService {
         })
       },
       getFooterMetrics: async () => {
-        const startedAt = this.runStartedAtByRunId.get(runId)
         return await this.buildFooterForRun(
           runId,
           sessionId,
           this.latestResultPayloadByRunId.get(runId),
           Date.now(),
-          typeof startedAt === 'number' ? Math.max(0, Date.now() - startedAt) : undefined,
         )
       },
     })
@@ -1591,56 +1588,42 @@ export class LarkIntegrationService {
     sessionId: string,
     payload: unknown,
     completedAt: number,
-    deltaMs?: number,
   ): Promise<DisplayAssistantFooter | null> {
     const page = await getMessagesPage(sessionId, {
       limit: 100,
       projectDirs: getProjectDirs(this.deps.configRegistry),
     })
-    const footerFromHistory = getAssistantFooter(page.messages, deltaMs)
+    const footerFromHistory = getAssistantFooter(page.messages)
     if (footerFromHistory && (hasMeaningfulFooterUsage(footerFromHistory.usage) || footerFromHistory.stopReason || footerFromHistory.model)) {
-      const footer = {
-        ...footerFromHistory,
-        completedAt,
-        deltaMs: deltaMs ?? footerFromHistory.deltaMs,
-      }
-      return footer
+      return footerFromHistory
     }
 
     const latestAssistantMessage = this.latestAssistantMessageByRunId.get(runId)
     if (latestAssistantMessage) {
       const footer = {
         completedAt,
-        ...(typeof deltaMs === 'number' ? { deltaMs } : {}),
         ...(getTranscriptStopReason(latestAssistantMessage) ? { stopReason: getTranscriptStopReason(latestAssistantMessage) ?? undefined } : {}),
         ...(getTranscriptAssistantUsage(latestAssistantMessage) ? { usage: getTranscriptAssistantUsage(latestAssistantMessage) ?? undefined } : {}),
         ...(getTranscriptAssistantModel(latestAssistantMessage) ? { model: getTranscriptAssistantModel(latestAssistantMessage) ?? undefined } : {}),
       }
       return footer
     }
-    const footerFromPayload = buildFooterFromResultPayload(payload, completedAt, deltaMs)
+    const footerFromPayload = buildFooterFromResultPayload(payload, completedAt)
     if (footerFromPayload?.stopReason || footerFromPayload?.model || footerFromPayload?.usage) {
       return footerFromPayload
     }
     if (!footerFromHistory) {
       return footerFromPayload
     }
-    const footer = {
-      ...footerFromHistory,
-      completedAt,
-      deltaMs: deltaMs ?? footerFromHistory.deltaMs,
-    }
-    return footer
+    return footerFromHistory
   }
 
   private async buildFinalCardForRun(sessionId: string, runId: string, fallbackText?: string): Promise<Record<string, unknown> | null> {
-    const startedAt = this.runStartedAtByRunId.get(runId)
     const footer = await this.buildFooterForRun(
       runId,
       sessionId,
       this.latestResultPayloadByRunId.get(runId),
       Date.now(),
-      typeof startedAt === 'number' ? Math.max(0, Date.now() - startedAt) : undefined,
     )
     if (footer) {
       const page = await getMessagesPage(sessionId, {

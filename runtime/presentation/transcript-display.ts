@@ -20,6 +20,7 @@ import {
   hasRenderableTranscriptContent,
   isTranscriptMetaMessage,
   isTranscriptRedactedThinkingMessage,
+  type TranscriptAssistantUsage,
   type TranscriptMessage,
 } from '../protocol/transcript-normalizer.js'
 
@@ -51,37 +52,88 @@ function getLinkage(message: TranscriptMessage): TranscriptLinkage {
   }
 }
 
-export function getAssistantFooter(messages: SessionMessage[], executionDurationMs?: number | null): DisplayAssistantFooter | undefined {
-  const source = [...messages].reverse().find((message) => {
+function getFooterSourceMessage(messages: SessionMessage[]): SessionMessage | undefined {
+  return [...messages].reverse().find((message) => {
     const stopReason = getTranscriptStopReason(message)
     const usage = getTranscriptAssistantUsage(message)
     const model = getTranscriptAssistantModel(message)
     return Boolean(stopReason) || Boolean(usage) || Boolean(model)
   }) ?? messages[messages.length - 1] ?? messages[0]
+}
 
-  if (!source && executionDurationMs == null) return undefined
+function sumAssistantUsage(messages: SessionMessage[]): TranscriptAssistantUsage | null {
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
+  let hasAny = false
+
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    const usage = getTranscriptAssistantUsage(message)
+    if (!usage) continue
+    if (typeof usage.inputTokens === 'number') {
+      inputTokens += usage.inputTokens
+      hasAny = true
+    }
+    if (typeof usage.outputTokens === 'number') {
+      outputTokens += usage.outputTokens
+      hasAny = true
+    }
+    if (typeof usage.cacheReadTokens === 'number') {
+      cacheReadTokens += usage.cacheReadTokens
+      hasAny = true
+    }
+    if (typeof usage.cacheWriteTokens === 'number') {
+      cacheWriteTokens += usage.cacheWriteTokens
+      hasAny = true
+    }
+  }
+
+  if (!hasAny) return null
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+  }
+}
+
+export function getAssistantFooter(messages: SessionMessage[]): DisplayAssistantFooter | undefined {
+  const source = getFooterSourceMessage(messages)
+  if (!source) return undefined
 
   const stopReason = source ? getTranscriptStopReason(source) : null
   const model = source ? getTranscriptAssistantModel(source) : null
-  const usage = source ? getTranscriptAssistantUsage(source) : null
+  const usage = sumAssistantUsage(messages)
   return {
     stopReason,
     model,
     usage,
-    executionDurationMs: executionDurationMs ?? null,
   }
 }
 
-function withFooterTiming<T extends { footer?: DisplayAssistantFooter; timestamp: number }>(item: T, previousTimestamp?: number | null): T {
+function withFooterTiming<T extends { footer?: DisplayAssistantFooter; messages: SessionMessage[] }>(
+  item: T,
+  promptTimestamp: number | null,
+): T {
   if (!item.footer) {
     return item
   }
+  const source = getFooterSourceMessage(item.messages)
+  const completedAt = typeof source?.timestamp === 'number' ? source.timestamp : null
+  const deltaMs = (
+    typeof completedAt === 'number'
+    && typeof promptTimestamp === 'number'
+  )
+    ? Math.max(0, completedAt - promptTimestamp)
+    : null
   return {
     ...item,
     footer: {
       ...item.footer,
-      completedAt: item.timestamp,
-      deltaMs: typeof previousTimestamp === 'number' ? Math.max(0, item.timestamp - previousTimestamp) : null,
+      completedAt,
+      deltaMs,
     },
   }
 }
@@ -437,7 +489,7 @@ function buildPrimaryDisplayItems(
   mode: 'default' | 'transcript',
 ): DisplayItem[] {
   const items: DisplayItem[] = []
-  let previousVisibleTimestamp: number | null = null
+  let lastUserPromptTimestamp: number | null = null
 
   let pendingTurnAtoms: TranscriptAtom[] = []
 
@@ -448,9 +500,8 @@ function buildPrimaryDisplayItems(
 
     const item = createAssistantDisplayItem(visibleAtoms, mode)
     if (item.fragments.length > 0 || item.overlays?.length) {
-      const timed: AssistantDisplayItem = withFooterTiming(item, previousVisibleTimestamp)
+      const timed: AssistantDisplayItem = withFooterTiming(item, lastUserPromptTimestamp)
       items.push(timed)
-      previousVisibleTimestamp = timed.timestamp
     }
   }
 
@@ -459,7 +510,7 @@ function buildPrimaryDisplayItems(
       flushPendingTurn()
       const item = createUserDisplayItem(atom)
       items.push(item)
-      previousVisibleTimestamp = item.timestamp
+      lastUserPromptTimestamp = item.timestamp
       continue
     }
 

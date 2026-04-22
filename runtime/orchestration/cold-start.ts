@@ -1,8 +1,6 @@
-import { randomUUID } from 'node:crypto'
 import type { ConfigRegistry } from '../config/registry.js'
 import type { SessionRegistry } from './session-registry.js'
 import type { ChannelClaimPlan } from './types.js'
-import { getChannelClaim, setExclusiveChannelClaim } from '../storage/fs/channel-claims.js'
 
 export async function buildColdStartClaimPlans(input: {
   config: ConfigRegistry
@@ -31,39 +29,17 @@ export async function buildColdStartClaimPlans(input: {
       continue
     }
 
-    const agent = input.config.getAgent(channel.agentId)
-    if (!agent) {
-      throw new Error(`Agent not found for channel ${channel.channelId}: ${channel.agentId}`)
-    }
-
-    // Prefer a persisted channel -> session claim over projectDir heuristics.
-    const persistedClaim = await getChannelClaim(channel.channelId)
-    if (
-      persistedClaim
-      && persistedClaim.agentId === channel.agentId
-      && !claimedSessionIds.has(persistedClaim.sessionId)
-    ) {
+    // If the channel is configured with a current session id, bind to it.
+    if (channel.currentSdkSessionId && !claimedSessionIds.has(channel.currentSdkSessionId)) {
       plans.push({
         channelId: channel.channelId,
         agentId: channel.agentId,
-        sessionId: persistedClaim.sessionId,
+        sessionId: channel.currentSdkSessionId,
         mode: 'resume',
-        reason: 'persisted_claim',
+        reason: 'configured_binding',
       })
-      claimedSessionIds.add(persistedClaim.sessionId)
-      continue
+      claimedSessionIds.add(channel.currentSdkSessionId)
     }
-
-    // No persisted claim: allocate a new session id for this channel (avoid projectDir heuristics).
-    const newSessionId = randomUUID()
-    plans.push({
-      channelId: channel.channelId,
-      agentId: channel.agentId,
-      sessionId: newSessionId,
-      mode: 'new',
-      reason: 'generated_new_session',
-    })
-    claimedSessionIds.add(newSessionId)
   }
 
   return plans
@@ -76,16 +52,6 @@ export function applyColdStartClaimPlans(input: {
   for (const plan of input.plans) {
     input.sessions.ensure(plan.sessionId, plan.agentId, {
       channelId: plan.channelId,
-    })
-  }
-}
-
-export async function persistColdStartClaimPlans(plans: ChannelClaimPlan[]): Promise<void> {
-  for (const plan of plans) {
-    await setExclusiveChannelClaim({
-      channelId: plan.channelId,
-      agentId: plan.agentId,
-      sessionId: plan.sessionId,
     })
   }
 }

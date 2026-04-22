@@ -6,7 +6,7 @@ import type { Orchestrator } from '../../orchestration/orchestrator.js'
 import type { SessionRegistry } from '../../orchestration/session-registry.js'
 import type { WorkerOutputEvent } from '../../execution/types.js'
 import { getMessagesPage, getSession } from '../../storage/fs/sessions.js'
-import { removeChannelClaim, setExclusiveChannelClaim } from '../../storage/fs/channel-claims.js'
+import type { SqliteConfigRepository } from '../../storage/sqlite/config-repository.js'
 import type {
   DisplayAssistantFooter,
   PermissionInteraction,
@@ -489,6 +489,7 @@ export class LarkIntegrationService {
   constructor(
     private readonly deps: {
       configRegistry: ConfigRegistry
+      configRepository: SqliteConfigRepository
       sessionRegistry: SessionRegistry
       orchestrator: Orchestrator
       logger: Logger
@@ -788,7 +789,7 @@ export class LarkIntegrationService {
 
       if (command.action === 'clear' || command.action === 'new') {
         this.deps.sessionRegistry.releaseChannel(channel.channelId)
-        await removeChannelClaim(channel.channelId)
+        this.deps.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, null)
         await this.sendTextToChannel(
           channel,
           command.action === 'new'
@@ -811,11 +812,7 @@ export class LarkIntegrationService {
       }
       this.deps.sessionRegistry.ensure(sessionId, channel.agentId)
       this.deps.sessionRegistry.claimChannel(sessionId, channel.channelId)
-      await setExclusiveChannelClaim({
-        channelId: channel.channelId,
-        agentId: channel.agentId,
-        sessionId,
-      })
+      this.deps.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
       await this.sendTextToChannel(
         channel,
         `Bound this chat to session ${sessionId}${persisted.title ? ` (${persisted.title})` : ''}.`,
@@ -1016,15 +1013,13 @@ export class LarkIntegrationService {
 
     let runtimeSession = this.deps.sessionRegistry.findByChannelId(channel.channelId)
     if (!runtimeSession) {
-      const sessionId = randomUUID()
+      const sessionId = channel.currentSdkSessionId || randomUUID()
       runtimeSession = this.deps.sessionRegistry.ensure(sessionId, channel.agentId, {
         channelId: channel.channelId,
       })
-      await setExclusiveChannelClaim({
-        channelId: channel.channelId,
-        agentId: channel.agentId,
-        sessionId,
-      })
+      if (!channel.currentSdkSessionId) {
+        this.deps.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
+      }
     }
 
     const agent = this.deps.configRegistry.getAgent(channel.agentId)

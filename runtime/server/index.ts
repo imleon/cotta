@@ -34,9 +34,15 @@ async function main() {
     console.log(`Cotta running at http://${info.address}:${info.port}`)
   })
 
+  let shuttingDown = false
   const shutdown = async () => {
-    await context.stop()
-    server.close()
+    if (shuttingDown) return
+    shuttingDown = true
+    try {
+      await context.stop()
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   }
   process.on('SIGINT', () => void shutdown())
   process.on('SIGTERM', () => void shutdown())

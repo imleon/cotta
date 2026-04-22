@@ -11,7 +11,8 @@ import { registerRunRoutes } from './http/routes/runs.js'
 import { registerSessionRoutes } from './http/routes/sessions.js'
 import { registerInteractiveRoutes } from './http/routes/interactive.js'
 import { registerLogRoutes } from './http/routes/logs.js'
-import { registerSettingsRoutes } from './http/routes/settings.js'
+import { registerChannelBindingRoutes } from './http/routes/channel-bindings.js'
+import { registerConfigRoutes } from './http/routes/config.js'
 import { registerStatusRoutes } from './http/routes/status.js'
 
 export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: ServerContext) {
@@ -49,7 +50,18 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
     readSessionSdkRawLogs: context.readSessionSdkRawLogs,
     readSessionPersistentLogs: context.readSessionPersistentLogs,
   })
-  registerSettingsRoutes(app, { logger: context.logger })
+  registerChannelBindingRoutes(app, {
+    logger: context.logger,
+    configRepository: context.configRepository,
+    sessionRegistry: context.sessionRegistry,
+    listSessionsByProjectDir: context.listSessionsByProjectDir,
+  })
+  registerConfigRoutes(app, {
+    logger: context.logger,
+    configDbPath: context.configDbPath,
+    configRepository: context.configRepository,
+    sessionRegistry: context.sessionRegistry,
+  })
   registerStatusRoutes(app, {
     logger: context.logger,
     config: context.config,

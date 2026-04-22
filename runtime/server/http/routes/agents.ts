@@ -2,7 +2,7 @@ import type { Hono } from 'hono'
 import type { StaticConfigRegistry } from '../../../config/registry.js'
 
 export function registerAgentRoutes(app: Hono<any, any, any>, input: {
-  defaultAgentId: string
+  defaultAgentId: string | null
   configRegistry: StaticConfigRegistry
 }) {
   app.get('/api/agents', (c) => {
@@ -16,4 +16,3 @@ export function registerAgentRoutes(app: Hono<any, any, any>, input: {
     })
   })
 }
-

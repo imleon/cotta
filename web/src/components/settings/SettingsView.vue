@@ -2,44 +2,18 @@
 import { computed, onMounted, ref } from 'vue'
 import { apiFetch } from '../../api/http'
 import {
-  fetchSettingsRequest,
-  saveSettingsRequest,
-} from '../../api/settings'
+  fetchConfigOverviewRequest,
+  saveConfigOverviewRequest,
+  type AgentConfig,
+  type ChannelConfig,
+  type ConnectorConfig,
+  type RuntimeConfig,
+} from '../../api/config'
+import {
+  fetchChannelBindingsRequest,
+  type ChannelSessionBindingItem,
+} from '../../api/channel-bindings'
 import { useSessionStore } from '../../stores/session'
-
-type ConnectorConfig = {
-  connectorId: string
-  connectorType: string
-  connectorConfig: Record<string, unknown>
-}
-
-type ChannelConfig = {
-  channelId: string
-  channelKey: string
-  channelName?: string
-  connectorId: string
-  agentId: string
-  enabled: boolean
-}
-
-type AgentConfig = {
-  agentId: string
-  agentName?: string
-  modelJson: { model?: string; thinking?: unknown; effort?: string }
-  projectDir: string
-  permissionMode?: string
-  allowToolsJson?: string[]
-  allowSkillsJson?: string[]
-  mcpServersJson?: Record<string, unknown>
-  envJson?: Record<string, string>
-  promptConfigJson?: Record<string, unknown>
-}
-
-type RuntimeConfig = {
-  connectors: ConnectorConfig[]
-  channels: ChannelConfig[]
-  agents: AgentConfig[]
-}
 
 const session = useSessionStore()
 const isLoading = ref(false)
@@ -47,27 +21,16 @@ const isSaving = ref(false)
 const loadError = ref('')
 const saveError = ref('')
 const saveNotice = ref('')
-
-const settingsPath = ref('')
-const settingsExists = ref(false)
-const settingsUpdatedAt = ref<number | null>(null)
+const isBindingOverviewLoading = ref(false)
 
 const config = ref<RuntimeConfig>({ connectors: [], channels: [], agents: [] })
-const savedSnapshot = ref('')
-
-const isDirty = computed(() => JSON.stringify(config.value) !== savedSnapshot.value)
-
-const statusTone = computed(() => {
-  if (saveError.value) return 'danger'
-  if (isDirty.value) return 'warning'
-  return 'ok'
-})
+const channelBindingsById = ref<Record<string, ChannelSessionBindingItem>>({})
 
 const statusBadgeClass = computed(() => {
-  if (statusTone.value === 'danger') {
+  if (saveError.value) {
     return 'border-[color:color-mix(in_srgb,var(--tt-danger)_26%,white)] bg-[color:color-mix(in_srgb,var(--tt-danger)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-danger)_88%,var(--tt-text))]'
   }
-  if (statusTone.value === 'warning') {
+  if (isSaving.value) {
     return 'border-[color:color-mix(in_srgb,var(--tt-warning)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-warning)_12%,white)] text-[color:color-mix(in_srgb,var(--tt-warning)_88%,var(--tt-text))]'
   }
   return 'border-[color:color-mix(in_srgb,var(--tt-success)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_90%,var(--tt-text))]'
@@ -120,38 +83,30 @@ function splitCsv(input: string): string[] {
     .filter(Boolean)
 }
 
-function toRuntimeConfig(raw: string): RuntimeConfig {
-  const parsed = JSON.parse(raw) as any
-  const connectors = Array.isArray(parsed?.connectors) ? parsed.connectors : []
-  const channels = Array.isArray(parsed?.channels) ? parsed.channels : []
-  const agents = Array.isArray(parsed?.agents) ? parsed.agents : []
-  return {
-    connectors: connectors.map((c: any) => ({
-      connectorId: String(c?.connectorId ?? ''),
-      connectorType: String(c?.connectorType ?? ''),
-      connectorConfig: (c?.connectorConfig && typeof c.connectorConfig === 'object' && !Array.isArray(c.connectorConfig)) ? c.connectorConfig : {},
-    })).filter((c: ConnectorConfig) => c.connectorId),
-    channels: channels.map((ch: any) => ({
-      channelId: String(ch?.channelId ?? ''),
-      channelKey: String(ch?.channelKey ?? ''),
-      channelName: typeof ch?.channelName === 'string' ? ch.channelName : undefined,
-      connectorId: String(ch?.connectorId ?? ''),
-      agentId: String(ch?.agentId ?? ''),
-      enabled: Boolean(ch?.enabled),
-    })).filter((ch: ChannelConfig) => ch.channelId),
-    agents: agents.map((a: any) => ({
-      agentId: String(a?.agentId ?? ''),
-      agentName: typeof a?.agentName === 'string' ? a.agentName : undefined,
-      modelJson: (a?.modelJson && typeof a.modelJson === 'object' && !Array.isArray(a.modelJson)) ? a.modelJson : {},
-      projectDir: String(a?.projectDir ?? ''),
-      permissionMode: typeof a?.permissionMode === 'string' ? a.permissionMode : undefined,
-      allowToolsJson: Array.isArray(a?.allowToolsJson) ? a.allowToolsJson.map(String) : undefined,
-      allowSkillsJson: Array.isArray(a?.allowSkillsJson) ? a.allowSkillsJson.map(String) : undefined,
-      mcpServersJson: (a?.mcpServersJson && typeof a.mcpServersJson === 'object' && !Array.isArray(a.mcpServersJson)) ? a.mcpServersJson : undefined,
-      envJson: (a?.envJson && typeof a.envJson === 'object' && !Array.isArray(a.envJson)) ? a.envJson : undefined,
-      promptConfigJson: (a?.promptConfigJson && typeof a.promptConfigJson === 'object' && !Array.isArray(a.promptConfigJson)) ? a.promptConfigJson : undefined,
-    })).filter((a: AgentConfig) => a.agentId),
+function toChannelBindingsMap(items: ChannelSessionBindingItem[]): Record<string, ChannelSessionBindingItem> {
+  return Object.fromEntries(items.map((item) => [item.channelId, item]))
+}
+
+async function loadChannelBindings() {
+  isBindingOverviewLoading.value = true
+  try {
+    const result = await fetchChannelBindingsRequest((input, init) => apiFetch(input, init, {
+      authToken: session.authToken,
+    }))
+    if (!result.ok) {
+      saveError.value = result.error || `Failed to load channel bindings (${result.status})`
+      return
+    }
+    channelBindingsById.value = toChannelBindingsMap(result.data)
+  } catch (error) {
+    saveError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    isBindingOverviewLoading.value = false
   }
+}
+
+function getChannelBinding(channelId: string): ChannelSessionBindingItem | null {
+  return channelBindingsById.value[channelId] ?? null
 }
 
 async function loadSettings() {
@@ -160,7 +115,7 @@ async function loadSettings() {
   saveError.value = ''
   saveNotice.value = ''
   try {
-    const result = await fetchSettingsRequest((input, init) => apiFetch(input, init, {
+    const result = await fetchConfigOverviewRequest((input, init) => apiFetch(input, init, {
       authToken: session.authToken,
     }))
     if (!result.ok) {
@@ -172,11 +127,8 @@ async function loadSettings() {
       loadError.value = 'Failed to load settings'
       return
     }
-    settingsPath.value = data.path
-    settingsExists.value = Boolean(data.exists)
-    settingsUpdatedAt.value = typeof data.updatedAt === 'number' ? data.updatedAt : null
-    config.value = toRuntimeConfig(typeof data.raw === 'string' ? data.raw : '{}')
-    savedSnapshot.value = JSON.stringify(config.value)
+    config.value = data.config
+    await loadChannelBindings()
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -184,44 +136,51 @@ async function loadSettings() {
   }
 }
 
-function validateConfig(): string[] {
+function validateConfig(nextConfig: RuntimeConfig): string[] {
   const errors: string[] = []
-  const connectorIds = new Set(config.value.connectors.map((c) => c.connectorId))
-  const agentIds = new Set(config.value.agents.map((a) => a.agentId))
-  for (const ch of config.value.channels) {
+  const connectorIds = new Set(nextConfig.connectors.map((c) => c.connectorId))
+  const agentIds = new Set(nextConfig.agents.map((a) => a.agentId))
+  const sessionIds = new Set<string>()
+  for (const ch of nextConfig.channels) {
     if (!connectorIds.has(ch.connectorId)) errors.push(`Channel ${ch.channelId}: connectorId 不存在 (${ch.connectorId})`)
     if (!agentIds.has(ch.agentId)) errors.push(`Channel ${ch.channelId}: agentId 不存在 (${ch.agentId})`)
     if (!ch.channelKey) errors.push(`Channel ${ch.channelId}: channelKey 不能为空`)
+    if (ch.currentSdkSessionId) {
+      if (sessionIds.has(ch.currentSdkSessionId)) {
+        errors.push(`Channel ${ch.channelId}: currentSdkSessionId 已被其他 Channel 使用 (${ch.currentSdkSessionId})`)
+      }
+      sessionIds.add(ch.currentSdkSessionId)
+    }
   }
-  for (const a of config.value.agents) {
+  for (const a of nextConfig.agents) {
     if (!a.projectDir) errors.push(`Agent ${a.agentId}: projectDir 不能为空`)
   }
   return errors
 }
 
-async function saveSettings() {
-  saveNotice.value = ''
+async function persistConfig(nextConfig: RuntimeConfig, notice: string) {
   saveError.value = ''
-  const errors = validateConfig()
+  const errors = validateConfig(nextConfig)
   if (errors.length > 0) {
     saveError.value = errors.join('；')
-    return
+    return false
   }
   isSaving.value = true
   try {
-    const raw = JSON.stringify(config.value, null, 2) + '\n'
-    const result = await saveSettingsRequest((input, init) => apiFetch(input, init, {
+    const result = await saveConfigOverviewRequest((input, init) => apiFetch(input, init, {
       authToken: session.authToken,
-    }), raw)
+    }), nextConfig)
     if (!result.ok) {
       saveError.value = result.error || `Failed to save settings (${result.status})`
-      return
+      return false
     }
-    savedSnapshot.value = JSON.stringify(config.value)
-    settingsUpdatedAt.value = typeof result.data?.updatedAt === 'number' ? result.data.updatedAt : settingsUpdatedAt.value
-    saveNotice.value = '已保存。提示：运行时配置通常需要重启服务才能完全生效。'
+    config.value = nextConfig
+    await loadChannelBindings()
+    saveNotice.value = notice
+    return true
   } catch (error) {
     saveError.value = error instanceof Error ? error.message : String(error)
+    return false
   } finally {
     isSaving.value = false
   }
@@ -243,6 +202,7 @@ const formChannelName = ref('')
 const formChannelKey = ref('')
 const formChannelConnectorId = ref('')
 const formChannelAgentId = ref('')
+const formChannelCurrentSdkSessionId = ref('')
 const formChannelEnabled = ref(true)
 
 const formAgentId = ref('')
@@ -260,6 +220,26 @@ const formAgentThinkingRows = ref<KvRow[]>([])
 
 const connectorOptions = computed(() => config.value.connectors.map((c) => ({ id: c.connectorId, type: c.connectorType })))
 const agentOptions = computed(() => config.value.agents.map((a) => ({ id: a.agentId, name: a.agentName || a.agentId })))
+const currentEditingChannelId = computed(() => {
+  if (editorKind.value !== 'channel') return ''
+  return editorIndex.value >= 0 ? (config.value.channels[editorIndex.value]?.channelId ?? '') : formChannelId.value.trim()
+})
+const currentEditingChannelBinding = computed(() => {
+  const channelId = currentEditingChannelId.value
+  return channelId ? getChannelBinding(channelId) : null
+})
+const currentEditingChannelSessionOptions = computed(() => {
+  const currentValue = formChannelCurrentSdkSessionId.value.trim()
+  const items = currentEditingChannelBinding.value?.candidateSessions ?? []
+  return items.map((candidate) => ({
+    value: candidate.sessionId,
+    label: candidate.title || candidate.sessionId,
+    claimedByChannelId: candidate.claimedByChannelId,
+    disabled: Boolean(candidate.claimedByChannelId) && candidate.sessionId !== currentValue,
+    isCurrent: candidate.isCurrent,
+    updatedAt: candidate.updatedAt,
+  }))
+})
 
 function resetEditorForms() {
   formConnectorId.value = ''
@@ -271,6 +251,7 @@ function resetEditorForms() {
   formChannelKey.value = ''
   formChannelConnectorId.value = ''
   formChannelAgentId.value = ''
+  formChannelCurrentSdkSessionId.value = ''
   formChannelEnabled.value = true
 
   formAgentId.value = ''
@@ -311,6 +292,7 @@ function openChannelEditor(index: number) {
   formChannelKey.value = ch?.channelKey ?? ''
   formChannelConnectorId.value = ch?.connectorId ?? (connectorOptions.value[0]?.id ?? '')
   formChannelAgentId.value = ch?.agentId ?? (agentOptions.value[0]?.id ?? '')
+  formChannelCurrentSdkSessionId.value = ch?.currentSdkSessionId ?? ''
   formChannelEnabled.value = ch?.enabled ?? true
   editorError.value = ''
   editorOpen.value = true
@@ -343,39 +325,68 @@ function openAgentEditor(index: number) {
 
 function addNew(kind: 'connector' | 'channel' | 'agent') {
   if (kind === 'connector') {
-    config.value.connectors.unshift({ connectorId: 'new-connector', connectorType: 'lark', connectorConfig: {} })
-    openConnectorEditor(0)
+    editorKind.value = 'connector'
+    editorIndex.value = -1
+    editorTitle.value = 'New Connector'
+    resetEditorForms()
+    formConnectorType.value = 'lark'
+    editorError.value = ''
+    editorOpen.value = true
     return
   }
   if (kind === 'channel') {
-    config.value.channels.unshift({ channelId: 'new-channel', channelKey: '', connectorId: '', agentId: '', enabled: true })
-    openChannelEditor(0)
+    editorKind.value = 'channel'
+    editorIndex.value = -1
+    editorTitle.value = 'New Channel'
+    resetEditorForms()
+    formChannelConnectorId.value = connectorOptions.value[0]?.id ?? ''
+    formChannelAgentId.value = agentOptions.value[0]?.id ?? ''
+    formChannelEnabled.value = true
+    editorError.value = ''
+    editorOpen.value = true
     return
   }
-  config.value.agents.unshift({ agentId: 'new-agent', projectDir: '', modelJson: {} })
-  openAgentEditor(0)
-}
-
-function removeAt(kind: 'connector' | 'channel' | 'agent', index: number) {
-  if (kind === 'connector') config.value.connectors.splice(index, 1)
-  else if (kind === 'channel') config.value.channels.splice(index, 1)
-  else config.value.agents.splice(index, 1)
-}
-
-function saveEditor() {
+  editorKind.value = 'agent'
+  editorIndex.value = -1
+  editorTitle.value = 'New Agent'
+  resetEditorForms()
   editorError.value = ''
+  editorOpen.value = true
+}
+
+async function removeAt(kind: 'connector' | 'channel' | 'agent', index: number) {
+  const nextConfig: RuntimeConfig = {
+    connectors: [...config.value.connectors],
+    channels: [...config.value.channels],
+    agents: [...config.value.agents],
+  }
+  if (kind === 'connector') nextConfig.connectors.splice(index, 1)
+  else if (kind === 'channel') nextConfig.channels.splice(index, 1)
+  else nextConfig.agents.splice(index, 1)
+
+  await persistConfig(nextConfig, '已删除并保存到 SQLite。提示：运行时配置通常需要重启服务才能完全生效。')
+}
+
+async function saveEditor() {
+  editorError.value = ''
+  saveNotice.value = ''
   if (editorKind.value === 'connector') {
     const connectorId = formConnectorId.value.trim()
-    const connectorType = formConnectorType.value.trim()
     if (!connectorId) { editorError.value = 'connectorId 不能为空'; return }
-    if (!connectorType) { editorError.value = 'connectorType 不能为空'; return }
     const next: ConnectorConfig = {
       connectorId,
-      connectorType,
+      connectorType: 'lark',
       connectorConfig: rowsToRecord(formConnectorConfigRows.value),
     }
-    config.value.connectors[editorIndex.value] = next
-    editorOpen.value = false
+    const nextConfig: RuntimeConfig = {
+      ...config.value,
+      connectors: editorIndex.value >= 0
+        ? config.value.connectors.map((item, index) => (index === editorIndex.value ? next : item))
+        : [next, ...config.value.connectors],
+    }
+    if (await persistConfig(nextConfig, '已保存到 SQLite。提示：运行时配置通常需要重启服务才能完全生效。')) {
+      editorOpen.value = false
+    }
     return
   }
 
@@ -384,6 +395,12 @@ function saveEditor() {
     const channelKey = formChannelKey.value.trim()
     if (!channelId) { editorError.value = 'channelId 不能为空'; return }
     if (!channelKey) { editorError.value = 'channelKey 不能为空'; return }
+    const selectedSessionId = formChannelCurrentSdkSessionId.value.trim()
+    const conflictingOption = currentEditingChannelSessionOptions.value.find((option) => option.value === selectedSessionId && option.disabled)
+    if (conflictingOption) {
+      editorError.value = `Session 已被其他 Channel 占用：${conflictingOption.claimedByChannelId}`
+      return
+    }
     const next: ChannelConfig = {
       channelId,
       channelKey,
@@ -391,9 +408,17 @@ function saveEditor() {
       connectorId: formChannelConnectorId.value,
       agentId: formChannelAgentId.value,
       enabled: Boolean(formChannelEnabled.value),
+      ...(selectedSessionId ? { currentSdkSessionId: selectedSessionId } : {}),
     }
-    config.value.channels[editorIndex.value] = next
-    editorOpen.value = false
+    const nextConfig: RuntimeConfig = {
+      ...config.value,
+      channels: editorIndex.value >= 0
+        ? config.value.channels.map((item, index) => (index === editorIndex.value ? next : item))
+        : [next, ...config.value.channels],
+    }
+    if (await persistConfig(nextConfig, '已保存到 SQLite。提示：运行时配置通常需要重启服务才能完全生效。')) {
+      editorOpen.value = false
+    }
     return
   }
 
@@ -420,8 +445,15 @@ function saveEditor() {
     ...(formAgentMcpServersRows.value.length > 0 ? { mcpServersJson: rowsToRecord(formAgentMcpServersRows.value) } : {}),
     ...(formAgentPromptConfigRows.value.length > 0 ? { promptConfigJson: rowsToRecord(formAgentPromptConfigRows.value) } : {}),
   }
-  config.value.agents[editorIndex.value] = next
-  editorOpen.value = false
+  const nextConfig: RuntimeConfig = {
+    ...config.value,
+    agents: editorIndex.value >= 0
+      ? config.value.agents.map((item, index) => (index === editorIndex.value ? next : item))
+      : [next, ...config.value.agents],
+  }
+  if (await persistConfig(nextConfig, '已保存到 SQLite。提示：运行时配置通常需要重启服务才能完全生效。')) {
+    editorOpen.value = false
+  }
 }
 
 onMounted(() => {
@@ -438,41 +470,13 @@ onMounted(() => {
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
                 <h2 class="text-lg font-semibold text-[var(--tt-accent)]">Settings</h2>
-                <span class="rounded-full border px-2 py-1 text-xs font-medium" :class="statusBadgeClass">
-                  {{ saveError ? 'Invalid' : (isDirty ? 'Unsaved' : 'Saved') }}
+                <span v-if="saveError || isSaving" class="rounded-full border px-2 py-1 text-xs font-medium" :class="statusBadgeClass">
+                  {{ saveError ? 'Invalid' : 'Saving' }}
                 </span>
               </div>
               <p class="mt-1 text-sm text-[var(--tt-text-muted)]">
-                结构化编辑运行时配置：Connector / Channel / Agent。保存会写回 <span class="font-mono">settings.json</span>。
+                结构化编辑运行时配置：Connector / Channel / Agent。保存会写入 <span class="font-mono">SQLite</span> 配置库。
               </p>
-              <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--tt-text-subtle)]">
-                <span class="rounded-full border border-[var(--tt-border)] bg-[var(--tt-card)] px-2 py-1">
-                  Path: <span class="font-mono">{{ settingsPath || '(loading...)' }}</span>
-                </span>
-                <span class="rounded-full border border-[var(--tt-border)] bg-[var(--tt-card)] px-2 py-1">
-                  Updated:
-                  <span v-if="settingsUpdatedAt">{{ new Date(settingsUpdatedAt).toLocaleString() }}</span>
-                  <span v-else>—</span>
-                </span>
-              </div>
-            </div>
-
-            <div class="flex flex-wrap items-center gap-2">
-              <button
-                class="rounded-xl border border-[var(--tt-border)] bg-[var(--tt-card)] px-3 py-2 text-sm font-medium text-[var(--tt-text-muted)] shadow-sm transition-colors hover:bg-[var(--tt-surface-soft)] hover:text-[var(--tt-accent)] disabled:opacity-50"
-                :disabled="isLoading || isSaving"
-                @click="loadSettings"
-              >
-                Reload
-              </button>
-              <button
-                class="rounded-xl bg-[var(--tt-primary)] px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[var(--tt-primary-strong)] disabled:opacity-50"
-                :disabled="isLoading || isSaving || !isDirty"
-                @click="saveSettings"
-              >
-                <span v-if="isSaving">Saving…</span>
-                <span v-else>Save</span>
-              </button>
             </div>
           </div>
         </div>
@@ -581,6 +585,31 @@ onMounted(() => {
                       <span>connector: <span class="font-mono">{{ ch.connectorId }}</span></span>
                       <span>agent: <span class="font-mono">{{ ch.agentId }}</span></span>
                     </div>
+                    <div class="mt-3 rounded-xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_78%,white)] p-3">
+                      <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="min-w-0">
+                          <div class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--tt-text-subtle)]">Session</div>
+                          <div v-if="getChannelBinding(ch.channelId)?.boundSession" class="mt-1">
+                            <div class="text-sm font-medium text-[var(--tt-accent)]">
+                              {{ getChannelBinding(ch.channelId)?.boundSession?.title || getChannelBinding(ch.channelId)?.boundSession?.sessionId }}
+                            </div>
+                            <div class="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-[var(--tt-text-subtle)]">
+                              <span class="font-mono">{{ getChannelBinding(ch.channelId)?.boundSession?.sessionId }}</span>
+                              <span>
+                                updated:
+                                {{ getChannelBinding(ch.channelId)?.boundSession?.updatedAt ? new Date(getChannelBinding(ch.channelId)!.boundSession!.updatedAt).toLocaleString() : '—' }}
+                              </span>
+                              <span v-if="getChannelBinding(ch.channelId)?.boundSession?.sessionStatus">
+                                status: {{ getChannelBinding(ch.channelId)?.boundSession?.sessionStatus }}
+                              </span>
+                            </div>
+                          </div>
+                          <div v-else class="mt-1 text-sm text-[var(--tt-text-subtle)]">
+                            {{ isBindingOverviewLoading ? '加载中…' : '当前未绑定 Session' }}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   <div class="flex items-center gap-2">
                     <button class="rounded-lg border border-[var(--tt-border)] bg-white px-2.5 py-1.5 text-[11px] font-medium text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]" @click="openChannelEditor(idx)">
@@ -597,16 +626,16 @@ onMounted(() => {
         </div>
         </div>
 
-        <div v-if="editorOpen" class="fixed inset-0 z-50">
+        <div v-if="editorOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div class="absolute inset-0 bg-[color:color-mix(in_srgb,var(--tt-accent)_28%,transparent)] backdrop-blur-[1px]" @click="editorOpen = false" />
-          <div class="absolute inset-x-0 bottom-0 mx-auto w-full max-w-3xl rounded-t-3xl border border-[var(--tt-border)] bg-[var(--tt-card)] shadow-2xl">
+          <div class="relative z-10 w-full max-w-3xl overflow-hidden rounded-3xl border border-[var(--tt-border)] bg-[var(--tt-card)] shadow-2xl">
             <div class="flex items-center justify-between border-b border-[var(--tt-border)] px-5 py-4">
               <div class="text-sm font-semibold text-[var(--tt-accent)]">{{ editorTitle }}</div>
               <button class="rounded-lg border border-[var(--tt-border)] bg-white px-2.5 py-1.5 text-[11px] font-medium text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]" @click="editorOpen = false">
                 Close
               </button>
             </div>
-            <div class="p-5">
+            <div class="max-h-[min(80vh,900px)] overflow-y-auto p-5">
               <div v-if="editorError" class="mt-3 rounded-xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-danger)_8%,white)] p-3 text-sm text-[var(--tt-danger)]">
                 {{ editorError }}
               </div>
@@ -638,6 +667,44 @@ onMounted(() => {
                         <option v-for="a in agentOptions" :key="a.id" :value="a.id">{{ a.name }}</option>
                       </select>
                     </label>
+                    <div class="space-y-2 rounded-xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_78%,white)] p-3 md:col-span-2">
+                      <div class="flex items-center justify-between gap-3">
+                        <div>
+                          <div class="text-xs font-medium text-[var(--tt-text-subtle)]">currentSdkSessionId</div>
+                          <div class="mt-1 text-[12px] text-[var(--tt-text-subtle)]">
+                            留空表示下次收到 prompt 时自动新建 Session 并绑定。
+                          </div>
+                        </div>
+                        <button
+                          class="rounded-lg border border-[var(--tt-border)] bg-white px-3 py-2 text-[11px] font-medium text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]"
+                          type="button"
+                          @click="formChannelCurrentSdkSessionId = ''"
+                        >
+                          设为自动
+                        </button>
+                      </div>
+                      <select v-model="formChannelCurrentSdkSessionId" class="w-full rounded-xl border border-[var(--tt-border)] bg-white/90 px-3 py-2 text-sm font-mono">
+                        <option value="">(auto-create on next prompt)</option>
+                        <option
+                          v-for="option in currentEditingChannelSessionOptions"
+                          :key="option.value"
+                          :value="option.value"
+                          :disabled="option.disabled"
+                        >
+                          {{ option.label }}{{ option.isCurrent ? ' [current]' : '' }}{{ option.claimedByChannelId ? ` [claimed by ${option.claimedByChannelId}]` : '' }}
+                        </option>
+                      </select>
+                      <div v-if="currentEditingChannelSessionOptions.length > 0" class="space-y-1 text-[12px] text-[var(--tt-text-subtle)]">
+                        <div v-for="option in currentEditingChannelSessionOptions" :key="`option-${option.value}`">
+                          <span class="font-mono">{{ option.value }}</span>
+                          <span> · updated: {{ new Date(option.updatedAt).toLocaleString() }}</span>
+                          <span v-if="option.claimedByChannelId"> · 已被 <span class="font-mono">{{ option.claimedByChannelId }}</span> 占用</span>
+                        </div>
+                      </div>
+                      <div v-else class="text-[12px] text-[var(--tt-text-subtle)]">
+                        当前 Agent 下还没有可选 Session。
+                      </div>
+                    </div>
                     <label class="flex items-center justify-between rounded-xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_78%,white)] px-3 py-2 md:col-span-2">
                       <div class="text-sm text-[var(--tt-text)]">Enabled</div>
                       <input v-model="formChannelEnabled" type="checkbox" class="h-4 w-4 accent-[var(--tt-primary)]" />
@@ -653,10 +720,7 @@ onMounted(() => {
                     </label>
                     <label class="space-y-1">
                       <div class="text-xs font-medium text-[var(--tt-text-subtle)]">connectorType</div>
-                      <select v-model="formConnectorType" class="w-full rounded-xl border border-[var(--tt-border)] bg-white/90 px-3 py-2 text-sm">
-                        <option value="lark">lark</option>
-                        <option value="generic">generic</option>
-                      </select>
+                      <input value="lark" disabled class="w-full rounded-xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-surface)_78%,white)] px-3 py-2 text-sm font-mono text-[var(--tt-text-subtle)]" />
                     </label>
                   </div>
 
@@ -800,8 +864,9 @@ onMounted(() => {
                 <button class="rounded-xl border border-[var(--tt-border)] bg-white px-4 py-2 text-sm font-medium text-[var(--tt-text-muted)] hover:bg-[var(--tt-surface-soft)]" @click="editorOpen = false">
                   Cancel
                 </button>
-                <button class="rounded-xl bg-[var(--tt-primary)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--tt-primary-strong)]" @click="saveEditor">
-                  Apply
+                <button class="rounded-xl bg-[var(--tt-primary)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--tt-primary-strong)] disabled:opacity-50" :disabled="isSaving" @click="saveEditor">
+                  <span v-if="isSaving">Applying…</span>
+                  <span v-else>Apply</span>
                 </button>
               </div>
             </div>

@@ -807,7 +807,7 @@ export const useSessionStore = defineStore('session', () => {
       try {
         const result = await fetchAgentsRequest(apiFetch)
         if (!result.ok) {
-          agentIdCache = stored ?? 'local-dev'
+          agentIdCache = stored ?? ''
           return agentIdCache
         }
         const agents = result.data.agents
@@ -820,17 +820,19 @@ export const useSessionStore = defineStore('session', () => {
           ? stored
           : (defaultFromServer && agentIds.includes(defaultFromServer))
             ? defaultFromServer
-            : agentIds[0] ?? stored ?? 'local-dev'
+            : agentIds[0] ?? stored ?? ''
 
         agentIdCache = chosen
-        try {
+        if (chosen) {
+          try {
           localStorage.setItem(AGENT_ID_STORAGE_KEY, chosen)
-        } catch {
-          // ignore storage failures
+          } catch {
+            // ignore storage failures
+          }
         }
         return chosen
       } catch {
-        agentIdCache = stored ?? 'local-dev'
+        agentIdCache = stored ?? ''
         return agentIdCache
       } finally {
         agentIdPromise = null
@@ -1057,6 +1059,11 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     const agentId = await ensureAgentId()
+    if (!agentId) {
+      sessionNotice.value = '当前没有可用的 Agent，请先到 Settings 创建至少一个 Agent。'
+      applyEvent({ type: 'session.run.failed', sessionId, error: 'no agent configured' })
+      return
+    }
     const mode = hadSession ? 'resume' : 'new'
 
     awaitingRunStart = true

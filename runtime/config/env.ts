@@ -16,7 +16,7 @@ function getInt(name: string, fallback: number): number {
 }
 
 export const ENV = {
-  runtimeSettingsPath: getString('COTTA_SETTINGS_PATH', ''),
+  configDbPath: getString('COTTA_DB_PATH', './data/cotta.db'),
 
   port: getInt('PORT', 3000),
   host: getString('HOST', '0.0.0.0'),
@@ -39,8 +39,6 @@ export const ENV = {
 
   authToken: getString('APP_AUTH_TOKEN', ''),
   authEnabled: getString('APP_AUTH_TOKEN', '').length > 0,
-
-  ipcPath: './data/ipc',
 
   lark: {
     appId: getString('LARK_APP_ID', ''),

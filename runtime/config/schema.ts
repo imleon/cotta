@@ -11,6 +11,9 @@ export interface ChannelConfig {
   connectorId: string
   agentId: string
   enabled: boolean
+  // Optional binding to an SDK session id. When empty, a new session will be
+  // allocated and persisted when the channel receives its next prompt.
+  currentSdkSessionId?: string
 }
 
 export interface AgentConfig {

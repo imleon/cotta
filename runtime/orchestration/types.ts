@@ -74,5 +74,10 @@ export interface ChannelClaimPlan {
   agentId: string
   sessionId: string
   mode: ChannelClaimMode
-  reason: 'existing_claim' | 'persisted_claim' | 'latest_unclaimed_session' | 'generated_new_session'
+  reason:
+    | 'existing_claim'
+    | 'persisted_claim'
+    | 'latest_unclaimed_session'
+    | 'generated_new_session'
+    | 'configured_binding'
 }

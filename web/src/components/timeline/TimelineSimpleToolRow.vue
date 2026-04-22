@@ -9,16 +9,18 @@ const props = withDefaults(defineProps<{
   content?: string
   contentMode?: 'plain' | 'markdown'
   expandable?: boolean
+  defaultExpanded?: boolean
 }>(), {
   subtitle: '',
   content: '',
   contentMode: 'plain',
   expandable: true,
+  defaultExpanded: false,
 })
 </script>
 
 <template>
-  <ToolRowShell :title="title" :subtitle="subtitle" :expandable="expandable">
+  <ToolRowShell :title="title" :subtitle="subtitle" :expandable="expandable" :default-expanded="defaultExpanded">
     <template #icon>{{ icon }}</template>
     <div class="max-h-72 overflow-auto pr-1">
       <MarkdownContent

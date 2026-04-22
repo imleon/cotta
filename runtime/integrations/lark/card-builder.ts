@@ -209,7 +209,7 @@ function createLarkCollapsiblePanel(params: {
       },
       background_color: isTopLevel ? 'grey' : '',
       vertical_align: 'center',
-      padding: isTopLevel ? '8px 12px 8px 12px' : '0px 0px 0px 0px',
+      padding: isTopLevel ? '8px 12px 8px 12px' : '4px 6px 4px 6px',
       icon: {
         tag: 'standard_icon',
         token: 'down-small-ccm_outlined',

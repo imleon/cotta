@@ -19,15 +19,17 @@ const props = withDefaults(defineProps<{
   sections: ToolSection[]
   maxHeightClass?: string
   expandable?: boolean
+  defaultExpanded?: boolean
 }>(), {
   subtitle: '',
   maxHeightClass: 'max-h-72',
   expandable: true,
+  defaultExpanded: false,
 })
 </script>
 
 <template>
-  <ToolRowShell :title="title" :subtitle="subtitle" :expandable="expandable">
+  <ToolRowShell :title="title" :subtitle="subtitle" :expandable="expandable" :default-expanded="defaultExpanded">
     <template #icon><Icon :name="iconName" /></template>
     <div :class="[maxHeightClass, 'space-y-3 overflow-auto pr-1']">
       <ToolSectionBlock

@@ -89,6 +89,7 @@ export interface TimelineAssistantItem {
   fragments: TimelineFragment[]
   footer?: TimelineAssistantFooter
   overlays?: TimelineLivePreview[]
+  placeholder?: boolean
 }
 
 export type TimelineRenderableItemModel =

@@ -5,6 +5,7 @@ import TimelineMessageContent from './TimelineMessageContent.vue'
 
 defineProps<{
   item: TimelineItemModel
+  debugSegment?: string
 }>()
 
 function getPrefix(item: TimelineItemModel): string {
@@ -57,6 +58,12 @@ function getRowClass(item: TimelineItemModel): string {
   <div :class="['timeline-cli-row', getRowClass(item)]">
     <span :class="getPrefixClass(item)">{{ getPrefix(item) }}</span>
     <div class="timeline-cli-content">
+      <div
+        v-if="debugSegment"
+        class="mb-1 inline-flex rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-700"
+      >
+        {{ debugSegment }}
+      </div>
       <TimelineMessageContent :item="item" />
     </div>
   </div>

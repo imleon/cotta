@@ -152,6 +152,27 @@ function removeLabelWhenSingle(sections: AssistantToolSection[]): AssistantToolS
   return [{ ...sections[0], label: '' }]
 }
 
+function buildInputWithResultSections(
+  input: unknown,
+  raw: unknown,
+  output: unknown,
+  options?: {
+    resultMode?: 'plain' | 'markdown'
+    fallbackLabel?: string
+  },
+): AssistantToolSection[] {
+  const resultContent = getSimpleResultContent(raw, output)
+  const inputSections = buildObjectSections(input, options?.fallbackLabel ?? 'input')
+  if (!resultContent) return inputSections
+  if (inputSections.length === 0) {
+    return [{ label: '', content: resultContent, mode: options?.resultMode ?? 'markdown' }]
+  }
+  return [
+    ...inputSections,
+    { label: 'tool_result', content: resultContent, mode: options?.resultMode ?? 'markdown' },
+  ]
+}
+
 export function buildAssistantToolRenderConfig(entry: AssistantToolEntry): AssistantToolRenderConfig {
   const normalizedTitle = entry.title.toLowerCase()
 
@@ -206,13 +227,12 @@ export function buildAssistantToolRenderConfig(entry: AssistantToolEntry): Assis
       subtitle,
       maxHeightClass: 'max-h-56',
       expandable: true,
-      sections: removeLabelWhenSingle([
-        {
-          label: '',
-          content: getSimpleResultContent(entry.result?.raw, entry.result?.output),
-          mode: 'plain',
-        },
-      ]),
+      sections: removeLabelWhenSingle(buildInputWithResultSections(
+        entry.input,
+        entry.result?.raw,
+        entry.result?.output,
+        { resultMode: 'plain' },
+      )),
     }
   }
 
@@ -347,9 +367,12 @@ export function buildAssistantToolRenderConfig(entry: AssistantToolEntry): Assis
       subtitle: getStringField(entry.input, 'query') || '',
       maxHeightClass: 'max-h-72',
       expandable: true,
-      sections: removeLabelWhenSingle([
-        { label: '', content: getSimpleResultContent(entry.result?.raw, entry.result?.output), mode: 'markdown' },
-      ]),
+      sections: removeLabelWhenSingle(buildInputWithResultSections(
+        entry.input,
+        entry.result?.raw,
+        entry.result?.output,
+        { resultMode: 'markdown' },
+      )),
     }
   }
 
@@ -360,9 +383,12 @@ export function buildAssistantToolRenderConfig(entry: AssistantToolEntry): Assis
       subtitle: getStringField(entry.input, 'url') || '',
       maxHeightClass: 'max-h-72',
       expandable: true,
-      sections: removeLabelWhenSingle([
-        { label: '', content: getSimpleResultContent(entry.result?.raw, entry.result?.output), mode: 'markdown' },
-      ]),
+      sections: removeLabelWhenSingle(buildInputWithResultSections(
+        entry.input,
+        entry.result?.raw,
+        entry.result?.output,
+        { resultMode: 'markdown' },
+      )),
     }
   }
 
@@ -373,9 +399,12 @@ export function buildAssistantToolRenderConfig(entry: AssistantToolEntry): Assis
       subtitle: getFirstQuestion(entry.input),
       maxHeightClass: 'max-h-72',
       expandable: true,
-      sections: removeLabelWhenSingle([
-        { label: '', content: getSimpleResultContent(entry.result?.raw, entry.result?.output), mode: 'markdown' },
-      ]),
+      sections: removeLabelWhenSingle(buildInputWithResultSections(
+        entry.input,
+        entry.result?.raw,
+        entry.result?.output,
+        { resultMode: 'markdown' },
+      )),
     }
   }
 
@@ -386,9 +415,12 @@ export function buildAssistantToolRenderConfig(entry: AssistantToolEntry): Assis
       subtitle: getStringField(entry.input, 'query') || '',
       maxHeightClass: 'max-h-72',
       expandable: true,
-      sections: removeLabelWhenSingle([
-        { label: '', content: getSimpleResultContent(entry.result?.raw, entry.result?.output), mode: 'markdown' },
-      ]),
+      sections: removeLabelWhenSingle(buildInputWithResultSections(
+        entry.input,
+        entry.result?.raw,
+        entry.result?.output,
+        { resultMode: 'markdown' },
+      )),
     }
   }
 
@@ -409,9 +441,11 @@ export function buildAssistantToolRenderConfig(entry: AssistantToolEntry): Assis
     subtitle: '',
     maxHeightClass: 'max-h-80',
     expandable: true,
-    sections: removeLabelWhenSingle([
-      ...buildObjectSections(entry.input),
-      { label: 'tool_result', content: getSimpleResultContent(entry.result?.raw, entry.result?.output), mode: 'markdown' },
-    ]),
+    sections: removeLabelWhenSingle(buildInputWithResultSections(
+      entry.input,
+      entry.result?.raw,
+      entry.result?.output,
+      { resultMode: 'markdown' },
+    )),
   }
 }

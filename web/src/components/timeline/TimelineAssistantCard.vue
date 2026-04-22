@@ -21,14 +21,10 @@ const props = withDefaults(defineProps<{
 })
 
 const allOverlays = computed(() => props.item.overlays || [])
-const detailOverlays = computed(() =>
-  allOverlays.value.filter((overlay) => overlay.overlayKind !== 'streaming_text')
-)
-const finalOverlays = computed(() =>
-  allOverlays.value.filter((overlay) => overlay.overlayKind === 'streaming_text')
-)
-
-const hasFinalOverlay = computed(() => finalOverlays.value.length > 0)
+const hasPreviewOverlays = computed(() => allOverlays.value.length > 0)
+const isPlaceholder = computed(() => props.item.placeholder === true)
+const isTerminalAssistant = computed(() => Boolean(props.item.footer?.stopReason))
+const shouldRenderUngrouped = computed(() => hasPreviewOverlays.value || !isTerminalAssistant.value)
 
 function compactString(value: string, head = 10, tail = 8): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
@@ -138,24 +134,89 @@ function getSkillArgs(input: unknown): unknown {
   return (input as Record<string, unknown>).args
 }
 
-function buildOverlayDetailEntries(overlay: TimelineLivePreview): AssistantDetailEntry[] {
+type RenderListEntry = {
+  key: string
+  entry: AssistantDetailEntry
+  defaultExpanded?: boolean
+}
+
+function flattenDetailEntries(entries: AssistantDetailEntry[]): AssistantDetailEntry[] {
+  return entries.flatMap((entry) => entry.kind === 'tool_group' ? entry.entries : [entry])
+}
+
+function isPreviewBlockActive(overlay: TimelineLivePreview, block: TimelineLivePreview['preview']['blocks'][number]): boolean {
+  if (!overlay.preview.active) return false
+  if (block.kind === 'thinking' && overlay.preview.phase === 'thinking') {
+    const latestThinkingIndex = Math.max(
+      ...overlay.preview.blocks
+        .filter((candidate) => candidate.kind === 'thinking')
+        .map((candidate) => candidate.index),
+    )
+    return block.index === latestThinkingIndex
+  }
+  if (block.kind === 'tool_use' && overlay.preview.phase === 'tool-input') {
+    const latestToolIndex = Math.max(
+      ...overlay.preview.blocks
+        .filter((candidate) => candidate.kind === 'tool_use')
+        .map((candidate) => candidate.index),
+    )
+    return block.index === latestToolIndex
+  }
+  return false
+}
+
+function getMaterializedToolResultsById(item: TimelineAssistantItem): Map<string, { output?: unknown }> {
+  const map = new Map<string, { output?: unknown }>()
+  for (const fragment of item.fragments) {
+    if (fragment.type !== 'tool_result' || !fragment.toolUseId) continue
+    map.set(fragment.toolUseId, { output: fragment.output })
+  }
+  return map
+}
+
+function parsePreviewToolInput(text: string): unknown {
+  const trimmed = text.trim()
+  if (!trimmed) return ''
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return trimmed
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return trimmed
+  }
+}
+
+function buildOverlayDetailEntries(overlay: TimelineLivePreview): RenderListEntry[] {
+  const materializedResults = getMaterializedToolResultsById(props.item)
   return overlay.preview.blocks.map((block, index) => {
     if (block.kind === 'thinking') {
       return {
         key: `${overlay.id}-thinking-${index}`,
-        kind: 'thinking',
-        title: THINKING_ROW_TITLE,
-        summary: block.redacted ? 'redacted' : compactString(block.shownText || ''),
-        content: block.redacted ? 'redacted thinking' : (block.shownText || ''),
-        redacted: block.redacted,
+        defaultExpanded: isPreviewBlockActive(overlay, block),
+        entry: {
+          key: `${overlay.id}-thinking-${index}`,
+          kind: 'thinking',
+          title: THINKING_ROW_TITLE,
+          summary: block.redacted ? 'redacted' : compactString(block.shownText || ''),
+          content: block.redacted ? 'redacted thinking' : (block.shownText || ''),
+          redacted: block.redacted,
+        },
       }
     }
 
     if (block.kind === 'tool_use') {
+      const parsedInput = parsePreviewToolInput(block.shownInput)
+      const materializedResult = block.toolUseId ? materializedResults.get(block.toolUseId) : undefined
+      const toolResult = materializedResult
+        ? {
+            type: 'tool_result' as const,
+            toolUseId: block.toolUseId,
+            output: materializedResult.output,
+          }
+        : null
       const syntheticToolUse = {
         name: block.name,
         toolUseId: block.toolUseId,
-        input: block.shownInput,
+        input: parsedInput,
       }
       const toolKind = getToolKind(syntheticToolUse)
       if (syntheticToolUse.name === 'Bash') {
@@ -163,126 +224,209 @@ function buildOverlayDetailEntries(overlay: TimelineLivePreview): AssistantDetai
         const description = getStringField(syntheticToolUse.input, 'description')
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'bash',
-          title: 'Bash',
-          summary: '',
-          result: null,
-          command,
-          description,
-          resultContent: '',
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'bash',
+            title: 'Bash',
+            summary: '',
+            result: toolResult,
+            command: command || (typeof parsedInput === 'string' ? parsedInput : ''),
+            description,
+            resultContent: materializedResult ? compactValue(materializedResult.output) : '',
+            input: parsedInput,
+          },
         }
       }
       if (syntheticToolUse.name === 'Read') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'read',
-          title: 'Read',
-          summary: '',
-          result: null,
-          filePath: getStringField(syntheticToolUse.input, 'file_path'),
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'read',
+            title: 'Read',
+            summary: '',
+            result: toolResult,
+            input: parsedInput,
+            filePath: getStringField(syntheticToolUse.input, 'file_path'),
+          },
         }
       }
       if (syntheticToolUse.name === 'Glob') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'glob',
-          title: 'Glob',
-          summary: '',
-          result: null,
-          filePath: buildGlobSubtitle(syntheticToolUse.input),
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'glob',
+            title: 'Glob',
+            summary: '',
+            result: toolResult,
+            input: parsedInput,
+            filePath: buildGlobSubtitle(syntheticToolUse.input),
+          },
         }
       }
       if (syntheticToolUse.name === 'Grep') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'grep',
-          title: 'Grep',
-          summary: '',
-          result: null,
-          filePath: buildGlobSubtitle(syntheticToolUse.input),
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'grep',
+            title: 'Grep',
+            summary: '',
+            result: toolResult,
+            input: parsedInput,
+            filePath: buildGlobSubtitle(syntheticToolUse.input),
+          },
         }
       }
       if (syntheticToolUse.name === 'Edit') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'edit',
-          title: 'Edit',
-          summary: '',
-          result: null,
-          filePath: getStringField(syntheticToolUse.input, 'file_path'),
-          input: syntheticToolUse.input,
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'edit',
+            title: 'Edit',
+            summary: '',
+            result: toolResult,
+            filePath: getStringField(syntheticToolUse.input, 'file_path'),
+            input: syntheticToolUse.input,
+          },
         }
       }
       if (syntheticToolUse.name === 'Skill') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'skill',
-          title: 'Skill',
-          summary: '',
-          result: null,
-          subtitle: getSkillSubtitle(syntheticToolUse.input),
-          args: getSkillArgs(syntheticToolUse.input),
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'skill',
+            title: 'Skill',
+            summary: '',
+            result: toolResult,
+            input: parsedInput,
+            subtitle: getSkillSubtitle(syntheticToolUse.input),
+            args: getSkillArgs(syntheticToolUse.input),
+          },
         }
       }
       if (toolKind === 'taskcreate') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'taskcreate',
-          title: 'TaskCreate',
-          summary: '',
-          result: null,
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'taskcreate',
+            title: 'TaskCreate',
+            summary: '',
+            result: toolResult,
+            input: parsedInput,
+          },
         }
       }
       if (syntheticToolUse.name === 'Write') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'write',
-          title: 'Write',
-          summary: '',
-          result: null,
-          filePath: getStringField(syntheticToolUse.input, 'file_path'),
-          contentValue: (syntheticToolUse.input && typeof syntheticToolUse.input === 'object')
-            ? (syntheticToolUse.input as Record<string, unknown>).content
-            : undefined,
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'write',
+            title: 'Write',
+            summary: '',
+            result: toolResult,
+            input: parsedInput,
+            filePath: getStringField(syntheticToolUse.input, 'file_path'),
+            contentValue: (syntheticToolUse.input && typeof syntheticToolUse.input === 'object')
+              ? (syntheticToolUse.input as Record<string, unknown>).content
+              : undefined,
+          },
         }
       }
       if (toolKind === 'agent') {
         return {
           key: `${overlay.id}-tool-${index}`,
-          kind: 'agent',
-          title: 'Agent',
-          summary: '',
-          result: null,
-          subtitle: buildAgentSubtitle(syntheticToolUse.input),
-          prompt: getAgentPrompt(syntheticToolUse.input),
+          defaultExpanded: isPreviewBlockActive(overlay, block),
+          entry: {
+            key: `${overlay.id}-tool-${index}`,
+            kind: 'agent',
+            title: 'Agent',
+            summary: '',
+            result: toolResult,
+            input: parsedInput,
+            subtitle: buildAgentSubtitle(syntheticToolUse.input),
+            prompt: getAgentPrompt(syntheticToolUse.input),
+          },
         }
       }
       return {
         key: `${overlay.id}-tool-${index}`,
-        kind: toolKind,
-        title: getToolTitle(syntheticToolUse),
-        summary: getToolSummary(syntheticToolUse),
-        result: null,
+        defaultExpanded: isPreviewBlockActive(overlay, block),
+        entry: {
+          key: `${overlay.id}-tool-${index}`,
+          kind: toolKind,
+          title: getToolTitle(syntheticToolUse),
+          summary: getToolSummary(syntheticToolUse),
+          result: toolResult,
+          input: parsedInput,
+        },
       }
     }
 
     return {
-      key: `${overlay.id}-thinking-fallback-${index}`,
-      kind: 'thinking',
-      title: '处理中',
-      summary: compactString(block.shownText || ''),
-      content: block.shownText || '',
+      key: `${overlay.id}-text-${index}`,
+      entry: {
+        key: `${overlay.id}-text-${index}`,
+        kind: 'text',
+        fragment: {
+          type: 'text',
+          text: block.shownText || '',
+        },
+      },
     }
   })
 }
 
-const contentEntries = computed<AssistantDetailEntry[]>(() => {
-  const entries: AssistantDetailEntry[] = []
+const contentEntries = computed<RenderListEntry[]>(() => {
+  const baseEntries = (shouldRenderUngrouped.value
+    ? flattenDetailEntries(buildAssistantDetailEntries(props.item))
+    : buildAssistantDetailEntries(props.item)
+  ).map((entry) => ({
+    key: entry.key,
+    entry,
+  }))
 
-  for (const overlay of detailOverlays.value) {
+  if (!hasPreviewOverlays.value) {
+    return baseEntries
+  }
+
+  const overlayToolUseIds = new Set<string>(
+    allOverlays.value.flatMap((overlay) =>
+      overlay.preview.blocks.flatMap((block) =>
+        block.kind === 'tool_use' && block.toolUseId ? [block.toolUseId] : [],
+      ),
+    ),
+  )
+  const materializedEntries = baseEntries.filter((renderItem) => {
+    const entry = renderItem.entry
+    if (entry.kind === 'thinking') return true
+    if (entry.kind === 'text') return true
+    if ('result' in entry || 'input' in entry) {
+      const toolUseId = 'result' in entry && entry.result?.toolUseId
+        ? entry.result.toolUseId
+        : undefined
+      if (toolUseId && overlayToolUseIds.has(toolUseId)) return false
+    }
+    return true
+  })
+
+  const entries: RenderListEntry[] = [...materializedEntries]
+  for (const overlay of allOverlays.value) {
     entries.push(...buildOverlayDetailEntries(overlay))
   }
-  entries.push(...buildAssistantDetailEntries(props.item))
   return entries
 })
 
@@ -293,31 +437,30 @@ const hasAnyContent = computed(() => contentEntries.value.length > 0)
 <template>
   <div class="space-y-3">
     <div v-if="hasAnyContent" class="space-y-3">
-      <template v-for="entry in contentEntries" :key="entry.key">
-        <TimelineToolGroupRow v-if="entry.kind === 'tool_group'" :summary="entry.summary">
+      <template v-for="renderItem in contentEntries" :key="renderItem.key">
+        <TimelineToolGroupRow v-if="renderItem.entry.kind === 'tool_group' && !shouldRenderUngrouped" :summary="renderItem.entry.summary">
           <TimelineAssistantDetailEntry
-            v-for="child in entry.entries"
+            v-for="child in renderItem.entry.entries"
             :key="child.key"
             :entry="child"
           />
         </TimelineToolGroupRow>
-        <TimelineAssistantDetailEntry v-else :entry="entry" />
+        <TimelineAssistantDetailEntry
+          v-else-if="renderItem.entry.kind !== 'tool_group'"
+          :entry="renderItem.entry"
+          :default-expanded-override="renderItem.defaultExpanded"
+        />
       </template>
     </div>
 
-    <div v-if="!hasAnyContent && hasFinalOverlay" class="space-y-2">
-      <TimelineLivePreviewCard
-        v-for="overlay in finalOverlays"
-        :key="`${item.key}-final-overlay-${overlay.id}`"
-        :item="overlay"
-        compact
-      />
-    </div>
-
-    <div v-if="!hasAnyContent && !hasFinalOverlay" class="text-[13px] leading-6 text-slate-400">
+    <div v-if="!hasAnyContent && !isPlaceholder" class="text-[13px] leading-6 text-slate-400">
       (no final output yet)
     </div>
 
-    <TimelineAssistantFooterLine :message="item.anchorMessage" :footer="item.footer" />
+    <TimelineAssistantFooterLine
+      v-if="isTerminalAssistant && !isPlaceholder && !hideFooter"
+      :message="item.anchorMessage"
+      :footer="item.footer"
+    />
   </div>
 </template>

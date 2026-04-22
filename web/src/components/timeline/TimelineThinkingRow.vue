@@ -9,9 +9,11 @@ const props = withDefaults(defineProps<{
   text: string
   redacted?: boolean
   maxHeightClass?: string
+  defaultExpanded?: boolean
 }>(), {
   redacted: false,
   maxHeightClass: 'max-h-56',
+  defaultExpanded: false,
 })
 
 const subtitle = computed(() => {
@@ -27,7 +29,7 @@ const thinkingText = computed(() => props.redacted ? 'redacted thinking' : props
     :title="THINKING_ROW_TITLE"
     :subtitle="subtitle"
     subtitle-visibility="collapsed"
-    :default-expanded="false"
+    :default-expanded="defaultExpanded"
   >
     <template #icon>
       <Icon name="efficiency_outlined" />

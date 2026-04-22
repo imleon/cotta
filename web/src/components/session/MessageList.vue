@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue'
-import TimelineCliSubrow from '../timeline/TimelineCliSubrow.vue'
 import TimelineCanUseToolInteractionBlock from '../timeline/TimelineCanUseToolInteractionBlock.vue'
 import TimelineElicitationInteractionBlock from '../timeline/TimelineElicitationInteractionBlock.vue'
 import TimelineRow from '../timeline/TimelineRow.vue'
@@ -13,7 +12,16 @@ const container = ref<HTMLElement>()
 const preservingOlderScroll = ref(false)
 const initialHistoryAutoScrollPending = ref(true)
 const pendingAutoScrollFrame = ref<number | null>(null)
-const visibleTimelineItems = computed(() => session.timeline)
+const historyItems = computed(() => session.historyFromServerItems)
+const committedItems = computed(() => session.committedTurnsLocalItems)
+const currentUserItems = computed(() => session.currentTurnUserItems)
+const currentAssistantItems = computed(() => session.currentTurnAssistantItems)
+const visibleTimelineItems = computed(() => [
+  ...historyItems.value,
+  ...committedItems.value,
+  ...currentUserItems.value,
+  ...currentAssistantItems.value,
+])
 const pendingPermissionInteraction = computed<TimelinePermissionInteraction | null>(() =>
   session.pendingInteraction?.kind === 'permission' ? session.pendingInteraction : null
 )
@@ -134,12 +142,41 @@ watch(
       </div>
     </div>
 
+    <template v-for="item in historyItems" :key="`history-${item.key}`">
+      <div class="pl-7">
+        <div class="mb-1 inline-flex rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-700">
+          historyFromServer
+        </div>
+      </div>
+      <TimelineRow :item="item" />
+    </template>
 
-    <TimelineRow
-      v-for="item in visibleTimelineItems"
-      :key="item.key"
-      :item="item"
-    />
+    <template v-for="item in committedItems" :key="`committed-${item.key}`">
+      <div class="pl-7">
+        <div class="mb-1 inline-flex rounded border border-sky-300 bg-sky-50 px-1.5 py-0.5 font-mono text-[10px] leading-none text-sky-700">
+          committedTurnsLocal
+        </div>
+      </div>
+      <TimelineRow :item="item" />
+    </template>
+
+    <template v-for="item in currentUserItems" :key="`current-user-${item.key}`">
+      <div class="pl-7">
+        <div class="mb-1 inline-flex rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] leading-none text-emerald-700">
+          currentTurnUser
+        </div>
+      </div>
+      <TimelineRow :item="item" />
+    </template>
+
+    <template v-for="item in currentAssistantItems" :key="`current-assistant-${item.key}`">
+      <div class="pl-7">
+        <div class="mb-1 inline-flex rounded border border-violet-300 bg-violet-50 px-1.5 py-0.5 font-mono text-[10px] leading-none text-violet-700">
+          currentTurnAssistant
+        </div>
+      </div>
+      <TimelineRow :item="item" />
+    </template>
 
     <div v-if="pendingPermissionInteraction && !isPendingPermissionAttached" class="pl-7">
       <TimelineCanUseToolInteractionBlock :interaction="pendingPermissionInteraction" />
@@ -148,12 +185,5 @@ watch(
     <div v-if="pendingElicitationInteraction && !isPendingElicitationAttached" class="pl-7">
       <TimelineElicitationInteractionBlock :interaction="pendingElicitationInteraction" />
     </div>
-    <TimelineCliSubrow v-if="session.isLoading" muted>
-      <div class="flex space-x-1.5 pt-0.5">
-        <div class="h-2 w-2 rounded-full bg-gray-400 animate-bounce" style="animation-delay: 0ms" />
-        <div class="h-2 w-2 rounded-full bg-gray-400 animate-bounce" style="animation-delay: 150ms" />
-        <div class="h-2 w-2 rounded-full bg-gray-400 animate-bounce" style="animation-delay: 300ms" />
-      </div>
-    </TimelineCliSubrow>
   </div>
 </template>

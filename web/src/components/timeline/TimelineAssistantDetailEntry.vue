@@ -67,6 +67,7 @@ type StructuredToolConfig = {
 
 const props = defineProps<{
   entry: RenderableDetailEntry
+  defaultExpandedOverride?: boolean
 }>()
 
 function isToolEntry(entry: RenderableDetailEntry): entry is DetailToolEntry {
@@ -292,6 +293,7 @@ const fallbackToolEntry = computed<DetailToolEntry | null>(() => {
       v-if="entry.kind === 'thinking'"
       :text="entry.content"
       :redacted="Boolean(entry.redacted)"
+      :default-expanded="Boolean(defaultExpandedOverride)"
     />
     <TimelineAssistantTextBlock
       v-else-if="entry.kind === 'text'"
@@ -305,6 +307,7 @@ const fallbackToolEntry = computed<DetailToolEntry | null>(() => {
       :sections="structuredToolConfig.sections"
       :max-height-class="structuredToolConfig.maxHeightClass"
       :expandable="structuredToolConfig.expandable"
+      :default-expanded="Boolean(defaultExpandedOverride)"
     />
     <TimelineSimpleToolRow
       v-else-if="simpleToolConfig"
@@ -314,6 +317,7 @@ const fallbackToolEntry = computed<DetailToolEntry | null>(() => {
       :content="simpleToolConfig.content"
       :content-mode="simpleToolConfig.contentMode"
       :expandable="simpleToolConfig.expandable"
+      :default-expanded="Boolean(defaultExpandedOverride)"
     />
     <TimelineAssistantDetailRow
       v-else-if="fallbackToolEntry"

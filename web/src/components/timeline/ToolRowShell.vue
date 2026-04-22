@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useSlots } from 'vue'
+import { computed, ref, useSlots, watch } from 'vue'
 
 const props = withDefaults(defineProps<{
   title: string
@@ -16,6 +16,13 @@ const props = withDefaults(defineProps<{
 
 const slots = useSlots()
 const expanded = ref(props.defaultExpanded)
+
+watch(
+  () => props.defaultExpanded,
+  (nextExpanded) => {
+    expanded.value = nextExpanded
+  },
+)
 
 const hasExpandedContent = computed(() => props.expandable && Boolean(slots.default))
 const shouldShowSubtitle = computed(() => {

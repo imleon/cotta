@@ -73,8 +73,8 @@ import {
   buildAtomTimelineItems,
   buildHistoryTimelineItems,
   buildLivePreviewItems,
-  buildRenderableTimeline,
 } from '../domain/timeline/buildTimeline'
+import { buildFourSegmentTimelineSections } from '../domain/timeline/fourSegment'
 import { createDebugLogger } from '../lib/debug.js'
 
 export type {
@@ -332,7 +332,7 @@ export const useSessionStore = defineStore('session', () => {
     const ids = new Set<string>()
     for (const preview of Object.values(streamPreviewStates.value)) {
       if (!preview.active) continue
-      if (preview.phase !== 'thinking' && preview.phase !== 'responding') continue
+      if (preview.phase !== 'thinking' && preview.phase !== 'responding' && preview.phase !== 'tool-input') continue
       if (preview.scope.anchorKind !== 'message') continue
       ids.add(preview.scope.anchorId)
     }
@@ -391,26 +391,54 @@ export const useSessionStore = defineStore('session', () => {
       })
       .filter((atom): atom is TranscriptAtom => atom !== null && atom.semanticKind !== 'meta')
   )
-
-
-
+  const liveAssistantTimelineItems = computed(() => {
+    const combined = [...liveLaneEvents.value.user, ...liveLaneEvents.value.assistant]
+      .slice()
+      .sort((left, right) => left.sequence - right.sequence)
+    return combined.flatMap((event, index) => {
+      const message = getTimelineMessageFromEvent(event)
+      if (!message) return []
+      const responseId = getTranscriptResponseId(message)
+      if (
+        message.role === 'assistant'
+        && responseId
+        && liveAssistantResponseIdsCoveredByPreview.value.has(responseId)
+        && getTranscriptStopReason(message) == null
+      ) {
+        return []
+      }
+      const atom = buildTranscriptAtom(message, {
+        source: 'live',
+        sourceIndex: index,
+        timestamp: typeof event.receivedAt === 'number' ? event.receivedAt : message.timestamp,
+        sequence: event.sequence,
+      })
+      if (atom.semanticKind === 'meta') return []
+      return buildAtomTimelineItems([atom])
+    })
+  })
   const historyTimelineItems = computed(() => buildHistoryTimelineItems(historyMessages.value))
   const userTimelineItems = computed(() => buildAtomTimelineItems(userLaneAtoms.value))
-  const liveTimelineItems = computed(() => buildAtomTimelineItems(liveAtoms.value))
   const livePreviewItems = computed(() =>
     buildLivePreviewItems(
       streamPreviewStates.value,
       streamAnimationCursors.value,
     )
   )
-  const timeline = computed<TimelineRenderableItemModel[]>(() =>
-    buildRenderableTimeline({
-      historyTimelineItems: historyTimelineItems.value,
+  const fourSegmentSections = computed(() =>
+    buildFourSegmentTimelineSections({
+      historyFromServerItems: historyTimelineItems.value,
       userTimelineItems: userTimelineItems.value,
-      liveTimelineItems: liveTimelineItems.value,
+      liveTimelineItems: liveAssistantTimelineItems.value,
       livePreviewItems: livePreviewItems.value,
+      hasActiveRun: hasActiveRun.value,
     })
   )
+  const historyFromServerItems = computed(() => fourSegmentSections.value.historyFromServerItems)
+  const committedTurnsLocalItems = computed(() => fourSegmentSections.value.committedTurnsLocalItems)
+  const currentTurnUserItems = computed(() => fourSegmentSections.value.currentTurnUserItems)
+  const currentTurnAssistantItems = computed(() => fourSegmentSections.value.currentTurnAssistantItems)
+  const timeline = computed<TimelineRenderableItemModel[]>(() => fourSegmentSections.value.timeline)
 
   let eventSequence = 0
   const terminalRunIds = new Set<string>()
@@ -1491,7 +1519,11 @@ export const useSessionStore = defineStore('session', () => {
   return {
     timeline,
     historyMessages,
+    historyFromServerItems,
     historyTimelineItems,
+    committedTurnsLocalItems,
+    currentTurnUserItems,
+    currentTurnAssistantItems,
     userLaneEvents,
     userTimelineItems,
     liveLaneEvents,

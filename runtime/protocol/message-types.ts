@@ -604,7 +604,6 @@ export interface SessionPersistentLogPage {
 export type RunnerAgentInput = {
   prompt: string
   sessionId?: string
-  workspacePath: string
   systemPrompt?: string
   model?: string
 }

@@ -1,7 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { ENV } from '../../config/env.js'
 import type { SDKSessionInfo, SessionMessage as SDKSessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { SessionMessage, SessionSummary } from '../../protocol/message-types.js'
 import {
@@ -93,7 +92,7 @@ function expandStartToTurnBoundary(messages: SessionMessage[], tentativeStart: n
 
 export async function readAllSessionMessages(
   sessionId: string,
-  projectDirs: string[] = [ENV.workspacePath],
+  projectDirs: string[],
 ): Promise<SessionMessage[]> {
   const sdk = await import('@anthropic-ai/claude-agent-sdk')
   if (typeof sdk.getSessionMessages !== 'function') {
@@ -124,7 +123,11 @@ export async function getMessagesPage(
   try {
     const limit = normalizeLimit(options.limit ?? 50)
     const before = normalizeBefore(options.before)
-    const allMessages = (await readAllSessionMessages(sessionId, options.projectDirs)).map((message) => normalizeStoredTranscriptMessage(message))
+    const projectDirs = options.projectDirs ?? []
+    if (projectDirs.length === 0) {
+      return { messages: [], hasMore: false, nextBefore: null }
+    }
+    const allMessages = (await readAllSessionMessages(sessionId, projectDirs)).map((message) => normalizeStoredTranscriptMessage(message))
     const endExclusive = getBeforeOffset(allMessages, before)
     const tentativeStart = Math.max(0, endExclusive - limit)
     const start = expandStartToTurnBoundary(allMessages, tentativeStart)
@@ -166,10 +169,6 @@ export async function listSessionsByProjectDirs(projectDirs: string[]): Promise<
   return [...deduped.values()].sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-export async function listAllSessions(): Promise<SessionInfo[]> {
-  return await listSessionsByProjectDir(ENV.workspacePath)
-}
-
 export async function listSessionsByProjectDir(projectDir: string): Promise<SessionInfo[]> {
   try {
     const sdk = await import('@anthropic-ai/claude-agent-sdk')
@@ -185,7 +184,7 @@ export async function listSessionsByProjectDir(projectDir: string): Promise<Sess
   }
 }
 
-export async function getSession(sessionId: string, projectDirs: string[] = [ENV.workspacePath]): Promise<SessionInfo | null> {
+export async function getSession(sessionId: string, projectDirs: string[]): Promise<SessionInfo | null> {
   try {
     const sdk = await import('@anthropic-ai/claude-agent-sdk')
     if (typeof sdk.getSessionInfo === 'function') {

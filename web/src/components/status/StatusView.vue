@@ -123,13 +123,6 @@ onMounted(() => {
             <div class="mt-2 text-xl font-semibold text-[var(--tt-accent)]">
               {{ typeof runtime?.uptimeSec === 'number' ? `${Math.floor(runtime.uptimeSec / 60)}m` : '—' }}
             </div>
-            <div class="mt-1 text-xs text-[var(--tt-text-subtle)]">agent timeout {{ runtime?.agentTimeoutMs ?? '—' }} ms</div>
-          </div>
-
-          <div class="rounded-xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_96%,white)] p-4">
-            <div class="text-xs font-medium text-[var(--tt-text-subtle)]">Concurrency</div>
-            <div class="mt-2 text-xl font-semibold text-[var(--tt-accent)]">{{ runtime?.maxConcurrentAgents ?? '—' }}</div>
-            <div class="mt-1 text-xs text-[var(--tt-text-subtle)]">max concurrent agents</div>
           </div>
 
           <div class="rounded-xl border border-[var(--tt-border)] bg-[color:color-mix(in_srgb,var(--tt-card)_96%,white)] p-4">

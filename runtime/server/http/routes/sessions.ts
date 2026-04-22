@@ -28,7 +28,6 @@ export function registerSessionRoutes(app: Hono<any, any, any>, input: {
   configRegistry: StaticConfigRegistry
   sessionRegistry: SessionRegistry
   orchestrator: Orchestrator
-  listAllSessions: () => Promise<SessionSummary[]>
   listSessionsByProjectDirs: (dirs: string[]) => Promise<SessionSummary[]>
   getMessagesPage: (sessionId: string, opts: { limit: number; before: string | null; projectDirs: string[] }) => Promise<SessionsPage>
 }) {
@@ -38,7 +37,7 @@ export function registerSessionRoutes(app: Hono<any, any, any>, input: {
       const projectDirs = getProjectDirs(input.configRegistry)
       const sessions = projectDirs.length > 0
         ? await input.listSessionsByProjectDirs(projectDirs)
-        : await input.listAllSessions()
+        : []
       const runtimeBySessionId = new Map(
         input.sessionRegistry.list().map((record) => [record.sessionId, record]),
       )

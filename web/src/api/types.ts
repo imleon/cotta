@@ -38,8 +38,6 @@ export interface StatusResponse {
     host: string
     port: number
     authEnabled: boolean
-    maxConcurrentAgents: number
-    agentTimeoutMs: number
     nodeVersion: string
     pid: number
     platform: string

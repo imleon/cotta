@@ -6,7 +6,7 @@ import type { StaticConfigRegistry } from '../../../config/registry.js'
 import type { RunRegistry } from '../../../orchestration/run-registry.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { RunRecord, SessionRecord } from '../../../orchestration/types.js'
-import { getLarkConfigStatus, getProjectDirs } from '../helpers.js'
+import { getProjectDirs } from '../helpers.js'
 import type { WorkerHealthSnapshot } from '../../../orchestration/worker-governance-service.js'
 
 type Logger = {
@@ -17,15 +17,6 @@ type Config = {
   host: string
   port: number
   authEnabled: boolean
-  maxConcurrentAgents: number
-  agentTimeoutMs: number
-  lark: {
-    appId: string
-    appSecret: string
-    encryptKey: string
-    verificationToken: string
-    botName: string
-  }
 }
 
 type SessionSummary = {
@@ -98,7 +89,6 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
   configRegistry: StaticConfigRegistry
   sessionRegistry: SessionRegistry
   runRegistry: RunRegistry
-  listAllSessions: () => Promise<SessionSummary[]>
   listSessionsByProjectDir: (dir: string) => Promise<SessionSummary[]>
   listSessionsByProjectDirs: (dirs: string[]) => Promise<SessionSummary[]>
   getWorkerHealthBySessionId?: () => Record<string, WorkerHealthSnapshot>
@@ -110,7 +100,7 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
       const projectDirs = getProjectDirs(input.configRegistry)
       const persistedSessions = projectDirs.length > 0
         ? await input.listSessionsByProjectDirs(projectDirs)
-        : await input.listAllSessions()
+        : []
       const perAgentPersistedSessions = await Promise.all(
         configuredAgents.map(async (agent) => ({
           agentId: agent.agentId,
@@ -265,15 +255,12 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
           host: input.config.host,
           port: input.config.port,
           authEnabled: input.config.authEnabled,
-          maxConcurrentAgents: input.config.maxConcurrentAgents,
-          agentTimeoutMs: input.config.agentTimeoutMs,
           nodeVersion: process.version,
           pid: process.pid,
           platform: process.platform,
           startedAt: Date.now() - Math.floor(process.uptime() * 1000),
           uptimeSec: process.uptime(),
         },
-        lark: getLarkConfigStatus(input.config.lark),
         counts: {
           agents: input.configRegistry.listAgents().length,
           channels: input.configRegistry.listChannels().length,

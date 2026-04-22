@@ -263,6 +263,7 @@ export async function readSessionPersistentLogs(
   cursor?: number | null,
   limit: number = DEFAULT_LOG_PAGE_SIZE,
   follow: boolean = false,
+  projectDirs: string[] = [],
 ): Promise<SessionPersistentLogPage> {
   const safeSessionId = sanitizeSessionId(sessionId)
   if (!safeSessionId) {
@@ -276,7 +277,9 @@ export async function readSessionPersistentLogs(
     return { items: [], hasMore: false, nextCursor: null }
   }
 
-  const sdkMessages = await readAllSessionMessages(safeSessionId)
+  const sdkMessages = projectDirs.length > 0
+    ? await readAllSessionMessages(safeSessionId, projectDirs)
+    : []
   const sdkMessageUuids = buildSdkMessageUuidSet(sdkMessages)
   return paginateLogLines(content, cursor, safeLimit, follow, (line, lineCursor) => readPersistentLogLine(line, lineCursor, sdkMessageUuids))
 }

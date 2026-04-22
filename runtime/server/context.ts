@@ -1,4 +1,4 @@
-import { getSession, listAllSessions, getMessagesPage, listSessionsByProjectDir, listSessionsByProjectDirs } from '../storage/fs/sessions.js'
+import { getSession, getMessagesPage, listSessionsByProjectDir, listSessionsByProjectDirs } from '../storage/fs/sessions.js'
 import { readSessionPersistentLogs, readSessionSdkRawLogs } from '../storage/fs/transport-logs.js'
 import type { RuntimeContext } from '../app/index.js'
 import { LarkIntegrationService } from '../integrations/lark/service.js'
@@ -10,6 +10,14 @@ import { createLogger, shortId } from './logger.js'
 export function createServerContext(input: { runtime: RuntimeContext }) {
   const { runtime } = input
   const logger = createLogger('web')
+
+  const getAgentProjectDirs = (): string[] => {
+    const dirs = new Set<string>()
+    for (const agent of runtime.configRegistry.listAgents()) {
+      if (agent.projectDir) dirs.add(agent.projectDir)
+    }
+    return [...dirs]
+  }
 
   const larkIntegration = new LarkIntegrationService({
     configRegistry: runtime.configRegistry,
@@ -46,11 +54,11 @@ export function createServerContext(input: { runtime: RuntimeContext }) {
 
     larkIntegration,
     getSession,
-    listAllSessions,
     listSessionsByProjectDir,
     getMessagesPage,
     listSessionsByProjectDirs,
-    readSessionPersistentLogs,
+    readSessionPersistentLogs: (sessionId: string, cursor: number | null, limit: number, follow: boolean) =>
+      readSessionPersistentLogs(sessionId, cursor, limit, follow, getAgentProjectDirs()),
     readSessionSdkRawLogs,
     getWorkerHealthBySessionId: () => workerGovernance.getHealthBySessionId(),
 

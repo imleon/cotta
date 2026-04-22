@@ -20,10 +20,6 @@ export const ENV = {
 
   port: getInt('PORT', 3000),
   host: getString('HOST', '0.0.0.0'),
-  workspacePath: getString('WORKSPACE_PATH', './data/workspace'),
-  maxConcurrentAgents: getInt('MAX_CONCURRENT_AGENTS', 2),
-  agentTimeoutMs: getInt('AGENT_TIMEOUT_MS', 600_000),
-  defaultModel: getString('DEFAULT_MODEL', ''),
 
   // Worker lifecycle governance.
   // - Set to 0 to disable idle timeout reaping.
@@ -39,12 +35,4 @@ export const ENV = {
 
   authToken: getString('APP_AUTH_TOKEN', ''),
   authEnabled: getString('APP_AUTH_TOKEN', '').length > 0,
-
-  lark: {
-    appId: getString('LARK_APP_ID', ''),
-    appSecret: getString('LARK_APP_SECRET', ''),
-    encryptKey: getString('LARK_ENCRYPT_KEY', ''),
-    verificationToken: getString('LARK_VERIFICATION_TOKEN', ''),
-    botName: getString('LARK_BOT_NAME', 'Cotta'),
-  },
 } as const

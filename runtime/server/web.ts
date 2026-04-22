@@ -40,7 +40,6 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
     configRegistry: context.configRegistry,
     sessionRegistry: context.sessionRegistry,
     orchestrator: context.orchestrator,
-    listAllSessions: context.listAllSessions,
     listSessionsByProjectDirs: context.listSessionsByProjectDirs,
     getMessagesPage: context.getMessagesPage,
   })
@@ -68,7 +67,6 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
     configRegistry: context.configRegistry,
     sessionRegistry: context.sessionRegistry,
     runRegistry: context.runRegistry,
-    listAllSessions: context.listAllSessions,
     listSessionsByProjectDir: context.listSessionsByProjectDir,
     listSessionsByProjectDirs: context.listSessionsByProjectDirs,
     getWorkerHealthBySessionId: context.getWorkerHealthBySessionId,

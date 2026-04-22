@@ -373,6 +373,10 @@ function mapDisplayItemToTimelineVm(item: DisplayItem): TimelineRenderableItemMo
   return mapAssistantItem(item)
 }
 
+export function mapDisplayItemsToTimelineVms(items: DisplayItem[]): TimelineRenderableItemModel[] {
+  return items.map(mapDisplayItemToTimelineVm)
+}
+
 export function buildHistoryTimelineItems(historyMessages: SessionMessage[]): DisplayItem[] {
   return buildHistoryDisplayItems(historyMessages, {
     mode: 'default',
@@ -392,7 +396,9 @@ export function buildLivePreviewItems(
   animationCursors: Record<string, StreamAnimationCursor>,
 ): TimelineLivePreviewItem[] {
   return Object.entries(previewStates)
-    .filter(([, preview]) => preview.status !== 'finalized' && preview.blocks.length > 0)
+    // Keep finalized previews visible until the turn is materialized/cleared.
+    // Otherwise preview-only blocks (e.g. thinking) can briefly disappear before the final message arrives.
+    .filter(([, preview]) => preview.blocks.length > 0)
     .slice()
     .sort(([, left], [, right]) => {
       const leftTimestamp = left.receivedAt ?? 0

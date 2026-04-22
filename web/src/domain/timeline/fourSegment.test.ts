@@ -90,8 +90,7 @@ describe('buildFourSegmentTimelineSections', () => {
   it('creates an empty current assistant placeholder immediately after a prompt', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100)],
-      liveTimelineItems: [],
+      localTurnItems: [createUserItem('user-a', 100)],
       livePreviewItems: [],
       hasActiveRun: true,
     })
@@ -106,8 +105,10 @@ describe('buildFourSegmentTimelineSections', () => {
   it('moves a finalized turn into committed local items immediately', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100)],
-      liveTimelineItems: [createAssistantItem('assistant-b', 110, [{ type: 'text', text: 'B' }], { stopReason: 'end_turn' })],
+      localTurnItems: [
+        createUserItem('user-a', 100),
+        createAssistantItem('assistant-b', 110, [{ type: 'text', text: 'B' }], { stopReason: 'end_turn' }),
+      ],
       livePreviewItems: [],
       hasActiveRun: false,
     })
@@ -120,8 +121,11 @@ describe('buildFourSegmentTimelineSections', () => {
   it('moves the previous finalized turn into committed local items when a new prompt starts', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100), createUserItem('user-c', 200)],
-      liveTimelineItems: [createAssistantItem('assistant-b', 110, [{ type: 'text', text: 'B' }], { stopReason: 'end_turn' })],
+      localTurnItems: [
+        createUserItem('user-a', 100),
+        createAssistantItem('assistant-b', 110, [{ type: 'text', text: 'B' }], { stopReason: 'end_turn' }),
+        createUserItem('user-c', 200),
+      ],
       livePreviewItems: [],
       hasActiveRun: true,
     })
@@ -136,8 +140,10 @@ describe('buildFourSegmentTimelineSections', () => {
   it('does not keep finalized assistant content inside currentTurnAssistant', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-c', 200)],
-      liveTimelineItems: [createAssistantItem('assistant-d', 210, [{ type: 'text', text: 'D' }], { stopReason: 'end_turn' })],
+      localTurnItems: [
+        createUserItem('user-c', 200),
+        createAssistantItem('assistant-d', 210, [{ type: 'text', text: 'D' }], { stopReason: 'end_turn' }),
+      ],
       livePreviewItems: [],
       hasActiveRun: false,
     })
@@ -149,8 +155,7 @@ describe('buildFourSegmentTimelineSections', () => {
   it('renders live preview in the current assistant section', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100)],
-      liveTimelineItems: [],
+      localTurnItems: [createUserItem('user-a', 100)],
       livePreviewItems: [createPreview(101)],
       hasActiveRun: true,
     })
@@ -164,8 +169,10 @@ describe('buildFourSegmentTimelineSections', () => {
   it('does not move a non-terminal tool assistant card into committed turns', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100)],
-      liveTimelineItems: [createAssistantItem('assistant-tool', 110, [{ type: 'tool_use', name: 'WebSearch' }])],
+      localTurnItems: [
+        createUserItem('user-a', 100),
+        createAssistantItem('assistant-tool', 110, [{ type: 'tool_use', name: 'WebSearch' }]),
+      ],
       livePreviewItems: [],
       hasActiveRun: true,
     })
@@ -178,17 +185,19 @@ describe('buildFourSegmentTimelineSections', () => {
   it('keeps pre-final thinking blocks when a turn moves into committed turns', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100)],
-      liveTimelineItems: [
-        createAssistantItem('assistant-thinking', 105, [{ type: 'thinking', text: 'pondering', defaultHidden: false }]),
-        createAssistantItem('assistant-final', 110, [{ type: 'text', text: '归来已百年' }], { stopReason: 'end_turn' }),
+      localTurnItems: [
+        createUserItem('user-a', 100),
+        createAssistantItem('assistant-turn', 110, [
+          { type: 'thinking', text: 'pondering', defaultHidden: false },
+          { type: 'text', text: '归来已百年' },
+        ], { stopReason: 'end_turn' }),
       ],
       livePreviewItems: [],
       hasActiveRun: false,
     })
 
     expect(sections.currentTurnAssistantItems).toHaveLength(0)
-    expect(sections.committedTurnsLocalItems.map((item) => item.key)).toEqual(['user-a', 'assistant-thinking'])
+    expect(sections.committedTurnsLocalItems.map((item) => item.key)).toEqual(['user-a', 'assistant-turn'])
     const committedAssistant = sections.committedTurnsLocalItems[1] as TimelineAssistantItem
     expect(committedAssistant.fragments.map((fragment) => fragment.type)).toEqual(['thinking', 'text'])
   })
@@ -196,10 +205,12 @@ describe('buildFourSegmentTimelineSections', () => {
   it('keeps current-turn tool and text in a single assistant card', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100)],
-      liveTimelineItems: [
-        createAssistantItem('assistant-tool', 105, [{ type: 'tool_use', name: 'WebSearch', toolUseId: 'tool-1' }]),
-        createAssistantItem('assistant-text', 110, [{ type: 'text', text: 'latest answer' }]),
+      localTurnItems: [
+        createUserItem('user-a', 100),
+        createAssistantItem('assistant-a', 110, [
+          { type: 'tool_use', name: 'WebSearch', toolUseId: 'tool-1' },
+          { type: 'text', text: 'latest answer' },
+        ]),
       ],
       livePreviewItems: [],
       hasActiveRun: true,
@@ -213,12 +224,13 @@ describe('buildFourSegmentTimelineSections', () => {
   it('keeps tool_result visible in committed turns (no refresh needed)', () => {
     const sections = buildFourSegmentTimelineSections({
       historyFromServerItems: [],
-      userTimelineItems: [createUserItem('user-a', 100)],
-      liveTimelineItems: [
-        createAssistantItem('assistant-tool', 105, [{ type: 'tool_use', name: 'WebSearch', toolUseId: 'tool-1' }]),
-        // tool_result may arrive as a bridge message but is represented as a tool_result fragment in the turn.
-        createAssistantItem('assistant-tool-result', 106, [{ type: 'tool_result', toolUseId: 'tool-1', output: 'ok' }]),
-        createAssistantItem('assistant-final', 110, [{ type: 'text', text: 'done' }], { stopReason: 'end_turn' }),
+      localTurnItems: [
+        createUserItem('user-a', 100),
+        createAssistantItem('assistant-final', 110, [
+          { type: 'tool_use', name: 'WebSearch', toolUseId: 'tool-1' },
+          { type: 'tool_result', toolUseId: 'tool-1', output: 'ok' },
+          { type: 'text', text: 'done' },
+        ], { stopReason: 'end_turn' }),
       ],
       livePreviewItems: [],
       hasActiveRun: false,

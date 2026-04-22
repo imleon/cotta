@@ -258,7 +258,7 @@ describe('buildRenderableTimeline', () => {
 })
 
 describe('buildLivePreviewItems', () => {
-  it('filters finalized previews and sorts active previews by receivedAt then sequence', () => {
+  it('keeps finalized previews until cleanup and sorts previews by receivedAt then sequence', () => {
     const previewStates: Record<string, StreamPreviewState> = {
       a: {
         scope: {
@@ -305,6 +305,6 @@ describe('buildLivePreviewItems', () => {
 
     const result = buildLivePreviewItems(previewStates, animationCursors)
 
-    expect(result.map((item) => item.anchor.scopeKey)).toEqual(['b', 'a'])
+    expect(result.map((item) => item.anchor.scopeKey)).toEqual(['c', 'b', 'a'])
   })
 })

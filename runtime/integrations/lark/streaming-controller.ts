@@ -1,4 +1,5 @@
-import type { DisplayAssistantFooter, SessionStreamEvent } from '../../protocol/message-types.js'
+import type { DisplayAssistantFooter, SessionStreamEvent, StreamRenderedPreviewState } from '../../protocol/message-types.js'
+import type { SessionMessage } from '../../protocol/message-types.js'
 import {
   advanceStreamAnimationCursor,
   createStreamAnimationCursor,
@@ -38,6 +39,8 @@ export type LarkStreamingBuildCardParams = {
   toolResults?: string[]
   footer?: DisplayAssistantFooter
   isFinal?: boolean
+  preview?: StreamRenderedPreviewState
+  materializedMessages?: SessionMessage[]
 }
 
 type ChannelLogParams = {
@@ -54,7 +57,7 @@ type StreamingControllerDeps = {
   buildCard: (params: LarkStreamingBuildCardParams) => Record<string, unknown>
   buildFinalCard?: (footer: DisplayAssistantFooter) => Promise<Record<string, unknown> | null>
   createCardKitMessage: (card: Record<string, unknown>) => Promise<CreateCardResult>
-  streamCardKitContent: (cardId: string, content: string, sequence: number) => Promise<UpdateResult>
+  updateCardKitPreview: (cardId: string, card: Record<string, unknown>, sequence: number) => Promise<UpdateResult>
   finalizeCardKit: (cardId: string, closeSequence: number, updateSequence: number, card: Record<string, unknown>) => Promise<UpdateResult>
   appendLog: (params: ChannelLogParams) => Promise<void>
   getFooterMetrics: () => Promise<DisplayAssistantFooter | null>
@@ -85,6 +88,7 @@ export class LarkStreamingController {
 
   private thinkingText = ''
   private readonly toolCalls = new Set<string>()
+  private renderedPreview: StreamRenderedPreviewState | null = null
 
   constructor(private readonly deps: StreamingControllerDeps) {
     this.flush = new LarkFlushController(() => this.performFlush())
@@ -139,6 +143,7 @@ export class LarkStreamingController {
     if (!this.text.cursor) {
       this.text.cursor = createStreamAnimationCursor(nextPreview)
     }
+    this.renderedPreview = renderStreamPreviewState(nextPreview, this.text.cursor)
 
     const thinkingBlocks = nextPreview.blocks.filter(
       (block): block is Extract<typeof nextPreview.blocks[number], { kind: 'thinking' }> => block.kind === 'thinking' && !block.redacted,
@@ -301,6 +306,7 @@ export class LarkStreamingController {
       thinkingText: this.thinkingText || undefined,
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
       isFinal: false,
+      ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
     })
 
     this.cardCreationPromise = (async () => {
@@ -343,6 +349,7 @@ export class LarkStreamingController {
       this.text.cursor = advanced.cursor
       this.text.animationDone = advanced.done
       const rendered = renderStreamPreviewState(this.text.previewState, advanced.cursor)
+      this.renderedPreview = rendered
       const renderedText = rendered.blocks
         .map((block) => {
           if (block.kind === 'text') return block.shownText
@@ -371,20 +378,27 @@ export class LarkStreamingController {
 
   private async performFlush(): Promise<void> {
     if (!this.card.cardMessageId || LARK_TERMINAL_PHASES.has(this.phase)) return
-    const displayText = this.text.accumulatedText.trim()
-    if (!displayText) return
+    const signature = this.renderedPreview ? JSON.stringify(this.renderedPreview) : this.text.accumulatedText.trim()
+    if (!signature) return
 
     if (this.card.cardKitCardId) {
-      if (displayText === this.text.lastFlushedText) return
+      if (signature === this.text.lastFlushedText) return
+      const previewCard = this.deps.buildCard({
+        answerText: this.text.accumulatedText,
+        thinkingText: this.thinkingText || undefined,
+        toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
+        isFinal: false,
+        ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
+      })
       const sequence = this.nextSequence()
-      const result = await this.deps.streamCardKitContent(this.card.cardKitCardId, displayText, sequence)
+      const result = await this.deps.updateCardKitPreview(this.card.cardKitCardId, previewCard, sequence)
       await this.deps.appendLog({
         eventName: result.delivered ? 'message.delivered' : 'message.failed',
-        payloadSummary: result.delivered ? 'cardkit-stream' : (result.error || 'failed'),
+        payloadSummary: result.delivered ? 'cardkit-preview-update' : (result.error || 'failed'),
         payload: result,
       })
       if (result.delivered) {
-        this.text.lastFlushedText = displayText
+        this.text.lastFlushedText = signature
         return
       }
       this.card.cardKitCardId = null

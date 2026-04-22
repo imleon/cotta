@@ -15,6 +15,7 @@ import type {
 import {
   extractStructuredContentFromBlocks,
   getTranscriptAssistantModel,
+  getTranscriptMessageId,
   getTranscriptAssistantUsage,
   getTranscriptStopReason,
   normalizeSdkEnvelopeMessage,
@@ -25,7 +26,6 @@ import { getAssistantFooter } from '../../presentation/transcript-display.js'
 import {
   buildAssistantStreamingCard,
   buildLarkFinalCardFromHistory,
-  STREAMING_CARD_ELEMENT_ID,
 } from './card-builder.js'
 import { LarkStreamingController, type LarkStreamingBuildCardParams } from './streaming-controller.js'
 
@@ -474,6 +474,7 @@ export class LarkIntegrationService {
   private readonly handledCardActions = new Set<string>()
   private readonly latestAssistantTextByRunId = new Map<string, string>()
   private readonly latestAssistantMessageByRunId = new Map<string, TranscriptMessage>()
+  private readonly materializedMessagesByRunId = new Map<string, TranscriptMessage[]>()
   private readonly latestResultPayloadByRunId = new Map<string, unknown>()
   private readonly inboundMessageSeenAt = new Map<string, number>()
   // NOTE: inbound message dedupe is module-level (see GLOBAL_INBOUND_MESSAGE_SEEN_AT)
@@ -1075,6 +1076,18 @@ export class LarkIntegrationService {
 
     if (event.kind === 'sdk_message' && event.runId) {
       const normalized = normalizeSdkEnvelopeMessage(event.payload)
+      if (normalized) {
+        const existing = this.materializedMessagesByRunId.get(event.runId) || []
+        const messageId = getTranscriptMessageId(normalized)
+        const next = messageId
+          ? (() => {
+              const index = existing.findIndex((message) => getTranscriptMessageId(message) === messageId)
+              if (index === -1) return [...existing, normalized]
+              return existing.map((message, itemIndex) => (itemIndex === index ? normalized : message))
+            })()
+          : [...existing, normalized]
+        this.materializedMessagesByRunId.set(event.runId, next)
+      }
       if (normalized?.role === 'assistant') {
         this.latestAssistantMessageByRunId.set(event.runId, normalized)
         const blocks = Array.isArray(normalized.blocks) ? normalized.blocks : []
@@ -1459,39 +1472,6 @@ export class LarkIntegrationService {
     })
   }
 
-  private async updateCardKitStreamingContent(
-    channel: ChannelConfig,
-    cardId: string,
-    card: Record<string, unknown>,
-    sequence: number,
-    fallbackContent: string,
-  ): Promise<void> {
-    const client = this.getClient(channel.connectorId)
-    const elements = card && typeof card === 'object' && 'body' in card
-      ? (((card as Record<string, unknown>).body as Record<string, unknown> | undefined)?.elements as unknown[] | undefined)
-      : undefined
-    const markdownElement = Array.isArray(elements)
-      ? elements.find((element) => {
-          if (!element || typeof element !== 'object') return false
-          return (element as { element_id?: unknown }).element_id === STREAMING_CARD_ELEMENT_ID
-        })
-      : null
-    const content = markdownElement && typeof markdownElement === 'object' && 'content' in (markdownElement as Record<string, unknown>)
-      ? ((markdownElement as Record<string, unknown>).content as string | undefined)
-      : fallbackContent
-
-    await (client as any).cardkit.v1.cardElement.content({
-      path: {
-        card_id: cardId,
-        element_id: STREAMING_CARD_ELEMENT_ID,
-      },
-      data: {
-        content: content ?? fallbackContent,
-        sequence,
-      },
-    })
-  }
-
   private cleanupInboundMessageDedupe(ttlMs: number = 30 * 60 * 1000): void {
     const now = Date.now()
     for (const [key, seenAt] of this.inboundMessageSeenAt.entries()) {
@@ -1509,6 +1489,7 @@ export class LarkIntegrationService {
     this.latestResultPayloadByRunId.delete(runId)
     this.runStartedAtByRunId.delete(runId)
     this.typingReactionByRunId.delete(runId)
+    this.materializedMessagesByRunId.delete(runId)
   }
 
   private getOrCreateStreamingController(channel: ChannelConfig, sessionId: string, runId: string): LarkStreamingController {
@@ -1519,7 +1500,10 @@ export class LarkIntegrationService {
       runId,
       conversationKey: channel.channelKey,
       sessionId,
-      buildCard: (params) => buildStreamingCardDocumentFromParams(params),
+      buildCard: (params) => buildStreamingCardDocumentFromParams({
+        ...params,
+        materializedMessages: this.materializedMessagesByRunId.get(runId),
+      }),
       buildFinalCard: async (footer) => {
         if (!footer) return null
         const page = await getMessagesPage(sessionId, {
@@ -1537,15 +1521,9 @@ export class LarkIntegrationService {
           ...(result.cardId ? {} : { error: 'cardkit-create-failed' }),
         }
       },
-      streamCardKitContent: async (cardId, content, sequence) => {
+      updateCardKitPreview: async (cardId, card, sequence) => {
         try {
-          await this.updateCardKitStreamingContent(
-            channel,
-            cardId,
-            buildStreamingCardDocumentFromParams({ answerText: content, isFinal: false }),
-            sequence,
-            content,
-          )
+          await this.updateCardKitCard(channel, cardId, card, sequence)
           return { delivered: true }
         } catch (error) {
           return { delivered: false, error: error instanceof Error ? error.message : String(error) }

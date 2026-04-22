@@ -79,6 +79,133 @@ function createLarkThinkingPanel(body: string): Record<string, unknown> {
   })
 }
 
+function isPreviewBlockActive(
+  preview: NonNullable<LarkStreamingBuildCardParams['preview']>,
+  block: NonNullable<LarkStreamingBuildCardParams['preview']>['blocks'][number],
+): boolean {
+  if (!preview.active) return false
+  if (block.kind === 'thinking' && preview.phase === 'thinking') {
+    const latest = Math.max(
+      ...preview.blocks.filter((candidate) => candidate.kind === 'thinking').map((candidate) => candidate.index),
+    )
+    return block.index === latest
+  }
+  if (block.kind === 'tool_use' && preview.phase === 'tool-input') {
+    const latest = Math.max(
+      ...preview.blocks.filter((candidate) => candidate.kind === 'tool_use').map((candidate) => candidate.index),
+    )
+    return block.index === latest
+  }
+  return false
+}
+
+function buildLarkPreviewElementsFromBlocks(
+  preview: NonNullable<LarkStreamingBuildCardParams['preview']>,
+): unknown[] {
+  const elements: unknown[] = []
+  // `preview.blocks` is already maintained in the assistant's content order by the runtime reducer.
+  // Do not re-sort here, otherwise ties/late index fixes may cause perceived "jumping".
+  const blocks = preview.blocks
+
+  for (const block of blocks) {
+    if (block.kind === 'text') {
+      const element = createLarkMarkdownBlock(block.shownText, 'normal_v2')
+      if (element) elements.push(element)
+      continue
+    }
+
+    if (block.kind === 'thinking') {
+      const content = optimizeLarkMarkdownStyle(block.shownText.trim())
+      const element = createLarkCollapsiblePanel({
+        title: 'Thinking',
+        subtitle: '',
+        // Keep the panel stable during streaming. If `shownText` is temporarily empty,
+        // render an empty body so the panel doesn't flicker/disappear.
+        elements: content
+          ? [{
+              tag: 'markdown',
+              content,
+              text_size: LARK_COMPACT_TEXT_SIZE,
+            }]
+          : [{
+              tag: 'plain_text',
+              content: ' ',
+              text_size: LARK_COMPACT_TEXT_SIZE,
+            }],
+        expanded: isPreviewBlockActive(preview, block),
+        variant: 'top_level',
+        titleIcon: {
+          tag: 'standard_icon',
+          token: 'efficiency_outlined',
+          color: 'orange',
+        },
+      })
+      if (element) elements.push(wrapTopLevelPanelInContainer(element as Record<string, unknown>))
+      continue
+    }
+
+    if (block.kind === 'tool_use') {
+      const input = (block.shownInput || '').trim()
+      const title = `调用 ${buildLarkToolTitle(block.name)}`
+      const element = input
+        ? createLarkCollapsiblePanel({
+            title,
+            subtitle: '',
+            elements: [{
+              tag: 'markdown',
+              content: `**Input**\n${formatLarkCodeBlock(input)}`,
+              text_size: LARK_COMPACT_TEXT_SIZE,
+              margin: '0px 0px 0px 0px',
+            }],
+            expanded: isPreviewBlockActive(preview, block),
+            variant: 'top_level',
+            titleIcon: {
+              tag: 'standard_icon',
+              token: 'setting-inter_outlined',
+              color: 'blue',
+            },
+          })
+        : createLarkStaticDetailRow(title, '', {
+            tag: 'standard_icon',
+            token: 'setting-inter_outlined',
+            color: 'blue',
+          })
+      if (element && (element as any).tag === 'collapsible_panel') {
+        elements.push(wrapTopLevelPanelInContainer(element as Record<string, unknown>))
+      } else if (element) {
+        elements.push(element)
+      }
+      continue
+    }
+  }
+
+  return elements
+}
+
+function flattenAssistantEntries(entries: AssistantDetailEntry[]): AssistantDetailEntry[] {
+  return entries.flatMap((entry) => entry.kind === 'tool_group' ? entry.entries : [entry])
+}
+
+function buildLarkPreviewMaterializedElements(messages: SessionMessage[] | undefined): unknown[] {
+  if (!messages?.length) return []
+  const items = buildHistoryDisplayItems(messages, { mode: 'default', includeHiddenAtoms: false })
+    .filter((item): item is AssistantDisplayItem => item.kind === 'assistant')
+  const target = items[items.length - 1]
+  if (!target) return []
+
+  const elements: unknown[] = []
+  for (const entry of flattenAssistantEntries(buildAssistantDetailEntries(target))) {
+    const element = buildLarkAssistantEntryElement(entry)
+    if (!element) continue
+    if (element.tag === 'collapsible_panel') {
+      elements.push(wrapTopLevelPanelInContainer(element as Record<string, unknown>))
+      continue
+    }
+    elements.push(element)
+  }
+  return elements
+}
+
 function buildLarkToolTitle(name: string): string {
   return name || 'unknown_tool'
 }
@@ -487,6 +614,39 @@ function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
 }
 
 export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams): Record<string, unknown> {
+  if (!params.isFinal && params.preview) {
+    const materializedElements = buildLarkPreviewMaterializedElements(params.materializedMessages)
+    const previewElements = buildLarkPreviewElementsFromBlocks(params.preview)
+    return {
+      schema: '2.0',
+      config: {
+        wide_screen_mode: true,
+        update_multi: true,
+        streaming_mode: true,
+        locales: ['zh_cn', 'en_us'],
+        style: {
+          text_size: {
+            [LARK_COMPACT_TEXT_SIZE]: {
+              default: 'notation',
+              pc: '10px',
+              mobile: '10px',
+            },
+          },
+        },
+        summary: {
+          content: 'Processing...',
+          i18n_content: {
+            zh_cn: '处理中...',
+            en_us: 'Processing...',
+          },
+        },
+      },
+      body: {
+        elements: [...materializedElements, ...previewElements],
+      },
+    }
+  }
+
   const mainContent = optimizeLarkMarkdownStyle(
     params.answerText || params.thinkingText || (params.isFinal ? 'Done.' : 'Processing...'),
   )
@@ -521,7 +681,7 @@ export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams
   }
 
   const footerText = params.footer ? buildAssistantFooterText(params.footer, { includeTimestamp: false }) : ''
-  if (footerText.trim().length > 0) {
+  if (params.isFinal && footerText.trim().length > 0) {
     elements.push({ tag: 'hr' })
     elements.push({
       tag: 'markdown',

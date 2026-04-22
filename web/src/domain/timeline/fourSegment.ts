@@ -1,13 +1,11 @@
 import type { DisplayItem } from '../../contract/runtime'
 import type {
   TimelineAssistantItem,
-  TimelineAssistantFooter,
   TimelineLivePreview,
-  TimelineFragment,
   TimelineRenderableItemModel,
   TimelineUserItem,
 } from '../../models/timeline'
-import { buildRenderableTimeline } from './buildTimeline'
+import { mapDisplayItemsToTimelineVms } from './buildTimeline'
 
 export interface FourSegmentTimelineSections {
   historyFromServerItems: TimelineRenderableItemModel[]
@@ -18,46 +16,7 @@ export interface FourSegmentTimelineSections {
 }
 
 function renderSingleUserItem(item: DisplayItem): TimelineRenderableItemModel[] {
-  return buildRenderableTimeline({
-    historyTimelineItems: [],
-    userTimelineItems: [item],
-    liveTimelineItems: [],
-    livePreviewItems: [],
-  })
-}
-
-function renderSingleAssistantItem(item: DisplayItem): TimelineRenderableItemModel[] {
-  return buildRenderableTimeline({
-    historyTimelineItems: [],
-    userTimelineItems: [],
-    liveTimelineItems: [item],
-    livePreviewItems: [],
-  })
-}
-
-function buildCommittedTurnItems(users: DisplayItem[], assistants: DisplayItem[]): TimelineRenderableItemModel[] {
-  const items: TimelineRenderableItemModel[] = []
-  let assistantIndex = 0
-  for (let index = 0; index < users.length; index += 1) {
-    const user = users[index]
-    if (user) items.push(...renderSingleUserItem(user))
-    const turnAssistants: DisplayItem[] = []
-    while (assistantIndex < assistants.length) {
-      const assistant = assistants[assistantIndex]
-      turnAssistants.push(assistant)
-      assistantIndex += 1
-      if (isTerminalAssistantItem(assistant)) break
-    }
-    if (turnAssistants.length > 0) {
-      items.push(...mergeAssistantTimelineItems(buildRenderableTimeline({
-        historyTimelineItems: [],
-        userTimelineItems: [],
-        liveTimelineItems: turnAssistants,
-        livePreviewItems: [],
-      })))
-    }
-  }
-  return items
+  return mapDisplayItemsToTimelineVms([item])
 }
 
 function isTerminalAssistantItem(item: DisplayItem): boolean {
@@ -91,73 +50,67 @@ function buildCurrentTurnAssistantPlaceholder(userItem: TimelineUserItem): Timel
   }
 }
 
-function isAssistantTimelineItem(item: TimelineRenderableItemModel): item is TimelineAssistantItem {
-  return item.kind === 'assistant'
-}
-
-function mergeAssistantTimelineItems(items: TimelineRenderableItemModel[]): TimelineAssistantItem[] {
-  const assistantItems = items.filter(isAssistantTimelineItem)
-  if (assistantItems.length === 0) return []
-  const [first, ...rest] = assistantItems
-  const merged = rest.reduce((current, next) => ({
-    ...current,
-    atomIds: [...current.atomIds, ...next.atomIds],
-    messages: [...current.messages, ...next.messages],
-    anchorMessage: next.anchorMessage ?? current.anchorMessage,
-    fragments: [...current.fragments, ...next.fragments] as TimelineFragment[],
-    footer: (next.footer ?? current.footer) as TimelineAssistantFooter | undefined,
-    overlays: [...(current.overlays || []), ...(next.overlays || [])],
-  }), first)
-  return [{
-    ...merged,
-    overlays: merged.overlays && merged.overlays.length > 0 ? merged.overlays : undefined,
-  }]
+function sortPreviewOverlays(overlays: TimelineLivePreview[]): TimelineLivePreview[] {
+  return overlays
+    .slice()
+    .sort((left, right) => {
+      if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp
+      return left.key.localeCompare(right.key)
+    })
 }
 
 export function buildFourSegmentTimelineSections(params: {
   historyFromServerItems: DisplayItem[]
-  userTimelineItems: DisplayItem[]
-  liveTimelineItems: DisplayItem[]
+  localTurnItems: DisplayItem[]
   livePreviewItems: TimelineLivePreview[]
   hasActiveRun: boolean
 }): FourSegmentTimelineSections {
-  const currentTurnUserItem = params.userTimelineItems[params.userTimelineItems.length - 1] ?? null
-  const liveAssistantItems = params.liveTimelineItems.filter((item) => item.kind === 'assistant')
-  const terminalAssistantItems = liveAssistantItems.filter(isTerminalAssistantItem)
-  const committedUserCount = Math.min(terminalAssistantItems.length, params.userTimelineItems.length)
-  const committedUsers = params.userTimelineItems.slice(0, committedUserCount)
-  const lastCommittedAssistant = terminalAssistantItems[committedUserCount - 1]
-  const lastCommittedAssistantIndex = lastCommittedAssistant
-    ? liveAssistantItems.findIndex((item) => item.key === lastCommittedAssistant.key)
-    : -1
-  const committedAssistants = lastCommittedAssistantIndex >= 0
-    ? liveAssistantItems.slice(0, lastCommittedAssistantIndex + 1)
-    : []
-  const committedTurnsLocalItems = buildCommittedTurnItems(committedUsers, committedAssistants)
+  const items = params.localTurnItems
+  const lastCommittedAssistantIndex = (() => {
+    let last = -1
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i]
+      if (item.kind === 'assistant' && isTerminalAssistantItem(item)) last = i
+    }
+    return last
+  })()
 
-  const currentUser =
-    params.userTimelineItems.length > committedUserCount
-      ? params.userTimelineItems[committedUserCount] as TimelineUserItem
-      : null
-  const currentTurnUserItems = currentUser
-    ? renderSingleUserItem(currentUser)
+  const committedSlice = lastCommittedAssistantIndex >= 0 ? items.slice(0, lastCommittedAssistantIndex + 1) : []
+  const committedTurnsLocalItems = mapDisplayItemsToTimelineVms(committedSlice)
+
+  const currentSlice = items.slice(lastCommittedAssistantIndex + 1)
+  const currentUser = currentSlice.find((item) => item.kind === 'user') as DisplayItem | undefined
+  const currentAssistant = currentSlice.find((item) => item.kind === 'assistant') as DisplayItem | undefined
+
+  const shouldShowCurrent = Boolean(
+    params.hasActiveRun
+    || params.livePreviewItems.length > 0
+    || (currentAssistant && !isTerminalAssistantItem(currentAssistant)),
+  )
+
+  const currentTurnUserItems = shouldShowCurrent && currentUser
+    ? renderSingleUserItem(currentUser as TimelineUserItem)
     : []
 
-  const currentLive = liveAssistantItems.slice(lastCommittedAssistantIndex + 1)
+  const currentLive = (shouldShowCurrent && currentAssistant && !isTerminalAssistantItem(currentAssistant))
+    ? [currentAssistant]
+    : []
 
   const currentTurnAssistantItems = (() => {
     if (currentTurnUserItems.length === 0 && currentLive.length === 0 && params.livePreviewItems.length === 0) {
       return []
     }
-    if (currentLive.length === 0 && params.livePreviewItems.length === 0 && currentTurnUserItems.length > 0) {
-      return [buildCurrentTurnAssistantPlaceholder(currentUser!)]
-    }
-    return mergeAssistantTimelineItems(buildRenderableTimeline({
-      historyTimelineItems: [],
-      userTimelineItems: [],
-      liveTimelineItems: currentLive,
-      livePreviewItems: params.livePreviewItems,
-    }))
+    const materializedAssistant = currentLive.length > 0
+      ? mapDisplayItemsToTimelineVms(currentLive).find((item): item is TimelineAssistantItem => item.kind === 'assistant') ?? null
+      : null
+    const host = materializedAssistant
+      ?? (currentTurnUserItems.length > 0 ? buildCurrentTurnAssistantPlaceholder((currentUser as TimelineUserItem)!) : null)
+    if (!host) return []
+    const overlays = sortPreviewOverlays(params.livePreviewItems)
+    return [{
+      ...host,
+      ...(overlays.length > 0 ? { overlays } : {}),
+    }]
   })()
 
   const timeline = [

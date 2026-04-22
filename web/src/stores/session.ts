@@ -49,7 +49,6 @@ import {
   reduceSessionErrorEvent,
   reduceTransactionEvent,
   shouldIncludeSdkMessageInTimeline,
-  sweepFinalizedStreamPreviews,
 } from '../domain/session/reducer'
 import type { TimelineInteractionResponse } from '../models/interaction'
 import type { TimelineRenderableItemModel } from '../models/timeline'
@@ -391,7 +390,7 @@ export const useSessionStore = defineStore('session', () => {
       })
       .filter((atom): atom is TranscriptAtom => atom !== null && atom.semanticKind !== 'meta')
   )
-  const liveAssistantTimelineItems = computed(() => {
+  const liveTurnAtoms = computed(() => {
     const combined = [...liveLaneEvents.value.user, ...liveLaneEvents.value.assistant]
       .slice()
       .sort((left, right) => left.sequence - right.sequence)
@@ -414,9 +413,15 @@ export const useSessionStore = defineStore('session', () => {
         sequence: event.sequence,
       })
       if (atom.semanticKind === 'meta') return []
-      return buildAtomTimelineItems([atom])
+      return [atom]
     })
   })
+  const localTurnItems = computed(() =>
+    buildAtomTimelineItems([
+      ...userLaneAtoms.value,
+      ...liveTurnAtoms.value,
+    ])
+  )
   const historyTimelineItems = computed(() => buildHistoryTimelineItems(historyMessages.value))
   const userTimelineItems = computed(() => buildAtomTimelineItems(userLaneAtoms.value))
   const livePreviewItems = computed(() =>
@@ -428,8 +433,7 @@ export const useSessionStore = defineStore('session', () => {
   const fourSegmentSections = computed(() =>
     buildFourSegmentTimelineSections({
       historyFromServerItems: historyTimelineItems.value,
-      userTimelineItems: userTimelineItems.value,
-      liveTimelineItems: liveAssistantTimelineItems.value,
+      localTurnItems: localTurnItems.value,
       livePreviewItems: livePreviewItems.value,
       hasActiveRun: hasActiveRun.value,
     })
@@ -451,22 +455,6 @@ export const useSessionStore = defineStore('session', () => {
   let streamAnimationFrame: number | null = null
   let streamSweepTimer: number | null = null
   let streamFinalizeTimers: Record<string, number> = {}
-
-  function scheduleFinalizedPreviewSweep(delayMs: number = 180) {
-    if (streamSweepTimer !== null) {
-      window.clearTimeout(streamSweepTimer)
-    }
-    streamSweepTimer = window.setTimeout(() => {
-      streamSweepTimer = null
-      const swept = sweepFinalizedStreamPreviews(
-        streamPreviewStates.value,
-        streamAnimationCursors.value,
-      )
-      if (!swept.removed) return
-      streamPreviewStates.value = swept.previewStates
-      streamAnimationCursors.value = swept.animationCursors
-    }, delayMs)
-  }
 
   function clearStreamTimers() {
     if (streamAnimationFrame !== null) {
@@ -496,7 +484,6 @@ export const useSessionStore = defineStore('session', () => {
 
         const latestPreview = streamPreviewStates.value[scopeKey]
         if (!latestPreview || latestPreview.status === 'finalized') {
-          scheduleFinalizedPreviewSweep(0)
           return
         }
 
@@ -509,7 +496,6 @@ export const useSessionStore = defineStore('session', () => {
           ...streamAnimationCursors.value,
           [scopeKey]: createStreamAnimationCursor(finalizedPreview),
         }
-        scheduleFinalizedPreviewSweep(0)
       }, delayMs),
     }
   }
@@ -631,7 +617,6 @@ export const useSessionStore = defineStore('session', () => {
       )
       streamPreviewStates.value = materialized.previewStates
       streamAnimationCursors.value = materialized.animationCursors
-      scheduleFinalizedPreviewSweep()
     }
     syncSessionId(nextTimelineEvent.sessionId)
     if (eventLog.value.length === 1 || eventLog.value.length % EVENT_LOG_INTERVAL === 0) {
@@ -677,7 +662,6 @@ export const useSessionStore = defineStore('session', () => {
     syncSessionId(event.sessionId)
     const next = reduceStreamSdkEvent(previewStates, animationCursors, event)
     if (next.mode === 'inactive_finalized') {
-      scheduleFinalizedPreviewSweep(0)
       return { previewStates: next.previewStates, animationCursors: next.animationCursors }
     }
 

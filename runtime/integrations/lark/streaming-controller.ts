@@ -1,4 +1,10 @@
-import type { DisplayAssistantFooter, SessionStreamEvent, StreamRenderedPreviewState } from '../../protocol/message-types.js'
+import type {
+  DisplayAssistantFooter,
+  SessionStreamEvent,
+  StreamAnimationCursor,
+  StreamPreviewState,
+  StreamRenderedPreviewState,
+} from '../../protocol/message-types.js'
 import type { SessionMessage } from '../../protocol/message-types.js'
 import {
   advanceStreamAnimationCursor,
@@ -89,6 +95,9 @@ export class LarkStreamingController {
   private thinkingText = ''
   private readonly toolCalls = new Set<string>()
   private renderedPreview: StreamRenderedPreviewState | null = null
+  private readonly previewStatesByScope = new Map<string, StreamPreviewState>()
+  private readonly animationCursorsByScope = new Map<string, StreamAnimationCursor>()
+  private readonly scopeOrderByKey = new Map<string, number>()
 
   constructor(private readonly deps: StreamingControllerDeps) {
     this.flush = new LarkFlushController(() => this.performFlush())
@@ -140,25 +149,18 @@ export class LarkStreamingController {
       return
     }
 
-    const nextPreview = reduceStreamPreviewEvent(this.text.previewState, event)
-    this.text.previewState = nextPreview
-    if (!this.text.cursor) {
-      this.text.cursor = createStreamAnimationCursor(nextPreview)
+    const scopeKey = event.scope.scopeKey
+    const currentPreview = this.previewStatesByScope.get(scopeKey) ?? null
+    const nextPreview = reduceStreamPreviewEvent(currentPreview, event)
+    this.previewStatesByScope.set(scopeKey, nextPreview)
+    if (!this.scopeOrderByKey.has(scopeKey)) {
+      this.scopeOrderByKey.set(scopeKey, event.sequence)
     }
-    this.renderedPreview = renderStreamPreviewState(nextPreview, this.text.cursor)
-
-    const thinkingBlocks = nextPreview.blocks.filter(
-      (block): block is Extract<typeof nextPreview.blocks[number], { kind: 'thinking' }> => block.kind === 'thinking' && !block.redacted,
-    )
-    this.thinkingText = thinkingBlocks.map((block) => block.text.trim()).filter(Boolean).join('\n\n')
-
-    const toolUseBlocks = nextPreview.blocks.filter((block) => block.kind === 'tool_use')
-    this.toolCalls.clear()
-    for (const block of toolUseBlocks) {
-      this.toolCalls.add(`[Tool call] ${block.name}`)
+    if (!this.animationCursorsByScope.has(scopeKey)) {
+      this.animationCursorsByScope.set(scopeKey, createStreamAnimationCursor(nextPreview))
     }
 
-    const visibleText = renderStreamPreviewText(nextPreview)
+    const { visibleText } = this.rebuildDerivedPreviewState()
     if (!this.text.accumulatedText.trim() && visibleText.trim()) {
       this.text.accumulatedText = visibleText.trim()
     }
@@ -183,7 +185,7 @@ export class LarkStreamingController {
     }
 
     if (!this.hasCard) return
-    if (!this.text.lastFlushedText.trim() || this.text.previewState === null) {
+    if (!this.text.lastFlushedText.trim() || this.previewStatesByScope.size === 0) {
       await this.throttledCardUpdate()
     }
   }
@@ -205,16 +207,15 @@ export class LarkStreamingController {
 
     const finalText = this.text.completedText || this.text.accumulatedText || LARK_EMPTY_REPLY_FALLBACK_TEXT
     const footer = await this.deps.getFooterMetrics()
-    // Finalize on the SAME streaming card: keep preview.blocks (now all settled),
-    // append footer, drop streaming_mode. No full-card replacement -> no flicker.
-    const finalCard = this.deps.buildCard({
-      answerText: finalText,
-      thinkingText: this.thinkingText || undefined,
-      toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
-      footer: footer ?? undefined,
-      isFinal: true,
-      ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
-    })
+    const finalCard = (footer ? await this.deps.buildFinalCard?.(footer) : null)
+      ?? this.deps.buildCard({
+        answerText: finalText,
+        thinkingText: this.thinkingText || undefined,
+        toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
+        footer: footer ?? undefined,
+        isFinal: true,
+        ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
+      })
 
     await this.appendRequested(finalCard, finalText)
     const result = await this.updateFinalCard(finalCard)
@@ -236,14 +237,15 @@ export class LarkStreamingController {
       ? `${this.text.accumulatedText}\n\n---\nError: ${error}`
       : `Error: ${error}`
     const footer = await this.deps.getFooterMetrics()
-    const finalCard = this.deps.buildCard({
-      answerText: finalText,
-      thinkingText: this.thinkingText || undefined,
-      toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
-      footer: footer ?? undefined,
-      isFinal: true,
-      ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
-    })
+    const finalCard = (footer ? await this.deps.buildFinalCard?.(footer) : null)
+      ?? this.deps.buildCard({
+        answerText: finalText,
+        thinkingText: this.thinkingText || undefined,
+        toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
+        footer: footer ?? undefined,
+        isFinal: true,
+        ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
+      })
 
     await this.appendRequested(finalCard, finalText)
     const result = await this.updateFinalCard(finalCard)
@@ -262,14 +264,15 @@ export class LarkStreamingController {
 
     const finalText = this.text.accumulatedText || 'Aborted.'
     const footer = await this.deps.getFooterMetrics()
-    const finalCard = this.deps.buildCard({
-      answerText: finalText,
-      thinkingText: this.thinkingText || undefined,
-      toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
-      footer: footer ?? undefined,
-      isFinal: true,
-      ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
-    })
+    const finalCard = (footer ? await this.deps.buildFinalCard?.(footer) : null)
+      ?? this.deps.buildCard({
+        answerText: finalText,
+        thinkingText: this.thinkingText || undefined,
+        toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
+        footer: footer ?? undefined,
+        isFinal: true,
+        ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
+      })
 
     await this.appendRequested(finalCard, finalText)
     const result = await this.updateFinalCard(finalCard)
@@ -356,13 +359,22 @@ export class LarkStreamingController {
 
   private advanceAnimation(): void {
     const step = () => {
-      if (!this.text.previewState) return
-      const advanced = advanceStreamAnimationCursor(this.text.cursor, this.text.previewState)
-      this.text.cursor = advanced.cursor
-      this.text.animationDone = advanced.done
-      const rendered = renderStreamPreviewState(this.text.previewState, advanced.cursor)
-      this.renderedPreview = rendered
-      const renderedText = rendered.blocks
+      const orderedPreviews = this.getOrderedPreviews()
+      if (orderedPreviews.length === 0) return
+
+      let done = true
+      let hasActivePreview = false
+      for (const [scopeKey, preview] of orderedPreviews) {
+        const currentCursor = this.animationCursorsByScope.get(scopeKey) ?? null
+        const advanced = advanceStreamAnimationCursor(currentCursor, preview)
+        this.animationCursorsByScope.set(scopeKey, advanced.cursor)
+        done = done && advanced.done
+        hasActivePreview = hasActivePreview || preview.active
+      }
+
+      this.text.animationDone = done
+      this.rebuildDerivedPreviewState()
+      const renderedText = (this.renderedPreview?.blocks ?? [])
         .map((block) => {
           if (block.kind === 'text') return block.shownText
           if (block.kind === 'tool_use') return block.name ? `[Tool call] ${block.name}` : ''
@@ -371,21 +383,113 @@ export class LarkStreamingController {
         .filter(Boolean)
         .join('\n\n')
         .trim()
-      this.text.accumulatedText = advanced.done || !this.text.previewState.active
+      this.text.accumulatedText = done || !hasActivePreview
         ? renderedText
         : `${renderedText || ''} ▎`.trim()
       void this.throttledCardUpdate()
 
-      if (advanced.done && !this.text.previewState.active && this.animationTimer) {
+      if (done && !hasActivePreview && this.animationTimer) {
         clearInterval(this.animationTimer)
         this.animationTimer = null
       }
     }
 
     step()
-    if (this.text.previewState?.active && !this.animationTimer) {
+    if (this.getOrderedPreviews().some(([, preview]) => preview.active) && !this.animationTimer) {
       this.animationTimer = setInterval(step, 50)
     }
+  }
+
+  private getOrderedPreviews(): Array<[string, StreamPreviewState]> {
+    return [...this.previewStatesByScope.entries()]
+      .sort(([leftKey], [rightKey]) => {
+        const leftOrder = this.scopeOrderByKey.get(leftKey) ?? Number.MAX_SAFE_INTEGER
+        const rightOrder = this.scopeOrderByKey.get(rightKey) ?? Number.MAX_SAFE_INTEGER
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder
+        return leftKey.localeCompare(rightKey)
+      })
+  }
+
+  private rebuildDerivedPreviewState(): { visibleText: string } {
+    const orderedPreviews = this.getOrderedPreviews()
+    if (orderedPreviews.length === 0) {
+      this.renderedPreview = null
+      this.thinkingText = ''
+      this.toolCalls.clear()
+      return { visibleText: '' }
+    }
+
+    let nextIndexOffset = 0
+    const mergedBlocks: StreamPreviewState['blocks'] = []
+    const mergedRenderedBlocks: StreamRenderedPreviewState['blocks'] = []
+
+    for (const [scopeKey, preview] of orderedPreviews) {
+      const cursor = this.animationCursorsByScope.get(scopeKey) ?? createStreamAnimationCursor(preview)
+      this.animationCursorsByScope.set(scopeKey, cursor)
+      const renderedPreview = renderStreamPreviewState(preview, cursor)
+      const maxLocalIndex = preview.blocks.reduce((max, block) => Math.max(max, block.index), -1)
+
+      for (const block of preview.blocks) {
+        const mergedIndex = nextIndexOffset + block.index
+        if (block.kind === 'text') {
+          mergedBlocks.push({ ...block, index: mergedIndex })
+        } else if (block.kind === 'thinking') {
+          mergedBlocks.push({ ...block, index: mergedIndex })
+        } else {
+          mergedBlocks.push({ ...block, index: mergedIndex })
+        }
+      }
+
+      for (const block of renderedPreview.blocks) {
+        const mergedIndex = nextIndexOffset + block.index
+        if (block.kind === 'text') {
+          mergedRenderedBlocks.push({ ...block, index: mergedIndex })
+        } else if (block.kind === 'thinking') {
+          mergedRenderedBlocks.push({ ...block, index: mergedIndex })
+        } else {
+          mergedRenderedBlocks.push({ ...block, index: mergedIndex })
+        }
+      }
+
+      nextIndexOffset += Math.max(1, maxLocalIndex + 1)
+      if (!preview.active) {
+        this.animationCursorsByScope.set(scopeKey, createStreamAnimationCursor(preview))
+      }
+    }
+
+    const latestPreview = orderedPreviews[orderedPreviews.length - 1][1]
+    const activePreview = [...orderedPreviews].reverse().find(([, preview]) => preview.active)?.[1] ?? latestPreview
+    const mergedPreview: StreamPreviewState = {
+      scope: activePreview.scope,
+      phase: activePreview.phase,
+      status: activePreview.status,
+      active: orderedPreviews.some(([, preview]) => preview.active),
+      blocks: mergedBlocks,
+      receivedAt: latestPreview.receivedAt,
+      sequence: latestPreview.sequence,
+    }
+
+    this.renderedPreview = {
+      scope: activePreview.scope,
+      phase: activePreview.phase,
+      status: activePreview.status,
+      active: mergedPreview.active,
+      blocks: mergedRenderedBlocks,
+    }
+
+    const thinkingBlocks = mergedPreview.blocks.filter(
+      (block): block is Extract<typeof mergedPreview.blocks[number], { kind: 'thinking' }> => block.kind === 'thinking' && !block.redacted,
+    )
+    this.thinkingText = thinkingBlocks.map((block) => block.text.trim()).filter(Boolean).join('\n\n')
+
+    this.toolCalls.clear()
+    for (const block of mergedPreview.blocks) {
+      if (block.kind === 'tool_use') {
+        this.toolCalls.add(`[Tool call] ${block.name}`)
+      }
+    }
+
+    return { visibleText: renderStreamPreviewText(mergedPreview) }
   }
 
   private async performFlush(): Promise<void> {

@@ -1,5 +1,6 @@
 import type {
   AssistantDisplayItem,
+  DisplayFragment,
   DisplayAssistantFooter,
   SessionMessage,
 } from '../../protocol/message-types.js'
@@ -19,6 +20,47 @@ import type { LarkStreamingBuildCardParams } from './streaming-controller.js'
 const LARK_COMPACT_TEXT_SIZE = 'cus-compact'
 
 export const STREAMING_CARD_ELEMENT_ID = 'streaming_content'
+
+const LARK_PROCESSING_SUMMARY = 'Processing...'
+const LARK_EMPTY_PANEL_MARKDOWN = '&nbsp;'
+
+function truncateSummaryText(text: string, maxChars: number = 30): string {
+  const normalized = text.trim()
+  if (!normalized) return ''
+  return Array.from(normalized).slice(0, maxChars).join('')
+}
+
+function buildLarkSummaryFromPreview(
+  preview: NonNullable<LarkStreamingBuildCardParams['preview']>,
+): { content: string; i18n_content: { zh_cn: string; en_us: string } } {
+  const firstTextBlock = preview.blocks.find((block) => block.kind === 'text')
+  const summary = firstTextBlock ? truncateSummaryText(firstTextBlock.shownText) : ''
+  const content = summary || LARK_PROCESSING_SUMMARY
+  return {
+    content,
+    i18n_content: {
+      zh_cn: content,
+      en_us: content,
+    },
+  }
+}
+
+function buildLarkSummaryFromFragments(
+  fragments: DisplayFragment[],
+): { content: string; i18n_content: { zh_cn: string; en_us: string } } {
+  const firstTextFragment = fragments.find(
+    (fragment): fragment is Extract<DisplayFragment, { type: 'text' }> => fragment.type === 'text',
+  )
+  const summary = firstTextFragment ? truncateSummaryText(firstTextFragment.text) : ''
+  const content = summary || LARK_PROCESSING_SUMMARY
+  return {
+    content,
+    i18n_content: {
+      zh_cn: content,
+      en_us: content,
+    },
+  }
+}
 
 function formatLarkCodeBlock(text: string): string {
   const trimmed = text.trim()
@@ -135,8 +177,8 @@ function buildLarkPreviewElementsFromBlocks(
               text_size: LARK_COMPACT_TEXT_SIZE,
             }]
           : [{
-              tag: 'plain_text',
-              content: ' ',
+              tag: 'markdown',
+              content: LARK_EMPTY_PANEL_MARKDOWN,
               text_size: LARK_COMPACT_TEXT_SIZE,
             }],
         expanded: active,
@@ -422,7 +464,7 @@ function createLarkStaticDetailRow(
 
 function buildLarkToolRowElement(
   entry: AssistantToolEntry,
-  options: { forceQuoteMarkdown?: boolean; topLevel?: boolean } = {},
+  options: { forceQuoteMarkdown?: boolean; topLevel?: boolean; preferPanel?: boolean } = {},
 ): Record<string, unknown> | null {
   const config = buildAssistantToolRenderConfig(entry)
   const toolIcon = {
@@ -430,8 +472,30 @@ function buildLarkToolRowElement(
     token: config.iconName,
     color: 'blue',
   }
+  const shouldPreferNestedPanel = options.topLevel === false && options.preferPanel === true
+  const nestedFallbackElements = config.subtitle.trim()
+    ? [{
+        tag: 'markdown',
+        content: optimizeLarkMarkdownStyle(config.subtitle.trim()),
+        text_size: LARK_COMPACT_TEXT_SIZE,
+        margin: '0px 0px 0px 0px',
+      }]
+    : [{
+        tag: 'markdown',
+        content: LARK_EMPTY_PANEL_MARKDOWN,
+        text_size: LARK_COMPACT_TEXT_SIZE,
+      }]
 
   if (!config.expandable || config.sections.length === 0) {
+    if (shouldPreferNestedPanel) {
+      return createLarkCollapsiblePanel({
+        title: config.title,
+        subtitle: '',
+        elements: nestedFallbackElements,
+        variant: 'nested',
+        titleIcon: toolIcon,
+      })
+    }
     return createLarkStaticDetailRow(
       config.title,
       config.subtitle,
@@ -449,6 +513,15 @@ function buildLarkToolRowElement(
     ))
     .filter(Boolean)
   if (elements.length === 0) {
+    if (shouldPreferNestedPanel) {
+      return createLarkCollapsiblePanel({
+        title: config.title,
+        subtitle: '',
+        elements: nestedFallbackElements,
+        variant: 'nested',
+        titleIcon: toolIcon,
+      })
+    }
     return createLarkStaticDetailRow(config.title, config.subtitle, toolIcon)
   }
   return createLarkCollapsiblePanel({
@@ -464,7 +537,11 @@ function buildLarkGroupedChildElement(entry: AssistantGroupChildEntry): Record<s
   if (entry.kind === 'thinking') {
     return buildLarkAssistantEntryElement(entry, { topLevel: false })
   }
-  return buildLarkToolRowElement(entry, { forceQuoteMarkdown: false, topLevel: false })
+  return buildLarkToolRowElement(entry, {
+    forceQuoteMarkdown: false,
+    topLevel: false,
+    preferPanel: true,
+  })
 }
 
 function buildLarkAssistantEntryElement(
@@ -547,8 +624,95 @@ function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
   return elements
 }
 
+function buildAssistantDisplayFragmentsFromPreview(
+  preview: NonNullable<LarkStreamingBuildCardParams['preview']>,
+): DisplayFragment[] {
+  const fragments: DisplayFragment[] = []
+  for (const block of preview.blocks) {
+    if (block.kind === 'text') {
+      const text = block.shownText.trim()
+      if (text) {
+        fragments.push({ type: 'text', text })
+      }
+      continue
+    }
+    if (block.kind === 'thinking') {
+      fragments.push({
+        type: 'thinking',
+        ...(block.redacted ? {} : { text: block.shownText }),
+        ...(block.redacted ? { redacted: true } : {}),
+        defaultHidden: false,
+      })
+      continue
+    }
+    fragments.push({
+      type: 'tool_use',
+      name: block.name,
+      ...(block.toolUseId ? { toolUseId: block.toolUseId } : {}),
+    })
+  }
+  return fragments
+}
+
+function buildLarkFinalCardFromPreview(
+  preview: NonNullable<LarkStreamingBuildCardParams['preview']>,
+  footer: DisplayAssistantFooter | undefined,
+  answerText: string | undefined,
+): Record<string, unknown> | null {
+  const summary = buildLarkSummaryFromPreview(preview)
+  const fragments = buildAssistantDisplayFragmentsFromPreview(preview)
+  if (fragments.length === 0 && answerText?.trim()) {
+    fragments.push({ type: 'text', text: answerText.trim() })
+  }
+  if (fragments.length === 0) return null
+
+  const scopeKey = preview.scope.scopeKey || 'lark-preview-final'
+  const pseudoItem = {
+    kind: 'assistant',
+    id: `preview-final-${scopeKey}`,
+    key: `preview-final-${scopeKey}`,
+    timestamp: Date.now(),
+    atomIds: [],
+    messages: [],
+    anchorMessage: {},
+    fragments,
+    ...(footer ? { footer } : {}),
+  } as unknown as AssistantDisplayItem
+
+  const elements = buildLarkAssistantElements(pseudoItem)
+  if (elements.length === 0) return null
+
+  return {
+    schema: '2.0',
+    config: {
+      wide_screen_mode: true,
+      update_multi: true,
+      locales: ['zh_cn', 'en_us'],
+      style: {
+        text_size: {
+          [LARK_COMPACT_TEXT_SIZE]: {
+            default: 'notation',
+            pc: '10px',
+            mobile: '10px',
+          },
+        },
+      },
+      summary,
+    },
+    body: {
+      elements,
+    },
+  }
+}
+
 export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams): Record<string, unknown> {
   if (params.preview) {
+    if (params.isFinal) {
+      const groupedFinalCard = buildLarkFinalCardFromPreview(params.preview, params.footer, params.answerText)
+      if (groupedFinalCard) {
+        return groupedFinalCard
+      }
+    }
     const previewElements = buildLarkPreviewElementsFromBlocks(params.preview)
     const bodyElements: unknown[] = previewElements.length > 0
       ? [...previewElements]
@@ -589,13 +753,7 @@ export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams
             },
           },
         },
-        summary: {
-          content: params.isFinal ? 'Claude response' : 'Processing...',
-          i18n_content: {
-            zh_cn: params.isFinal ? 'Claude 回复' : '处理中...',
-            en_us: params.isFinal ? 'Claude response' : 'Processing...',
-          },
-        },
+        summary: buildLarkSummaryFromPreview(params.preview),
       },
       body: {
         elements: bodyElements,
@@ -673,10 +831,10 @@ export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams
         },
       },
       summary: {
-        content: params.isFinal ? 'Claude response' : 'Processing...',
+        content: LARK_PROCESSING_SUMMARY,
         i18n_content: {
-          zh_cn: params.isFinal ? 'Claude 回复' : '处理中...',
-          en_us: params.isFinal ? 'Claude response' : 'Processing...',
+          zh_cn: LARK_PROCESSING_SUMMARY,
+          en_us: LARK_PROCESSING_SUMMARY,
         },
       },
     },
@@ -693,6 +851,7 @@ export function buildLarkFinalCardFromHistory(messages: SessionMessage[], footer
   if (!target) return null
 
   const elements = buildLarkAssistantElements({ ...target, footer })
+  const summary = buildLarkSummaryFromFragments(target.fragments)
 
   if (elements.length === 0) return null
 
@@ -711,13 +870,7 @@ export function buildLarkFinalCardFromHistory(messages: SessionMessage[], footer
           },
         },
       },
-      summary: {
-        content: 'Claude response',
-        i18n_content: {
-          zh_cn: 'Claude 回复',
-          en_us: 'Claude response',
-        },
-      },
+      summary,
     },
     body: {
       elements,

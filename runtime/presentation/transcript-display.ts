@@ -542,3 +542,9 @@ export function buildHistoryDisplayItems(messages: SessionMessage[], options: Bu
   // decide how to present details per-turn.
   return items
 }
+
+export function getLatestAssistantHistoryFooter(messages: SessionMessage[]): DisplayAssistantFooter | undefined {
+  const items = buildHistoryDisplayItems(messages, { mode: 'default', includeHiddenAtoms: false })
+  const assistants = items.filter((item): item is AssistantDisplayItem => item.kind === 'assistant')
+  return assistants[assistants.length - 1]?.footer
+}

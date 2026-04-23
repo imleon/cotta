@@ -14,14 +14,11 @@ import type {
 import type { TranscriptMessage } from '../../protocol/index.js'
 import {
   extractStructuredContentFromBlocks,
-  getTranscriptAssistantModel,
   getTranscriptMessageId,
-  getTranscriptAssistantUsage,
-  getTranscriptStopReason,
   normalizeSdkEnvelopeMessage,
   stringifyStructuredValue,
 } from '../../protocol/index.js'
-import { getAssistantFooter } from '../../presentation/transcript-display.js'
+import { getLatestAssistantHistoryFooter } from '../../presentation/transcript-display.js'
 import {
   buildAssistantStreamingCard,
   buildLarkFinalCardFromHistory,
@@ -239,6 +236,11 @@ function hasMeaningfulFooterUsage(usage: DisplayAssistantFooter['usage'] | null 
   if (!usage) return false
   return [usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens]
     .some((value) => typeof value === 'number' && value > 0)
+}
+
+function hasMeaningfulFooter(footer: DisplayAssistantFooter | null | undefined): footer is DisplayAssistantFooter {
+  if (!footer) return false
+  return hasMeaningfulFooterUsage(footer.usage) || Boolean(footer.stopReason) || Boolean(footer.model)
 }
 
 function getProjectDirs(configRegistry: ConfigRegistry): string[] {
@@ -1349,7 +1351,7 @@ export class LarkIntegrationService {
     sequence: number,
   ): Promise<void> {
     const client = this.getClient(channel.connectorId)
-    await (client as any).cardkit.v1.card.settings({
+    const response = await (client as any).cardkit.v1.card.settings({
       path: {
         card_id: cardId,
       },
@@ -1358,6 +1360,9 @@ export class LarkIntegrationService {
         sequence,
       },
     })
+    if ((response as any)?.code && (response as any).code !== 0) {
+      throw new Error((response as any)?.msg || `card.settings failed with code ${(response as any).code}`)
+    }
   }
 
   private async updateCardKitCard(
@@ -1367,7 +1372,7 @@ export class LarkIntegrationService {
     sequence: number,
   ): Promise<void> {
     const client = this.getClient(channel.connectorId)
-    await (client as any).cardkit.v1.card.update({
+    const response = await (client as any).cardkit.v1.card.update({
       path: {
         card_id: cardId,
       },
@@ -1379,6 +1384,9 @@ export class LarkIntegrationService {
         sequence,
       },
     })
+    if ((response as any)?.code && (response as any).code !== 0) {
+      throw new Error((response as any)?.msg || `card.update failed with code ${(response as any).code}`)
+    }
   }
 
   private cleanupInboundMessageDedupe(ttlMs: number = 30 * 60 * 1000): void {
@@ -1481,23 +1489,25 @@ export class LarkIntegrationService {
       limit: 100,
       projectDirs: getProjectDirs(this.deps.configRegistry),
     })
-    const footerFromHistory = getAssistantFooter(page.messages)
-    if (footerFromHistory && (hasMeaningfulFooterUsage(footerFromHistory.usage) || footerFromHistory.stopReason || footerFromHistory.model)) {
+    const footerFromHistory = getLatestAssistantHistoryFooter(page.messages)
+    if (hasMeaningfulFooter(footerFromHistory)) {
       return footerFromHistory
     }
 
     const latestAssistantMessage = this.latestAssistantMessageByRunId.get(runId)
     if (latestAssistantMessage) {
-      const footer = {
-        completedAt,
-        ...(getTranscriptStopReason(latestAssistantMessage) ? { stopReason: getTranscriptStopReason(latestAssistantMessage) ?? undefined } : {}),
-        ...(getTranscriptAssistantUsage(latestAssistantMessage) ? { usage: getTranscriptAssistantUsage(latestAssistantMessage) ?? undefined } : {}),
-        ...(getTranscriptAssistantModel(latestAssistantMessage) ? { model: getTranscriptAssistantModel(latestAssistantMessage) ?? undefined } : {}),
+      const latestMessageId = getTranscriptMessageId(latestAssistantMessage)
+      const mergedMessages = latestMessageId && page.messages.some((message) => getTranscriptMessageId(message) === latestMessageId)
+        ? page.messages
+        : [...page.messages, latestAssistantMessage]
+      const footerFromMergedHistory = getLatestAssistantHistoryFooter(mergedMessages)
+      if (hasMeaningfulFooter(footerFromMergedHistory)) {
+        return footerFromMergedHistory
       }
-      return footer
     }
+
     const footerFromPayload = buildFooterFromResultPayload(payload, completedAt)
-    if (footerFromPayload?.stopReason || footerFromPayload?.model || footerFromPayload?.usage) {
+    if (hasMeaningfulFooter(footerFromPayload)) {
       return footerFromPayload
     }
     if (!footerFromHistory) {

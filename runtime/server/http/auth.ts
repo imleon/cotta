@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
+import type { AppEnv } from './app-env.js'
 
 type Logger = {
   warn: (event: string, fields?: Record<string, unknown>) => void
@@ -31,7 +32,7 @@ export function createApiAuthMiddleware(input: {
   config: AuthConfig
   logger: Logger
   allowPaths: Set<string>
-}): MiddlewareHandler {
+}): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     if (!input.config.authEnabled || input.allowPaths.has(c.req.path)) {
       await next()
@@ -44,7 +45,7 @@ export function createApiAuthMiddleware(input: {
         path: c.req.path,
         hasToken: Boolean(token),
       })
-      return c.json({ error: 'Unauthorized' }, 401)
+      return c.json({ error: 'Unauthorized', code: 'unauthorized', message: 'Unauthorized' }, 401)
     }
 
     await next()
@@ -54,7 +55,7 @@ export function createApiAuthMiddleware(input: {
 export function createWsAuthMiddleware(input: {
   config: AuthConfig
   logger: Logger
-}): MiddlewareHandler {
+}): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const token = c.req.query('auth')
     if (!isAuthorizedToken(input.config, token)) {
@@ -67,4 +68,3 @@ export function createWsAuthMiddleware(input: {
     await next()
   }
 }
-

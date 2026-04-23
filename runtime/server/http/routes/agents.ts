@@ -1,7 +1,8 @@
 import type { Hono } from 'hono'
 import type { StaticConfigRegistry } from '../../../config/registry.js'
+import type { AppEnv } from '../app-env.js'
 
-export function registerAgentRoutes(app: Hono<any, any, any>, input: {
+export function registerAgentRoutes(app: Hono<AppEnv>, input: {
   defaultAgentId: string | null
   configRegistry: StaticConfigRegistry
 }) {

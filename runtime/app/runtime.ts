@@ -10,8 +10,10 @@ import { ENV } from '../config/env.js'
 import { appendSessionSdkRawLog } from '../storage/fs/transport-logs.js'
 import { createSqliteDatabase } from '../storage/sqlite/db.js'
 import { SqliteConfigRepository } from '../storage/sqlite/config-repository.js'
+import { createLogger, type Logger } from '../server/logger.js'
 
 export type RuntimeContext = {
+  logger: Logger
   defaultAgentId: string | null
   configDbPath: string
   runtimeConfig: RuntimeConfig
@@ -24,6 +26,7 @@ export type RuntimeContext = {
 }
 
 export function createRuntime(input?: { configDbPath?: string }): RuntimeContext {
+  const logger = createLogger('runtime')
   const configDbPath = input?.configDbPath || ENV.configDbPath
   const db = createSqliteDatabase(configDbPath)
   const configRepository = new SqliteConfigRepository(db)
@@ -40,10 +43,12 @@ export function createRuntime(input?: { configDbPath?: string }): RuntimeContext
     sessionRegistry,
     runRegistry,
     workerManager,
+    logger,
     sdkRawLogWriter: appendSessionSdkRawLog,
   })
 
   return {
+    logger,
     defaultAgentId,
     configDbPath,
     runtimeConfig,
@@ -57,7 +62,7 @@ export function createRuntime(input?: { configDbPath?: string }): RuntimeContext
 }
 
 export async function bootstrapColdStart(
-  runtime: Pick<RuntimeContext, 'configRegistry' | 'sessionRegistry' | 'orchestrator'>,
+  runtime: Pick<RuntimeContext, 'configRegistry' | 'sessionRegistry'>,
 ): Promise<void> {
   const plans = await buildColdStartClaimPlans({
     config: runtime.configRegistry,
@@ -67,10 +72,4 @@ export async function bootstrapColdStart(
     sessions: runtime.sessionRegistry,
     plans,
   })
-
-  // Ensure each claimed session has an attached worker so the runtime is "warm"
-  // right after cold start.
-  for (const plan of plans) {
-    await runtime.orchestrator.ensureWorkerForSession(plan.sessionId, plan.agentId, plan.mode)
-  }
 }

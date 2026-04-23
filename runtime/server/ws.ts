@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { UpgradeWebSocket } from 'hono/ws'
-import type { WorkerOutputEvent } from '../execution/types.js'
 import type { Orchestrator } from '../orchestration/orchestrator.js'
+import type { SessionEvent } from '../protocol/index.js'
 import { createLogger, shortId } from './logger.js'
 
 const logger = createLogger('websocket')
@@ -17,12 +17,12 @@ function sendSocketEvent(ws: { send: (data: string) => void }, payload: unknown)
 }
 
 function matchesFilter(
-  event: WorkerOutputEvent,
+  event: SessionEvent,
   sessionId?: string,
   runId?: string,
 ): boolean {
   if (sessionId && event.sessionId !== sessionId) return false
-  if (runId && event.runId !== runId) return false
+  if (runId && (!('runId' in event) || event.runId !== runId)) return false
   return true
 }
 
@@ -45,7 +45,7 @@ export function createWebSocketHandler(
 
     return {
       onOpen(_evt, ws) {
-        orchestrator.subscribe(subscriberKey, (event) => {
+        orchestrator.subscribeSessionEvents(subscriberKey, (event) => {
           if (!matchesFilter(event, sessionId, runId)) return
           sendSocketEvent(ws, event)
         })
@@ -59,7 +59,7 @@ export function createWebSocketHandler(
         })
       },
       onClose() {
-        orchestrator.unsubscribe(subscriberKey)
+        orchestrator.unsubscribeSessionEvents(subscriberKey)
         logger.info('ws:close', { connId })
       },
     }

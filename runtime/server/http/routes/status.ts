@@ -6,12 +6,10 @@ import type { StaticConfigRegistry } from '../../../config/registry.js'
 import type { RunRegistry } from '../../../orchestration/run-registry.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { RunRecord, SessionRecord } from '../../../orchestration/types.js'
-import { getProjectDirs } from '../helpers.js'
 import type { WorkerHealthSnapshot } from '../../../orchestration/worker-governance-service.js'
-
-type Logger = {
-  error: (event: string, fields?: Record<string, unknown>) => void
-}
+import type { AppEnv } from '../app-env.js'
+import { getProjectDirs } from '../helpers.js'
+import { sendInternalError } from '../validation.js'
 
 type Config = {
   host: string
@@ -57,16 +55,19 @@ function toLastRun(run: RunRecord | null): SessionLastRun | null {
   }
 }
 
+let cachedPackageVersion: string | null = null
 function getPackageVersion(): string {
+  if (cachedPackageVersion) return cachedPackageVersion
   try {
     const currentDir = dirname(fileURLToPath(import.meta.url))
     const packageJsonPath = resolve(currentDir, '../../../../package.json')
     const raw = readFileSync(packageJsonPath, 'utf-8')
     const parsed = JSON.parse(raw) as { version?: unknown }
-    return typeof parsed.version === 'string' ? parsed.version : 'unknown'
+    cachedPackageVersion = typeof parsed.version === 'string' ? parsed.version : 'unknown'
   } catch {
-    return 'unknown'
+    cachedPackageVersion = 'unknown'
   }
+  return cachedPackageVersion
 }
 
 function toRuntimeSessionSnapshot(runtime: SessionRecord | null) {
@@ -83,8 +84,7 @@ function toRuntimeSessionSnapshot(runtime: SessionRecord | null) {
   }
 }
 
-export function registerStatusRoutes(app: Hono<any, any, any>, input: {
-  logger: Logger
+export function registerStatusRoutes(app: Hono<AppEnv>, input: {
   config: Config
   configRegistry: StaticConfigRegistry
   sessionRegistry: SessionRegistry
@@ -95,6 +95,7 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
 }) {
   app.get('/api/status', async (c) => {
     const startedAt = Date.now()
+    const logger = c.get('logger')
     try {
       const configuredAgents = input.configRegistry.listAgents()
       const projectDirs = getProjectDirs(input.configRegistry)
@@ -212,7 +213,8 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
           .sort((a, b) => b.updatedAt - a.updatedAt)
         const channelCount = input.configRegistry.listChannels().filter((ch) => ch.agentId === agent.agentId).length
         const activeSessionCount = agentSessions.filter((s) => {
-          const status = (s as any).runtime?.sessionStatus as string | undefined
+          const runtime = (s as { runtime?: { sessionStatus?: string } }).runtime
+          const status = runtime?.sessionStatus
           return status === 'running' || status === 'requires_action'
         }).length
         return {
@@ -277,11 +279,11 @@ export function registerStatusRoutes(app: Hono<any, any, any>, input: {
         durationMs: Date.now() - startedAt,
       })
     } catch (err) {
-      input.logger.error('http:status:error', {
+      logger.error('http:status:error', {
         error: err instanceof Error ? err.message : String(err),
         durationMs: Date.now() - startedAt,
       })
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+      return sendInternalError(c, 'status_failed', err)
     }
   })
 }

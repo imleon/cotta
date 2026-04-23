@@ -1,49 +1,58 @@
 import type { Hono } from 'hono'
+import { z } from 'zod'
 import { SessionBusyError, type Orchestrator } from '../../../orchestration/orchestrator.js'
 import type { RunRegistry } from '../../../orchestration/run-registry.js'
+import type { AppEnv } from '../app-env.js'
+import {
+  getValidatedBody,
+  getValidatedParams,
+  sendError,
+  sendInternalError,
+  validateJsonBody,
+  validateParams,
+} from '../validation.js'
 
-type Logger = {
-  error: (event: string, fields?: Record<string, unknown>) => void
-}
+const CreateRunBodySchema = z.object({
+  sessionId: z.string().trim().min(1, 'sessionId is required'),
+  agentId: z.string().trim().min(1, 'agentId is required'),
+  text: z.string().min(1, 'text is required'),
+  mode: z.enum(['new', 'resume']).default('resume'),
+})
+type CreateRunBody = z.infer<typeof CreateRunBodySchema>
 
-export function registerRunRoutes(app: Hono<any, any, any>, input: {
-  logger: Logger
+const RunIdParamSchema = z.object({
+  id: z.string().trim().min(1, 'run id is required'),
+})
+type RunIdParams = z.infer<typeof RunIdParamSchema>
+
+export function registerRunRoutes(app: Hono<AppEnv>, input: {
   orchestrator: Orchestrator
   runRegistry: RunRegistry
 }) {
-  app.post('/api/runs', async (c) => {
+  app.post('/api/runs', validateJsonBody(CreateRunBodySchema), async (c) => {
+    const body = getValidatedBody<CreateRunBody>(c)
     try {
-      const body = await c.req.json()
-      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
-      const agentId = typeof body?.agentId === 'string' ? body.agentId.trim() : ''
-      const text = typeof body?.text === 'string' ? body.text : ''
-      const mode = body?.mode === 'new' ? 'new' : 'resume'
-
-      if (!sessionId || !agentId || !text) {
-        return c.json({ error: 'sessionId, agentId, text are required' }, 400)
-      }
-
-      const accepted = await input.orchestrator.dispatchRun({ sessionId, agentId, text, mode })
+      const accepted = await input.orchestrator.dispatchRun(body)
       return c.json(accepted)
     } catch (error) {
-      input.logger.error('http:runs:create:error', {
+      if (error instanceof SessionBusyError) {
+        return sendError(c, 409, 'session_busy', 'Session already has an active run', {
+          details: {
+            sessionId: error.sessionId,
+            activeRunId: error.activeRunId,
+            sessionStatus: error.sessionStatus,
+          },
+        })
+      }
+      c.get('logger').error('http:runs:create:error', {
         error: error instanceof Error ? error.message : String(error),
       })
-      if (error instanceof SessionBusyError) {
-        return c.json({
-          error: 'session_busy',
-          message: 'Session already has an active run',
-          sessionId: error.sessionId,
-          activeRunId: error.activeRunId,
-          sessionStatus: error.sessionStatus,
-        }, 409)
-      }
-      return c.json({ error: 'Failed to create run' }, 500)
+      return sendInternalError(c, 'run_create_failed', error)
     }
   })
 
-  app.get('/api/runs/:id', (c) => {
-    const id = c.req.param('id')
+  app.get('/api/runs/:id', validateParams(RunIdParamSchema), (c) => {
+    const { id } = getValidatedParams<RunIdParams>(c)
     const run = input.runRegistry.get(id)
     return c.json({ run })
   })

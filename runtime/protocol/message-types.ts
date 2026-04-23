@@ -50,7 +50,7 @@ export interface StreamEventNormalized {
 
 export interface SessionStreamEvent {
   type: 'session.sdk.stream_event'
-  runId: string
+  runId?: string
   sessionId?: string
   receivedAt: number
   sequence: number
@@ -601,53 +601,16 @@ export interface SessionPersistentLogPage {
   nextCursor: number | null
 }
 
-export type RunnerAgentInput = {
-  prompt: string
-  sessionId?: string
-  systemPrompt?: string
-  model?: string
-}
-
-export type RunnerCommand =
-  | { type: 'run.start'; input: RunnerAgentInput }
-  | { type: 'run.cancel' }
-  | { type: 'control.respond'; requestId: string; response: { kind: 'permission'; decision: 'approve' | 'deny'; selectedSuggestion?: PermissionSuggestion | null; content?: Record<string, string | number | boolean | string[]> } | { kind: 'elicitation'; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> } }
-  | { type: 'control.cancel'; requestId: string }
-  | { type: 'control.request'; requestId: string; request: { subtype: 'interrupt' } | { subtype: 'get_context_usage' } | { subtype: 'mcp_status' } }
-
-export type RunnerRuntimeEvent =
-  | { type: 'run.started'; sessionId?: string }
-  | { type: 'run.state_changed'; state: SessionRunState; sessionId?: string }
-  | { type: 'run.completed'; messageCount: number; sessionId?: string }
-  | { type: 'run.failed'; error: string; stack?: string; sessionId?: string }
-  | { type: 'run.cancelled'; sessionId?: string }
-  | ({ type: 'sdk.message'; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)
-  | ({ type: 'sdk.stream_event'; event: SessionStreamEvent } & RuntimeEnvelopeBase)
-  | ({ type: 'control.message'; direction: ControlDirection; message: SdkControlEnvelope; transaction: ControlTransactionSummary } & RuntimeEnvelopeBase)
-  | ({ type: 'control.opened'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'control.awaiting_user'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'control.responded'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'control.completed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'control.cancel_requested'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'control.cancelled'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'control.failed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'interactive.opened'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'interactive.awaiting_user'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'interactive.responded'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'interactive.completed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'interactive.cancelled'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | ({ type: 'interactive.failed'; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | { type: 'sdk.raw'; event: SdkRawLogEvent }
-
 export type SessionEvent =
+  | ({ type: 'session.state_changed'; state: 'idle' | 'running' | 'requires_action' } & Pick<RuntimeEnvelopeBase, 'sessionId'>)
   | { type: 'session.run.queued'; runId: string; sessionId?: string }
   | { type: 'session.run.started'; runId: string; sessionId?: string }
   | { type: 'session.run.state_changed'; runId: string; state: SessionRunState; sessionId?: string }
   | { type: 'session.run.completed'; runId: string; sessionId?: string; exitCode?: number | null; error?: string }
   | { type: 'session.run.failed'; runId?: string; sessionId?: string; error: string }
   | { type: 'session.run.cancelled'; runId: string; sessionId?: string }
-  | ({ type: 'session.sdk.message'; runId: string; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)
-  | ({ type: 'session.sdk.stream_event'; runId: string; event: SessionStreamEvent } & RuntimeEnvelopeBase)
+  | ({ type: 'session.sdk.message'; runId?: string; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)
+  | ({ type: 'session.sdk.stream_event'; runId?: string; event: SessionStreamEvent } & RuntimeEnvelopeBase)
   | ({ type: 'session.control.message'; runId?: string; direction: ControlDirection; message: SdkControlEnvelope; transaction: ControlTransactionSummary } & RuntimeEnvelopeBase)
   | ({ type: 'session.control.opened'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.control.awaiting_user'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
@@ -660,9 +623,11 @@ export type SessionEvent =
   | ({ type: 'session.interactive.awaiting_user'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.interactive.responded'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.interactive.completed'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
+  | ({ type: 'session.interactive.cancel_requested'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.interactive.cancelled'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
   | ({ type: 'session.interactive.failed'; runId?: string; transaction: ControlTransactionSummary; payload?: unknown } & RuntimeEnvelopeBase)
-  | { type: 'session.error'; runId?: string; error: string }
+  | ({ type: 'session.worker.closed'; runId?: string } & RuntimeEnvelopeBase)
+  | { type: 'session.error'; runId?: string; sessionId?: string; error: string }
 
 export type LaneKind = 'history' | 'user' | 'live' | 'session' | 'drop'
 export type LiveLaneKind = 'user' | 'stream_event' | 'assistant' | 'system' | 'result' | 'tool_progress' | 'tool_use_summary' | 'prompt_suggestion'

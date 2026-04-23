@@ -1,10 +1,12 @@
 import type { ConfigRegistry } from '../config/registry.js'
-import type { SdkRawLogEvent } from '../protocol/message-types.js'
+import type { SdkRawLogEvent, SessionEvent } from '../protocol/message-types.js'
+import { SessionEventMapper } from '../protocol/session-event-mapper.js'
 import type { RunTerminalStatus, SessionRecord, RunRecord } from './types.js'
 import type { SessionRegistry } from './session-registry.js'
 import type { RunRegistry } from './run-registry.js'
 import type { WorkerOutputEvent } from '../execution/types.js'
 import type { WorkerManager, WorkerStartMode } from '../execution/worker-manager.js'
+import type { Logger } from '../server/logger.js'
 import { EgressRouter } from './egress-router.js'
 import { WorkerSupervisor } from './worker-supervisor.js'
 import { RunDispatcher, type DispatchRunInput, type V2HostControlSubtype, SessionBusyError } from './run-dispatcher.js'
@@ -12,13 +14,16 @@ import { SessionLifecycleService, type SessionLifecycleResult, type SessionRecov
 import { InteractionCoordinator } from './interaction-coordinator.js'
 
 export type OrchestratorSubscriber = (event: WorkerOutputEvent) => void
+export type SessionEventSubscriber = (event: SessionEvent) => void
 
 export { SessionBusyError }
 
 export type { SessionLifecycleResult }
 
 export class Orchestrator {
-  private readonly egress = new EgressRouter<WorkerOutputEvent>()
+  private readonly egress: EgressRouter<WorkerOutputEvent>
+  private readonly sessionEgress: EgressRouter<SessionEvent>
+  private readonly sessionEventMapper = new SessionEventMapper()
   private readonly workerSupervisor: WorkerSupervisor
   private readonly runDispatcher: RunDispatcher
   private readonly sessionLifecycle: SessionLifecycleService
@@ -31,9 +36,12 @@ export class Orchestrator {
       sessionRegistry: SessionRegistry
       runRegistry: RunRegistry
       workerManager: WorkerManager
+      logger: Logger
       sdkRawLogWriter?: (runId: string, event: SdkRawLogEvent) => Promise<void>
     },
   ) {
+    this.egress = new EgressRouter<WorkerOutputEvent>(deps.logger)
+    this.sessionEgress = new EgressRouter<SessionEvent>(deps.logger)
     this.workerSupervisor = new WorkerSupervisor(
       {
         workerManager: deps.workerManager,
@@ -105,6 +113,14 @@ export class Orchestrator {
 
   unsubscribe(key: string): void {
     this.egress.unsubscribe(key)
+  }
+
+  subscribeSessionEvents(key: string, subscriber: SessionEventSubscriber): void {
+    this.sessionEgress.subscribe(key, subscriber)
+  }
+
+  unsubscribeSessionEvents(key: string): void {
+    this.sessionEgress.unsubscribe(key)
   }
 
   getSession(sessionId: string): SessionRecord | null {
@@ -190,6 +206,10 @@ export class Orchestrator {
             this.deps.runRegistry.setStatus(event.runId, 'running')
           }
         }
+        // If a config change was deferred while a run was active, apply it once the session becomes idle.
+        if (event.state === 'idle') {
+          await this.maybeRebuildWorkerAfterIdle(event.sessionId)
+        }
         break
 
       case 'result':
@@ -205,6 +225,9 @@ export class Orchestrator {
           }
           this.deps.sessionRegistry.setActiveRun(event.sessionId, undefined)
         }
+        // Some SDKs may emit terminal result separately; ensure deferred rebuild still happens
+        // once the run is done and the session is idle.
+        await this.maybeRebuildWorkerAfterIdle(event.sessionId)
         break
 
       case 'worker_closed':
@@ -221,6 +244,22 @@ export class Orchestrator {
 
     await this.persistSdkRawEvent(event)
     this.broadcast(event)
+  }
+
+  private async maybeRebuildWorkerAfterIdle(sessionId: string): Promise<void> {
+    const session = this.deps.sessionRegistry.get(sessionId)
+    if (!session) return
+    if (session.sessionStatus !== 'idle') return
+    if (session.activeRunId) return
+
+    // If there is no worker attached, there is nothing to rebuild.
+    if (!this.workerSupervisor.getWorker(sessionId)) return
+
+    const agent = this.deps.configRegistry.getAgent(session.agentId)
+    if (!agent) return
+
+    // This will rebuild only when the stored worker config differs from the desired config.
+    await this.workerSupervisor.ensureWorker(sessionId, agent, 'resume')
   }
 
   private async persistSdkRawEvent(event: WorkerOutputEvent): Promise<void> {
@@ -323,5 +362,9 @@ export class Orchestrator {
 
   private broadcast(event: WorkerOutputEvent): void {
     this.egress.publish(event)
+    const sessionEvent = this.sessionEventMapper.mapWorkerOutputEvent(event)
+    if (sessionEvent) {
+      this.sessionEgress.publish(sessionEvent)
+    }
   }
 }

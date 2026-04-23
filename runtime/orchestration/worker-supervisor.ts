@@ -39,8 +39,9 @@ export class WorkerSupervisor {
 
         console.info('[worker-supervisor] config changed; rebuilding worker', {
           sessionId,
-          from: currentSig.slice(0, 8),
-          to: desiredSig.slice(0, 8),
+          // This is canonical JSON (not a hash). Avoid logging raw config (may contain secrets).
+          fromType: currentSig.length === 64 && /^[0-9a-f]+$/i.test(currentSig) ? 'sha256-legacy' : 'json',
+          toType: 'json',
         })
         await this.stopWorker(sessionId)
       } else if (!currentSig) {

@@ -1,20 +1,15 @@
 import type { Hono } from 'hono'
-
-type Logger = {
-  debug: (event: string, fields?: Record<string, unknown>) => void
-}
+import type { AppEnv } from '../app-env.js'
 
 type Config = {
   authEnabled: boolean
 }
 
-export function registerMiscRoutes(app: Hono<any, any, any>, input: {
-  logger: Logger
+export function registerMiscRoutes(app: Hono<AppEnv>, input: {
   config: Config
 }) {
   app.get('/api/health', (c) => {
-    input.logger.debug('http:health', { authEnabled: input.config.authEnabled })
+    c.get('logger').debug('http:health', { authEnabled: input.config.authEnabled })
     return c.json({ status: 'ok', authEnabled: input.config.authEnabled })
   })
-
 }

@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { UpgradeWebSocket } from 'hono/ws'
+import type { AppEnv } from './http/app-env.js'
+import { createRequestContextMiddleware } from './http/request-context.js'
 import type { ServerContext } from './context.js'
 import { createWebSocketHandler } from './ws.js'
 import { createApiAuthMiddleware, createWsAuthMiddleware } from './http/auth.js'
@@ -16,9 +18,12 @@ import { registerConfigRoutes } from './http/routes/config.js'
 import { registerStatusRoutes } from './http/routes/status.js'
 
 export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: ServerContext) {
-  const app = new Hono()
+  const app = new Hono<AppEnv>()
 
   app.use('*', cors())
+  // Inject request-scoped logger & requestId into Hono context, so every downstream
+  // handler / middleware can rely on `c.get('logger')` and `c.get('requestId')`.
+  app.use('*', createRequestContextMiddleware({ logger: context.logger }))
 
   app.use('/api/*', createApiAuthMiddleware({
     config: context.config,
@@ -30,12 +35,11 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
     ]),
   }))
 
-  registerMiscRoutes(app, { logger: context.logger, config: context.config })
-  registerLarkRoutes(app, { logger: context.logger, larkIntegration: context.larkIntegration })
+  registerMiscRoutes(app, { config: context.config })
+  registerLarkRoutes(app, { larkIntegration: context.larkIntegration })
   registerAgentRoutes(app, { defaultAgentId: context.defaultAgentId, configRegistry: context.configRegistry })
-  registerRunRoutes(app, { logger: context.logger, orchestrator: context.orchestrator, runRegistry: context.runRegistry })
+  registerRunRoutes(app, { orchestrator: context.orchestrator, runRegistry: context.runRegistry })
   registerSessionRoutes(app, {
-    logger: context.logger,
     shortId: context.shortId,
     configRegistry: context.configRegistry,
     sessionRegistry: context.sessionRegistry,
@@ -43,26 +47,22 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
     listSessionsByProjectDirs: context.listSessionsByProjectDirs,
     getMessagesPage: context.getMessagesPage,
   })
-  registerInteractiveRoutes(app, { logger: context.logger, orchestrator: context.orchestrator })
+  registerInteractiveRoutes(app, { orchestrator: context.orchestrator })
   registerLogRoutes(app, {
-    logger: context.logger,
     readSessionSdkRawLogs: context.readSessionSdkRawLogs,
     readSessionPersistentLogs: context.readSessionPersistentLogs,
   })
   registerChannelBindingRoutes(app, {
-    logger: context.logger,
     configRepository: context.configRepository,
     sessionRegistry: context.sessionRegistry,
     listSessionsByProjectDir: context.listSessionsByProjectDir,
   })
   registerConfigRoutes(app, {
-    logger: context.logger,
     configDbPath: context.configDbPath,
     configRepository: context.configRepository,
     sessionRegistry: context.sessionRegistry,
   })
   registerStatusRoutes(app, {
-    logger: context.logger,
     config: context.config,
     configRegistry: context.configRegistry,
     sessionRegistry: context.sessionRegistry,

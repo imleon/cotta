@@ -66,7 +66,14 @@ function emit(scope: string, level: LogLevel, event: string, fields?: LogFields)
   console[method](prefix)
 }
 
-export function createLogger(scope: string) {
+export type Logger = {
+  debug: (event: string, fields?: LogFields) => void
+  info: (event: string, fields?: LogFields) => void
+  warn: (event: string, fields?: LogFields) => void
+  error: (event: string, fields?: LogFields) => void
+}
+
+export function createLogger(scope: string): Logger {
   return {
     debug(event: string, fields?: LogFields) {
       emit(scope, 'debug', event, fields)

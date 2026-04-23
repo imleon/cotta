@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import type { AgentTemplate } from './types.js'
 
 function stableStringify(value: unknown): string {
@@ -21,7 +20,7 @@ export function computeWorkerConfigSignature(agent: AgentTemplate): string {
     env: agent.env ?? null,
     promptConfig: agent.promptConfig ?? null,
   }
-  const raw = stableStringify(payload)
-  return createHash('sha256').update(raw).digest('hex')
+  // Use canonical JSON text for comparison (field-by-field), rather than hashing.
+  // This makes diffs/debugging easier and avoids opaque SHA256 comparisons.
+  return stableStringify(payload)
 }
-

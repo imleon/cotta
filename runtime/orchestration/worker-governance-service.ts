@@ -33,6 +33,7 @@ export class WorkerGovernanceService {
   private readonly healthBySessionId = new Map<string, WorkerHealthSnapshot>()
   private readonly lastAutoRebuildAtBySessionId = new Map<string, number>()
   private readonly orchestratorWatchKey = 'worker-governance:watch'
+  private readonly deferredRebuildReasonBySessionId = new Map<string, string>()
 
   constructor(
     private readonly deps: {
@@ -87,6 +88,10 @@ export class WorkerGovernanceService {
       this.sweepTimer = null
     }
     this.deps.orchestrator.unsubscribe(this.orchestratorWatchKey)
+    for (const sessionId of this.deferredRebuildReasonBySessionId.keys()) {
+      this.deps.orchestrator.unsubscribe(this.deferredKey(sessionId))
+    }
+    this.deferredRebuildReasonBySessionId.clear()
   }
 
   getHealth(sessionId: string): WorkerHealthSnapshot | null {
@@ -194,8 +199,10 @@ export class WorkerGovernanceService {
     const session = this.deps.sessionRegistry.get(sessionId)
     if (!session) return
     // Don't attempt rebuild while the session is actively running / awaiting user.
-    if (session.sessionStatus !== 'idle') return
-    if (session.activeRunId) return
+    if (session.sessionStatus !== 'idle' || session.activeRunId) {
+      this.deferAutoRebuildUntilIdle(sessionId, reason ?? 'unknown')
+      return
+    }
 
     const now = Date.now()
     const last = this.lastAutoRebuildAtBySessionId.get(sessionId) ?? 0
@@ -215,6 +222,33 @@ export class WorkerGovernanceService {
         error: error instanceof Error ? error.message : String(error),
       })
     }
+  }
+
+  private deferredKey(sessionId: string): string {
+    return `worker-governance:defer:${sessionId}`
+  }
+
+  private deferAutoRebuildUntilIdle(sessionId: string, reason: string): void {
+    if (!sessionId) return
+    // Keep the latest reason (useful for logging/debugging).
+    this.deferredRebuildReasonBySessionId.set(sessionId, reason)
+
+    const key = this.deferredKey(sessionId)
+    // Ensure single subscription per session.
+    this.deps.orchestrator.unsubscribe(key)
+    this.deps.orchestrator.subscribe(key, (event: any) => {
+      if (!event || typeof event !== 'object') return
+      if (event.sessionId !== sessionId) return
+      const session = this.deps.sessionRegistry.get(sessionId)
+      if (!session) return
+      if (session.sessionStatus !== 'idle') return
+      if (session.activeRunId) return
+
+      this.deps.orchestrator.unsubscribe(key)
+      const deferredReason = this.deferredRebuildReasonBySessionId.get(sessionId) ?? reason
+      this.deferredRebuildReasonBySessionId.delete(sessionId)
+      void this.maybeAutoRebuild(sessionId, `deferred:${deferredReason}`)
+    })
   }
 
   private waitForControlCompletion(sessionId: string, requestId: string, timeoutMs: number): Promise<boolean> {

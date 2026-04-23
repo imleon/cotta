@@ -4,14 +4,14 @@ import type { ConfigRegistry } from '../../config/registry.js'
 import type { ConnectorConfig, ChannelConfig } from '../../config/schema.js'
 import type { Orchestrator } from '../../orchestration/orchestrator.js'
 import type { SessionRegistry } from '../../orchestration/session-registry.js'
-import type { WorkerOutputEvent } from '../../execution/types.js'
 import { getMessagesPage, getSession } from '../../storage/fs/sessions.js'
 import type { SqliteConfigRepository } from '../../storage/sqlite/config-repository.js'
 import type {
   DisplayAssistantFooter,
   PermissionInteraction,
-  SessionStreamEvent,
-} from '../../protocol/message-types.js'
+  SessionEvent,
+} from '../../protocol/index.js'
+import type { TranscriptMessage } from '../../protocol/index.js'
 import {
   extractStructuredContentFromBlocks,
   getTranscriptAssistantModel,
@@ -20,8 +20,7 @@ import {
   getTranscriptStopReason,
   normalizeSdkEnvelopeMessage,
   stringifyStructuredValue,
-  type TranscriptMessage,
-} from '../../protocol/transcript-normalizer.js'
+} from '../../protocol/index.js'
 import { getAssistantFooter } from '../../presentation/transcript-display.js'
 import {
   buildAssistantStreamingCard,
@@ -482,8 +481,6 @@ export class LarkIntegrationService {
   private readonly runStartedAtByRunId = new Map<string, number>()
   private readonly typingReactionByRunId = new Map<string, { sourceMessageId: string; reactionId?: string | null; started?: boolean; cleared?: boolean }>()
   private readonly streamControllersByRunId = new Map<string, LarkStreamingController>()
-  private readonly activeStreamMessageIds = new Map<string, string>()
-  private readonly streamSequenceByRunId = new Map<string, number>()
   private started = false
 
   constructor(
@@ -499,7 +496,7 @@ export class LarkIntegrationService {
   start(): void {
     if (this.started) return
     this.started = true
-    this.deps.orchestrator.subscribe(this.subscriberKey, (event) => {
+    this.deps.orchestrator.subscribeSessionEvents(this.subscriberKey, (event) => {
       void this.handleWorkerEvent(event).catch((error) => {
         this.deps.logger.error('lark:worker-event:error', {
           error: error instanceof Error ? error.message : String(error),
@@ -519,7 +516,7 @@ export class LarkIntegrationService {
   async stop(): Promise<void> {
     if (!this.started) return
     this.started = false
-    this.deps.orchestrator.unsubscribe(this.subscriberKey)
+    this.deps.orchestrator.unsubscribeSessionEvents(this.subscriberKey)
 
     // Best-effort shutdown of long connections. The upstream SDK has changed
     // APIs over time, so we use duck-typing to avoid hard dependencies.
@@ -1057,7 +1054,7 @@ export class LarkIntegrationService {
     })
   }
 
-  private async handleWorkerEvent(event: WorkerOutputEvent): Promise<void> {
+  private async handleWorkerEvent(event: SessionEvent): Promise<void> {
     const sessionId = event.sessionId
     if (!sessionId) return
 
@@ -1069,7 +1066,7 @@ export class LarkIntegrationService {
     const connector = this.deps.configRegistry.getConnector(channel.connectorId)
     if (connector?.connectorType !== 'lark') return
 
-    if (event.kind === 'sdk_message' && event.runId) {
+    if (event.type === 'session.sdk.message' && event.runId) {
       const normalized = normalizeSdkEnvelopeMessage(event.payload)
       if (normalized) {
         const existing = this.materializedMessagesByRunId.get(event.runId) || []
@@ -1101,20 +1098,17 @@ export class LarkIntegrationService {
       return
     }
 
-    if (event.kind === 'sdk_stream_event' && event.runId) {
+    if (event.type === 'session.sdk.stream_event' && event.runId) {
       // If the run is already delivered, ignore any late stream events to avoid
       // creating a second streaming card after the final card was sent.
       if (this.deliveredRunIds.has(event.runId)) return
       await this.ensureTypingReactionStarted(channel, event.runId)
-      const normalized = this.normalizeSdkStreamEvent(event.runId, sessionId, event.receivedAt, event.payload)
-      if (!normalized) return
       const streamingController = this.getOrCreateStreamingController(channel, sessionId, event.runId)
-      await streamingController.onStreamEvent(normalized)
+      await streamingController.onStreamEvent(event.event)
       return
     }
 
-    if (event.kind === 'control_transaction') {
-      if (event.phase !== 'awaiting_user') return
+    if (event.type === 'session.interactive.awaiting_user' || event.type === 'session.control.awaiting_user') {
       const interaction = event.transaction.interaction
       if (!interaction || interaction.kind !== 'permission') return
       if (this.deliveredInteractionIds.has(interaction.id)) return
@@ -1138,172 +1132,59 @@ export class LarkIntegrationService {
       return
     }
 
-    if (event.kind !== 'result' || !event.runId) return
-    if (this.deliveredRunIds.has(event.runId)) return
-    this.deliveredRunIds.add(event.runId)
-    this.latestResultPayloadByRunId.set(event.runId, event.payload)
+    if (event.type !== 'session.run.completed' && event.type !== 'session.run.failed') return
+    const runId = event.runId
+    if (!runId) return
+    if (this.deliveredRunIds.has(runId)) return
+    this.deliveredRunIds.add(runId)
 
     try {
-      const replyContext = this.replyContextByRunId.get(event.runId)
-      const streamingController = this.streamControllersByRunId.get(event.runId)
+      const replyContext = this.replyContextByRunId.get(runId)
+      const streamingController = this.streamControllersByRunId.get(runId)
       if (streamingController) {
         await this.waitForTerminalSettling()
         let delivered = false
-        if (event.subtype === 'success') {
+        if (event.type === 'session.run.completed') {
           streamingController.markFullyComplete()
           delivered = await streamingController.onIdle()
         } else {
-          delivered = await streamingController.onError(`运行失败：${event.subtype}`)
+          delivered = await streamingController.onError(`运行失败：${event.error}`)
         }
         if (!delivered) {
-          const card = await this.buildFinalCardForRun(sessionId, event.runId)
+          const card = await this.buildFinalCardForRun(sessionId, runId)
           if (card) {
             await this.createCardKitMessage(channel, card, replyContext)
           }
         }
       } else {
-        const cachedAssistantText = event.subtype === 'success'
-          ? this.latestAssistantTextByRunId.get(event.runId) ?? ''
+        const cachedAssistantText = event.type === 'session.run.completed'
+          ? this.latestAssistantTextByRunId.get(runId) ?? ''
           : ''
-        const text = event.subtype === 'success'
+        const text = event.type === 'session.run.completed'
           ? (cachedAssistantText || await this.buildLatestAssistantReply(sessionId))
-          : `运行失败：${event.subtype}`
+          : `运行失败：${event.error}`
         if (!text) return
-        const card = await this.buildFinalCardForRun(sessionId, event.runId, text)
+        const card = await this.buildFinalCardForRun(sessionId, runId, text)
         if (card) {
           await this.createCardKitMessage(channel, card, replyContext)
         }
       }
       this.deps.logger.info('lark:message:sent', {
-        runId: event.runId,
+        runId,
         sessionId,
         conversationKey: channel.channelKey,
       })
-      this.latestAssistantTextByRunId.delete(event.runId)
-      this.latestAssistantMessageByRunId.delete(event.runId)
-      this.replyContextByRunId.delete(event.runId)
-      await this.clearTypingReaction(event.runId, channel)
-      this.cleanupStreamingRun(event.runId)
+      this.latestAssistantTextByRunId.delete(runId)
+      this.latestAssistantMessageByRunId.delete(runId)
+      this.replyContextByRunId.delete(runId)
+      await this.clearTypingReaction(runId, channel)
+      this.cleanupStreamingRun(runId)
     } catch (error) {
       this.deps.logger.error('lark:message:send:error', {
-        runId: event.runId,
+        runId,
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       })
-    }
-  }
-
-  private normalizeSdkStreamEvent(
-    runId: string,
-    sessionId: string,
-    receivedAt: number,
-    payload: unknown,
-  ): SessionStreamEvent | null {
-    const record = payload && typeof payload === 'object'
-      ? payload as Record<string, unknown>
-      : null
-    if (!record || record.type !== 'stream_event') return null
-
-    const rawEvent = record.event && typeof record.event === 'object'
-      ? record.event as Record<string, unknown>
-      : null
-    const eventType = typeof rawEvent?.type === 'string'
-      ? rawEvent.type as SessionStreamEvent['event']['type']
-      : null
-    if (!rawEvent || !eventType) return null
-
-    const parentToolUseId = typeof record.parent_tool_use_id === 'string'
-      ? record.parent_tool_use_id
-      : record.parent_tool_use_id === null
-        ? null
-        : undefined
-    const index = typeof rawEvent.index === 'number' ? rawEvent.index : undefined
-    const directMessage = rawEvent.message && typeof rawEvent.message === 'object'
-      ? rawEvent.message as Record<string, unknown>
-      : null
-    const directMessageId = typeof directMessage?.id === 'string' ? directMessage.id : undefined
-
-    let messageId = directMessageId
-    if (messageId) {
-      this.activeStreamMessageIds.set(sessionId, messageId)
-    } else {
-      messageId = this.activeStreamMessageIds.get(sessionId)
-    }
-    if (eventType === 'message_stop') {
-      this.activeStreamMessageIds.delete(sessionId)
-    }
-
-    const sequence = (this.streamSequenceByRunId.get(runId) ?? 0) + 1
-    this.streamSequenceByRunId.set(runId, sequence)
-
-    const scope: SessionStreamEvent['scope'] = messageId
-      ? {
-          scopeKey: `${sessionId}:message:${messageId}`,
-          anchorKind: 'message',
-          anchorId: messageId,
-          messageId,
-          ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
-          ...(index !== undefined ? { index } : {}),
-        }
-      : typeof parentToolUseId === 'string'
-        ? {
-            scopeKey: `${sessionId}:tool_use:${parentToolUseId}`,
-            anchorKind: 'tool_use',
-            anchorId: parentToolUseId,
-            parentToolUseId,
-            ...(index !== undefined ? { index } : {}),
-          }
-        : {
-            scopeKey: `${sessionId}:ephemeral:${sequence}`,
-            anchorKind: 'ephemeral',
-            anchorId: `${sessionId}:ephemeral:${sequence}`,
-            ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
-            ...(index !== undefined ? { index } : {}),
-          }
-
-    let normalized: SessionStreamEvent['normalized']
-    if (eventType === 'content_block_start') {
-      const block = rawEvent.content_block && typeof rawEvent.content_block === 'object'
-        ? rawEvent.content_block as Record<string, unknown>
-        : null
-      if (block?.type === 'text') {
-        normalized = { blockKind: 'text', text: typeof block.text === 'string' ? block.text : '' }
-      } else if (block?.type === 'thinking') {
-        normalized = { blockKind: 'thinking', thinking: typeof block.thinking === 'string' ? block.thinking : '', redacted: false }
-      } else if (block?.type === 'redacted_thinking') {
-        normalized = { blockKind: 'thinking', redacted: true }
-      } else if (block?.type === 'tool_use') {
-        normalized = {
-          blockKind: 'tool_use',
-          toolName: typeof block.name === 'string' ? block.name : 'unknown_tool',
-          toolUseId: typeof block.id === 'string' ? block.id : undefined,
-          partialJson: typeof block.input === 'string' ? block.input : undefined,
-        }
-      }
-    } else if (eventType === 'content_block_delta') {
-      const delta = rawEvent.delta && typeof rawEvent.delta === 'object'
-        ? rawEvent.delta as Record<string, unknown>
-        : null
-      const deltaType = typeof delta?.type === 'string' ? delta.type : null
-      if (delta && deltaType === 'text_delta') {
-        normalized = { blockKind: 'text', deltaKind: 'text_delta', text: typeof delta.text === 'string' ? delta.text : '' }
-      } else if (delta && deltaType === 'thinking_delta') {
-        normalized = { blockKind: 'thinking', deltaKind: 'thinking_delta', thinking: typeof delta.thinking === 'string' ? delta.thinking : '' }
-      } else if (delta && deltaType === 'input_json_delta') {
-        normalized = { blockKind: 'tool_use', deltaKind: 'input_json_delta', partialJson: typeof delta.partial_json === 'string' ? delta.partial_json : '' }
-      }
-    }
-
-    return {
-      type: 'session.sdk.stream_event',
-      runId,
-      sessionId,
-      receivedAt,
-      sequence,
-      scope,
-      event: { type: eventType },
-      ...(normalized ? { normalized } : {}),
-      raw: payload,
     }
   }
 
@@ -1480,7 +1361,6 @@ export class LarkIntegrationService {
     const controller = this.streamControllersByRunId.get(runId)
     controller?.dispose()
     this.streamControllersByRunId.delete(runId)
-    this.streamSequenceByRunId.delete(runId)
     this.latestResultPayloadByRunId.delete(runId)
     this.runStartedAtByRunId.delete(runId)
     this.typingReactionByRunId.delete(runId)

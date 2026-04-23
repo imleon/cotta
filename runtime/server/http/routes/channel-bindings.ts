@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import type { Hono } from 'hono'
+import { z } from 'zod'
 import type { RuntimeConfig } from '../../../config/schema.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { SessionRecord } from '../../../orchestration/types.js'
 import type { SqliteConfigRepository } from '../../../storage/sqlite/config-repository.js'
-
-type Logger = {
-  info: (event: string, fields?: Record<string, unknown>) => void
-  error: (event: string, fields?: Record<string, unknown>) => void
-}
+import type { AppEnv } from '../app-env.js'
+import {
+  getValidatedBody,
+  getValidatedParams,
+  sendError,
+  sendInternalError,
+  validateJsonBody,
+  validateParams,
+} from '../validation.js'
 
 type SessionSummary = {
   id: string
@@ -24,7 +29,6 @@ type CandidateSession = {
   title?: string
   updatedAt: number
   isCurrent: boolean
-  // If present, this session is already bound to another channel.
   claimedByChannelId?: string
 }
 
@@ -35,6 +39,16 @@ type BoundSession = {
   sessionStatus?: string
   activeRunId?: string
 }
+
+const ChannelIdParamSchema = z.object({
+  channelId: z.string().trim().min(1, 'channelId is required'),
+})
+type ChannelIdParams = z.infer<typeof ChannelIdParamSchema>
+
+const UseBindingBodySchema = z.object({
+  sessionId: z.string().trim().min(1, 'sessionId is required'),
+})
+type UseBindingBody = z.infer<typeof UseBindingBodySchema>
 
 function buildConfigMaps(config: RuntimeConfig) {
   return {
@@ -153,8 +167,7 @@ function buildClaimedChannelBySessionIdFromConfig(config: RuntimeConfig): Map<st
   return claimed
 }
 
-export function registerChannelBindingRoutes(app: Hono<any, any, any>, input: {
-  logger: Logger
+export function registerChannelBindingRoutes(app: Hono<AppEnv>, input: {
   configRepository: SqliteConfigRepository
   sessionRegistry: SessionRegistry
   listSessionsByProjectDir: (dir: string) => Promise<SessionSummary[]>
@@ -179,113 +192,129 @@ export function registerChannelBindingRoutes(app: Hono<any, any, any>, input: {
 
       return c.json({ items })
     } catch (error) {
-      input.logger.error('http:channel-bindings:list:error', {
+      c.get('logger').error('http:channel-bindings:list:error', {
         error: error instanceof Error ? error.message : String(error),
       })
-      return c.json({ error: error instanceof Error ? error.message : 'Failed to load channel bindings' }, 500)
+      return sendInternalError(c, 'channel_bindings_list_failed', error)
     }
   })
 
-  app.post('/api/channels/:channelId/session-binding/use', async (c) => {
-    const startedAt = Date.now()
-    try {
-      const channelId = c.req.param('channelId').trim()
-      const body = await c.req.json().catch(() => null)
-      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
-      if (!channelId || !sessionId) {
-        return c.json({ error: 'channelId and sessionId are required' }, 400)
+  app.post(
+    '/api/channels/:channelId/session-binding/use',
+    validateParams(ChannelIdParamSchema),
+    validateJsonBody(UseBindingBodySchema),
+    async (c) => {
+      const startedAt = Date.now()
+      const logger = c.get('logger')
+      const { channelId } = getValidatedParams<ChannelIdParams>(c)
+      const { sessionId } = getValidatedBody<UseBindingBody>(c)
+      try {
+        const config = input.configRepository.loadRuntimeConfig()
+        const { channelById, agentById } = buildConfigMaps(config)
+        const channel = channelById.get(channelId)
+        if (!channel) {
+          return sendError(c, 404, 'channel_not_found', `Channel not found: ${channelId}`)
+        }
+        const agent = agentById.get(channel.agentId)
+        if (!agent) {
+          return sendError(c, 400, 'agent_not_found', `Agent not found for channel ${channel.channelId}: ${channel.agentId}`)
+        }
+
+        const claimedChannelBySessionId = buildClaimedChannelBySessionIdFromConfig(config)
+        const claimedBy = claimedChannelBySessionId.get(sessionId)
+        if (claimedBy && claimedBy !== channel.channelId) {
+          return sendError(c, 409, 'session_already_bound', `Session ${sessionId} is already bound to channel ${claimedBy}`, {
+            details: { sessionId, claimedBy },
+          })
+        }
+
+        const persistedSessions = await input.listSessionsByProjectDir(agent.projectDir)
+        const runtimeMatch = input.sessionRegistry.get(sessionId)
+        const persistedMatch = persistedSessions.find((session) => session.id === sessionId)
+        if (!runtimeMatch && !persistedMatch) {
+          return sendError(c, 404, 'session_not_found', `Session not found: ${sessionId}`)
+        }
+        if (runtimeMatch && runtimeMatch.agentId !== channel.agentId) {
+          return sendError(c, 400, 'session_agent_mismatch', `Session ${sessionId} belongs to another agent`, {
+            details: { sessionId, expectedAgentId: channel.agentId, actualAgentId: runtimeMatch.agentId },
+          })
+        }
+
+        input.sessionRegistry.ensure(sessionId, channel.agentId)
+        input.sessionRegistry.claimChannel(sessionId, channel.channelId)
+        input.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
+
+        const refreshedConfig = input.configRepository.loadRuntimeConfig()
+        const refreshedClaimMap = buildClaimedChannelBySessionIdFromConfig(refreshedConfig)
+        const item = await buildChannelBindingItem(
+          channel,
+          agent,
+          input.sessionRegistry,
+          input.listSessionsByProjectDir,
+          new Map([[agent.projectDir, persistedSessions]]),
+          refreshedClaimMap,
+        )
+        logger.info('http:channel-binding:use:success', {
+          channelId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+        })
+        return c.json({ item })
+      } catch (error) {
+        logger.error('http:channel-binding:use:error', {
+          error: error instanceof Error ? error.message : String(error),
+          durationMs: Date.now() - startedAt,
+        })
+        return sendInternalError(c, 'channel_binding_use_failed', error)
       }
+    },
+  )
 
-      const config = input.configRepository.loadRuntimeConfig()
-      const { channelById, agentById } = buildConfigMaps(config)
-      const channel = channelById.get(channelId)
-      if (!channel) return c.json({ error: `Channel not found: ${channelId}` }, 404)
-      const agent = agentById.get(channel.agentId)
-      if (!agent) return c.json({ error: `Agent not found for channel ${channel.channelId}: ${channel.agentId}` }, 400)
+  app.post(
+    '/api/channels/:channelId/session-binding/new',
+    validateParams(ChannelIdParamSchema),
+    async (c) => {
+      const startedAt = Date.now()
+      const logger = c.get('logger')
+      const { channelId } = getValidatedParams<ChannelIdParams>(c)
+      try {
+        const config = input.configRepository.loadRuntimeConfig()
+        const { channelById, agentById } = buildConfigMaps(config)
+        const channel = channelById.get(channelId)
+        if (!channel) {
+          return sendError(c, 404, 'channel_not_found', `Channel not found: ${channelId}`)
+        }
+        const agent = agentById.get(channel.agentId)
+        if (!agent) {
+          return sendError(c, 400, 'agent_not_found', `Agent not found for channel ${channel.channelId}: ${channel.agentId}`)
+        }
 
-      const claimedChannelBySessionId = buildClaimedChannelBySessionIdFromConfig(config)
-      const claimedBy = claimedChannelBySessionId.get(sessionId)
-      if (claimedBy && claimedBy !== channel.channelId) {
-        return c.json({ error: `Session ${sessionId} is already bound to channel ${claimedBy}` }, 409)
+        const sessionId = randomUUID()
+        input.sessionRegistry.ensure(sessionId, channel.agentId)
+        input.sessionRegistry.claimChannel(sessionId, channel.channelId)
+        input.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
+
+        const item = await buildChannelBindingItem(
+          channel,
+          agent,
+          input.sessionRegistry,
+          input.listSessionsByProjectDir,
+          new Map<string, SessionSummary[]>(),
+          buildClaimedChannelBySessionIdFromConfig(input.configRepository.loadRuntimeConfig()),
+        )
+        logger.info('http:channel-binding:new:success', {
+          channelId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+        })
+        return c.json({ item })
+      } catch (error) {
+        logger.error('http:channel-binding:new:error', {
+          error: error instanceof Error ? error.message : String(error),
+          durationMs: Date.now() - startedAt,
+        })
+        return sendInternalError(c, 'channel_binding_new_failed', error)
       }
-
-      const persistedSessions = await input.listSessionsByProjectDir(agent.projectDir)
-      const runtimeMatch = input.sessionRegistry.get(sessionId)
-      const persistedMatch = persistedSessions.find((session) => session.id === sessionId)
-      if (!runtimeMatch && !persistedMatch) {
-        return c.json({ error: `Session not found: ${sessionId}` }, 404)
-      }
-      if (runtimeMatch && runtimeMatch.agentId !== channel.agentId) {
-        return c.json({ error: `Session ${sessionId} belongs to another agent` }, 400)
-      }
-
-      input.sessionRegistry.ensure(sessionId, channel.agentId)
-      input.sessionRegistry.claimChannel(sessionId, channel.channelId)
-      input.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
-
-      const refreshedConfig = input.configRepository.loadRuntimeConfig()
-      const refreshedClaimMap = buildClaimedChannelBySessionIdFromConfig(refreshedConfig)
-      const item = await buildChannelBindingItem(
-        channel,
-        agent,
-        input.sessionRegistry,
-        input.listSessionsByProjectDir,
-        new Map([[agent.projectDir, persistedSessions]]),
-        refreshedClaimMap,
-      )
-      input.logger.info('http:channel-binding:use:success', {
-        channelId,
-        sessionId,
-        durationMs: Date.now() - startedAt,
-      })
-      return c.json({ item })
-    } catch (error) {
-      input.logger.error('http:channel-binding:use:error', {
-        error: error instanceof Error ? error.message : String(error),
-        durationMs: Date.now() - startedAt,
-      })
-      return c.json({ error: error instanceof Error ? error.message : 'Failed to bind session' }, 500)
-    }
-  })
-
-  app.post('/api/channels/:channelId/session-binding/new', async (c) => {
-    const startedAt = Date.now()
-    try {
-      const channelId = c.req.param('channelId').trim()
-      if (!channelId) return c.json({ error: 'channelId is required' }, 400)
-
-      const config = input.configRepository.loadRuntimeConfig()
-      const { channelById, agentById } = buildConfigMaps(config)
-      const channel = channelById.get(channelId)
-      if (!channel) return c.json({ error: `Channel not found: ${channelId}` }, 404)
-      const agent = agentById.get(channel.agentId)
-      if (!agent) return c.json({ error: `Agent not found for channel ${channel.channelId}: ${channel.agentId}` }, 400)
-
-      const sessionId = randomUUID()
-      input.sessionRegistry.ensure(sessionId, channel.agentId)
-      input.sessionRegistry.claimChannel(sessionId, channel.channelId)
-      input.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
-
-      const item = await buildChannelBindingItem(
-        channel,
-        agent,
-        input.sessionRegistry,
-        input.listSessionsByProjectDir,
-        new Map<string, SessionSummary[]>(),
-        buildClaimedChannelBySessionIdFromConfig(input.configRepository.loadRuntimeConfig()),
-      )
-      input.logger.info('http:channel-binding:new:success', {
-        channelId,
-        sessionId,
-        durationMs: Date.now() - startedAt,
-      })
-      return c.json({ item })
-    } catch (error) {
-      input.logger.error('http:channel-binding:new:error', {
-        error: error instanceof Error ? error.message : String(error),
-        durationMs: Date.now() - startedAt,
-      })
-      return c.json({ error: error instanceof Error ? error.message : 'Failed to create and bind session' }, 500)
-    }
-  })
+    },
+  )
 }

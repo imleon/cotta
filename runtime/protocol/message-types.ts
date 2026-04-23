@@ -606,7 +606,7 @@ export type SessionEvent =
   | { type: 'session.run.queued'; runId: string; sessionId?: string }
   | { type: 'session.run.started'; runId: string; sessionId?: string }
   | { type: 'session.run.state_changed'; runId: string; state: SessionRunState; sessionId?: string }
-  | { type: 'session.run.completed'; runId: string; sessionId?: string; exitCode?: number | null; error?: string }
+  | { type: 'session.run.completed'; runId: string; sessionId?: string; exitCode?: number | null; error?: string; resultPayload?: unknown }
   | { type: 'session.run.failed'; runId?: string; sessionId?: string; error: string }
   | { type: 'session.run.cancelled'; runId: string; sessionId?: string }
   | ({ type: 'session.sdk.message'; runId?: string; payload: SDKMessage; parsed?: SessionMessage } & RuntimeEnvelopeBase)

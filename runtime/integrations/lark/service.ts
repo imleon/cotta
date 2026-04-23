@@ -481,6 +481,7 @@ export class LarkIntegrationService {
   private readonly runStartedAtByRunId = new Map<string, number>()
   private readonly typingReactionByRunId = new Map<string, { sourceMessageId: string; reactionId?: string | null; started?: boolean; cleared?: boolean }>()
   private readonly streamControllersByRunId = new Map<string, LarkStreamingController>()
+  private readonly runEventQueueByRunId = new Map<string, Promise<void>>()
   private started = false
 
   constructor(
@@ -1055,6 +1056,38 @@ export class LarkIntegrationService {
   }
 
   private async handleWorkerEvent(event: SessionEvent): Promise<void> {
+    // Preserve per-run ordering across async awaits inside handlers (e.g. typing reaction,
+    // card creation). Without this, a terminal event can overtake earlier stream events,
+    // resulting in "final only" delivery.
+    const runId = ('runId' in event && typeof event.runId === 'string' && event.runId.trim())
+      ? event.runId.trim()
+      : null
+    if (runId) {
+      this.enqueueRunEvent(runId, () => this.handleWorkerEventInner(event))
+      return
+    }
+    await this.handleWorkerEventInner(event)
+  }
+
+  private enqueueRunEvent(runId: string, task: () => Promise<void>): void {
+    const prev = this.runEventQueueByRunId.get(runId) ?? Promise.resolve()
+    const next = prev
+      .then(task)
+      .catch((error) => {
+        this.deps.logger.error('lark:run-event:error', {
+          runId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+      .finally(() => {
+        if (this.runEventQueueByRunId.get(runId) === next) {
+          this.runEventQueueByRunId.delete(runId)
+        }
+      })
+    this.runEventQueueByRunId.set(runId, next)
+  }
+
+  private async handleWorkerEventInner(event: SessionEvent): Promise<void> {
     const sessionId = event.sessionId
     if (!sessionId) return
 
@@ -1102,7 +1135,7 @@ export class LarkIntegrationService {
       // If the run is already delivered, ignore any late stream events to avoid
       // creating a second streaming card after the final card was sent.
       if (this.deliveredRunIds.has(event.runId)) return
-      await this.ensureTypingReactionStarted(channel, event.runId)
+      void this.ensureTypingReactionStarted(channel, event.runId)
       const streamingController = this.getOrCreateStreamingController(channel, sessionId, event.runId)
       await streamingController.onStreamEvent(event.event)
       return
@@ -1375,10 +1408,7 @@ export class LarkIntegrationService {
       runId,
       conversationKey: channel.channelKey,
       sessionId,
-      buildCard: (params) => buildStreamingCardDocumentFromParams({
-        ...params,
-        materializedMessages: this.materializedMessagesByRunId.get(runId),
-      }),
+      buildCard: (params) => buildStreamingCardDocumentFromParams(params),
       buildFinalCard: async (footer) => {
         if (!footer) return null
         const page = await getMessagesPage(sessionId, {
@@ -1406,8 +1436,13 @@ export class LarkIntegrationService {
       },
       finalizeCardKit: async (cardId, closeSequence, updateSequence, card) => {
         try {
-          await this.setCardKitStreamingMode(channel, cardId, false, closeSequence)
+          // Update final content FIRST (while streaming_mode=true), THEN close streaming_mode.
+          // Rationale: CardKit accepts card.update only while streaming_mode is active; closing
+          // it first freezes the card at whatever was last shown (often Processing...).
+          // Here updateSequence is the smaller one (caller: nextSequence() ordering),
+          // so swap so that closeSequence is monotonically after updateSequence.
           await this.updateCardKitCard(channel, cardId, card, updateSequence)
+          await this.setCardKitStreamingMode(channel, cardId, false, closeSequence)
           return { delivered: true }
         } catch (error) {
           return { delivered: false, error: error instanceof Error ? error.message : String(error) }

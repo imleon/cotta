@@ -127,6 +127,12 @@ function shortId(value?: string | null): string | undefined {
   return value ? value.slice(0, 8) : undefined
 }
 
+function isSessionEventWire(value: unknown): value is SessionEvent {
+  if (!value || typeof value !== 'object') return false
+  const type = (value as Record<string, unknown>).type
+  return typeof type === 'string' && type.startsWith('session.')
+}
+
 function redactUrl(url: URL): string {
   const safe = new URL(url.toString())
   if (safe.searchParams.has('auth')) {
@@ -722,6 +728,13 @@ export const useSessionStore = defineStore('session', () => {
         syncSessionId(event.sessionId)
       }
       if (event.type === 'session.run.completed') {
+        if (event.sessionId && event.resultPayload !== undefined) {
+          patchLastAssistantMessageFooterFromResult({
+            sessionId: event.sessionId,
+            runId: event.runId,
+            resultPayload: event.resultPayload,
+          })
+        }
         logger.info('chat:done', {
           runId: shortId(event.runId),
           sessionId: shortId(event.sessionId),
@@ -922,7 +935,9 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function applyWireEvent(wire: unknown) {
-    if (!isWorkerOutputEvent(wire)) return
+    if (!isWorkerOutputEvent(wire)) {
+      return
+    }
 
     const sessionId = wire.sessionId
     const runId = typeof wire.runId === 'string' && wire.runId ? wire.runId : null
@@ -1013,6 +1028,10 @@ export const useSessionStore = defineStore('session', () => {
     onRawMessage: (raw) => {
       try {
         const parsed = JSON.parse(raw)
+        if (isSessionEventWire(parsed)) {
+          applyEvent(parsed)
+          return
+        }
         applyWireEvent(parsed)
       } catch (error) {
         logger.warn('ws:message:parse-error', {

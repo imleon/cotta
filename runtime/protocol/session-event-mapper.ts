@@ -6,6 +6,7 @@ import type {
   SessionEvent,
   SessionStreamEvent,
 } from './message-types.js'
+import { normalizeSdkEnvelopeMessage } from './transcript-normalizer.js'
 
 export class SessionEventMapper {
   private readonly activeStreamMessageIds = new Map<string, string>()
@@ -30,6 +31,7 @@ export class SessionEventMapper {
         }
 
       case 'sdk_message':
+        const parsedMessage = normalizeSdkEnvelopeMessage(event.payload)
         return {
           type: 'session.sdk.message',
           ...(event.runId ? { runId: event.runId } : {}),
@@ -37,6 +39,7 @@ export class SessionEventMapper {
           receivedAt: event.receivedAt,
           sequence: this.nextSequence(),
           payload: event.payload as SDKMessage,
+          ...(parsedMessage ? { parsed: parsedMessage } : {}),
         }
 
       case 'sdk_stream_event': {
@@ -82,6 +85,7 @@ export class SessionEventMapper {
             type: 'session.run.completed',
             runId: event.runId,
             sessionId: event.sessionId,
+            resultPayload: event.payload,
           }
         }
         return {

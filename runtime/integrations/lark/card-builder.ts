@@ -3,7 +3,6 @@ import type {
   DisplayAssistantFooter,
   SessionMessage,
 } from '../../protocol/message-types.js'
-import { stringifyStructuredValue } from '../../protocol/transcript-normalizer.js'
 import { buildAssistantFooterText } from '../../presentation/assistant-footer-format.js'
 import { buildHistoryDisplayItems } from '../../presentation/transcript-display.js'
 import {
@@ -116,6 +115,14 @@ function buildLarkPreviewElementsFromBlocks(
 
     if (block.kind === 'thinking') {
       const content = optimizeLarkMarkdownStyle(block.shownText.trim())
+      const active = isPreviewBlockActive(preview, block)
+      // Keep an empty thinking panel stable only while it is actively streaming.
+      // Once the block is inactive/finalized, an empty panel is just noise and can
+      // become the top-most element of the final card, which leaves the real text
+      // body shifted down and may cause Lark to keep showing the old placeholder UI.
+      if (!content && !active) {
+        continue
+      }
       const element = createLarkCollapsiblePanel({
         title: 'Thinking',
         subtitle: '',
@@ -132,7 +139,7 @@ function buildLarkPreviewElementsFromBlocks(
               content: ' ',
               text_size: LARK_COMPACT_TEXT_SIZE,
             }],
-        expanded: isPreviewBlockActive(preview, block),
+        expanded: active,
         variant: 'top_level',
         titleIcon: {
           tag: 'standard_icon',
@@ -182,81 +189,8 @@ function buildLarkPreviewElementsFromBlocks(
   return elements
 }
 
-function flattenAssistantEntries(entries: AssistantDetailEntry[]): AssistantDetailEntry[] {
-  return entries.flatMap((entry) => entry.kind === 'tool_group' ? entry.entries : [entry])
-}
-
-function buildLarkPreviewMaterializedElements(messages: SessionMessage[] | undefined): unknown[] {
-  if (!messages?.length) return []
-  const items = buildHistoryDisplayItems(messages, { mode: 'default', includeHiddenAtoms: false })
-    .filter((item): item is AssistantDisplayItem => item.kind === 'assistant')
-  const target = items[items.length - 1]
-  if (!target) return []
-
-  const elements: unknown[] = []
-  for (const entry of flattenAssistantEntries(buildAssistantDetailEntries(target))) {
-    const element = buildLarkAssistantEntryElement(entry)
-    if (!element) continue
-    if (element.tag === 'collapsible_panel') {
-      elements.push(wrapTopLevelPanelInContainer(element as Record<string, unknown>))
-      continue
-    }
-    elements.push(element)
-  }
-  return elements
-}
-
 function buildLarkToolTitle(name: string): string {
   return name || 'unknown_tool'
-}
-
-function buildLarkToolInputDetail(input?: unknown): string {
-  const inputText = stringifyStructuredValue(input).trim().replace(/\s+/g, ' ')
-  return inputText.length > 240 ? `${inputText.slice(0, 240)}...` : inputText
-}
-
-function createLarkToolPanel(name: string, input?: unknown, resultText?: string): Record<string, unknown> {
-  const elements: unknown[] = [
-    {
-      tag: 'markdown',
-      content: `**${buildLarkToolTitle(name)}**`,
-      text_size: 'notation',
-    },
-  ]
-
-  const detail = buildLarkToolInputDetail(input)
-  if (detail) {
-    elements.push({
-      tag: 'plain_text',
-      content: detail,
-      text_size: 'notation',
-      text_color: 'grey',
-      margin: '4px 0px 0px 12px',
-    })
-  }
-
-  if (resultText) {
-    elements.push({
-      tag: 'markdown',
-      content: `**Result**\n${formatLarkCodeBlock(resultText)}`,
-      text_size: 'notation',
-      margin: '4px 0px 0px 12px',
-    })
-  }
-
-  return createLarkSectionPanel({
-    title: 'Tool',
-    verticalSpacing: '4px',
-    elements,
-  })
-}
-
-function createLarkToolResultPanel(resultText: string): Record<string, unknown> {
-  return createLarkSectionPanel({
-    title: 'Tool Result',
-    body: `**Result**\n${formatLarkCodeBlock(resultText)}`,
-    verticalSpacing: '4px',
-  })
 }
 
 function createLarkMarkdownBlock(content: string, textSize: string = 'normal_v2'): Record<string, unknown> | null {
@@ -614,15 +548,37 @@ function buildLarkAssistantElements(item: AssistantDisplayItem): unknown[] {
 }
 
 export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams): Record<string, unknown> {
-  if (!params.isFinal && params.preview) {
-    const materializedElements = buildLarkPreviewMaterializedElements(params.materializedMessages)
+  if (params.preview) {
     const previewElements = buildLarkPreviewElementsFromBlocks(params.preview)
+    const bodyElements: unknown[] = previewElements.length > 0
+      ? [...previewElements]
+      : [{
+          tag: 'markdown',
+          content: params.answerText?.trim() || 'Processing...',
+          text_align: 'left',
+          text_size: 'normal_v2',
+          margin: '0px 0px 0px 0px',
+          element_id: STREAMING_CARD_ELEMENT_ID,
+        }]
+
+    const footerText = params.isFinal && params.footer
+      ? buildAssistantFooterText(params.footer, { includeTimestamp: false })
+      : ''
+    if (params.isFinal && footerText.trim().length > 0) {
+      bodyElements.push({ tag: 'hr' })
+      bodyElements.push({
+        tag: 'markdown',
+        content: `<font color='grey'>${footerText}</font>`,
+        text_size: 'notation',
+      })
+    }
+
     return {
       schema: '2.0',
       config: {
         wide_screen_mode: true,
         update_multi: true,
-        streaming_mode: true,
+        ...(params.isFinal ? {} : { streaming_mode: true }),
         locales: ['zh_cn', 'en_us'],
         style: {
           text_size: {
@@ -634,15 +590,15 @@ export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams
           },
         },
         summary: {
-          content: 'Processing...',
+          content: params.isFinal ? 'Claude response' : 'Processing...',
           i18n_content: {
-            zh_cn: '处理中...',
-            en_us: 'Processing...',
+            zh_cn: params.isFinal ? 'Claude 回复' : '处理中...',
+            en_us: params.isFinal ? 'Claude response' : 'Processing...',
           },
         },
       },
       body: {
-        elements: [...materializedElements, ...previewElements],
+        elements: bodyElements,
       },
     }
   }
@@ -670,13 +626,23 @@ export function buildAssistantStreamingCard(params: LarkStreamingBuildCardParams
 
   if (normalizedToolCalls && normalizedToolCalls.length > 0) {
     for (const toolCall of normalizedToolCalls) {
-      elements.push(createLarkToolPanel(toolCall))
+      elements.push({
+        tag: 'markdown',
+        content: `**Tool**\n${toolCall}`,
+        text_size: 'notation',
+        margin: '4px 0px 0px 0px',
+      })
     }
   }
 
   if (normalizedToolResults && normalizedToolResults.length > 0) {
     for (const toolResult of normalizedToolResults) {
-      elements.push(createLarkToolResultPanel(toolResult))
+      elements.push({
+        tag: 'markdown',
+        content: `**Tool Result**\n${formatLarkCodeBlock(toolResult)}`,
+        text_size: 'notation',
+        margin: '4px 0px 0px 0px',
+      })
     }
   }
 

@@ -136,7 +136,9 @@ export class LarkStreamingController {
   }
 
   async onStreamEvent(event: SessionStreamEvent): Promise<void> {
-    if (!this.shouldProceed() || !this.shouldProcessStreamEvent(event)) return
+    if (!this.shouldProceed() || !this.shouldProcessStreamEvent(event)) {
+      return
+    }
 
     const nextPreview = reduceStreamPreviewEvent(this.text.previewState, event)
     this.text.previewState = nextPreview
@@ -157,18 +159,16 @@ export class LarkStreamingController {
     }
 
     const visibleText = renderStreamPreviewText(nextPreview)
-    if (!visibleText.trim() && !this.thinkingText.trim() && this.toolCalls.size === 0) return
-
-    // Seed the initial card with the first visible content instead of a generic
-    // "Processing..." placeholder, so users don't see an extra transient card.
     if (!this.text.accumulatedText.trim() && visibleText.trim()) {
       this.text.accumulatedText = visibleText.trim()
     }
 
     await this.ensureCardCreated()
     if (!this.shouldProceed()) return
-    this.advanceAnimation()
-    await this.throttledCardUpdate()
+    if (visibleText.trim() || this.thinkingText.trim() || this.toolCalls.size > 0) {
+      this.advanceAnimation()
+      await this.throttledCardUpdate()
+    }
   }
 
   async onMaterializedText(text: string): Promise<void> {
@@ -193,20 +193,27 @@ export class LarkStreamingController {
   }
 
   async onIdle(): Promise<boolean> {
-    if (!this.dispatchFullyComplete || LARK_TERMINAL_PHASES.has(this.phase)) return false
+    if (!this.dispatchFullyComplete || LARK_TERMINAL_PHASES.has(this.phase)) {
+      return false
+    }
 
     this.transition(LARK_STREAMING_PHASES.completed, 'normal')
     await this.prepareForTerminalUpdate()
-    if (!this.card.cardMessageId) return false
+    if (!this.card.cardMessageId) {
+      return false
+    }
 
     const finalText = this.text.completedText || this.text.accumulatedText || LARK_EMPTY_REPLY_FALLBACK_TEXT
     const footer = await this.deps.getFooterMetrics()
-    const finalCard = await this.deps.buildFinalCard?.(footer ?? undefined as never) ?? this.deps.buildCard({
+    // Finalize on the SAME streaming card: keep preview.blocks (now all settled),
+    // append footer, drop streaming_mode. No full-card replacement -> no flicker.
+    const finalCard = this.deps.buildCard({
       answerText: finalText,
       thinkingText: this.thinkingText || undefined,
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
       footer: footer ?? undefined,
       isFinal: true,
+      ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
     })
 
     await this.appendRequested(finalCard, finalText)
@@ -235,6 +242,7 @@ export class LarkStreamingController {
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
       footer: footer ?? undefined,
       isFinal: true,
+      ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
     })
 
     await this.appendRequested(finalCard, finalText)
@@ -260,6 +268,7 @@ export class LarkStreamingController {
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
       footer: footer ?? undefined,
       isFinal: true,
+      ...(this.renderedPreview ? { preview: this.renderedPreview } : {}),
     })
 
     await this.appendRequested(finalCard, finalText)
@@ -301,8 +310,11 @@ export class LarkStreamingController {
 
     this.createEpoch += 1
     const epoch = this.createEpoch
+    const seededAnswerText = this.text.accumulatedText.trim()
+      ? this.text.accumulatedText
+      : 'Processing...'
     const initialCard = this.deps.buildCard({
-      answerText: this.text.accumulatedText,
+      answerText: seededAnswerText,
       thinkingText: this.thinkingText || undefined,
       toolCalls: this.toolCalls.size > 0 ? [...this.toolCalls] : undefined,
       isFinal: false,
@@ -311,7 +323,7 @@ export class LarkStreamingController {
 
     this.cardCreationPromise = (async () => {
       try {
-        await this.appendRequested(initialCard, this.text.accumulatedText || 'interactive-card')
+        await this.appendRequested(initialCard, seededAnswerText || 'interactive-card')
         const cardKitResult = await this.deps.createCardKitMessage(initialCard)
         await this.deps.appendLog({
           eventName: cardKitResult.delivered ? 'message.delivered' : 'message.failed',
@@ -331,7 +343,7 @@ export class LarkStreamingController {
         }
 
         this.transition(LARK_STREAMING_PHASES.creation_failed, 'creation_failed')
-      } catch {
+      } catch (error) {
         if (this.isStaleCreate(epoch)) return
         this.transition(LARK_STREAMING_PHASES.creation_failed, 'creation_failed')
       }
@@ -377,12 +389,18 @@ export class LarkStreamingController {
   }
 
   private async performFlush(): Promise<void> {
-    if (!this.card.cardMessageId || LARK_TERMINAL_PHASES.has(this.phase)) return
+    if (!this.card.cardMessageId || LARK_TERMINAL_PHASES.has(this.phase)) {
+      return
+    }
     const signature = this.renderedPreview ? JSON.stringify(this.renderedPreview) : this.text.accumulatedText.trim()
-    if (!signature) return
+    if (!signature) {
+      return
+    }
 
     if (this.card.cardKitCardId) {
-      if (signature === this.text.lastFlushedText) return
+      if (signature === this.text.lastFlushedText) {
+        return
+      }
       const previewCard = this.deps.buildCard({
         answerText: this.text.accumulatedText,
         thinkingText: this.thinkingText || undefined,
@@ -413,15 +431,15 @@ export class LarkStreamingController {
   private async updateFinalCard(card: Record<string, unknown>): Promise<UpdateResult> {
     const effectiveCardId = this.card.cardKitCardId ?? this.card.originalCardKitCardId
     if (effectiveCardId) {
-      const closeSequence = this.nextSequence()
+      // updateSequence must be < closeSequence: we update the final content first
+      // (while streaming_mode=true), then close streaming_mode. See service.finalizeCardKit.
       const updateSequence = this.nextSequence()
-      return await this.deps.finalizeCardKit(effectiveCardId, closeSequence, updateSequence, card)
+      const closeSequence = this.nextSequence()
+      const result = await this.deps.finalizeCardKit(effectiveCardId, closeSequence, updateSequence, card)
+      return result
     }
 
-    if (!effectiveCardId) {
-      return { delivered: false, error: 'No message to finalize' }
-    }
-    return { delivered: false, error: 'No cardkit card to finalize' }
+    return { delivered: false, error: 'No message to finalize' }
   }
 
   private async appendRequested(card: Record<string, unknown>, summary: string): Promise<void> {

@@ -100,6 +100,19 @@ const logger = createDebugLogger('session-store')
 const EVENT_LOG_INTERVAL = 20
 const OPTIMISTIC_USER_MATCH_WINDOW_MS = 30_000
 
+function safeReadStorageValue(key: string): string | null {
+  try {
+    const value = localStorage.getItem(key)
+    return value && value.trim() ? value.trim() : null
+  } catch (error) {
+    logger.warn('storage:read:error', {
+      key,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+}
+
 type OptimisticUserMessage = SessionMessage & {
   optimistic: true
   localId: string
@@ -222,7 +235,7 @@ export const useSessionStore = defineStore('session', () => {
   const currentSessionId = ref<string | null>(null)
   const isConnected = ref(false)
   const runState = ref<SessionRunState>('idle')
-  const authToken = ref(localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || '')
+  const authToken = ref(safeReadStorageValue(AUTH_TOKEN_STORAGE_KEY) || '')
   const authError = ref('')
   const sessionNotice = ref('')
   const authRequired = ref(false)
@@ -499,14 +512,23 @@ export const useSessionStore = defineStore('session', () => {
 
   function persistAuthToken(token: string) {
     authToken.value = token.trim()
+    sessionNotice.value = ''
     logger.info('auth:set-token', {
       hasToken: Boolean(authToken.value),
       tokenLength: authToken.value.length,
     })
-    if (authToken.value) {
-      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken.value)
-    } else {
-      localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+    try {
+      if (authToken.value) {
+        localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken.value)
+      } else {
+        localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+      }
+    } catch (error) {
+      sessionNotice.value = '浏览器存储不可用，访问令牌仅在当前页面有效。'
+      logger.warn('auth:storage:write:error', {
+        hasToken: Boolean(authToken.value),
+        error: error instanceof Error ? error.message : String(error),
+      })
     }
   }
 
@@ -544,15 +566,22 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function claimRun(event: SessionEvent): boolean {
+    const summary = currentSessionSummary.value
+    const summaryHasActiveRun = summary?.sessionStatus === 'running' || summary?.sessionStatus === 'requires_action'
     const decision = decideRunClaim(
-      { activeRunId: activeRunId.value, awaitingRunStart },
+      {
+        activeRunId: activeRunId.value,
+        awaitingRunStart,
+        knownActiveRunId: summary?.activeRunId ?? null,
+        canRecoverUnknownRun: !activeRunId.value && !awaitingRunStart && summaryHasActiveRun,
+      },
       event,
     )
     awaitingRunStart = decision.next.awaitingRunStart
     activeRunId.value = decision.next.activeRunId
 
     if (decision.log) {
-      if (decision.log.level === 'info' && decision.log.kind === 'run-claimed') {
+      if (decision.log.level === 'info' && (decision.log.kind === 'run-claimed' || decision.log.kind === 'run-recovered')) {
         logger.info('chat:run-claimed', { runId: shortId(decision.log.runId) })
       } else if (decision.log.level === 'warn' && decision.log.kind === 'ignored-unclaimed-run') {
         logger.warn('chat:event:ignored-unclaimed-run', {
@@ -788,14 +817,7 @@ export const useSessionStore = defineStore('session', () => {
     if (agentIdPromise) return await agentIdPromise
 
     agentIdPromise = (async () => {
-      const stored = (() => {
-        try {
-          const value = localStorage.getItem(AGENT_ID_STORAGE_KEY)
-          return value && value.trim() ? value.trim() : null
-        } catch {
-          return null
-        }
-      })()
+      const stored = safeReadStorageValue(AGENT_ID_STORAGE_KEY)
 
       try {
         const result = await fetchAgentsRequest(apiFetch)
@@ -818,13 +840,20 @@ export const useSessionStore = defineStore('session', () => {
         agentIdCache = chosen
         if (chosen) {
           try {
-          localStorage.setItem(AGENT_ID_STORAGE_KEY, chosen)
-          } catch {
-            // ignore storage failures
+            localStorage.setItem(AGENT_ID_STORAGE_KEY, chosen)
+          } catch (error) {
+            sessionNotice.value = '浏览器存储不可用，默认 Agent 选择不会在刷新后保留。'
+            logger.warn('agent:storage:write:error', {
+              agentId: chosen,
+              error: error instanceof Error ? error.message : String(error),
+            })
           }
         }
         return chosen
-      } catch {
+      } catch (error) {
+        logger.warn('agents:resolve:error', {
+          error: error instanceof Error ? error.message : String(error),
+        })
         agentIdCache = stored ?? ''
         return agentIdCache
       } finally {
@@ -990,6 +1019,7 @@ export const useSessionStore = defineStore('session', () => {
     },
     shouldReconnect: () => !authError.value && (!authRequired.value || hasAuthToken.value),
     reconnectDelayMs: 3000,
+    reconnectMaxDelayMs: 30000,
   })
 
   function connect() {

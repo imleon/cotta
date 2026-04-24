@@ -15,6 +15,17 @@ export class SessionRegistry {
     return [...this.records.values()]
   }
 
+  snapshot(): SessionRecord[] {
+    return this.list().map((record) => ({ ...record }))
+  }
+
+  restore(snapshot: SessionRecord[]): void {
+    this.records.clear()
+    for (const record of snapshot) {
+      this.records.set(record.sessionId, { ...record })
+    }
+  }
+
   findByChannelId(channelId: string): SessionRecord | null {
     for (const record of this.records.values()) {
       if (record.channelId === channelId) return record

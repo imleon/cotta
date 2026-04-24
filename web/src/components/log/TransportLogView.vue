@@ -2,8 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useLogViewStore } from '../../stores/log-view'
 import { stringifyStructuredValue } from '../../lib/runtime-format'
+import { createDebugLogger } from '../../lib/debug'
 
 const logView = useLogViewStore()
+const logger = createDebugLogger('transport-log-view')
+const warnedPersistentParseKeys = new Set<string>()
 const sdkRawItems = computed(() => logView.sdkRawLog)
 const messageItems = computed(() => sdkRawItems.value.filter((item) => item.event.kind === 'sdk_message'))
 const controlItems = computed(() => sdkRawItems.value.filter((item) => item.event.kind !== 'sdk_message'))
@@ -194,7 +197,15 @@ function getPersistentRecord(line: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(line)
     return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
-  } catch {
+  } catch (error) {
+    const warnKey = line.slice(0, 160)
+    if (!warnedPersistentParseKeys.has(warnKey)) {
+      warnedPersistentParseKeys.add(warnKey)
+      logger.warn('persistent-log:parse:error', {
+        error: error instanceof Error ? error.message : String(error),
+        linePreview: warnKey,
+      })
+    }
     return null
   }
 }
@@ -349,14 +360,19 @@ async function scrollToBottom() {
 async function handleScroll() {
   const container = scrollContainer.value
   if (!container || container.scrollTop > 120) return
-  if (logView.selectedLogTab !== 'persistent') return
-  if (!logView.persistentLogHasMore || logView.persistentLogLoading) return
+  const isPersistent = logView.selectedLogTab === 'persistent'
+  const canLoadOlder = isPersistent
+    ? logView.persistentLogHasMore && !logView.persistentLogLoading
+    : logView.sdkRawLogHasMore && !logView.sdkRawLogLoading
+  if (!canLoadOlder) return
 
   logView.pauseSelectedLogFollow()
   preservingOlderScroll.value = true
   const previousHeight = container.scrollHeight
   const previousTop = container.scrollTop
-  const loaded = await logView.loadOlderPersistentLogs()
+  const loaded = isPersistent
+    ? await logView.loadOlderPersistentLogs()
+    : await logView.loadOlderSdkRawLogs()
   if (!loaded) {
     preservingOlderScroll.value = false
     return
@@ -482,6 +498,20 @@ onBeforeUnmount(() => {
         >
           {{ liveButtonLabel }}
         </button>
+      </div>
+
+      <div
+        v-if="(logView.selectedLogTab === 'messages' || logView.selectedLogTab === 'control') && logView.sdkRawLogHasMore"
+        class="pb-1 text-[10px] leading-5 text-[var(--tt-text-subtle)]"
+      >
+        向上滚动可继续加载更早的 SDK raw 日志。
+      </div>
+
+      <div
+        v-if="logView.selectedLogTab === 'persistent' && logView.persistentLogHasMore"
+        class="pb-1 text-[10px] leading-5 text-[var(--tt-text-subtle)]"
+      >
+        向上滚动可继续加载更早的 persistent 日志。
       </div>
 
       <div

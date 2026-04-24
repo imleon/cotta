@@ -56,6 +56,7 @@ async function main() {
   process.on('SIGTERM', () => void shutdown())
 
   injectWebSocket(server)
+  return shutdown
 }
 
 runWithFailFast(main, logger)

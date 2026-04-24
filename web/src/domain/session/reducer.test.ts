@@ -98,6 +98,8 @@ describe('decideRunClaim', () => {
     expect(result.next).toEqual({
       activeRunId: 'run-1',
       awaitingRunStart: false,
+      knownActiveRunId: 'run-1',
+      canRecoverUnknownRun: false,
     })
     expect(result.log).toEqual({
       level: 'info',
@@ -127,6 +129,68 @@ describe('decideRunClaim', () => {
       kind: 'ignored-unclaimed-run',
       runId: 'run-2',
       eventType: 'session.run.started',
+    })
+  })
+
+  it('recovers a known active run from session summary evidence', () => {
+    const result = decideRunClaim(
+      {
+        activeRunId: null,
+        awaitingRunStart: false,
+        knownActiveRunId: 'run-3',
+        canRecoverUnknownRun: false,
+      },
+      {
+        type: 'session.run.state_changed',
+        runId: 'run-3',
+        sessionId: 'session-1',
+        state: 'running',
+      } satisfies SessionEvent,
+    )
+
+    expect(result.accept).toBe(true)
+    expect(result.next).toEqual({
+      activeRunId: 'run-3',
+      awaitingRunStart: false,
+      knownActiveRunId: 'run-3',
+      canRecoverUnknownRun: false,
+    })
+    expect(result.log).toEqual({
+      level: 'info',
+      kind: 'run-recovered',
+      runId: 'run-3',
+      eventType: 'session.run.state_changed',
+    })
+  })
+
+  it('recovers an unknown active run when session summary says the session is already busy', () => {
+    const result = decideRunClaim(
+      {
+        activeRunId: null,
+        awaitingRunStart: false,
+        knownActiveRunId: null,
+        canRecoverUnknownRun: true,
+      },
+      {
+        type: 'session.run.state_changed',
+        runId: 'run-4',
+        sessionId: 'session-1',
+        state: 'running',
+      } satisfies SessionEvent,
+    )
+
+    expect(result.accept).toBe(true)
+    expect(result.next).toEqual({
+      activeRunId: 'run-4',
+      awaitingRunStart: false,
+      knownActiveRunId: 'run-4',
+      canRecoverUnknownRun: false,
+    })
+    expect(result.log).toEqual({
+      level: 'info',
+      kind: 'run-recovered',
+      runId: 'run-4',
+      eventType: 'session.run.state_changed',
     })
   })
 })

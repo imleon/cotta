@@ -124,6 +124,34 @@ export class SessionEventMapper {
   private cleanupRun(runId?: string): void {
     if (!runId) return
     this.streamSequenceByRunId.delete(runId)
+    for (const key of this.activeStreamMessageIds.keys()) {
+      if (key.startsWith(`run:${runId}:`)) {
+        this.activeStreamMessageIds.delete(key)
+      }
+    }
+  }
+
+  private getStreamTrackingKey(input: {
+    runId?: string
+    sessionId: string
+    parentToolUseId?: string | null
+  }): string {
+    const streamScope = input.parentToolUseId ?? 'root'
+    return input.runId
+      ? `run:${input.runId}:stream:${streamScope}`
+      : `session:${input.sessionId}:stream:${streamScope}`
+  }
+
+  private getScopeKey(input: {
+    runId?: string
+    sessionId: string
+    anchorKind: 'message' | 'tool_use' | 'ephemeral'
+    anchorId: string
+  }): string {
+    const prefix = input.runId
+      ? `run:${input.runId}`
+      : `session:${input.sessionId}`
+    return `${prefix}:${input.anchorKind}:${input.anchorId}`
   }
 
   private controlTransactionType(
@@ -181,14 +209,19 @@ export class SessionEventMapper {
       : null
     const directMessageId = typeof directMessage?.id === 'string' ? directMessage.id : undefined
 
+    const trackingKey = this.getStreamTrackingKey({
+      runId,
+      sessionId,
+      parentToolUseId,
+    })
     let messageId = directMessageId
     if (messageId) {
-      this.activeStreamMessageIds.set(sessionId, messageId)
+      this.activeStreamMessageIds.set(trackingKey, messageId)
     } else {
-      messageId = this.activeStreamMessageIds.get(sessionId)
+      messageId = this.activeStreamMessageIds.get(trackingKey)
     }
     if (eventType === 'message_stop') {
-      this.activeStreamMessageIds.delete(sessionId)
+      this.activeStreamMessageIds.delete(trackingKey)
     }
 
     const sequence = runId
@@ -198,9 +231,18 @@ export class SessionEventMapper {
       this.streamSequenceByRunId.set(runId, sequence)
     }
 
+    if (!messageId && (eventType === 'message_delta' || eventType === 'message_stop')) {
+      return null
+    }
+
     const scope: SessionStreamEvent['scope'] = messageId
       ? {
-          scopeKey: `${sessionId}:message:${messageId}`,
+          scopeKey: this.getScopeKey({
+            runId,
+            sessionId,
+            anchorKind: 'message',
+            anchorId: messageId,
+          }),
           anchorKind: 'message',
           anchorId: messageId,
           messageId,
@@ -209,16 +251,31 @@ export class SessionEventMapper {
         }
       : typeof parentToolUseId === 'string'
         ? {
-            scopeKey: `${sessionId}:tool_use:${parentToolUseId}`,
+            scopeKey: this.getScopeKey({
+              runId,
+              sessionId,
+              anchorKind: 'tool_use',
+              anchorId: parentToolUseId,
+            }),
             anchorKind: 'tool_use',
             anchorId: parentToolUseId,
             parentToolUseId,
             ...(index !== undefined ? { index } : {}),
           }
         : {
-            scopeKey: `${sessionId}:ephemeral:${sequence}`,
+            scopeKey: this.getScopeKey({
+              runId,
+              sessionId,
+              anchorKind: 'ephemeral',
+              anchorId: String(sequence),
+            }),
             anchorKind: 'ephemeral',
-            anchorId: `${sessionId}:ephemeral:${sequence}`,
+            anchorId: this.getScopeKey({
+              runId,
+              sessionId,
+              anchorKind: 'ephemeral',
+              anchorId: String(sequence),
+            }),
             ...(parentToolUseId !== undefined ? { parentToolUseId } : {}),
             ...(index !== undefined ? { index } : {}),
           }

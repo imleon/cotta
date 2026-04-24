@@ -65,7 +65,7 @@ describe('SessionEventMapper', () => {
       sequence: 1,
       event: {
         scope: {
-          scopeKey: 'session-1:message:message-1',
+          scopeKey: 'run:run-1:message:message-1',
           anchorKind: 'message',
           messageId: 'message-1',
         },
@@ -80,7 +80,7 @@ describe('SessionEventMapper', () => {
       sequence: 2,
       event: {
         scope: {
-          scopeKey: 'session-1:message:message-1',
+          scopeKey: 'run:run-1:message:message-1',
           anchorKind: 'message',
           messageId: 'message-1',
         },
@@ -96,7 +96,7 @@ describe('SessionEventMapper', () => {
       sequence: 3,
       event: {
         scope: {
-          scopeKey: 'session-1:message:message-1',
+          scopeKey: 'run:run-1:message:message-1',
           anchorKind: 'message',
           messageId: 'message-1',
         },
@@ -108,7 +108,7 @@ describe('SessionEventMapper', () => {
       sequence: 4,
       event: {
         scope: {
-          scopeKey: 'session-1:tool_use:tool-1',
+          scopeKey: 'run:run-1:tool_use:tool-1',
           anchorKind: 'tool_use',
           anchorId: 'tool-1',
           parentToolUseId: 'tool-1',
@@ -159,7 +159,7 @@ describe('SessionEventMapper', () => {
       sequence: 1,
       event: {
         scope: {
-          scopeKey: 'session-1:message:message-2',
+          scopeKey: 'run:run-1:message:message-2',
           messageId: 'message-2',
         },
         normalized: {
@@ -169,6 +169,110 @@ describe('SessionEventMapper', () => {
         },
       },
     })
+  })
+
+  it('tracks message ids per run so interleaved runs on the same session do not cross-wire deltas', () => {
+    const mapper = new SessionEventMapper()
+
+    mapper.mapWorkerOutputEvent({
+      kind: 'sdk_stream_event',
+      sessionId: 'session-1',
+      runId: 'run-1',
+      receivedAt: 1,
+      payload: {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          message: { id: 'message-1' },
+          content_block: { type: 'text', text: 'hello' },
+        },
+      },
+    })
+    mapper.mapWorkerOutputEvent({
+      kind: 'sdk_stream_event',
+      sessionId: 'session-1',
+      runId: 'run-2',
+      receivedAt: 2,
+      payload: {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          message: { id: 'message-2' },
+          content_block: { type: 'text', text: 'hola' },
+        },
+      },
+    })
+
+    const run1Delta = mapper.mapWorkerOutputEvent({
+      kind: 'sdk_stream_event',
+      sessionId: 'session-1',
+      runId: 'run-1',
+      receivedAt: 3,
+      payload: {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: ' world' },
+        },
+      },
+    })
+    const run2Delta = mapper.mapWorkerOutputEvent({
+      kind: 'sdk_stream_event',
+      sessionId: 'session-1',
+      runId: 'run-2',
+      receivedAt: 4,
+      payload: {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: ' mundo' },
+        },
+      },
+    })
+
+    expect(run1Delta).toMatchObject({
+      type: 'session.sdk.stream_event',
+      runId: 'run-1',
+      event: {
+        scope: {
+          scopeKey: 'run:run-1:message:message-1',
+          messageId: 'message-1',
+        },
+      },
+    })
+    expect(run2Delta).toMatchObject({
+      type: 'session.sdk.stream_event',
+      runId: 'run-2',
+      event: {
+        scope: {
+          scopeKey: 'run:run-2:message:message-2',
+          messageId: 'message-2',
+        },
+      },
+    })
+  })
+
+  it('drops message-scoped deltas that arrive without a tracked message start', () => {
+    const mapper = new SessionEventMapper()
+
+    const orphanDelta = mapper.mapWorkerOutputEvent({
+      kind: 'sdk_stream_event',
+      sessionId: 'session-1',
+      runId: 'run-1',
+      receivedAt: 1,
+      payload: {
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+        },
+      },
+    })
+
+    expect(orphanDelta).toBeNull()
   })
 
   it('maps control transaction families and phases onto the public session event types', () => {

@@ -69,6 +69,22 @@ function mergePersistentLogEntries(
   return sortPersistentLogEntries([...byCursor.values()])
 }
 
+function sortSdkRawLogEntries(entries: SessionSdkRawLogEntry[]): SessionSdkRawLogEntry[] {
+  return entries
+    .slice()
+    .sort((left, right) => left.cursor - right.cursor)
+}
+
+function mergeSdkRawLogEntries(
+  existing: SessionSdkRawLogEntry[],
+  incoming: SessionSdkRawLogEntry[],
+): SessionSdkRawLogEntry[] {
+  const byCursor = new Map<number, SessionSdkRawLogEntry>()
+  for (const entry of existing) byCursor.set(entry.cursor, entry)
+  for (const entry of incoming) byCursor.set(entry.cursor, entry)
+  return sortSdkRawLogEntries([...byCursor.values()])
+}
+
 export const useLogViewStore = defineStore('log-view', () => {
   const sessionStore = useSessionStore()
   const agents = ref<AgentDescriptor[]>([])
@@ -237,15 +253,17 @@ export const useLogViewStore = defineStore('log-view', () => {
         return false
       }
       const items = result.data.items
-      if (options.append) {
-        sdkRawLog.value = [...items, ...sdkRawLog.value]
-      } else if (options.follow) {
-        sdkRawLog.value = [...sdkRawLog.value, ...items]
+      if (options.append || options.follow) {
+        sdkRawLog.value = mergeSdkRawLogEntries(sdkRawLog.value, items)
       } else {
-        sdkRawLog.value = items
+        sdkRawLog.value = sortSdkRawLogEntries(items)
       }
-      sdkRawLogHasMore.value = false
-      sdkRawLogCursor.value = null
+      if (options.follow) {
+        // Keep older-page cursor state stable while live-following newer entries.
+      } else {
+        sdkRawLogHasMore.value = result.data.hasMore
+        sdkRawLogCursor.value = result.data.nextCursor
+      }
       logger.info('sdk-raw:load:success', {
         sessionId: shortId(sessionId),
         count: items.length,
@@ -365,7 +383,8 @@ export const useLogViewStore = defineStore('log-view', () => {
   }
 
   async function loadOlderSdkRawLogs() {
-    return false
+    if (!selectedSessionId.value || !sdkRawLogHasMore.value || sdkRawLogCursor.value === null) return false
+    return loadSdkRawLogs(selectedSessionId.value, { cursor: sdkRawLogCursor.value, append: true })
   }
 
   async function loadOlderPersistentLogs() {

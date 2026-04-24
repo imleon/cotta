@@ -52,8 +52,22 @@ export interface StatusResponse {
       permissionMode?: string
       allowTools?: string[]
       allowSkills?: string[]
-      mcpServers?: Record<string, unknown>
-      env?: Record<string, string>
+      mcpSummary?: {
+        count: number
+        servers: Array<{
+          name: string
+          enabled?: boolean
+        }>
+      }
+      envSummary?: {
+        keys: string[]
+        count: number
+      }
+      promptConfigSummary?: {
+        configured: boolean
+        keyCount: number
+        version?: string
+      }
     }
     counts: {
       sessions: number

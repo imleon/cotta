@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 
-const LATEST_SCHEMA_VERSION = 2
+const LATEST_SCHEMA_VERSION = 3
 
 type Migration = {
   version: number
@@ -127,6 +127,23 @@ const migrations: Migration[] = [
         CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_current_sdk_session_id_unique
         ON channels(current_sdk_session_id)
         WHERE current_sdk_session_id IS NOT NULL;
+      `)
+    },
+  },
+  {
+    version: 3,
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lark_inbound_receipts (
+          connector_id TEXT NOT NULL,
+          chat_id TEXT NOT NULL,
+          message_id TEXT NOT NULL,
+          processed_at INTEGER NOT NULL,
+          PRIMARY KEY (connector_id, chat_id, message_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_lark_inbound_receipts_processed_at
+        ON lark_inbound_receipts(processed_at);
       `)
     },
   },

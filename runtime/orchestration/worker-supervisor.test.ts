@@ -319,4 +319,58 @@ describe('WorkerSupervisor', () => {
     newQueue.close()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
+
+  it('keeps consuming worker output after a single callback failure', async () => {
+    const sessionRegistry = new SessionRegistry()
+    sessionRegistry.ensure('session-1', 'agent-1', {
+      workerRef: 'worker-1',
+      sessionStatus: 'idle',
+    })
+
+    const queue = createAsyncQueue<WorkerOutputEvent>()
+    const handle = {
+      workerRef: 'worker-1',
+      sessionId: 'session-1',
+      input: { write: vi.fn() },
+      output: queue.iterable,
+      close: vi.fn(),
+    }
+    const workerManager = {
+      get: vi.fn().mockReturnValue(handle),
+      start: vi.fn(),
+      stop: vi.fn(),
+      remove: vi.fn(),
+    }
+    const onWorkerEvent = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(undefined)
+    const supervisor = new WorkerSupervisor(
+      {
+        workerManager: workerManager as never,
+        sessionRegistry,
+      },
+      {
+        onWorkerEvent,
+      },
+    )
+
+    await supervisor.ensureWorker('session-1', baseAgent, 'resume')
+
+    queue.push({
+      kind: 'worker_closed',
+      sessionId: 'session-1',
+      receivedAt: 1,
+    })
+    queue.push({
+      kind: 'worker_closed',
+      sessionId: 'session-1',
+      receivedAt: 2,
+    })
+    queue.close()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(onWorkerEvent).toHaveBeenCalledTimes(2)
+    expect(workerManager.remove).toHaveBeenCalledWith('session-1')
+  })
 })

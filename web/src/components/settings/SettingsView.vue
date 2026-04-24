@@ -14,8 +14,11 @@ import {
   type ChannelSessionBindingItem,
 } from '../../api/channel-bindings'
 import { useSessionStore } from '../../stores/session'
+import { createDebugLogger } from '../../lib/debug'
+import { recordToRows, rowsToRecord, rowsToStringRecord, type KvRow } from './form-codec'
 
 const session = useSessionStore()
+const logger = createDebugLogger('settings-view')
 const isLoading = ref(false)
 const isSaving = ref(false)
 const loadError = ref('')
@@ -35,46 +38,6 @@ const statusBadgeClass = computed(() => {
   }
   return 'border-[color:color-mix(in_srgb,var(--tt-success)_28%,white)] bg-[color:color-mix(in_srgb,var(--tt-success)_10%,white)] text-[color:color-mix(in_srgb,var(--tt-success)_90%,var(--tt-text))]'
 })
-
-type KvRow = { key: string; value: string }
-
-function recordToRows(record: Record<string, unknown> | undefined): KvRow[] {
-  if (!record) return []
-  return Object.entries(record).map(([key, value]) => ({
-    key,
-    value: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-  }))
-}
-
-function rowsToRecord(rows: KvRow[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const row of rows) {
-    const key = row.key.trim()
-    if (!key) continue
-    const raw = row.value.trim()
-    if (!raw) {
-      out[key] = ''
-      continue
-    }
-    // Try JSON first so numbers/booleans/objects can round-trip.
-    try {
-      out[key] = JSON.parse(raw)
-    } catch {
-      out[key] = raw
-    }
-  }
-  return out
-}
-
-function rowsToStringRecord(rows: KvRow[]): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const row of rows) {
-    const key = row.key.trim()
-    if (!key) continue
-    out[key] = row.value
-  }
-  return out
-}
 
 function splitCsv(input: string): string[] {
   return input
@@ -99,6 +62,9 @@ async function loadChannelBindings() {
     }
     channelBindingsById.value = toChannelBindingsMap(result.data)
   } catch (error) {
+    logger.warn('channel-bindings:load:error', {
+      error: error instanceof Error ? error.message : String(error),
+    })
     saveError.value = error instanceof Error ? error.message : String(error)
   } finally {
     isBindingOverviewLoading.value = false
@@ -130,6 +96,9 @@ async function loadSettings() {
     config.value = data.config
     await loadChannelBindings()
   } catch (error) {
+    logger.warn('settings:load:error', {
+      error: error instanceof Error ? error.message : String(error),
+    })
     loadError.value = error instanceof Error ? error.message : String(error)
   } finally {
     isLoading.value = false
@@ -179,6 +148,9 @@ async function persistConfig(nextConfig: RuntimeConfig, notice: string) {
     saveNotice.value = notice
     return true
   } catch (error) {
+    logger.warn('settings:save:error', {
+      error: error instanceof Error ? error.message : String(error),
+    })
     saveError.value = error instanceof Error ? error.message : String(error)
     return false
   } finally {

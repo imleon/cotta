@@ -331,12 +331,14 @@ export function advanceStreamAnimationFrame(
 export type RunClaimState = {
   activeRunId: string | null
   awaitingRunStart: boolean
+  knownActiveRunId?: string | null
+  canRecoverUnknownRun?: boolean
 }
 
 export type RunClaimDecision = {
   accept: boolean
   next: RunClaimState
-  log?: { level: 'info' | 'warn'; kind: 'run-claimed' | 'ignored-unclaimed-run'; runId: string; eventType: string }
+  log?: { level: 'info' | 'warn'; kind: 'run-claimed' | 'run-recovered' | 'ignored-unclaimed-run'; runId: string; eventType: string }
 }
 
 export function getEventRunId(event: SessionEvent): string | null {
@@ -384,8 +386,39 @@ export function decideRunClaim(prev: RunClaimState, event: SessionEvent): RunCla
   if (prev.awaitingRunStart) {
     return {
       accept: true,
-      next: { activeRunId: eventRunId, awaitingRunStart: false },
+      next: {
+        activeRunId: eventRunId,
+        awaitingRunStart: false,
+        knownActiveRunId: eventRunId,
+        canRecoverUnknownRun: false,
+      },
       log: { level: 'info', kind: 'run-claimed', runId: eventRunId, eventType: event.type },
+    }
+  }
+
+  if (prev.knownActiveRunId && prev.knownActiveRunId === eventRunId) {
+    return {
+      accept: true,
+      next: {
+        activeRunId: eventRunId,
+        awaitingRunStart: false,
+        knownActiveRunId: eventRunId,
+        canRecoverUnknownRun: false,
+      },
+      log: { level: 'info', kind: 'run-recovered', runId: eventRunId, eventType: event.type },
+    }
+  }
+
+  if (prev.canRecoverUnknownRun) {
+    return {
+      accept: true,
+      next: {
+        activeRunId: eventRunId,
+        awaitingRunStart: false,
+        knownActiveRunId: eventRunId,
+        canRecoverUnknownRun: false,
+      },
+      log: { level: 'info', kind: 'run-recovered', runId: eventRunId, eventType: event.type },
     }
   }
 

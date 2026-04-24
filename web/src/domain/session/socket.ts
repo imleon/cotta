@@ -19,6 +19,24 @@ export interface SessionSocketControllerOptions {
   onReconnectScheduled?: (delayMs: number) => void
   shouldReconnect: () => boolean
   reconnectDelayMs?: number
+  reconnectMaxDelayMs?: number
+  random?: () => number
+}
+
+export function calculateReconnectDelayMs(input: {
+  attempt: number
+  baseDelayMs: number
+  maxDelayMs: number
+  random?: () => number
+}): number {
+  const attempt = Math.max(0, input.attempt)
+  const baseDelayMs = Math.max(1, input.baseDelayMs)
+  const maxDelayMs = Math.max(baseDelayMs, input.maxDelayMs)
+  const exponentialDelay = Math.min(maxDelayMs, baseDelayMs * (2 ** attempt))
+  const jitterWindow = Math.round(exponentialDelay * 0.2)
+  const random = input.random ?? Math.random
+  const jittered = exponentialDelay - jitterWindow + Math.round(random() * jitterWindow * 2)
+  return Math.max(250, Math.min(maxDelayMs, jittered))
 }
 
 export function buildSessionWsUrl(input: {
@@ -40,10 +58,12 @@ export function buildSessionWsUrl(input: {
 
 export function createSessionSocketController(options: SessionSocketControllerOptions) {
   const reconnectDelayMs = options.reconnectDelayMs ?? 3000
+  const reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? 30000
   let ws: WebSocket | null = null
   let sessionFilter: string | null = null
   let reconnectTimer: number | null = null
   let intentionalClose = false
+  let reconnectAttempt = 0
 
   function clearReconnectTimer() {
     if (reconnectTimer !== null) {
@@ -52,9 +72,12 @@ export function createSessionSocketController(options: SessionSocketControllerOp
     }
   }
 
-  function disconnect() {
+  function disconnect(resetReconnectState: boolean = true) {
     intentionalClose = true
     clearReconnectTimer()
+    if (resetReconnectState) {
+      reconnectAttempt = 0
+    }
     if (ws) {
       options.onBeforeDisconnect?.(ws.readyState)
       ws.onclose = null
@@ -70,7 +93,7 @@ export function createSessionSocketController(options: SessionSocketControllerOp
       return
     }
 
-    disconnect()
+    disconnect(false)
     intentionalClose = false
 
     const sessionId = options.getSessionId()
@@ -86,6 +109,7 @@ export function createSessionSocketController(options: SessionSocketControllerOp
     ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
+      reconnectAttempt = 0
       options.onOpen(sessionId)
     }
 
@@ -98,12 +122,19 @@ export function createSessionSocketController(options: SessionSocketControllerOp
         wasClean: event.wasClean,
       })
       if (!intentionalClose && options.shouldReconnect()) {
+        const delayMs = calculateReconnectDelayMs({
+          attempt: reconnectAttempt,
+          baseDelayMs: reconnectDelayMs,
+          maxDelayMs: reconnectMaxDelayMs,
+          random: options.random,
+        })
+        reconnectAttempt += 1
         clearReconnectTimer()
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = null
           connect()
-        }, reconnectDelayMs)
-        options.onReconnectScheduled?.(reconnectDelayMs)
+        }, delayMs)
+        options.onReconnectScheduled?.(delayMs)
       }
     }
 

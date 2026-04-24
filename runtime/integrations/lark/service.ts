@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import * as Lark from '@larksuiteoapi/node-sdk'
 import type { ConfigRegistry } from '../../config/registry.js'
-import type { ChannelConfig } from '../../config/schema.js'
+import type { ChannelConfig, ConnectorConfig } from '../../config/schema.js'
 import type { Orchestrator } from '../../orchestration/orchestrator.js'
 import type { SessionRegistry } from '../../orchestration/session-registry.js'
 import { getMessagesPage, getSession } from '../../storage/fs/sessions.js'
@@ -37,6 +37,7 @@ import {
   isEventExpired,
   listEnabledLarkChannels,
   listLarkConnectors,
+  parseConnectorConfig,
   parseLarkTextContent,
   truncateText,
   type LarkReceiveEvent,
@@ -90,7 +91,7 @@ type ClientWithCardkit = Lark.Client & {
 
 export class LarkIntegrationService {
   private readonly subscriberKey = 'lark-integration'
-  private readonly deliveredRunIds = new Set<string>()
+  private readonly deliveredRunIds = new Map<string, number>()
   private readonly latestAssistantTextByRunId = new Map<string, string>()
   private readonly latestAssistantMessageByRunId = new Map<string, TranscriptMessage>()
   private readonly materializedMessagesByRunId = new Map<string, TranscriptMessage[]>()
@@ -178,22 +179,73 @@ export class LarkIntegrationService {
       return { status: 200, payload: { challenge: record.challenge } }
     }
 
-    const connectors = listLarkConnectors(this.deps.configRegistry)
+    const requestTraceId = randomUUID()
+    const allConnectors = listLarkConnectors(this.deps.configRegistry)
+    const appIdHint = this.extractInboundAppIdHint(record)
+    const connectors = appIdHint
+      ? allConnectors.filter((connector) => this.matchesConnectorAppId(connector, appIdHint))
+      : allConnectors
+    const attemptedConnectorIds: string[] = []
     for (const connector of connectors) {
       const dispatcher = this.clientManager.getDispatcher(connector.connectorId)
+      attemptedConnectorIds.push(connector.connectorId)
       try {
         await dispatcher.invoke(record, { needCheck: true })
+        this.deps.logger.info('lark:inbound:matched', {
+          requestTraceId,
+          connectorId: connector.connectorId,
+          appIdHint: appIdHint ?? undefined,
+          attemptedConnectors: attemptedConnectorIds.length,
+        })
         return { status: 200, payload: { ok: true } }
       } catch (error) {
-        // Try the next connector config. Each dispatcher validates token/decrypt settings.
+        this.deps.logger.warn('lark:inbound:connector-mismatch', {
+          requestTraceId,
+          connectorId: connector.connectorId,
+          appIdHint: appIdHint ?? undefined,
+          failureKind: this.classifyInboundDispatchError(error),
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
     }
 
     this.deps.logger.warn('lark:inbound:unmatched', {
-      connectorCount: connectors.length,
+      requestTraceId,
+      connectorCount: allConnectors.length,
+      attemptedConnectorIds,
+      appIdHint: appIdHint ?? undefined,
       keys: Object.keys(record),
     })
     return { status: 400, payload: { error: 'No matching lark connector' } }
+  }
+
+  private extractInboundAppIdHint(record: Record<string, unknown>): string | null {
+    const header = asRecord(record.header)
+    const event = asRecord(record.event)
+    const appIdCandidates = [
+      record.app_id,
+      header?.app_id,
+      event?.app_id,
+    ]
+    for (const candidate of appIdCandidates) {
+      const appId = asString(candidate)
+      if (appId) return appId
+    }
+    return null
+  }
+
+  private matchesConnectorAppId(connector: ConnectorConfig, appIdHint: string): boolean {
+    const parsed = parseConnectorConfig(connector)
+    return parsed?.appId === appIdHint
+  }
+
+  private classifyInboundDispatchError(error: unknown): string {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+    if (message.includes('token')) return 'token'
+    if (message.includes('encrypt') || message.includes('decrypt')) return 'decrypt'
+    if (message.includes('sign') || message.includes('signature')) return 'signature'
+    if (message.includes('app id') || message.includes('app_id')) return 'app_id'
+    return 'dispatch'
   }
 
   async handleCardAction(body: unknown): Promise<{ status: number; payload: unknown }> {
@@ -301,72 +353,83 @@ export class LarkIntegrationService {
     const dedupeKey = `${chatId}:${messageId}`
     this.cleanupInboundMessageDedupe()
     if (this.inboundMessageSeenAt.has(dedupeKey)) return
+    if (this.deps.configRepository.hasLarkInboundReceipt(connectorId, chatId, messageId)) {
+      this.deps.logger.info('lark:message:deduped-persisted', { connectorId, chatId, messageId })
+      return
+    }
     this.inboundMessageSeenAt.set(dedupeKey, Date.now())
 
-    if (isEventExpired(asString(data.message?.create_time))) {
-      this.deps.logger.info('lark:message:expired', { connectorId, chatId, messageId })
-      return
-    }
+    try {
+      if (isEventExpired(asString(data.message?.create_time))) {
+        this.deps.logger.info('lark:message:expired', { connectorId, chatId, messageId })
+        return
+      }
 
-    const channel = listEnabledLarkChannels(this.deps.configRegistry)
-      .find((item) => item.channelKey === chatId && item.connectorId === connectorId)
-    if (!channel) {
-      this.deps.logger.warn('lark:message:channel-miss', { connectorId, chatId })
-      return
-    }
+      const channel = listEnabledLarkChannels(this.deps.configRegistry)
+        .find((item) => item.channelKey === chatId && item.connectorId === connectorId)
+      if (!channel) {
+        this.deps.logger.warn('lark:message:channel-miss', { connectorId, chatId })
+        return
+      }
 
-    const command = this.interactionHandler.parseCommand(text)
-    const replyContext: LarkReplyContext = {
-      ...(messageId ? { replyToMessageId: messageId } : {}),
-      chatType,
-      ...(typeof data.sender?.sender_id?.open_id === 'string' ? { senderOpenId: data.sender.sender_id.open_id } : {}),
-    }
-    if (command) {
-      await this.handleInteractionCommand(channel, chatId, command, replyContext)
-      return
-    }
+      const command = this.interactionHandler.parseCommand(text)
+      const replyContext: LarkReplyContext = {
+        ...(messageId ? { replyToMessageId: messageId } : {}),
+        chatType,
+        ...(typeof data.sender?.sender_id?.open_id === 'string' ? { senderOpenId: data.sender.sender_id.open_id } : {}),
+      }
+      if (command) {
+        await this.handleInteractionCommand(channel, chatId, command, replyContext)
+        this.deps.configRepository.recordLarkInboundReceipt(connectorId, chatId, messageId)
+        return
+      }
 
-    let runtimeSession = this.deps.sessionRegistry.findByChannelId(channel.channelId)
-    if (!runtimeSession) {
-      const sessionId = this.deps.configRepository.getChannelCurrentSdkSessionId(channel.channelId) || randomUUID()
-      this.deps.channelBindingService.bindChannel(channel.channelId, sessionId, channel.agentId)
-      runtimeSession = this.deps.sessionRegistry.get(sessionId)
-    }
-    if (!runtimeSession) throw new Error(`Failed to resolve runtime session for channel ${channel.channelId}`)
+      let runtimeSession = this.deps.sessionRegistry.findByChannelId(channel.channelId)
+      if (!runtimeSession) {
+        const sessionId = this.deps.configRepository.getChannelCurrentSdkSessionId(channel.channelId) || randomUUID()
+        this.deps.channelBindingService.bindChannel(channel.channelId, sessionId, channel.agentId)
+        runtimeSession = this.deps.sessionRegistry.get(sessionId)
+      }
+      if (!runtimeSession) throw new Error(`Failed to resolve runtime session for channel ${channel.channelId}`)
 
-    const agent = this.deps.configRegistry.getAgent(channel.agentId)
-    if (!agent) {
-      throw new Error(`Agent not found for channel ${channel.channelId}: ${channel.agentId}`)
-    }
-    const persistedSession = await getSession(runtimeSession.sessionId, [agent.projectDir])
-    const mode = persistedSession ? 'resume' as const : 'new' as const
+      const agent = this.deps.configRegistry.getAgent(channel.agentId)
+      if (!agent) {
+        throw new Error(`Agent not found for channel ${channel.channelId}: ${channel.agentId}`)
+      }
+      const persistedSession = await getSession(runtimeSession.sessionId, [agent.projectDir])
+      const mode = persistedSession ? 'resume' as const : 'new' as const
 
-    const dispatched = await this.deps.orchestrator.dispatchRun({
-      sessionId: runtimeSession.sessionId,
-      agentId: channel.agentId,
-      text,
-      mode,
-    })
-    this.replyContextByRunId.set(dispatched.runId, replyContext)
-    this.runStartedAtByRunId.set(dispatched.runId, Date.now())
-    // Create the streaming controller eagerly so `result` won't race ahead and
-    // take the "no-controller" path (which would create a second card).
-    this.getOrCreateStreamingController(channel, runtimeSession.sessionId, dispatched.runId)
-    if (messageId) {
-      this.typingReactionByRunId.set(dispatched.runId, {
-        sourceMessageId: messageId,
-        started: false,
-        cleared: false,
+      const dispatched = await this.deps.orchestrator.dispatchRun({
+        sessionId: runtimeSession.sessionId,
+        agentId: channel.agentId,
+        text,
+        mode,
       })
+      this.replyContextByRunId.set(dispatched.runId, replyContext)
+      this.runStartedAtByRunId.set(dispatched.runId, Date.now())
+      // Create the streaming controller eagerly so `result` won't race ahead and
+      // take the "no-controller" path (which would create a second card).
+      this.getOrCreateStreamingController(channel, runtimeSession.sessionId, dispatched.runId)
+      if (messageId) {
+        this.typingReactionByRunId.set(dispatched.runId, {
+          sourceMessageId: messageId,
+          started: false,
+          cleared: false,
+        })
+      }
+      this.deps.configRepository.recordLarkInboundReceipt(connectorId, chatId, messageId)
+      this.deps.logger.info('lark:message:dispatched', {
+        connectorId,
+        channelId: channel.channelId,
+        sessionId: runtimeSession.sessionId,
+        runId: dispatched.runId,
+        chatId,
+        chatType,
+      })
+    } catch (error) {
+      this.inboundMessageSeenAt.delete(dedupeKey)
+      throw error
     }
-    this.deps.logger.info('lark:message:dispatched', {
-      connectorId,
-      channelId: channel.channelId,
-      sessionId: runtimeSession.sessionId,
-      runId: dispatched.runId,
-      chatId,
-      chatType,
-    })
   }
 
   private async handleWorkerEvent(event: SessionEvent): Promise<void> {
@@ -476,14 +539,13 @@ export class LarkIntegrationService {
     const runId = event.runId
     if (!runId) return
     if (this.deliveredRunIds.has(runId)) return
-    this.deliveredRunIds.add(runId)
 
     try {
       const replyContext = this.replyContextByRunId.get(runId)
       const streamingController = this.streamControllersByRunId.get(runId)
+      let delivered = false
       if (streamingController) {
         await this.waitForTerminalSettling()
-        let delivered = false
         if (event.type === 'session.run.completed') {
           streamingController.markFullyComplete()
           delivered = await streamingController.onIdle()
@@ -494,6 +556,7 @@ export class LarkIntegrationService {
           const card = await this.buildFinalCardForRun(sessionId, runId)
           if (card) {
             await this.createCardKitMessage(channel, card, replyContext)
+            delivered = true
           }
         }
       } else {
@@ -507,24 +570,35 @@ export class LarkIntegrationService {
         const card = await this.buildFinalCardForRun(sessionId, runId, text)
         if (card) {
           await this.createCardKitMessage(channel, card, replyContext)
+          delivered = true
         }
+      }
+      if (delivered) {
+        this.deliveredRunIds.set(runId, Date.now())
       }
       this.deps.logger.info('lark:message:sent', {
         runId,
         sessionId,
         conversationKey: channel.channelKey,
       })
-      this.latestAssistantTextByRunId.delete(runId)
-      this.latestAssistantMessageByRunId.delete(runId)
-      this.replyContextByRunId.delete(runId)
-      await this.clearTypingReaction(runId, channel)
-      this.cleanupStreamingRun(runId)
     } catch (error) {
       this.deps.logger.error('lark:message:send:error', {
         runId,
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       })
+    } finally {
+      try {
+        await this.clearTypingReaction(runId, channel)
+      } catch (error) {
+        this.deps.logger.error('lark:typing:cleanup:error', {
+          runId,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+      this.releaseRunState(runId)
+      this.cleanupDeliveredRuns()
     }
   }
 
@@ -701,6 +775,15 @@ export class LarkIntegrationService {
     }
   }
 
+  private cleanupDeliveredRuns(ttlMs: number = 30 * 60 * 1000): void {
+    const now = Date.now()
+    for (const [runId, deliveredAt] of this.deliveredRunIds.entries()) {
+      if (now - deliveredAt > ttlMs) {
+        this.deliveredRunIds.delete(runId)
+      }
+    }
+  }
+
   private cleanupStreamingRun(runId: string): void {
     const controller = this.streamControllersByRunId.get(runId)
     controller?.dispose()
@@ -709,6 +792,13 @@ export class LarkIntegrationService {
     this.runStartedAtByRunId.delete(runId)
     this.typingReactionByRunId.delete(runId)
     this.materializedMessagesByRunId.delete(runId)
+  }
+
+  private releaseRunState(runId: string): void {
+    this.latestAssistantTextByRunId.delete(runId)
+    this.latestAssistantMessageByRunId.delete(runId)
+    this.replyContextByRunId.delete(runId)
+    this.cleanupStreamingRun(runId)
   }
 
   private getOrCreateStreamingController(channel: ChannelConfig, sessionId: string, runId: string): LarkStreamingController {

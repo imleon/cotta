@@ -31,7 +31,7 @@ describe('createSqliteDatabase', () => {
     try {
       const schemaVersion = db.prepare('SELECT version FROM schema_version').get() as { version: number }
 
-      expect(schemaVersion.version).toBe(2)
+      expect(schemaVersion.version).toBe(3)
       expect(getColumns(db, 'channels')).toContain('current_sdk_session_id')
     } finally {
       db.close()
@@ -85,7 +85,7 @@ describe('createSqliteDatabase', () => {
 
     try {
       const schemaVersion = db.prepare('SELECT version FROM schema_version').get() as { version: number }
-      expect(schemaVersion.version).toBe(2)
+      expect(schemaVersion.version).toBe(3)
       expect(getColumns(db, 'channels')).toContain('current_sdk_session_id')
     } finally {
       db.close()
@@ -117,7 +117,7 @@ describe('createSqliteDatabase', () => {
     db.close()
 
     expect(() => createSqliteDatabase(dbPath)).toThrow(
-      'Unsupported SQLite schema version 99; runtime supports up to 2',
+      'Unsupported SQLite schema version 99; runtime supports up to 3',
     )
   })
 

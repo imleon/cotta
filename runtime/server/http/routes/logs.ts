@@ -1,9 +1,13 @@
 import type { Hono } from 'hono'
 import { z } from 'zod'
+import type { ConfigRegistry } from '../../../config/registry.js'
+import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { AppEnv } from '../app-env.js'
+import { getProjectDirs } from '../helpers.js'
 import {
   getValidatedParams,
   getValidatedQuery,
+  sendError,
   sendInternalError,
   validateParams,
   validateQuery,
@@ -40,7 +44,33 @@ const PersistentLogsQuerySchema = SdkRawLogsQuerySchema.pick({
 })
 type PersistentLogsQuery = z.infer<typeof PersistentLogsQuerySchema>
 
+type AccessibleSession = { id: string } | null
+
+type LogAccessDeps = {
+  configRegistry: ConfigRegistry
+  sessionRegistry: Pick<SessionRegistry, 'get'>
+  getSession: (sessionId: string, projectDirs: string[]) => Promise<AccessibleSession>
+}
+
+export async function canAccessSessionLogs(sessionId: string, deps: LogAccessDeps): Promise<boolean> {
+  const runtimeSession = deps.sessionRegistry.get(sessionId)
+  if (runtimeSession?.sessionScope === 'managed') {
+    return true
+  }
+
+  const projectDirs = getProjectDirs(deps.configRegistry)
+  if (projectDirs.length === 0) {
+    return false
+  }
+
+  const persistedSession = await deps.getSession(sessionId, projectDirs)
+  return Boolean(persistedSession)
+}
+
 export function registerLogRoutes(app: Hono<AppEnv>, input: {
+  configRegistry: ConfigRegistry
+  sessionRegistry: Pick<SessionRegistry, 'get'>
+  getSession: (sessionId: string, projectDirs: string[]) => Promise<AccessibleSession>
   readSessionSdkRawLogs: (sessionId: string, cursor: number | null, limit: number, follow: boolean, full: boolean) => Promise<LogsPage>
   readSessionPersistentLogs: (sessionId: string, cursor: number | null, limit: number, follow: boolean) => Promise<LogsPage>
 }) {
@@ -53,6 +83,11 @@ export function registerLogRoutes(app: Hono<AppEnv>, input: {
       const { id } = getValidatedParams<SessionIdParams>(c)
       const { limit, cursor, follow, full } = getValidatedQuery<SdkRawLogsQuery>(c)
       try {
+        const authorized = await canAccessSessionLogs(id, input)
+        if (!authorized) {
+          c.get('logger').warn('http:sdk-raw-logs:forbidden', { sessionId: id })
+          return sendError(c, 404, 'session_not_found', `Session not found: ${id}`)
+        }
         const page = await input.readSessionSdkRawLogs(id, cursor, limit, follow, full)
         return c.json(page)
       } catch (err) {
@@ -74,6 +109,11 @@ export function registerLogRoutes(app: Hono<AppEnv>, input: {
       const { id } = getValidatedParams<SessionIdParams>(c)
       const { limit, cursor, follow } = getValidatedQuery<PersistentLogsQuery>(c)
       try {
+        const authorized = await canAccessSessionLogs(id, input)
+        if (!authorized) {
+          c.get('logger').warn('http:persistent-logs:forbidden', { sessionId: id })
+          return sendError(c, 404, 'session_not_found', `Session not found: ${id}`)
+        }
         const page = await input.readSessionPersistentLogs(id, cursor, limit, follow)
         return c.json(page)
       } catch (err) {

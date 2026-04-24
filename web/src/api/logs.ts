@@ -7,6 +7,8 @@ import { extractApiError, makeApiResult, readJsonSafe, type ApiResult } from './
 
 export interface SdkRawLogsData {
   items: SessionSdkRawLogEntry[]
+  hasMore: boolean
+  nextCursor: number | null
 }
 
 export interface PersistentLogsData {
@@ -35,7 +37,7 @@ export async function fetchSdkRawLogsRequest(
     return makeApiResult({
       ok: false,
       status: res.status,
-      data: { items: [] },
+      data: { items: [], hasMore: false, nextCursor: null },
       error: extractApiError(payload, res.status),
     })
   }
@@ -44,7 +46,11 @@ export async function fetchSdkRawLogsRequest(
   return makeApiResult({
     ok: true,
     status: res.status,
-    data: { items: Array.isArray(data.items) ? data.items : [] },
+    data: {
+      items: Array.isArray(data.items) ? data.items : [],
+      hasMore: Boolean(data.hasMore),
+      nextCursor: typeof data.nextCursor === 'number' ? data.nextCursor : null,
+    },
   })
 }
 

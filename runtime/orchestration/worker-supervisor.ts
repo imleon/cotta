@@ -83,8 +83,23 @@ export class WorkerSupervisor {
     void (async () => {
       try {
         for await (const event of handle.output) {
-          await this.callbacks.onWorkerEvent(event)
+          try {
+            await this.callbacks.onWorkerEvent(event)
+          } catch (error) {
+            logger.error('worker-output-event-callback-error', {
+              sessionId: handle.sessionId,
+              workerRef: handle.workerRef,
+              eventKind: event.kind,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
         }
+      } catch (error) {
+        logger.error('worker-output-consumer-error', {
+          sessionId: handle.sessionId,
+          workerRef: handle.workerRef,
+          error: error instanceof Error ? error.message : String(error),
+        })
       } finally {
         this.attachedWorkers.delete(handle.workerRef)
         if (this.isCurrentWorker(handle)) {

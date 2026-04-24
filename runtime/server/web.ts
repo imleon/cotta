@@ -49,6 +49,9 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
   })
   registerInteractiveRoutes(app, { orchestrator: context.orchestrator })
   registerLogRoutes(app, {
+    configRegistry: context.configRegistry,
+    sessionRegistry: context.sessionRegistry,
+    getSession: context.getSession,
     readSessionSdkRawLogs: context.readSessionSdkRawLogs,
     readSessionPersistentLogs: context.readSessionPersistentLogs,
   })
@@ -71,7 +74,6 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
     sessionRegistry: context.sessionRegistry,
     runRegistry: context.runRegistry,
     listSessionsByProjectDir: context.listSessionsByProjectDir,
-    listSessionsByProjectDirs: context.listSessionsByProjectDirs,
     getWorkerHealthBySessionId: context.getWorkerHealthBySessionId,
   })
 

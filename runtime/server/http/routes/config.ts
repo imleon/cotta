@@ -1,6 +1,7 @@
 import type { Hono } from 'hono'
 import type { RuntimeConfig } from '../../../config/schema.js'
 import type { MutableConfigRegistry } from '../../../config/registry.js'
+import type { SessionRecord } from '../../../orchestration/types.js'
 import {
   RuntimeConfigWrapperSchema,
   type RuntimeConfigWrapper,
@@ -20,6 +21,8 @@ type SessionRegistryLike = {
   ensure: (sessionId: string, agentId: string, init?: { channelId?: string }) => void
   claimChannel: (sessionId: string, channelId: string) => void
   releaseChannel: (channelId: string) => void
+  snapshot: () => SessionRecord[]
+  restore: (snapshot: SessionRecord[]) => void
 }
 
 function applyRuntimeConfigToSessionRegistry(
@@ -33,6 +36,61 @@ function applyRuntimeConfigToSessionRegistry(
     } else {
       sessionRegistry.releaseChannel(channel.channelId)
     }
+  }
+}
+
+async function rollbackRuntimeConfigState(input: {
+  previousConfig: RuntimeConfig
+  previousSessions: SessionRecord[]
+  configRepository: SqliteConfigRepository
+  configRegistry: MutableConfigRegistry
+  sessionRegistry: SessionRegistryLike
+  orchestrator: Orchestrator
+}): Promise<void> {
+  input.configRepository.replaceRuntimeConfig(input.previousConfig)
+  input.configRegistry.update(input.previousConfig)
+  input.sessionRegistry.restore(input.previousSessions)
+  await input.orchestrator.refreshConfigDependentSessions()
+}
+
+export async function replaceRuntimeConfigAtomically(input: {
+  config: RuntimeConfig
+  configRepository: SqliteConfigRepository
+  configRegistry: MutableConfigRegistry
+  sessionRegistry: SessionRegistryLike
+  orchestrator: Orchestrator
+}): Promise<{ refresh: { checked: number; rebuilt: number }; updatedAt: number | null }> {
+  const previousConfig = input.configRepository.loadRuntimeConfig()
+  const previousSessions = input.sessionRegistry.snapshot()
+
+  input.configRepository.replaceRuntimeConfig(input.config)
+
+  try {
+    input.configRegistry.update(input.config)
+    applyRuntimeConfigToSessionRegistry(input.config, input.sessionRegistry)
+    const refresh = await input.orchestrator.refreshConfigDependentSessions()
+    return {
+      refresh,
+      updatedAt: input.configRepository.getLastUpdatedAt(),
+    }
+  } catch (error) {
+    try {
+      await rollbackRuntimeConfigState({
+        previousConfig,
+        previousSessions,
+        configRepository: input.configRepository,
+        configRegistry: input.configRegistry,
+        sessionRegistry: input.sessionRegistry,
+        orchestrator: input.orchestrator,
+      })
+    } catch (rollbackError) {
+      throw new Error(
+        `Failed to apply runtime config and rollback also failed: ${
+          error instanceof Error ? error.message : String(error)
+        }; rollback: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+      )
+    }
+    throw new Error(`Failed to apply runtime config: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -67,11 +125,13 @@ export function registerConfigRoutes(app: Hono<AppEnv>, input: {
       }
 
       try {
-        input.configRepository.replaceRuntimeConfig(config)
-        input.configRegistry.update(config)
-        applyRuntimeConfigToSessionRegistry(config, input.sessionRegistry)
-        const refresh = await input.orchestrator.refreshConfigDependentSessions()
-        const updatedAt = input.configRepository.getLastUpdatedAt()
+        const { refresh, updatedAt } = await replaceRuntimeConfigAtomically({
+          config,
+          configRepository: input.configRepository,
+          configRegistry: input.configRegistry,
+          sessionRegistry: input.sessionRegistry,
+          orchestrator: input.orchestrator,
+        })
         logger.info('http:config:save:success', {
           durationMs: Date.now() - startedAt,
           connectors: config.connectors.length,

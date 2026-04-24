@@ -5,10 +5,9 @@ import type { Hono } from 'hono'
 import type { ConfigRegistry } from '../../../config/registry.js'
 import type { RunRegistry } from '../../../orchestration/run-registry.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
-import type { RunRecord, SessionRecord } from '../../../orchestration/types.js'
+import type { AgentTemplate, RunRecord, SessionRecord } from '../../../orchestration/types.js'
 import type { WorkerHealthSnapshot } from '../../../orchestration/worker-governance-service.js'
 import type { AppEnv } from '../app-env.js'
-import { getProjectDirs } from '../helpers.js'
 import { sendInternalError } from '../validation.js'
 
 type Config = {
@@ -21,6 +20,11 @@ type SessionSummary = {
   id: string
   title: string
   updatedAt: number
+}
+
+type AgentPersistedSessions = {
+  agentId: string
+  sessions: SessionSummary[]
 }
 
 type SessionLastRun = {
@@ -84,13 +88,104 @@ function toRuntimeSessionSnapshot(runtime: SessionRecord | null) {
   }
 }
 
+function summarizeEnv(env: AgentTemplate['env']) {
+  if (!env) return undefined
+  const keys = Object.keys(env).sort()
+  if (keys.length === 0) return undefined
+  return {
+    keys,
+    count: keys.length,
+  }
+}
+
+function summarizeMcpServers(mcpServers: AgentTemplate['mcpServers']) {
+  if (!mcpServers) return undefined
+  const names = Object.keys(mcpServers).sort()
+  if (names.length === 0) return undefined
+  return {
+    count: names.length,
+    servers: names.map((name) => {
+      const raw = mcpServers[name]
+      const enabled = typeof raw === 'object'
+        && raw !== null
+        && 'enabled' in raw
+        && typeof (raw as { enabled?: unknown }).enabled === 'boolean'
+        ? (raw as { enabled: boolean }).enabled
+        : undefined
+      return enabled === undefined ? { name } : { name, enabled }
+    }),
+  }
+}
+
+function summarizePromptConfig(promptConfig: AgentTemplate['promptConfig']) {
+  if (!promptConfig) return undefined
+  const keys = Object.keys(promptConfig).sort()
+  if (keys.length === 0) return undefined
+  const version = typeof promptConfig.version === 'string' || typeof promptConfig.version === 'number'
+    ? String(promptConfig.version)
+    : undefined
+  return {
+    configured: true,
+    keyCount: keys.length,
+    ...(version ? { version } : {}),
+  }
+}
+
+export function toStatusAgentConfig(agent: AgentTemplate) {
+  return {
+    agentId: agent.agentId,
+    projectDir: agent.projectDir,
+    ...(agent.model ? { model: agent.model } : {}),
+    ...(agent.permissionMode ? { permissionMode: agent.permissionMode } : {}),
+    ...(agent.allowTools ? { allowTools: agent.allowTools } : {}),
+    ...(agent.allowSkills ? { allowSkills: agent.allowSkills } : {}),
+    ...(summarizeMcpServers(agent.mcpServers) ? { mcpSummary: summarizeMcpServers(agent.mcpServers) } : {}),
+    ...(summarizeEnv(agent.env) ? { envSummary: summarizeEnv(agent.env) } : {}),
+    ...(summarizePromptConfig(agent.promptConfig) ? { promptConfigSummary: summarizePromptConfig(agent.promptConfig) } : {}),
+  }
+}
+
+export async function collectPersistedSessionsByAgent(
+  configuredAgents: Array<{ agentId: string; projectDir: string }>,
+  listSessionsByProjectDir: (dir: string) => Promise<SessionSummary[]>,
+): Promise<{
+  persistedSessions: SessionSummary[]
+  perAgentPersistedSessions: AgentPersistedSessions[]
+}> {
+  const uniqueDirs = [...new Set(configuredAgents.map((agent) => agent.projectDir.trim()).filter(Boolean))]
+  const sessionsByDir = new Map<string, SessionSummary[]>()
+
+  await Promise.all(uniqueDirs.map(async (dir) => {
+    sessionsByDir.set(dir, await listSessionsByProjectDir(dir))
+  }))
+
+  const perAgentPersistedSessions = configuredAgents.map((agent) => ({
+    agentId: agent.agentId,
+    sessions: sessionsByDir.get(agent.projectDir.trim()) ?? [],
+  }))
+
+  const persistedBySessionId = new Map<string, SessionSummary>()
+  for (const sessions of sessionsByDir.values()) {
+    for (const session of sessions) {
+      const existing = persistedBySessionId.get(session.id)
+      if (!existing || session.updatedAt > existing.updatedAt) {
+        persistedBySessionId.set(session.id, session)
+      }
+    }
+  }
+
+  return {
+    persistedSessions: [...persistedBySessionId.values()].sort((a, b) => b.updatedAt - a.updatedAt),
+    perAgentPersistedSessions,
+  }
+}
+
 export function registerStatusRoutes(app: Hono<AppEnv>, input: {
   config: Config
   configRegistry: ConfigRegistry
   sessionRegistry: SessionRegistry
   runRegistry: RunRegistry
   listSessionsByProjectDir: (dir: string) => Promise<SessionSummary[]>
-  listSessionsByProjectDirs: (dirs: string[]) => Promise<SessionSummary[]>
   getWorkerHealthBySessionId?: () => Record<string, WorkerHealthSnapshot>
 }) {
   app.get('/api/status', async (c) => {
@@ -98,15 +193,9 @@ export function registerStatusRoutes(app: Hono<AppEnv>, input: {
     const logger = c.get('logger')
     try {
       const configuredAgents = input.configRegistry.listAgents()
-      const projectDirs = getProjectDirs(input.configRegistry)
-      const persistedSessions = projectDirs.length > 0
-        ? await input.listSessionsByProjectDirs(projectDirs)
-        : []
-      const perAgentPersistedSessions = await Promise.all(
-        configuredAgents.map(async (agent) => ({
-          agentId: agent.agentId,
-          sessions: await input.listSessionsByProjectDir(agent.projectDir),
-        })),
+      const { persistedSessions, perAgentPersistedSessions } = await collectPersistedSessionsByAgent(
+        configuredAgents,
+        input.listSessionsByProjectDir,
       )
       const runtimeSessions = input.sessionRegistry.list()
       const runtimeBySessionId = new Map(runtimeSessions.map((record) => [record.sessionId, record]))
@@ -218,17 +307,7 @@ export function registerStatusRoutes(app: Hono<AppEnv>, input: {
           return status === 'running' || status === 'requires_action'
         }).length
         return {
-          agent: {
-            agentId: agent.agentId,
-            projectDir: agent.projectDir,
-            ...(agent.model ? { model: agent.model } : {}),
-            ...(agent.permissionMode ? { permissionMode: agent.permissionMode } : {}),
-            ...(agent.allowTools ? { allowTools: agent.allowTools } : {}),
-            ...(agent.allowSkills ? { allowSkills: agent.allowSkills } : {}),
-            ...(agent.mcpServers ? { mcpServers: agent.mcpServers } : {}),
-            ...(agent.env ? { env: agent.env } : {}),
-            ...(agent.promptConfig ? { promptConfig: agent.promptConfig } : {}),
-          },
+          agent: toStatusAgentConfig(agent),
           counts: {
             sessions: agentSessions.length,
             activeSessions: activeSessionCount,

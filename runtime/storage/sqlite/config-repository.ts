@@ -33,6 +33,8 @@ type ChannelRow = {
   enabled: number
 }
 
+type IdRow = { id: string }
+
 function parseJsonObject<T extends Record<string, unknown>>(raw: string | null, fallback: T, field: string): T {
   if (!raw) return fallback
   try {
@@ -124,15 +126,21 @@ export class SqliteConfigRepository {
   private readonly upsertConnectorStmt: Database.Statement
   private readonly upsertAgentStmt: Database.Statement
   private readonly upsertChannelStmt: Database.Statement
-  private readonly deleteAllChannelsStmt: Database.Statement
-  private readonly deleteAllAgentsStmt: Database.Statement
-  private readonly deleteAllConnectorsStmt: Database.Statement
+  private readonly deleteChannelStmt: Database.Statement<[string]>
+  private readonly deleteAgentStmt: Database.Statement<[string]>
+  private readonly deleteConnectorStmt: Database.Statement<[string]>
+  private readonly listChannelIdsStmt: Database.Statement<[], IdRow>
+  private readonly listAgentIdsStmt: Database.Statement<[], IdRow>
+  private readonly listConnectorIdsStmt: Database.Statement<[], IdRow>
   private readonly getLastUpdatedAtStmt: Database.Statement<[], { updatedAt: number | null }>
   private readonly updateChannelCurrentSdkSessionIdStmt: Database.Statement
   private readonly clearChannelSessionBindingStmt: Database.Statement
   private readonly clearSessionBindingsStmt: Database.Statement
   private readonly bindChannelToSessionTx: (channelId: string, sessionId: string) => void
   private readonly getChannelCurrentSdkSessionIdStmt: Database.Statement<[string], { currentSdkSessionId: string | null } | undefined>
+  private readonly hasLarkInboundReceiptStmt: Database.Statement<[string, string, string], { present: number } | undefined>
+  private readonly insertLarkInboundReceiptStmt: Database.Statement
+  private readonly cleanupLarkInboundReceiptsStmt: Database.Statement<[number]>
 
   constructor(private readonly db: Database.Database) {
     this.listConnectorsStmt = db.prepare(`
@@ -257,9 +265,12 @@ export class SqliteConfigRepository {
         enabled = excluded.enabled,
         updated_at = excluded.updated_at
     `)
-    this.deleteAllChannelsStmt = db.prepare('DELETE FROM channels')
-    this.deleteAllAgentsStmt = db.prepare('DELETE FROM agents')
-    this.deleteAllConnectorsStmt = db.prepare('DELETE FROM connectors')
+    this.deleteChannelStmt = db.prepare('DELETE FROM channels WHERE channel_id = ?')
+    this.deleteAgentStmt = db.prepare('DELETE FROM agents WHERE agent_id = ?')
+    this.deleteConnectorStmt = db.prepare('DELETE FROM connectors WHERE connector_id = ?')
+    this.listChannelIdsStmt = db.prepare('SELECT channel_id AS id FROM channels')
+    this.listAgentIdsStmt = db.prepare('SELECT agent_id AS id FROM agents')
+    this.listConnectorIdsStmt = db.prepare('SELECT connector_id AS id FROM connectors')
     this.getLastUpdatedAtStmt = db.prepare(`
       SELECT MAX(updated_at) AS updatedAt
       FROM (
@@ -289,6 +300,26 @@ export class SqliteConfigRepository {
       SELECT current_sdk_session_id AS currentSdkSessionId
       FROM channels
       WHERE channel_id = ?
+    `)
+    this.hasLarkInboundReceiptStmt = db.prepare(`
+      SELECT 1 AS present
+      FROM lark_inbound_receipts
+      WHERE connector_id = ?
+        AND chat_id = ?
+        AND message_id = ?
+      LIMIT 1
+    `)
+    this.insertLarkInboundReceiptStmt = db.prepare(`
+      INSERT OR IGNORE INTO lark_inbound_receipts (
+        connector_id,
+        chat_id,
+        message_id,
+        processed_at
+      ) VALUES (?, ?, ?, ?)
+    `)
+    this.cleanupLarkInboundReceiptsStmt = db.prepare(`
+      DELETE FROM lark_inbound_receipts
+      WHERE processed_at < ?
     `)
     this.bindChannelToSessionTx = db.transaction((channelId: string, sessionId: string) => {
       const updatedAt = Date.now()
@@ -343,13 +374,25 @@ export class SqliteConfigRepository {
     this.bindChannelToSessionTx(channelId, sessionId)
   }
 
+  hasLarkInboundReceipt(connectorId: string, chatId: string, messageId: string): boolean {
+    return Boolean(this.hasLarkInboundReceiptStmt.get(connectorId, chatId, messageId))
+  }
+
+  recordLarkInboundReceipt(
+    connectorId: string,
+    chatId: string,
+    messageId: string,
+    options?: { processedAt?: number; retentionMs?: number },
+  ): void {
+    const processedAt = options?.processedAt ?? Date.now()
+    const retentionMs = options?.retentionMs ?? 30 * 24 * 60 * 60 * 1000
+    this.insertLarkInboundReceiptStmt.run(connectorId, chatId, messageId, processedAt)
+    this.cleanupLarkInboundReceiptsStmt.run(processedAt - retentionMs)
+  }
+
   replaceRuntimeConfig(config: RuntimeConfig): void {
     const now = Date.now()
     const replaceAll = this.db.transaction((nextConfig: RuntimeConfig) => {
-      this.deleteAllChannelsStmt.run()
-      this.deleteAllAgentsStmt.run()
-      this.deleteAllConnectorsStmt.run()
-
       for (const connector of nextConfig.connectors) {
         this.upsertConnectorStmt.run({
           connectorId: connector.connectorId,
@@ -359,6 +402,8 @@ export class SqliteConfigRepository {
           updatedAt: now,
         })
       }
+
+      const nextConnectorIds = new Set(nextConfig.connectors.map((connector) => connector.connectorId))
 
       for (const agent of nextConfig.agents) {
         this.upsertAgentStmt.run({
@@ -377,6 +422,8 @@ export class SqliteConfigRepository {
         })
       }
 
+      const nextAgentIds = new Set(nextConfig.agents.map((agent) => agent.agentId))
+
       for (const channel of nextConfig.channels) {
         this.upsertChannelStmt.run({
           channelId: channel.channelId,
@@ -389,6 +436,23 @@ export class SqliteConfigRepository {
           createdAt: now,
           updatedAt: now,
         })
+      }
+
+      const nextChannelIds = new Set(nextConfig.channels.map((channel) => channel.channelId))
+      for (const row of this.listChannelIdsStmt.all() as IdRow[]) {
+        if (!nextChannelIds.has(row.id)) {
+          this.deleteChannelStmt.run(row.id)
+        }
+      }
+      for (const row of this.listAgentIdsStmt.all() as IdRow[]) {
+        if (!nextAgentIds.has(row.id)) {
+          this.deleteAgentStmt.run(row.id)
+        }
+      }
+      for (const row of this.listConnectorIdsStmt.all() as IdRow[]) {
+        if (!nextConnectorIds.has(row.id)) {
+          this.deleteConnectorStmt.run(row.id)
+        }
       }
     })
 

@@ -7,7 +7,10 @@ import type {
   SessionStreamEvent,
   StreamPreviewBlock,
   StreamPreviewState,
-} from './message-types.js'
+} from './stream-types.js'
+import { createLogger } from '../core/logger.js'
+
+const logger = createLogger('transcript-normalizer')
 
 export function reduceStreamPreviewEvent(
   current: StreamPreviewState | null,
@@ -315,7 +318,10 @@ export function stringifyStructuredValue(value: unknown): string {
 
   try {
     return JSON.stringify(value, null, 2)
-  } catch {
+  } catch (error) {
+    logger.warn('stringify-structured-value-failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
     return String(value)
   }
 }

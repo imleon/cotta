@@ -1,7 +1,10 @@
 import type { AgentTemplate } from '../orchestration/types.js'
 import type { WorkerHandle } from './types.js'
+import { createLogger } from '../core/logger.js'
 
 export type WorkerStartMode = 'new' | 'resume'
+
+const logger = createLogger('worker-manager')
 
 export interface WorkerFactory {
   start(input: {
@@ -67,7 +70,11 @@ export class WorkerManager {
         await handle.close()
         this.remove(sessionId)
         return true
-      } catch {
+      } catch (error) {
+        logger.warn('stop-inflight-worker-failed', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        })
         this.remove(sessionId)
         return false
       }

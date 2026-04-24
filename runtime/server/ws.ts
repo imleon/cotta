@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { UpgradeWebSocket } from 'hono/ws'
 import type { Orchestrator } from '../orchestration/orchestrator.js'
-import type { SessionEvent } from '../protocol/index.js'
+import type { ExternalAdminWsEvent, SessionEvent } from '../protocol/index.js'
 import { createLogger, shortId } from './logger.js'
 
 const logger = createLogger('websocket')
 
-function sendSocketEvent(ws: { send: (data: string) => void }, payload: unknown) {
+function sendSocketEvent(ws: { send: (data: string) => void }, payload: ExternalAdminWsEvent) {
   try {
     ws.send(JSON.stringify(payload))
   } catch (error) {

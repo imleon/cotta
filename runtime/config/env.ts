@@ -30,7 +30,8 @@ export const ENV = {
   workerHealthCheckIntervalMs: getInt('WORKER_HEALTH_CHECK_INTERVAL_MS', 5 * 60 * 1000),
   workerHealthCheckTimeoutMs: getInt('WORKER_HEALTH_CHECK_TIMEOUT_MS', 2_000),
   // Auto rebuild on unhealthy/error (best-effort).
-  // - Set to 0 to disable automatic rebuilds.
+  // - Set to 0 to rebuild immediately.
+  // - Set to a negative value to disable automatic rebuilds.
   workerAutoRebuildCooldownMs: getInt('WORKER_AUTO_REBUILD_COOLDOWN_MS', 5 * 60 * 1000),
 
   authToken: getString('APP_AUTH_TOKEN', ''),

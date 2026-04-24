@@ -4,8 +4,8 @@ import type {
   StreamAnimationCursor,
   StreamPreviewState,
   StreamRenderedPreviewState,
-} from '../../protocol/message-types.js'
-import type { SessionMessage } from '../../protocol/message-types.js'
+} from '../../protocol/index.js'
+import type { SessionMessage } from '../../protocol/session-contract-types.js'
 import {
   advanceStreamAnimationCursor,
   createStreamAnimationCursor,

@@ -22,6 +22,7 @@ export function createServerContext(input: { runtime: RuntimeContext }) {
   const larkIntegration = new LarkIntegrationService({
     configRegistry: runtime.configRegistry,
     configRepository: runtime.configRepository,
+    channelBindingService: runtime.channelBindingService,
     sessionRegistry: runtime.sessionRegistry,
     orchestrator: runtime.orchestrator,
     logger,
@@ -47,6 +48,7 @@ export function createServerContext(input: { runtime: RuntimeContext }) {
     configDbPath: runtime.configDbPath,
 
     configRepository: runtime.configRepository,
+    channelBindingService: runtime.channelBindingService,
     configRegistry: runtime.configRegistry,
     orchestrator: runtime.orchestrator,
     runRegistry: runtime.runRegistry,

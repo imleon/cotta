@@ -1,4 +1,4 @@
-import type { DisplayAssistantFooter } from '../protocol/message-types.js'
+import type { DisplayAssistantFooter } from '../protocol/transcript-display-types.js'
 import type { TranscriptAssistantUsage } from '../protocol/transcript-normalizer.js'
 
 export function getCompactModel(model?: string | null): string {

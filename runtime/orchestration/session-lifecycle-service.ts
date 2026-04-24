@@ -1,12 +1,9 @@
-import type { ConfigRegistry } from '../config/registry.js'
 import type { RunRegistry } from './run-registry.js'
 import type { SessionRegistry } from './session-registry.js'
-import type { WorkerStartMode } from '../execution/worker-manager.js'
 import type { WorkerSupervisor } from './worker-supervisor.js'
 
 export interface SessionLifecycleResult {
   sessionId: string
-  workerRef?: string
   stopped: boolean
   rebuilt?: boolean
   hadActiveRun: boolean
@@ -15,22 +12,27 @@ export interface SessionLifecycleResult {
 export type SessionRecoverResult = SessionLifecycleResult & {
   interruptRequested: boolean
   interruptRequestId?: string
+  interruptError?: string
   idleObserved: boolean
   interruptWaitMs?: number
+  aborted?: boolean
+  abortReason?: 'interrupt_failed' | 'stop_failed'
 }
 
 export class SessionLifecycleService {
   constructor(
     private readonly deps: {
-      configRegistry: ConfigRegistry
       sessionRegistry: SessionRegistry
       runRegistry: RunRegistry
       workerSupervisor: WorkerSupervisor
-      ensureWorkerForSession: (sessionId: string, agentId: string, mode: WorkerStartMode) => Promise<{ workerRef: string }>
       requestInterrupt: (sessionId: string) => Promise<{ requestId: string }>
       waitForIdle: (sessionId: string, timeoutMs: number) => Promise<boolean>
     },
   ) {}
+
+  private buildStopFailureError(sessionId: string, action: 'rebuild' | 'recover'): Error {
+    return new Error(`Failed to stop session before ${action}: ${sessionId}`)
+  }
 
   async stopSession(sessionId: string): Promise<SessionLifecycleResult> {
     const session = this.deps.sessionRegistry.get(sessionId)
@@ -64,11 +66,11 @@ export class SessionLifecycleService {
     }
 
     const stopResult = await this.stopSession(sessionId)
-    const worker = await this.deps.ensureWorkerForSession(sessionId, session.agentId, 'resume')
-
+    if (!stopResult.stopped) {
+      throw this.buildStopFailureError(sessionId, 'rebuild')
+    }
     return {
       ...stopResult,
-      workerRef: worker.workerRef,
       rebuilt: true,
     }
   }
@@ -87,6 +89,7 @@ export class SessionLifecycleService {
     const interruptTimeoutMs = input?.interruptTimeoutMs ?? 2_000
     let interruptRequested = false
     let interruptRequestId: string | undefined
+    let interruptError: string | undefined
     let idleObserved = false
     const waitStartedAt = Date.now()
 
@@ -96,22 +99,45 @@ export class SessionLifecycleService {
         const accepted = await this.deps.requestInterrupt(sessionId)
         interruptRequested = true
         interruptRequestId = accepted.requestId
-      } catch {
-        // Best-effort: proceed to stop/rebuild even if interrupt fails.
+      } catch (error) {
+        interruptError = error instanceof Error ? error.message : String(error)
+        return {
+          sessionId,
+          stopped: false,
+          rebuilt: false,
+          hadActiveRun: true,
+          interruptRequested: false,
+          interruptError,
+          idleObserved: false,
+          interruptWaitMs: Date.now() - waitStartedAt,
+          aborted: true,
+          abortReason: 'interrupt_failed',
+        }
       }
 
       idleObserved = await this.deps.waitForIdle(sessionId, interruptTimeoutMs)
     }
 
     const stopResult = await this.stopSession(sessionId)
-    const worker = await this.deps.ensureWorkerForSession(sessionId, session.agentId, 'resume')
-
+    if (!stopResult.stopped) {
+      return {
+        ...stopResult,
+        rebuilt: false,
+        interruptRequested,
+        ...(interruptRequestId ? { interruptRequestId } : {}),
+        ...(interruptError ? { interruptError } : {}),
+        idleObserved,
+        interruptWaitMs: Date.now() - waitStartedAt,
+        aborted: true,
+        abortReason: 'stop_failed',
+      }
+    }
     return {
       ...stopResult,
-      workerRef: worker.workerRef,
       rebuilt: true,
       interruptRequested,
       ...(interruptRequestId ? { interruptRequestId } : {}),
+      ...(interruptError ? { interruptError } : {}),
       idleObserved,
       interruptWaitMs: Date.now() - waitStartedAt,
     }

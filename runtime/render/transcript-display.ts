@@ -23,6 +23,9 @@ import {
   type TranscriptAssistantUsage,
   type TranscriptMessage,
 } from '../protocol/transcript-normalizer.js'
+import { createLogger } from '../core/logger.js'
+
+const logger = createLogger('transcript-display')
 
 export interface BuildDisplayItemsOptions {
   mode?: 'default' | 'transcript'
@@ -217,7 +220,10 @@ function stringifyStructuredContent(value: unknown): string {
 
   try {
     return JSON.stringify(value, null, 2)
-  } catch {
+  } catch (error) {
+    logger.warn('stringify-structured-content-failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
     return String(value)
   }
 }

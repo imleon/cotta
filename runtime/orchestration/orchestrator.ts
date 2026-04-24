@@ -1,14 +1,15 @@
 import type { ConfigRegistry } from '../config/registry.js'
 import type { SdkRawLogEvent, SessionEvent } from '../protocol/message-types.js'
 import { SessionEventMapper } from '../protocol/session-event-mapper.js'
-import type { RunTerminalStatus, SessionRecord, RunRecord } from './types.js'
+import { isRunTerminalStatus, type RunTerminalStatus, type SessionRecord, type RunRecord } from './types.js'
 import type { SessionRegistry } from './session-registry.js'
 import type { RunRegistry } from './run-registry.js'
 import type { WorkerOutputEvent } from '../execution/types.js'
-import type { WorkerManager, WorkerStartMode } from '../execution/worker-manager.js'
-import type { Logger } from '../server/logger.js'
+import type { WorkerManager } from '../execution/worker-manager.js'
+import type { Logger } from '../core/logger.js'
 import { EgressRouter } from './egress-router.js'
 import { WorkerSupervisor } from './worker-supervisor.js'
+import { computeWorkerConfigSignature } from './worker-config-signature.js'
 import { RunDispatcher, type DispatchRunInput, type V2HostControlSubtype, SessionBusyError } from './run-dispatcher.js'
 import { SessionLifecycleService, type SessionLifecycleResult, type SessionRecoverResult } from './session-lifecycle-service.js'
 import { InteractionCoordinator } from './interaction-coordinator.js'
@@ -29,6 +30,7 @@ export class Orchestrator {
   private readonly sessionLifecycle: SessionLifecycleService
   private readonly interactionCoordinator: InteractionCoordinator
   private sdkRawSequence = 0
+  private readonly sdkRawLogFailureNoticeByRunId = new Set<string>()
 
   constructor(
     private readonly deps: {
@@ -59,14 +61,9 @@ export class Orchestrator {
       persistSyntheticUserMessage: async (input) => await this.persistSyntheticUserMessage(input),
     })
     this.sessionLifecycle = new SessionLifecycleService({
-      configRegistry: deps.configRegistry,
       sessionRegistry: deps.sessionRegistry,
       runRegistry: deps.runRegistry,
       workerSupervisor: this.workerSupervisor,
-      ensureWorkerForSession: async (sessionId, agentId, mode) => {
-        const worker = await this.runDispatcher.ensureWorkerForSession(sessionId, agentId, mode)
-        return { workerRef: worker.workerRef }
-      },
       requestInterrupt: async (sessionId) => {
         const accepted = await this.runDispatcher.requestControlSession(sessionId, 'interrupt')
         return { requestId: accepted.requestId }
@@ -80,6 +77,11 @@ export class Orchestrator {
   }
 
   private waitForSessionIdle(sessionId: string, timeoutMs: number): Promise<boolean> {
+    const current = this.deps.sessionRegistry.get(sessionId)
+    if (current?.sessionStatus === 'idle' && !current.activeRunId) {
+      return Promise.resolve(true)
+    }
+
     return new Promise((resolve) => {
       const key = `session-idle:${sessionId}:${Date.now()}`
       const timeout = setTimeout(() => {
@@ -104,6 +106,13 @@ export class Orchestrator {
           resolve(false)
         }
       })
+
+      const latest = this.deps.sessionRegistry.get(sessionId)
+      if (latest?.sessionStatus === 'idle' && !latest.activeRunId) {
+        clearTimeout(timeout)
+        this.unsubscribe(key)
+        resolve(true)
+      }
     })
   }
 
@@ -133,14 +142,6 @@ export class Orchestrator {
 
   ensureSession(sessionId: string, agentId: string): SessionRecord {
     return this.deps.sessionRegistry.ensure(sessionId, agentId)
-  }
-
-  async ensureWorkerForSession(
-    sessionId: string,
-    agentId: string,
-    mode: WorkerStartMode,
-  ): Promise<import('../execution/types.js').WorkerHandle> {
-    return await this.runDispatcher.ensureWorkerForSession(sessionId, agentId, mode)
   }
 
   async dispatchRun(input: DispatchRunInput): Promise<{ sessionId: string; runId: string }> {
@@ -180,11 +181,43 @@ export class Orchestrator {
   }
 
   async rebuildSession(sessionId: string): Promise<SessionLifecycleResult> {
-    return await this.sessionLifecycle.rebuildSession(sessionId)
+    const result = await this.sessionLifecycle.rebuildSession(sessionId)
+    await this.startWorkerForSession(sessionId, 'resume')
+    return result
+  }
+
+  // Called after a config update is persisted and applied to the in-memory registry.
+  // This proactively rebuilds idle workers whose execution-relevant config changed,
+  // while keeping the "idle-gated rebuild" safety invariant.
+  async refreshConfigDependentSessions(): Promise<{ checked: number; rebuilt: number }> {
+    let checked = 0
+    let rebuilt = 0
+    for (const session of this.deps.sessionRegistry.list()) {
+      const worker = this.workerSupervisor.getWorker(session.sessionId)
+      if (!worker) continue
+      if (session.activeRunId || (session.sessionStatus && session.sessionStatus !== 'idle')) continue
+
+      const agent = this.deps.configRegistry.getAgent(session.agentId)
+      if (!agent) continue
+      checked += 1
+
+      const currentSig = session.workerConfigSig
+      // ensureWorker() will stop + restart if the signature changed and session is idle.
+      await this.workerSupervisor.ensureWorker(session.sessionId, agent, 'resume')
+      const next = this.deps.sessionRegistry.get(session.sessionId)
+      if (currentSig && next?.workerConfigSig && currentSig !== next.workerConfigSig) {
+        rebuilt += 1
+      }
+    }
+    return { checked, rebuilt }
   }
 
   async recoverSession(sessionId: string, input?: { interruptTimeoutMs?: number }): Promise<SessionRecoverResult> {
-    return await this.sessionLifecycle.recoverSession(sessionId, input)
+    const result = await this.sessionLifecycle.recoverSession(sessionId, input)
+    if (!result.aborted) {
+      await this.startWorkerForSession(sessionId, 'resume')
+    }
+    return result
   }
 
   private async handleWorkerOutput(event: WorkerOutputEvent): Promise<void> {
@@ -214,6 +247,7 @@ export class Orchestrator {
 
       case 'result':
         if (event.runId) {
+          this.sdkRawLogFailureNoticeByRunId.delete(event.runId)
           if (event.subtype === 'success') {
             this.deps.runRegistry.complete(event.runId, { kind: 'success' })
           } else {
@@ -231,9 +265,13 @@ export class Orchestrator {
         break
 
       case 'worker_closed':
+        if (event.runId) this.sdkRawLogFailureNoticeByRunId.delete(event.runId)
+        this.handleUnexpectedWorkerTermination(event)
         break
 
       case 'worker_error':
+        if (event.runId) this.sdkRawLogFailureNoticeByRunId.delete(event.runId)
+        this.handleUnexpectedWorkerTermination(event)
         break
 
       case 'control_message':
@@ -244,6 +282,44 @@ export class Orchestrator {
 
     await this.persistSdkRawEvent(event)
     this.broadcast(event)
+  }
+
+  private async startWorkerForSession(sessionId: string, mode: 'new' | 'resume'): Promise<void> {
+    const session = this.deps.sessionRegistry.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+    const agent = this.deps.configRegistry.getAgent(session.agentId)
+    if (!agent) throw new Error(`Agent not found for session ${sessionId}: ${session.agentId}`)
+    await this.workerSupervisor.ensureWorker(sessionId, agent, mode)
+  }
+
+  private handleUnexpectedWorkerTermination(
+    event: Extract<WorkerOutputEvent, { kind: 'worker_closed' | 'worker_error' }>,
+  ): void {
+    const session = this.deps.sessionRegistry.get(event.sessionId)
+    const runId = event.runId ?? session?.activeRunId
+    if (!runId) return
+
+    const run = this.deps.runRegistry.get(runId)
+    if (!run || isRunTerminalStatus(run.runStatus)) return
+
+    const message = event.kind === 'worker_error'
+      ? (event.error || 'Worker crashed unexpectedly.')
+      : 'Worker closed unexpectedly before the active run completed.'
+
+    this.deps.runRegistry.fail(runId, 'error_during_execution', {
+      kind: 'error_during_execution',
+      title: 'Worker Crashed',
+      brief: 'Worker terminated during an active run',
+      message,
+    })
+    this.deps.sessionRegistry.setActiveRun(event.sessionId, undefined)
+    this.deps.sessionRegistry.setStatus(event.sessionId, 'idle')
+    this.sessionEgress.publish({
+      type: 'session.run.failed',
+      runId,
+      sessionId: event.sessionId,
+      error: 'error_during_execution',
+    })
   }
 
   private async maybeRebuildWorkerAfterIdle(sessionId: string): Promise<void> {
@@ -258,8 +334,11 @@ export class Orchestrator {
     const agent = this.deps.configRegistry.getAgent(session.agentId)
     if (!agent) return
 
-    // This will rebuild only when the stored worker config differs from the desired config.
-    await this.workerSupervisor.ensureWorker(sessionId, agent, 'resume')
+    const desiredSig = computeWorkerConfigSignature(agent)
+    if (!session.workerConfigSig || session.workerConfigSig === desiredSig) return
+    // Lazy cold start: only stop the stale worker here; the next dispatch will
+    // rebuild it on demand. This avoids eager resource consumption during idle.
+    await this.workerSupervisor.stopWorker(sessionId)
   }
 
   private async persistSdkRawEvent(event: WorkerOutputEvent): Promise<void> {
@@ -272,12 +351,13 @@ export class Orchestrator {
     try {
       await this.deps.sdkRawLogWriter(runId, sdkRawEvent)
     } catch (error) {
-      console.warn('[orchestrator] failed to append sdk raw log', {
+      this.deps.logger.error('orchestrator:sdk-raw-log:append-failed', {
         sessionId: event.sessionId,
         runId,
         kind: event.kind,
         error: error instanceof Error ? error.message : String(error),
       })
+      this.publishSdkRawLogFailureNotice(event.sessionId, runId)
     }
   }
 
@@ -304,12 +384,25 @@ export class Orchestrator {
         },
       })
     } catch (error) {
-      console.warn('[orchestrator] failed to append synthetic user sdk raw log', {
+      this.deps.logger.error('orchestrator:synthetic-user-log:append-failed', {
         sessionId: input.sessionId,
         runId: input.runId,
         error: error instanceof Error ? error.message : String(error),
       })
+      this.publishSdkRawLogFailureNotice(input.sessionId, input.runId)
     }
+  }
+
+  private publishSdkRawLogFailureNotice(sessionId: string, runId: string): void {
+    if (!sessionId || !runId) return
+    if (this.sdkRawLogFailureNoticeByRunId.has(runId)) return
+    this.sdkRawLogFailureNoticeByRunId.add(runId)
+    this.sessionEgress.publish({
+      type: 'session.error',
+      sessionId,
+      runId,
+      error: 'SDK raw log persistence failed; audit trail may be incomplete.',
+    })
   }
 
   private toSdkRawLogEvent(event: WorkerOutputEvent): SdkRawLogEvent | null {

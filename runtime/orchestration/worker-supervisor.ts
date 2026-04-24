@@ -2,7 +2,10 @@ import type { AgentTemplate } from './types.js'
 import type { SessionRegistry } from './session-registry.js'
 import type { WorkerHandle, WorkerOutputEvent } from '../execution/types.js'
 import type { WorkerManager, WorkerStartMode } from '../execution/worker-manager.js'
+import { createLogger } from '../core/logger.js'
 import { computeWorkerConfigSignature } from './worker-config-signature.js'
+
+const logger = createLogger('worker-supervisor')
 
 export class WorkerSupervisor {
   private readonly attachedWorkers = new Set<string>()
@@ -27,7 +30,7 @@ export class WorkerSupervisor {
     mode: WorkerStartMode,
   ): Promise<WorkerHandle> {
     const desiredSig = computeWorkerConfigSignature(agent)
-    const existing = this.deps.workerManager.get(sessionId)
+    let existing = this.deps.workerManager.get(sessionId)
     if (existing) {
       const session = this.deps.sessionRegistry.get(sessionId)
       const currentSig = session?.workerConfigSig
@@ -37,20 +40,23 @@ export class WorkerSupervisor {
           return existing
         }
 
-        console.info('[worker-supervisor] config changed; rebuilding worker', {
+        logger.info('config-changed-rebuilding-worker', {
           sessionId,
-          // This is canonical JSON (not a hash). Avoid logging raw config (may contain secrets).
-          fromType: currentSig.length === 64 && /^[0-9a-f]+$/i.test(currentSig) ? 'sha256-legacy' : 'json',
+          // Worker signatures are canonical JSON snapshots only. Avoid logging raw config.
+          fromType: 'json',
           toType: 'json',
         })
         await this.stopWorker(sessionId)
+        existing = null
       } else if (!currentSig) {
         // Backfill the signature for existing sessions.
         this.deps.sessionRegistry.setWorkerConfigSig(sessionId, desiredSig)
       }
 
-      this.attachWorkerOutputIfNeeded(existing)
-      return existing
+      if (existing) {
+        this.attachWorkerOutputIfNeeded(existing)
+        return existing
+      }
     }
 
     const handle = await this.deps.workerManager.start(sessionId, agent, mode)
@@ -66,6 +72,10 @@ export class WorkerSupervisor {
     return stopped
   }
 
+  private isCurrentWorker(handle: WorkerHandle): boolean {
+    return this.deps.workerManager.get(handle.sessionId)?.workerRef === handle.workerRef
+  }
+
   private attachWorkerOutputIfNeeded(handle: WorkerHandle): void {
     if (this.attachedWorkers.has(handle.workerRef)) return
     this.attachedWorkers.add(handle.workerRef)
@@ -77,8 +87,10 @@ export class WorkerSupervisor {
         }
       } finally {
         this.attachedWorkers.delete(handle.workerRef)
-        this.deps.workerManager.remove(handle.sessionId)
-        this.deps.sessionRegistry.detachWorker(handle.sessionId)
+        if (this.isCurrentWorker(handle)) {
+          this.deps.workerManager.remove(handle.sessionId)
+          this.deps.sessionRegistry.detachWorker(handle.sessionId)
+        }
       }
     })()
   }

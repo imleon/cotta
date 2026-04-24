@@ -51,7 +51,7 @@ export function sendValidationError(
 async function readJsonSafely(c: Context<AppEnv>): Promise<unknown> {
   try {
     return await c.req.json()
-  } catch {
+  } catch (_parseError) {
     return undefined
   }
 }

@@ -1,5 +1,5 @@
 import type { RunRegistry } from '../../orchestration/run-registry.js'
-import type { StaticConfigRegistry } from '../../config/registry.js'
+import type { ConfigRegistry } from '../../config/registry.js'
 
 type LarkConfig = {
   appId: string
@@ -20,7 +20,7 @@ export function getLarkConfigStatus(lark: LarkConfig) {
   }
 }
 
-export function getProjectDirs(configRegistry: StaticConfigRegistry): string[] {
+export function getProjectDirs(configRegistry: ConfigRegistry): string[] {
   const dirs = configRegistry.listAgents().map((agent) => agent.projectDir)
   return [...new Set(dirs.map((dir) => dir.trim()).filter(Boolean))]
 }
@@ -42,4 +42,3 @@ export function toActiveRunSummary(runRegistry: RunRegistry, runId?: string | nu
     ...(run.sessionId ? { sessionId: run.sessionId } : {}),
   }
 }
-

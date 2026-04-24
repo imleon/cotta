@@ -7,6 +7,7 @@ export type {
   DisplayFragmentToolResult,
   DisplayFragmentToolUse,
   DisplayItem,
+  ExternalAdminWsEvent,
   LaneKind,
   LiveLaneKind,
   InteractiveSource,
@@ -42,7 +43,7 @@ export {
   buildDisplayItems,
   buildHistoryDisplayItems,
   buildTranscriptAtom,
-} from '../../../runtime/presentation/transcript-display.js'
+} from '../../../runtime/render/transcript-display.js'
 
 export {
   advanceStreamAnimationCursor,
@@ -63,16 +64,16 @@ export type {
 
 export {
   buildAssistantFooterText,
-} from '../../../runtime/presentation/assistant-footer-format.js'
+} from '../../../runtime/render/assistant-footer-format.js'
 
 export {
   buildElicitationContent,
   buildElicitationContentForObject,
   inferElicitationRenderer,
-} from '../../../runtime/presentation/elicitation-renderer.js'
+} from '../../../runtime/render/elicitation-renderer.js'
 
 export type {
   ElicitationFormField,
   ElicitationOption,
   ElicitationRenderer,
-} from '../../../runtime/presentation/elicitation-renderer.js'
+} from '../../../runtime/render/elicitation-renderer.js'

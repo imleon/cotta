@@ -18,12 +18,6 @@ function hasTable(db: Database.Database, tableName: string): boolean {
   return row?.name === tableName
 }
 
-function getTableColumns(db: Database.Database, tableName: string): string[] {
-  if (!hasTable(db, tableName)) return []
-  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
-  return rows.map((row) => row.name).filter((name): name is string => typeof name === 'string')
-}
-
 function ensureSchemaVersionTable(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
@@ -32,25 +26,26 @@ function ensureSchemaVersionTable(db: Database.Database): void {
   `)
 }
 
-function detectExistingSchemaVersion(db: Database.Database): number {
-  const connectorsExists = hasTable(db, 'connectors')
-  const agentsExists = hasTable(db, 'agents')
-  const channelsExists = hasTable(db, 'channels')
-
-  if (!connectorsExists && !agentsExists && !channelsExists) {
-    return 0
-  }
-
-  if (!(connectorsExists && agentsExists && channelsExists)) {
-    throw new Error('Unsupported SQLite schema: expected connectors, agents, and channels tables to either all exist or all be absent')
-  }
-
-  const channelColumns = new Set(getTableColumns(db, 'channels'))
-  return channelColumns.has('current_sdk_session_id') ? 2 : 1
+function hasUserTables(db: Database.Database): boolean {
+  const row = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name NOT LIKE 'sqlite_%'
+      AND name != 'schema_version'
+    LIMIT 1
+  `).get() as { name?: string } | undefined
+  return typeof row?.name === 'string'
 }
 
 function getSchemaVersion(db: Database.Database): number {
-  ensureSchemaVersionTable(db)
+  const schemaVersionTableExists = hasTable(db, 'schema_version')
+  if (!schemaVersionTableExists) {
+    if (hasUserTables(db)) {
+      throw new Error('Unsupported SQLite schema: schema_version table is required for non-empty databases')
+    }
+    ensureSchemaVersionTable(db)
+  }
   const rows = db.prepare('SELECT version FROM schema_version').all() as Array<{ version?: number }>
   if (rows.length > 1) {
     throw new Error('Invalid SQLite schema: schema_version must contain exactly one row')
@@ -64,9 +59,12 @@ function getSchemaVersion(db: Database.Database): number {
     return version as number
   }
 
-  const detectedVersion = detectExistingSchemaVersion(db)
-  db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(detectedVersion)
-  return detectedVersion
+  if (hasUserTables(db)) {
+    throw new Error('Invalid SQLite schema: schema_version must contain exactly one row')
+  }
+
+  db.prepare('INSERT INTO schema_version (version) VALUES (0)').run()
+  return 0
 }
 
 function setSchemaVersion(db: Database.Database, version: number): void {

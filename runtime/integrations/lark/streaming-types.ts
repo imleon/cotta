@@ -1,4 +1,4 @@
-import type { StreamAnimationCursor, StreamPreviewState } from '../../protocol/message-types.js'
+import type { StreamAnimationCursor, StreamPreviewState } from '../../protocol/stream-types.js'
 
 export const LARK_THROTTLE = {
   CARDKIT_MS: 100,

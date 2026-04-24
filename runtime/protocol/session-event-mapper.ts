@@ -3,9 +3,9 @@ import type { WorkerOutputEvent } from '../execution/types.js'
 import type {
   ControlTransactionSummary,
   SdkControlEnvelope,
-  SessionEvent,
-  SessionStreamEvent,
-} from './message-types.js'
+} from './control-types.js'
+import type { SessionEvent } from './runtime-event-types.js'
+import type { SessionStreamEvent } from './stream-types.js'
 import { normalizeSdkEnvelopeMessage } from './transcript-normalizer.js'
 
 export class SessionEventMapper {

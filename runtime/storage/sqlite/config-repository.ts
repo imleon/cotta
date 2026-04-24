@@ -1,5 +1,8 @@
 import type Database from 'better-sqlite3'
 import type { AgentConfig, ChannelConfig, ConnectorConfig, RuntimeConfig } from '../../config/schema.js'
+import { createLogger } from '../../core/logger.js'
+
+const logger = createLogger('sqlite-config-repository')
 
 type ConnectorRow = {
   connector_id: string
@@ -30,30 +33,38 @@ type ChannelRow = {
   enabled: number
 }
 
-function parseJsonObject<T extends Record<string, unknown>>(raw: string | null, fallback: T): T {
+function parseJsonObject<T extends Record<string, unknown>>(raw: string | null, fallback: T, field: string): T {
   if (!raw) return fallback
   try {
     const parsed = JSON.parse(raw) as unknown
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as T
     }
-  } catch {
-    // Ignore malformed persisted JSON and fall back to defaults.
+    throw new Error(`Expected object JSON in ${field}`)
+  } catch (error) {
+    logger.error('invalid-persisted-json-object', {
+      field,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw new Error(`Invalid persisted JSON object in ${field}`)
   }
-  return fallback
 }
 
-function parseJsonArray<T>(raw: string | null): T[] | undefined {
+function parseJsonArray<T>(raw: string | null, field: string): T[] | undefined {
   if (!raw) return undefined
   try {
     const parsed = JSON.parse(raw) as unknown
     if (Array.isArray(parsed)) {
       return parsed as T[]
     }
-  } catch {
-    // Ignore malformed persisted JSON and fall back to defaults.
+    throw new Error(`Expected array JSON in ${field}`)
+  } catch (error) {
+    logger.error('invalid-persisted-json-array', {
+      field,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw new Error(`Invalid persisted JSON array in ${field}`)
   }
-  return undefined
 }
 
 function stringifyJson(value: unknown): string {
@@ -69,22 +80,22 @@ function toConnectorConfig(row: ConnectorRow): ConnectorConfig {
   return {
     connectorId: row.connector_id,
     connectorType: row.connector_type,
-    connectorConfig: parseJsonObject(row.connector_config_json, {}),
+    connectorConfig: parseJsonObject(row.connector_config_json, {}, `connectors.${row.connector_id}.connector_config_json`),
   }
 }
 
 function toAgentConfig(row: AgentRow): AgentConfig {
-  const allowTools = parseJsonArray<string>(row.allow_tools_json)
-  const allowSkills = parseJsonArray<string>(row.allow_skills_json)
-  const mcpServers = parseJsonObject(row.mcp_servers_json, {})
-  const env = parseJsonObject<Record<string, string>>(row.env_json, {})
-  const promptConfig = parseJsonObject(row.prompt_config_json, {})
+  const allowTools = parseJsonArray<string>(row.allow_tools_json, `agents.${row.agent_id}.allow_tools_json`)
+  const allowSkills = parseJsonArray<string>(row.allow_skills_json, `agents.${row.agent_id}.allow_skills_json`)
+  const mcpServers = parseJsonObject(row.mcp_servers_json, {}, `agents.${row.agent_id}.mcp_servers_json`)
+  const env = parseJsonObject<Record<string, string>>(row.env_json, {}, `agents.${row.agent_id}.env_json`)
+  const promptConfig = parseJsonObject(row.prompt_config_json, {}, `agents.${row.agent_id}.prompt_config_json`)
 
   return {
     agentId: row.agent_id,
     ...(row.agent_name ? { agentName: row.agent_name } : {}),
     projectDir: row.project_dir,
-    modelJson: parseJsonObject(row.model_json, {}),
+    modelJson: parseJsonObject(row.model_json, {}, `agents.${row.agent_id}.model_json`),
     ...(row.permission_mode ? { permissionMode: row.permission_mode } : {}),
     ...(allowTools && allowTools.length > 0 ? { allowToolsJson: allowTools } : {}),
     ...(allowSkills && allowSkills.length > 0 ? { allowSkillsJson: allowSkills } : {}),
@@ -118,6 +129,9 @@ export class SqliteConfigRepository {
   private readonly deleteAllConnectorsStmt: Database.Statement
   private readonly getLastUpdatedAtStmt: Database.Statement<[], { updatedAt: number | null }>
   private readonly updateChannelCurrentSdkSessionIdStmt: Database.Statement
+  private readonly clearChannelSessionBindingStmt: Database.Statement
+  private readonly clearSessionBindingsStmt: Database.Statement
+  private readonly bindChannelToSessionTx: (channelId: string, sessionId: string) => void
   private readonly getChannelCurrentSdkSessionIdStmt: Database.Statement<[string], { currentSdkSessionId: string | null } | undefined>
 
   constructor(private readonly db: Database.Database) {
@@ -261,11 +275,31 @@ export class SqliteConfigRepository {
       SET current_sdk_session_id = @currentSdkSessionId, updated_at = @updatedAt
       WHERE channel_id = @channelId
     `)
+    this.clearChannelSessionBindingStmt = db.prepare(`
+      UPDATE channels
+      SET current_sdk_session_id = NULL, updated_at = @updatedAt
+      WHERE channel_id = @channelId
+    `)
+    this.clearSessionBindingsStmt = db.prepare(`
+      UPDATE channels
+      SET current_sdk_session_id = NULL, updated_at = @updatedAt
+      WHERE current_sdk_session_id = @sessionId
+    `)
     this.getChannelCurrentSdkSessionIdStmt = db.prepare(`
       SELECT current_sdk_session_id AS currentSdkSessionId
       FROM channels
       WHERE channel_id = ?
     `)
+    this.bindChannelToSessionTx = db.transaction((channelId: string, sessionId: string) => {
+      const updatedAt = Date.now()
+      this.clearChannelSessionBindingStmt.run({ channelId, updatedAt })
+      this.clearSessionBindingsStmt.run({ sessionId, updatedAt })
+      this.updateChannelCurrentSdkSessionIdStmt.run({
+        channelId,
+        currentSdkSessionId: sessionId,
+        updatedAt,
+      })
+    })
   }
 
   loadRuntimeConfig(): RuntimeConfig {
@@ -298,12 +332,15 @@ export class SqliteConfigRepository {
     return row?.currentSdkSessionId ?? null
   }
 
-  updateChannelCurrentSdkSessionId(channelId: string, sessionId: string | null): void {
-    this.updateChannelCurrentSdkSessionIdStmt.run({
+  clearChannelSessionBinding(channelId: string): void {
+    this.clearChannelSessionBindingStmt.run({
       channelId,
-      currentSdkSessionId: sessionId,
       updatedAt: Date.now(),
     })
+  }
+
+  bindChannelToSession(channelId: string, sessionId: string): void {
+    this.bindChannelToSessionTx(channelId, sessionId)
   }
 
   replaceRuntimeConfig(config: RuntimeConfig): void {

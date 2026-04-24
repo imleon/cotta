@@ -8,7 +8,8 @@ import type {
   SessionSdkRawLogEntry,
   SessionSdkRawLogPage,
   SdkRawLogEvent,
-} from '../../protocol/message-types.js'
+} from '../../protocol/index.js'
+import { sanitizeValue } from '../../core/sanitize.js'
 import { readAllSessionMessages } from './sessions.js'
 
 const LOG_DIR = './data/logs'
@@ -32,45 +33,10 @@ function sanitizeSessionId(sessionId: string): string | null {
   return /^[a-zA-Z0-9._-]+$/.test(sessionId) ? sessionId : null
 }
 
-const RAW_REDACTED = '[REDACTED]'
-
-function sanitizeRawString(value: string): string {
-  return value
-    .replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, `$1${RAW_REDACTED}`)
-    .replace(/([?&]auth=)[^&]+/gi, `$1${RAW_REDACTED}`)
-}
-
-function isSensitiveRawKey(key: string): boolean {
-  const normalized = key.toLowerCase()
-  return normalized.includes('token')
-    || normalized.includes('authorization')
-    || normalized.includes('secret')
-    || normalized.includes('password')
-    || normalized.includes('apikey')
-    || normalized === 'auth'
-}
-
-function sanitizeRawValue(value: unknown): unknown {
-  if (value == null) return value
-  if (typeof value === 'string') return sanitizeRawString(value)
-  if (typeof value === 'number' || typeof value === 'boolean') return value
-  if (value instanceof Error) return { name: value.name, message: sanitizeRawString(value.message) }
-  if (Array.isArray(value)) return value.map((item) => sanitizeRawValue(item))
-  if (typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => [
-        key,
-        isSensitiveRawKey(key) ? RAW_REDACTED : sanitizeRawValue(entryValue),
-      ])
-    )
-  }
-  return String(value)
-}
-
 function sanitizeSdkRawEvent(event: SdkRawLogEvent): SdkRawLogEvent {
   return {
     ...event,
-    message: sanitizeRawValue(event.message) as SdkRawLogEvent['message'],
+    message: sanitizeValue(event.message) as SdkRawLogEvent['message'],
   }
 }
 
@@ -181,7 +147,7 @@ function parseSdkRawLogLine(line: string, cursor: number): SessionSdkRawLogEntry
       sessionId: parsed.sessionId,
       event,
     }
-  } catch {
+  } catch (_parseError) {
     return null
   }
 }
@@ -222,7 +188,7 @@ function extractPersistentLogTimestamp(line: string): number | null {
       return Number.isNaN(value) ? null : value
     }
     return null
-  } catch {
+  } catch (_parseError) {
     return null
   }
 }
@@ -234,7 +200,7 @@ function extractPersistentLogUuid(line: string): string | null {
     return typeof (parsed as Record<string, unknown>).uuid === 'string'
       ? (parsed as Record<string, unknown>).uuid as string
       : null
-  } catch {
+  } catch (_parseError) {
     return null
   }
 }

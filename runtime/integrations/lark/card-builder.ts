@@ -4,16 +4,18 @@ import type {
   DisplayAssistantFooter,
   SessionMessage,
 } from '../../protocol/message-types.js'
-import { buildAssistantFooterText } from '../../presentation/assistant-footer-format.js'
-import { buildHistoryDisplayItems } from '../../presentation/transcript-display.js'
 import {
   buildAssistantDetailEntries,
-  type AssistantDetailEntry,
-  type AssistantGroupChildEntry,
-  type AssistantToolEntry,
-} from '../../presentation/assistant-detail-entries.js'
-import { extractThinkingSubtitle } from '../../presentation/assistant-row-semantics.js'
-import { buildAssistantToolRenderConfig } from '../../presentation/assistant-tool-sections.js'
+  buildAssistantFooterText,
+  buildAssistantToolRenderConfig,
+  buildHistoryDisplayItems,
+  extractThinkingSubtitle,
+} from '../../render/assistant-display.js'
+import type {
+  AssistantDetailEntry,
+  AssistantGroupChildEntry,
+  AssistantToolEntry,
+} from '../../render/assistant-detail-entries.js'
 import { optimizeLarkMarkdownStyle } from './markdown.js'
 import type { LarkStreamingBuildCardParams } from './streaming-controller.js'
 
@@ -219,8 +221,9 @@ function buildLarkPreviewElementsFromBlocks(
             token: 'setting-inter_outlined',
             color: 'blue',
           })
-      if (element && (element as any).tag === 'collapsible_panel') {
-        elements.push(wrapTopLevelPanelInContainer(element as Record<string, unknown>))
+      const elementRecord = element && typeof element === 'object' ? element as Record<string, unknown> : null
+      if (elementRecord?.tag === 'collapsible_panel') {
+        elements.push(wrapTopLevelPanelInContainer(elementRecord))
       } else if (element) {
         elements.push(element)
       }

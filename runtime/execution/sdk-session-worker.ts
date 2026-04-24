@@ -95,20 +95,63 @@ function toQueryOptions(
   agent: AgentTemplate,
   mode: WorkerStartMode,
 ): NonNullable<Parameters<typeof query>[0]['options']> {
+  type QueryOptions = NonNullable<Parameters<typeof query>[0]['options']>
+  type QueryMcpServers = QueryOptions['mcpServers']
+  type QuerySettingSources = QueryOptions['settingSources']
+  type QueryEnv = QueryOptions['env']
+  type QuerySettingSource = 'user' | 'project' | 'local'
   // Default to a small safe allowlist for convenience, unless configured.
   const defaultAllowedTools = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch']
   const allowedTools = Array.isArray(agent.allowTools) && agent.allowTools.length > 0
     ? agent.allowTools
     : defaultAllowedTools
+  // Explicitly mirror Cotta's runtime policy:
+  // - load user-level Claude settings (~/.claude/settings.json)
+  // - load project-level settings and CLAUDE.md under each projectDir
+  // This avoids behavior drift from SDK default changes across versions.
+  const defaultSettingSources: QuerySettingSources = ['user', 'project']
+
+  const promptConfig = (agent.promptConfig && typeof agent.promptConfig === 'object' && !Array.isArray(agent.promptConfig))
+    ? agent.promptConfig as Record<string, unknown>
+    : {}
+  const settingSourcesFromPrompt = Array.isArray(promptConfig.settingSources)
+    ? (promptConfig.settingSources.filter((item): item is QuerySettingSource => (
+      item === 'user' || item === 'project' || item === 'local'
+    )) as QuerySettingSources)
+    : null
+  const settingSources: QuerySettingSources = (settingSourcesFromPrompt && settingSourcesFromPrompt.length > 0)
+    ? settingSourcesFromPrompt
+    : defaultSettingSources
+
+  const env: QueryEnv | undefined = agent.env && Object.keys(agent.env).length > 0
+    ? agent.env
+    : undefined
+
+  // allowSkillsJson maps to Claude Code "skills" allowlist. When omitted, all discovered skills load.
+  const skills = Array.isArray(agent.allowSkills) && agent.allowSkills.length > 0
+    ? agent.allowSkills
+    : undefined
+
+  const planModeInstructions = typeof promptConfig.planModeInstructions === 'string'
+    ? promptConfig.planModeInstructions
+    : undefined
+  const allowDangerouslySkipPermissions = promptConfig.allowDangerouslySkipPermissions === true
+    ? true
+    : undefined
   return {
     ...(mode === 'new' ? { sessionId } : { resume: sessionId }),
     cwd: agent.projectDir,
     ...(agent.model ? { model: agent.model } : {}),
     ...(agent.permissionMode ? { permissionMode: agent.permissionMode as never } : {}),
+    ...(allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions } : {}),
+    ...(planModeInstructions ? { planModeInstructions } : {}),
     includePartialMessages: true,
     allowedTools,
-    ...(agent.mcpServers ? { mcpServers: agent.mcpServers as any } : {}),
-  }
+    settingSources,
+    ...(env ? { env } : {}),
+    ...(skills ? { skills } : {}),
+    ...(agent.mcpServers ? { mcpServers: agent.mcpServers as QueryMcpServers } : {}),
+  } as QueryOptions
 }
 
 function isTerminalEvent(
@@ -136,7 +179,7 @@ function createControlTransaction(input: {
   openedAt: number
   updatedAt?: number
   error?: string
-  request?: SdkControlEnvelope
+  request?: SdkControlRequestEnvelope
   response?: SdkControlResponseEnvelope
   interaction?: PendingInteraction | null
   payload?: unknown
@@ -152,7 +195,7 @@ function createControlTransaction(input: {
     updatedAt: input.updatedAt ?? Date.now(),
     sessionId: input.sessionId,
     ...(input.runId ? { runId: input.runId } : {}),
-    ...(input.request ? { request: input.request as any } : {}),
+    ...(input.request ? { request: input.request } : {}),
     ...(input.response ? { response: input.response } : {}),
     ...(input.interaction !== undefined ? { interaction: input.interaction } : {}),
     ...(input.payload !== undefined ? { payload: input.payload } : {}),
@@ -277,11 +320,14 @@ function createSdkControlResponseEnvelope(input: {
   }
 }
 
-function createInteractiveControlRequestEnvelope(requestId: string, request: Record<string, unknown>): SdkControlRequestEnvelope {
+function createInteractiveControlRequestEnvelope(
+  requestId: string,
+  request: { subtype: string; [key: string]: unknown },
+): SdkControlRequestEnvelope {
   return {
     type: 'control_request',
     request_id: requestId,
-    request: request as any,
+    request,
   }
 }
 
@@ -362,7 +408,7 @@ export async function startSdkSessionWorker(input: {
       request: requestEnvelope,
       interaction,
       payload: permissionRequest,
-    } as any)
+    })
     outputQueue.push({
       kind: 'control_transaction',
       sessionId: input.sessionId,
@@ -478,7 +524,7 @@ export async function startSdkSessionWorker(input: {
       request: requestEnvelope,
       interaction,
       payload: request,
-    } as any)
+    })
     outputQueue.push({
       kind: 'control_transaction',
       sessionId: input.sessionId,

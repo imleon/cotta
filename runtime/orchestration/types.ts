@@ -10,6 +10,18 @@ export type RunTerminalStatus =
 
 export type RunStatus = 'running' | 'requires_action' | RunTerminalStatus
 
+export function isRunActiveStatus(status: RunStatus): boolean {
+  return status === 'running' || status === 'requires_action'
+}
+
+export function isRunTerminalStatus(status: RunStatus): boolean {
+  return !isRunActiveStatus(status)
+}
+
+export function isSessionActiveStatus(status?: SessionStatus): boolean {
+  return status === 'running' || status === 'requires_action'
+}
+
 export interface AgentTemplate {
   agentId: string
   projectDir: string

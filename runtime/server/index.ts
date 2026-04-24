@@ -6,7 +6,11 @@ import { readFileSync, existsSync } from 'fs'
 import { CONFIG } from './config.js'
 import { createWebRoutes } from './web.js'
 import { bootstrapColdStart, createRuntime } from '../app/index.js'
+import { createLogger } from '../core/logger.js'
 import { createServerContext } from './context.js'
+import { runWithFailFast } from './startup.js'
+
+const logger = createLogger('server-index')
 
 async function main() {
   const runtime = createRuntime()
@@ -31,7 +35,11 @@ async function main() {
   })
 
   const server = serve({ fetch: app.fetch, port: CONFIG.port, hostname: CONFIG.host }, (info) => {
-    console.log(`Cotta running at http://${info.address}:${info.port}`)
+    logger.info('listening', {
+      address: info.address,
+      port: info.port,
+      url: `http://${info.address}:${info.port}`,
+    })
   })
 
   let shuttingDown = false
@@ -50,4 +58,4 @@ async function main() {
   injectWebSocket(server)
 }
 
-void main()
+runWithFailFast(main, logger)

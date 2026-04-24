@@ -1,10 +1,12 @@
 import type { Hono } from 'hono'
 import type { RuntimeConfig } from '../../../config/schema.js'
+import type { MutableConfigRegistry } from '../../../config/registry.js'
 import {
   RuntimeConfigWrapperSchema,
   type RuntimeConfigWrapper,
   runtimeConfigIntegrityIssues,
 } from '../../../config/zod-schemas.js'
+import type { Orchestrator } from '../../../orchestration/orchestrator.js'
 import type { SqliteConfigRepository } from '../../../storage/sqlite/config-repository.js'
 import type { AppEnv } from '../app-env.js'
 import {
@@ -37,7 +39,9 @@ function applyRuntimeConfigToSessionRegistry(
 export function registerConfigRoutes(app: Hono<AppEnv>, input: {
   configDbPath: string
   configRepository: SqliteConfigRepository
+  configRegistry: MutableConfigRegistry
   sessionRegistry: SessionRegistryLike
+  orchestrator: Orchestrator
 }) {
   app.get('/api/config/overview', (c) => {
     return c.json({
@@ -64,13 +68,17 @@ export function registerConfigRoutes(app: Hono<AppEnv>, input: {
 
       try {
         input.configRepository.replaceRuntimeConfig(config)
+        input.configRegistry.update(config)
         applyRuntimeConfigToSessionRegistry(config, input.sessionRegistry)
+        const refresh = await input.orchestrator.refreshConfigDependentSessions()
         const updatedAt = input.configRepository.getLastUpdatedAt()
         logger.info('http:config:save:success', {
           durationMs: Date.now() - startedAt,
           connectors: config.connectors.length,
           agents: config.agents.length,
           channels: config.channels.length,
+          refreshedSessions: refresh.checked,
+          rebuiltIdleWorkers: refresh.rebuilt,
         })
         return c.json({ ok: true, updatedAt })
       } catch (error) {

@@ -5,6 +5,7 @@ import type { RuntimeConfig } from '../../../config/schema.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { SessionRecord } from '../../../orchestration/types.js'
 import type { SqliteConfigRepository } from '../../../storage/sqlite/config-repository.js'
+import type { ChannelBindingService } from '../../../orchestration/channel-binding-service.js'
 import type { AppEnv } from '../app-env.js'
 import {
   getValidatedBody,
@@ -169,6 +170,7 @@ function buildClaimedChannelBySessionIdFromConfig(config: RuntimeConfig): Map<st
 
 export function registerChannelBindingRoutes(app: Hono<AppEnv>, input: {
   configRepository: SqliteConfigRepository
+  channelBindingService: ChannelBindingService
   sessionRegistry: SessionRegistry
   listSessionsByProjectDir: (dir: string) => Promise<SessionSummary[]>
 }) {
@@ -240,9 +242,7 @@ export function registerChannelBindingRoutes(app: Hono<AppEnv>, input: {
           })
         }
 
-        input.sessionRegistry.ensure(sessionId, channel.agentId)
-        input.sessionRegistry.claimChannel(sessionId, channel.channelId)
-        input.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
+        input.channelBindingService.bindChannel(channel.channelId, sessionId, channel.agentId)
 
         const refreshedConfig = input.configRepository.loadRuntimeConfig()
         const refreshedClaimMap = buildClaimedChannelBySessionIdFromConfig(refreshedConfig)
@@ -290,9 +290,7 @@ export function registerChannelBindingRoutes(app: Hono<AppEnv>, input: {
         }
 
         const sessionId = randomUUID()
-        input.sessionRegistry.ensure(sessionId, channel.agentId)
-        input.sessionRegistry.claimChannel(sessionId, channel.channelId)
-        input.configRepository.updateChannelCurrentSdkSessionId(channel.channelId, sessionId)
+        input.channelBindingService.bindChannel(channel.channelId, sessionId, channel.agentId)
 
         const item = await buildChannelBindingItem(
           channel,

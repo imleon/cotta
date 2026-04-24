@@ -1,10 +1,28 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { WorkerOutputEvent } from '../execution/types.js'
+import { createLogger } from '../core/logger.js'
 
 type ResultSubtype = Extract<
   WorkerOutputEvent,
   { kind: 'result' }
 >['subtype']
+
+const logger = createLogger('sdk-event-adapter')
+
+type HostMismatchMetadata = {
+  expected_session_id: string
+  actual_session_id: string
+  session_id_mismatch: true
+}
+
+type SdkMessageWithShape = SDKMessage & {
+  type?: unknown
+  subtype?: unknown
+}
+
+type SdkMessageWithHostMetadata = SDKMessage & {
+  _host: HostMismatchMetadata
+}
 
 function extractSdkSessionId(message: SDKMessage): string | null {
   const raw = message as unknown as { session_id?: unknown }
@@ -19,6 +37,22 @@ function isResultSubtype(value: unknown): value is ResultSubtype {
     || value === 'error_max_structured_output_retries'
 }
 
+function withHostSessionMismatch(
+  message: SDKMessage,
+  sessionId: string,
+  sdkSessionId: string | null,
+): SDKMessage | SdkMessageWithHostMetadata {
+  if (!sdkSessionId || sdkSessionId === sessionId) return message
+  return {
+    ...message,
+    _host: {
+      expected_session_id: sessionId,
+      actual_session_id: sdkSessionId,
+      session_id_mismatch: true,
+    },
+  }
+}
+
 export function adaptSdkMessage(
   message: SDKMessage,
   sessionId: string,
@@ -29,11 +63,12 @@ export function adaptSdkMessage(
   if (sdkSessionId && sdkSessionId !== sessionId) {
     // Invariant check: under normal conditions, SDK output session_id should match
     // the worker's expected sessionId. We only log here; do not change behavior.
-    console.warn('[sdk-event-adapter] session_id mismatch', {
+    const shapedMessage = message as SdkMessageWithShape
+    logger.warn('session-id-mismatch', {
       expectedSessionId: sessionId,
       actualSessionId: sdkSessionId,
-      type: (message as any).type,
-      subtype: (message as any).subtype,
+      type: shapedMessage.type,
+      subtype: shapedMessage.subtype,
     })
   }
 
@@ -44,9 +79,7 @@ export function adaptSdkMessage(
       runId,
       receivedAt,
       state: message.state,
-      payload: sdkSessionId && sdkSessionId !== sessionId
-        ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
-        : message,
+      payload: withHostSessionMismatch(message, sessionId, sdkSessionId),
     }
   }
 
@@ -61,9 +94,7 @@ export function adaptSdkMessage(
       runId,
       receivedAt,
       subtype,
-      payload: sdkSessionId && sdkSessionId !== sessionId
-        ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
-        : message,
+      payload: withHostSessionMismatch(message, sessionId, sdkSessionId),
     }
   }
 
@@ -73,9 +104,7 @@ export function adaptSdkMessage(
       sessionId,
       runId,
       receivedAt,
-      payload: sdkSessionId && sdkSessionId !== sessionId
-        ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
-        : message,
+      payload: withHostSessionMismatch(message, sessionId, sdkSessionId),
     }
   }
 
@@ -84,8 +113,6 @@ export function adaptSdkMessage(
     sessionId,
     runId,
     receivedAt,
-    payload: sdkSessionId && sdkSessionId !== sessionId
-      ? { ...message as any, _host: { expected_session_id: sessionId, actual_session_id: sdkSessionId, session_id_mismatch: true } }
-      : message,
+    payload: withHostSessionMismatch(message, sessionId, sdkSessionId),
   }
 }

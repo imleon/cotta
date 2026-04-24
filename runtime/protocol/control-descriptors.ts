@@ -1,4 +1,4 @@
-import type { ControlDescriptor, PendingInteraction } from './message-types.js'
+import type { ControlDescriptor, PendingInteraction } from './control-types.js'
 export const DEFAULT_CONTROL_DESCRIPTOR: ControlDescriptor = {
   subtype: 'unknown',
   family: 'integration',

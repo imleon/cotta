@@ -11,10 +11,11 @@
     "build:web": "cd web && npm run build",
     "build:all": "npm run build && npm run build:web",
     "start": "node dist/runtime/server/index.js",
+    "test": "vitest run --config vitest.config.ts",
     "test:cli": "echo \"test:cli removed (legacy agent runner)\""
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.118",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "@hono/node-server": "^1.14.0",
     "@hono/node-ws": "^1.1.0",
     "@larksuiteoapi/node-sdk": "^1.60.0",
@@ -27,6 +28,7 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.5"
   }
 }

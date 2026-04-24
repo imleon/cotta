@@ -1,7 +1,10 @@
 import type { Hono } from 'hono'
-import type { LarkIntegrationService } from '../../../integrations/lark/service.js'
-import type { AppEnv } from '../app-env.js'
+import type { AppEnv } from '../../server/http/app-env.js'
+import type { LarkIntegrationService } from './service.js'
 
+// Lark HTTP endpoints are integration-specific transport adapters.
+// Keeping them co-located with the integration avoids a "thin forwarding shell"
+// under server routes and makes boundary ownership explicit.
 export function registerLarkRoutes(app: Hono<AppEnv>, input: {
   larkIntegration: LarkIntegrationService
 }) {
@@ -49,3 +52,4 @@ export function registerLarkRoutes(app: Hono<AppEnv>, input: {
     }
   })
 }
+

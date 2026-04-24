@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Hono } from 'hono'
-import type { StaticConfigRegistry } from '../../../config/registry.js'
+import type { ConfigRegistry } from '../../../config/registry.js'
 import type { RunRegistry } from '../../../orchestration/run-registry.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { RunRecord, SessionRecord } from '../../../orchestration/types.js'
@@ -64,7 +64,7 @@ function getPackageVersion(): string {
     const raw = readFileSync(packageJsonPath, 'utf-8')
     const parsed = JSON.parse(raw) as { version?: unknown }
     cachedPackageVersion = typeof parsed.version === 'string' ? parsed.version : 'unknown'
-  } catch {
+  } catch (_readError) {
     cachedPackageVersion = 'unknown'
   }
   return cachedPackageVersion
@@ -86,7 +86,7 @@ function toRuntimeSessionSnapshot(runtime: SessionRecord | null) {
 
 export function registerStatusRoutes(app: Hono<AppEnv>, input: {
   config: Config
-  configRegistry: StaticConfigRegistry
+  configRegistry: ConfigRegistry
   sessionRegistry: SessionRegistry
   runRegistry: RunRegistry
   listSessionsByProjectDir: (dir: string) => Promise<SessionSummary[]>

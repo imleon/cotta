@@ -1,7 +1,7 @@
 export {
   buildAssistantDetailEntries,
   buildToolGroupSummary,
-} from '../../../../runtime/presentation/assistant-detail-entries.js'
+} from '../../../../runtime/render/assistant-detail-entries.js'
 
 export type {
   AssistantDetailEntry,
@@ -11,4 +11,4 @@ export type {
   AssistantToolEntry,
   AssistantToolEntryKind,
   AssistantToolGroupEntry,
-} from '../../../../runtime/presentation/assistant-detail-entries.js'
+} from '../../../../runtime/render/assistant-detail-entries.js'

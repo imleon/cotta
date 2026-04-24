@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type {
   ControlTransactionSummary,
+  ExternalAdminWsEvent,
   LiveLaneKind,
   PendingInteraction,
   SessionEvent,
@@ -44,7 +45,6 @@ import {
   markStreamPreviewsMaterialized,
   reconcileOptimisticUserMessages,
   reduceStreamSdkEvent,
-  reduceInteractiveTransaction,
   reduceRunLifecycleEvent,
   reduceSessionErrorEvent,
   reduceTransactionEvent,
@@ -62,12 +62,9 @@ import type {
   TimelineItemModel,
 } from '../models/session'
 import {
-  isWorkerOutputEvent,
-  translateWorkerOutputEvent,
-} from '../domain/session/liveWire'
-import {
   createSessionSocketController,
 } from '../domain/session/socket'
+import { isExternalAdminWsEvent, isSessionEventWire } from '../domain/session/wsWire'
 import {
   buildAtomTimelineItems,
   buildHistoryTimelineItems,
@@ -108,29 +105,25 @@ type OptimisticUserMessage = SessionMessage & {
   localId: string
 }
 
-function normalizeSession(item: any): SessionSummary {
+function normalizeSession(item: unknown): SessionSummary {
+  const obj = typeof item === 'object' && item ? (item as Record<string, unknown>) : {}
   return {
-    id: typeof item?.id === 'string' ? item.id : '',
-    title: typeof item?.title === 'string' && item.title ? item.title : (typeof item?.id === 'string' ? item.id.slice(0, 8) : 'Untitled'),
-    updatedAt: typeof item?.updatedAt === 'number' ? item.updatedAt : Date.now(),
-    ...(typeof item?.agentId === 'string' && item.agentId ? { agentId: item.agentId } : {}),
-    ...(typeof item?.channelId === 'string' && item.channelId ? { channelId: item.channelId } : {}),
-    ...(typeof item?.workerRef === 'string' && item.workerRef ? { workerRef: item.workerRef } : {}),
-    ...(item?.sessionStatus === 'idle' || item?.sessionStatus === 'running' || item?.sessionStatus === 'requires_action'
-      ? { sessionStatus: item.sessionStatus }
+    id: typeof obj.id === 'string' ? obj.id : '',
+    title: typeof obj.title === 'string' && obj.title ? obj.title : (typeof obj.id === 'string' ? obj.id.slice(0, 8) : 'Untitled'),
+    updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : Date.now(),
+    ...(typeof obj.agentId === 'string' && obj.agentId ? { agentId: obj.agentId } : {}),
+    ...(typeof obj.channelId === 'string' && obj.channelId ? { channelId: obj.channelId } : {}),
+    ...(typeof obj.workerRef === 'string' && obj.workerRef ? { workerRef: obj.workerRef } : {}),
+    ...(obj.sessionStatus === 'idle' || obj.sessionStatus === 'running' || obj.sessionStatus === 'requires_action'
+      ? { sessionStatus: obj.sessionStatus as SessionSummary['sessionStatus'] }
       : {}),
-    ...(typeof item?.activeRunId === 'string' && item.activeRunId ? { activeRunId: item.activeRunId } : {}),
+    ...(typeof obj.activeRunId === 'string' && obj.activeRunId ? { activeRunId: obj.activeRunId } : {}),
+    ...(typeof obj.sessionScope === 'string' && obj.sessionScope ? { sessionScope: obj.sessionScope as SessionSummary['sessionScope'] } : {}),
   }
 }
 
 function shortId(value?: string | null): string | undefined {
   return value ? value.slice(0, 8) : undefined
-}
-
-function isSessionEventWire(value: unknown): value is SessionEvent {
-  if (!value || typeof value !== 'object') return false
-  const type = (value as Record<string, unknown>).type
-  return typeof type === 'string' && type.startsWith('session.')
 }
 
 function redactUrl(url: URL): string {
@@ -224,6 +217,7 @@ export const useSessionStore = defineStore('session', () => {
   const historyMessagesLoading = ref(false)
   const historyMessagesLoadingOlder = ref(false)
   const historyMessagesBeforeCursor = ref<string | null>(null)
+  const historyMessagesError = ref('')
   const sessions = ref<SessionSummary[]>([])
   const currentSessionId = ref<string | null>(null)
   const isConnected = ref(false)
@@ -450,9 +444,6 @@ export const useSessionStore = defineStore('session', () => {
   const currentTurnAssistantItems = computed(() => fourSegmentSections.value.currentTurnAssistantItems)
   const timeline = computed<TimelineRenderableItemModel[]>(() => fourSegmentSections.value.timeline)
 
-  let eventSequence = 0
-  const terminalRunIds = new Set<string>()
-  const activeStreamMessageIds = new Map<string, string>()
   let agentIdCache: string | null = null
   let agentIdPromise: Promise<string> | null = null
   let awaitingRunStart = false
@@ -633,17 +624,6 @@ export const useSessionStore = defineStore('session', () => {
         sessionId: shortId(nextTimelineEvent.sessionId),
       })
     }
-  }
-
-  function applyInteractiveTransaction(transaction: ControlTransactionSummary) {
-    const next = reduceInteractiveTransaction({
-      controlTransactionsById: controlTransactionsById.value,
-      activeControlOrder: activeControlOrder.value,
-      runState: runState.value,
-    }, transaction)
-    controlTransactionsById.value = next.controlTransactionsById
-    activeControlOrder.value = next.activeControlOrder
-    runState.value = next.runState
   }
 
   function scheduleStreamDisplayAdvance() {
@@ -934,52 +914,6 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function applyWireEvent(wire: unknown) {
-    if (!isWorkerOutputEvent(wire)) {
-      return
-    }
-
-    const sessionId = wire.sessionId
-    const runId = typeof wire.runId === 'string' && wire.runId ? wire.runId : null
-    const kind = wire.kind
-
-    // Keep UI sessionId in sync even if we drop the event.
-    syncSessionId(sessionId)
-
-    if (runId && terminalRunIds.has(runId) && kind === 'session_state_changed' && wire.state === 'idle') {
-      // Avoid overriding "completed/failed" with "idle" after terminal result.
-      return
-    }
-
-    const sequence = ++eventSequence
-    const translation = translateWorkerOutputEvent({
-      wire,
-      sequence,
-      activeStreamMessageIds,
-    })
-
-    if (translation.terminalRunId) {
-      terminalRunIds.add(translation.terminalRunId)
-    }
-
-    if (translation.events.length === 0 && kind === 'control_transaction' && wire.transaction) {
-      const targetSessionId = wire.transaction.sessionId ?? sessionId
-      applyInteractiveTransaction(wire.transaction)
-      syncSessionId(targetSessionId)
-      return
-    }
-
-    for (const event of translation.events) {
-      applyEvent(event)
-    }
-
-    if (translation.footerPatch) {
-      patchLastAssistantMessageFooterFromResult(translation.footerPatch)
-    }
-
-    // worker_closed: currently ignored by the main chat UI.
-  }
-
   const socketController = createSessionSocketController({
     getSessionId: () => currentSessionId.value,
     getAuthToken: () => authToken.value,
@@ -994,7 +928,6 @@ export const useSessionStore = defineStore('session', () => {
     },
     onConnectStart: (wsUrl, sessionId) => {
       authError.value = ''
-      eventSequence = 0
       logger.info('ws:connect:start', {
         url: redactUrl(wsUrl),
         hasAuthToken: hasAuthToken.value,
@@ -1027,12 +960,20 @@ export const useSessionStore = defineStore('session', () => {
     },
     onRawMessage: (raw) => {
       try {
-        const parsed = JSON.parse(raw)
+        const parsed = JSON.parse(raw) as ExternalAdminWsEvent
+        if (!isExternalAdminWsEvent(parsed)) {
+          logger.warn('ws:message:drop-unknown', {
+            raw: raw.slice(0, 160),
+          })
+          return
+        }
         if (isSessionEventWire(parsed)) {
           applyEvent(parsed)
           return
         }
-        applyWireEvent(parsed)
+        if (parsed.type === 'ws.notice') {
+          sessionNotice.value = parsed.message
+        }
       } catch (error) {
         logger.warn('ws:message:parse-error', {
           error: error instanceof Error ? error.message : String(error),
@@ -1242,6 +1183,7 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoading.value = false
     historyMessagesLoadingOlder.value = false
     historyMessagesBeforeCursor.value = null
+    historyMessagesError.value = ''
     eventLog.value = []
     streamPreviewStates.value = {}
     streamAnimationCursors.value = {}
@@ -1265,6 +1207,7 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoading.value = false
     historyMessagesLoadingOlder.value = false
     historyMessagesBeforeCursor.value = null
+    historyMessagesError.value = ''
     eventLog.value = []
     streamPreviewStates.value = {}
     streamAnimationCursors.value = {}
@@ -1286,6 +1229,7 @@ export const useSessionStore = defineStore('session', () => {
 
     historyMessagesLoading.value = true
     historyMessagesLoadingOlder.value = Boolean(options.prepend)
+    if (!options.prepend) historyMessagesError.value = ''
     logger.info('messages:load:start', {
       sessionId: shortId(id),
       reset: Boolean(options.reset),
@@ -1298,9 +1242,11 @@ export const useSessionStore = defineStore('session', () => {
         before: options.before,
       })
       if (!result.ok) {
+        historyMessagesError.value = `加载历史消息失败（${result.error ?? `HTTP ${result.status}`}）`
         logger.warn('messages:load:error', {
           sessionId: shortId(id),
           status: result.status,
+          error: result.error,
           reset: Boolean(options.reset),
           prepend: Boolean(options.prepend),
         })
@@ -1321,6 +1267,7 @@ export const useSessionStore = defineStore('session', () => {
       }
       historyMessagesHasMore.value = result.data.hasMore
       historyMessagesBeforeCursor.value = result.data.nextBefore
+      historyMessagesError.value = ''
       logger.info('messages:load:success', {
         sessionId: shortId(id),
         count: messages.length,
@@ -1338,6 +1285,7 @@ export const useSessionStore = defineStore('session', () => {
         reset: Boolean(options.reset),
         prepend: Boolean(options.prepend),
       })
+      historyMessagesError.value = '加载历史消息失败（unexpected_error）'
       return false
     } finally {
       historyMessagesLoading.value = false
@@ -1517,6 +1465,7 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoading.value = false
     historyMessagesLoadingOlder.value = false
     historyMessagesBeforeCursor.value = null
+    historyMessagesError.value = ''
     sessions.value = []
     eventLog.value = []
     streamPreviewStates.value = {}
@@ -1546,6 +1495,7 @@ export const useSessionStore = defineStore('session', () => {
     historyMessagesLoading,
     historyMessagesLoadingOlder,
     historyMessagesBeforeCursor,
+    historyMessagesError,
     sessions,
     currentSessionId,
     isConnected,

@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 import { z } from 'zod'
-import type { StaticConfigRegistry } from '../../../config/registry.js'
+import type { ConfigRegistry } from '../../../config/registry.js'
 import type { Orchestrator } from '../../../orchestration/orchestrator.js'
 import type { SessionRegistry } from '../../../orchestration/session-registry.js'
 import type { AppEnv } from '../app-env.js'
@@ -56,7 +56,7 @@ type RecoverBody = z.infer<typeof RecoverBodySchema>
 
 export function registerSessionRoutes(app: Hono<AppEnv>, input: {
   shortId: (value?: string | null) => string | undefined
-  configRegistry: StaticConfigRegistry
+  configRegistry: ConfigRegistry
   sessionRegistry: SessionRegistry
   orchestrator: Orchestrator
   listSessionsByProjectDirs: (dirs: string[]) => Promise<SessionSummary[]>

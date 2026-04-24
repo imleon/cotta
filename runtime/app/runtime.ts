@@ -1,6 +1,7 @@
-import { StaticConfigRegistry } from '../config/registry.js'
+import { MutableConfigRegistry } from '../config/registry.js'
 import type { RuntimeConfig } from '../config/schema.js'
 import { Orchestrator } from '../orchestration/orchestrator.js'
+import { ChannelBindingService } from '../orchestration/channel-binding-service.js'
 import { RunRegistry } from '../orchestration/run-registry.js'
 import { SessionRegistry } from '../orchestration/session-registry.js'
 import { WorkerManager } from '../execution/worker-manager.js'
@@ -10,7 +11,7 @@ import { ENV } from '../config/env.js'
 import { appendSessionSdkRawLog } from '../storage/fs/transport-logs.js'
 import { createSqliteDatabase } from '../storage/sqlite/db.js'
 import { SqliteConfigRepository } from '../storage/sqlite/config-repository.js'
-import { createLogger, type Logger } from '../server/logger.js'
+import { createLogger, type Logger } from '../core/logger.js'
 
 export type RuntimeContext = {
   logger: Logger
@@ -18,8 +19,9 @@ export type RuntimeContext = {
   configDbPath: string
   runtimeConfig: RuntimeConfig
   configRepository: SqliteConfigRepository
-  configRegistry: StaticConfigRegistry
+  configRegistry: MutableConfigRegistry
   sessionRegistry: SessionRegistry
+  channelBindingService: ChannelBindingService
   runRegistry: RunRegistry
   workerManager: WorkerManager
   orchestrator: Orchestrator
@@ -31,10 +33,14 @@ export function createRuntime(input?: { configDbPath?: string }): RuntimeContext
   const db = createSqliteDatabase(configDbPath)
   const configRepository = new SqliteConfigRepository(db)
   const runtimeConfig = configRepository.loadRuntimeConfig()
-  const configRegistry = new StaticConfigRegistry(runtimeConfig)
+  const configRegistry = new MutableConfigRegistry(runtimeConfig)
   const defaultAgentId = runtimeConfig.agents[0]?.agentId ?? null
 
   const sessionRegistry = new SessionRegistry()
+  const channelBindingService = new ChannelBindingService({
+    configRepository,
+    sessionRegistry,
+  })
   const runRegistry = new RunRegistry()
   const workerManager = new WorkerManager(new SdkSessionWorkerFactory())
 
@@ -55,6 +61,7 @@ export function createRuntime(input?: { configDbPath?: string }): RuntimeContext
     configRepository,
     configRegistry,
     sessionRegistry,
+    channelBindingService,
     runRegistry,
     workerManager,
     orchestrator,

@@ -1,6 +1,6 @@
-export { buildAssistantToolRenderConfig } from '../../../../runtime/presentation/assistant-tool-sections.js'
+export { buildAssistantToolRenderConfig } from '../../../../runtime/render/assistant-tool-sections.js'
 
 export type {
   AssistantToolRenderConfig,
   AssistantToolSection,
-} from '../../../../runtime/presentation/assistant-tool-sections.js'
+} from '../../../../runtime/render/assistant-tool-sections.js'

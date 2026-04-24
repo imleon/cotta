@@ -1,5 +1,6 @@
 import type { SessionRegistry } from './session-registry.js'
 import type { WorkerManager } from '../execution/worker-manager.js'
+import type { WorkerOutputEvent } from '../execution/types.js'
 
 type Logger = {
   info: (event: string, fields?: Record<string, unknown>) => void
@@ -22,9 +23,11 @@ type OrchestratorProbe = {
     subtype: 'mcp_status',
   ) => Promise<{ sessionId: string; requestId: string }>
   rebuildSession: (sessionId: string) => Promise<unknown>
-  subscribe: (key: string, subscriber: (event: any) => void) => void
+  subscribe: (key: string, subscriber: (event: WorkerOutputEvent) => void) => void
   unsubscribe: (key: string) => void
 }
+
+type ControlTransactionEvent = Extract<WorkerOutputEvent, { kind: 'control_transaction' }>
 
 export class WorkerGovernanceService {
   private sweepTimer: ReturnType<typeof setInterval> | null = null
@@ -32,6 +35,9 @@ export class WorkerGovernanceService {
   private readonly inflightHealthChecks = new Set<string>()
   private readonly healthBySessionId = new Map<string, WorkerHealthSnapshot>()
   private readonly lastAutoRebuildAtBySessionId = new Map<string, number>()
+  private readonly crashRetryAttemptBySessionId = new Map<string, number>()
+  private readonly crashRetryTimerBySessionId = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly crashRetryLastAtBySessionId = new Map<string, number>()
   private readonly orchestratorWatchKey = 'worker-governance:watch'
   private readonly deferredRebuildReasonBySessionId = new Map<string, string>()
 
@@ -62,13 +68,15 @@ export class WorkerGovernanceService {
       })
     }, sweepIntervalMs)
 
-    // Watch for worker error events and attempt best-effort rebuild (idle-only, cooldown-guarded).
-    this.deps.orchestrator.subscribe(this.orchestratorWatchKey, (event: any) => {
-      if (!event || typeof event !== 'object') return
-      if (event.kind !== 'worker_error') return
-      const sessionId = typeof event.sessionId === 'string' ? event.sessionId : ''
+    // Watch for worker crash/close events and attempt best-effort rebuild.
+    this.deps.orchestrator.subscribe(this.orchestratorWatchKey, (event) => {
+      if (event.kind !== 'worker_error' && event.kind !== 'worker_closed') return
+      const sessionId = event.sessionId
       if (!sessionId) return
-      void this.maybeAutoRebuild(sessionId, 'worker_error')
+      const session = this.deps.sessionRegistry.get(sessionId)
+      // Explicit/manual stop detaches the worker before worker_closed is broadcast.
+      if (event.kind === 'worker_closed' && !session?.workerRef && !session?.activeRunId) return
+      this.scheduleCrashRetry(sessionId, event.kind)
     })
 
     this.deps.logger.info('worker-governance:started', {
@@ -92,6 +100,10 @@ export class WorkerGovernanceService {
       this.deps.orchestrator.unsubscribe(this.deferredKey(sessionId))
     }
     this.deferredRebuildReasonBySessionId.clear()
+    for (const timer of this.crashRetryTimerBySessionId.values()) {
+      clearTimeout(timer)
+    }
+    this.crashRetryTimerBySessionId.clear()
   }
 
   getHealth(sessionId: string): WorkerHealthSnapshot | null {
@@ -194,7 +206,7 @@ export class WorkerGovernanceService {
   }
 
   private async maybeAutoRebuild(sessionId: string, reason?: string): Promise<void> {
-    if (this.deps.autoRebuildCooldownMs <= 0) return
+    if (this.deps.autoRebuildCooldownMs < 0) return
 
     const session = this.deps.sessionRegistry.get(sessionId)
     if (!session) return
@@ -206,8 +218,10 @@ export class WorkerGovernanceService {
 
     const now = Date.now()
     const last = this.lastAutoRebuildAtBySessionId.get(sessionId) ?? 0
-    if (now - last < this.deps.autoRebuildCooldownMs) return
-    this.lastAutoRebuildAtBySessionId.set(sessionId, now)
+    if (this.deps.autoRebuildCooldownMs > 0) {
+      if (now - last < this.deps.autoRebuildCooldownMs) return
+      this.lastAutoRebuildAtBySessionId.set(sessionId, now)
+    }
 
     try {
       await this.deps.orchestrator.rebuildSession(sessionId)
@@ -224,6 +238,39 @@ export class WorkerGovernanceService {
     }
   }
 
+  private scheduleCrashRetry(sessionId: string, reason: 'worker_error' | 'worker_closed'): void {
+    const now = Date.now()
+    const last = this.crashRetryLastAtBySessionId.get(sessionId) ?? 0
+    const attempt = now - last > 5 * 60_000
+      ? 1
+      : (this.crashRetryAttemptBySessionId.get(sessionId) ?? 0) + 1
+    this.crashRetryLastAtBySessionId.set(sessionId, now)
+    this.crashRetryAttemptBySessionId.set(sessionId, attempt)
+
+    const baseDelayMs = this.deps.autoRebuildCooldownMs > 0 ? this.deps.autoRebuildCooldownMs : 1_000
+    const delayMs = attempt <= 1 ? 0 : Math.min(baseDelayMs * 2 ** (attempt - 2), 30_000)
+
+    const existingTimer = this.crashRetryTimerBySessionId.get(sessionId)
+    if (existingTimer) clearTimeout(existingTimer)
+
+    if (delayMs <= 0) {
+      void this.maybeAutoRebuild(sessionId, reason)
+      return
+    }
+
+    this.deps.logger.info('worker-governance:crash-retry:scheduled', {
+      sessionId,
+      reason,
+      attempt,
+      delayMs,
+    })
+    const timer = setTimeout(() => {
+      this.crashRetryTimerBySessionId.delete(sessionId)
+      void this.maybeAutoRebuild(sessionId, `retry:${reason}`)
+    }, delayMs)
+    this.crashRetryTimerBySessionId.set(sessionId, timer)
+  }
+
   private deferredKey(sessionId: string): string {
     return `worker-governance:defer:${sessionId}`
   }
@@ -236,8 +283,7 @@ export class WorkerGovernanceService {
     const key = this.deferredKey(sessionId)
     // Ensure single subscription per session.
     this.deps.orchestrator.unsubscribe(key)
-    this.deps.orchestrator.subscribe(key, (event: any) => {
-      if (!event || typeof event !== 'object') return
+    this.deps.orchestrator.subscribe(key, (event) => {
       if (event.sessionId !== sessionId) return
       const session = this.deps.sessionRegistry.get(sessionId)
       if (!session) return
@@ -259,8 +305,7 @@ export class WorkerGovernanceService {
         resolve(false)
       }, Math.max(50, timeoutMs))
 
-      this.deps.orchestrator.subscribe(key, (event: any) => {
-        if (!event || typeof event !== 'object') return
+      this.deps.orchestrator.subscribe(key, (event) => {
         if (event.sessionId !== sessionId) return
 
         if (event.kind === 'worker_error' || event.kind === 'worker_closed') {
@@ -271,9 +316,9 @@ export class WorkerGovernanceService {
         }
 
         if (event.kind !== 'control_transaction') return
-        const transaction = (event as any).transaction
+        const transaction = (event as ControlTransactionEvent).transaction
         if (!transaction || transaction.requestId !== requestId) return
-        const phase = (event as any).phase
+        const phase = (event as ControlTransactionEvent).phase
         if (phase === 'completed') {
           clearTimeout(timeout)
           this.deps.orchestrator.unsubscribe(key)

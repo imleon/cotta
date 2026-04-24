@@ -5,7 +5,6 @@ import type { SessionRegistry } from './session-registry.js'
 import type { SessionRecord } from './types.js'
 import type { WorkerStartMode } from '../execution/worker-manager.js'
 import type { AgentTemplate } from './types.js'
-import type { WorkerHandle } from '../execution/types.js'
 import type { WorkerSupervisor } from './worker-supervisor.js'
 
 export interface DispatchRunInput {
@@ -144,16 +143,6 @@ export class RunDispatcher {
     return { sessionId: input.sessionId, requestId: input.requestId }
   }
 
-  async ensureWorkerForSession(
-    sessionId: string,
-    agentId: string,
-    mode: WorkerStartMode,
-  ): Promise<WorkerHandle> {
-    const agent = this.mustGetAgent(agentId)
-    this.deps.sessionRegistry.ensure(sessionId, agentId)
-    return await this.deps.workerSupervisor.ensureWorker(sessionId, agent, mode)
-  }
-
   private mustGetAgent(agentId: string): AgentTemplate {
     const agent = this.deps.configRegistry.getAgent(agentId)
     if (!agent) {
@@ -162,4 +151,3 @@ export class RunDispatcher {
     return agent
   }
 }
-

@@ -7,7 +7,7 @@ import type { ServerContext } from './context.js'
 import { createWebSocketHandler } from './ws.js'
 import { createApiAuthMiddleware, createWsAuthMiddleware } from './http/auth.js'
 import { registerMiscRoutes } from './http/routes/misc.js'
-import { registerLarkRoutes } from './http/routes/lark.js'
+import { registerLarkRoutes } from '../integrations/lark/http-routes.js'
 import { registerAgentRoutes } from './http/routes/agents.js'
 import { registerRunRoutes } from './http/routes/runs.js'
 import { registerSessionRoutes } from './http/routes/sessions.js'
@@ -54,13 +54,16 @@ export function createWebRoutes(upgradeWebSocket: UpgradeWebSocket, context: Ser
   })
   registerChannelBindingRoutes(app, {
     configRepository: context.configRepository,
+    channelBindingService: context.channelBindingService,
     sessionRegistry: context.sessionRegistry,
     listSessionsByProjectDir: context.listSessionsByProjectDir,
   })
   registerConfigRoutes(app, {
     configDbPath: context.configDbPath,
     configRepository: context.configRepository,
+    configRegistry: context.configRegistry,
     sessionRegistry: context.sessionRegistry,
+    orchestrator: context.orchestrator,
   })
   registerStatusRoutes(app, {
     config: context.config,

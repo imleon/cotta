@@ -133,7 +133,14 @@ watch(
     </div>
 
     <div
-      v-if="visibleTimelineItems.length === 0"
+      v-if="session.historyMessagesError"
+      class="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
+    >
+      {{ session.historyMessagesError }}
+    </div>
+
+    <div
+      v-if="visibleTimelineItems.length === 0 && !session.historyMessagesError"
       class="flex items-center justify-center h-full text-gray-400"
     >
       <div class="text-center">

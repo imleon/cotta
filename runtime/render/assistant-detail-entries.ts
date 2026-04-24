@@ -3,7 +3,7 @@ import type {
   DisplayFragmentText,
   DisplayFragmentToolResult,
   DisplayFragmentToolUse,
-} from '../protocol/message-types.js'
+} from '../protocol/transcript-display-types.js'
 import { stringifyStructuredValue } from '../protocol/transcript-normalizer.js'
 import { THINKING_ROW_TITLE } from './assistant-row-semantics.js'
 

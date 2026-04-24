@@ -1,7 +1,7 @@
 import type {
   ControlDirection,
   ControlTransactionSummary,
-} from '../protocol/message-types.js'
+} from '../protocol/control-types.js'
 
 export type WorkerRef = string
 

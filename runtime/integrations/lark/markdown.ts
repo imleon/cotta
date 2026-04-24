@@ -32,11 +32,18 @@ function optimizeMarkdownCore(text: string): string {
   return result
 }
 
+import { createLogger } from '../../core/logger.js'
+
+const logger = createLogger('lark-markdown')
+
 export function optimizeLarkMarkdownStyle(text: string): string {
   if (!text.trim()) return text
   try {
     return stripInvalidImageKeys(optimizeMarkdownCore(text))
-  } catch {
+  } catch (error) {
+    logger.warn('optimize-markdown-failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
     return text
   }
 }

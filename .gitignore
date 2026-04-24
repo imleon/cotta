@@ -1,0 +1,17 @@
+.claude
+ARCHITECTURE.md
+CLAUDE.md
+settings.json
+node_modules/
+dist/
+data/
+.env
+*.log
+.dbg/
+TODO.md
+NOTES.md
+debug-lark-double-card-p.md
+mcp/
+.gitignore
+icon.html
+docs/

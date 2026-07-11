@@ -117,14 +117,24 @@ function ProjectCard({
   )
 }
 
-function SessionRow({ session, selected }: { session: SessionSummary; selected: boolean }) {
+function SessionRow({
+  session,
+  selected,
+  onSelect,
+}: {
+  session: SessionSummary
+  selected: boolean
+  onSelect: () => void
+}) {
   return (
-    <li className={`session-row ${selected ? 'selected' : ''}`}>
-      <div>
-        <strong>{session.title}</strong>
-        <span>{formatLastActivity(session.lastActivityAt)}</span>
-      </div>
-      <span className="session-status">{session.displayStatus ?? session.rawStatus ?? 'idle'}</span>
+    <li>
+      <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect}>
+        <div>
+          <strong>{session.title}</strong>
+          <span>{formatLastActivity(session.lastActivityAt)}</span>
+        </div>
+        <span className="session-status">{session.displayStatus ?? session.rawStatus ?? 'idle'}</span>
+      </button>
     </li>
   )
 }
@@ -365,7 +375,16 @@ function ProjectDetail({ projectId }: { projectId: string | null }) {
       ) : (
         <ol className="session-list">
           {data.sessions.map((session) => (
-            <SessionRow key={session.id} session={session} selected={session.id === selectedSessionId} />
+            <SessionRow
+              key={session.id}
+              session={session}
+              selected={session.id === selectedSessionId}
+              onSelect={() => {
+                setActiveSessionId(session.id)
+                setLiveTurnId(null)
+                setSubmitError(null)
+              }}
+            />
           ))}
         </ol>
       )}

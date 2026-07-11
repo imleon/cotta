@@ -11,6 +11,7 @@ import {
   type SessionSummary,
   type SessionTimelineResponse,
   type TimelineBlock,
+  type TurnSummary,
 } from '@cotta/shared'
 import './styles.css'
 
@@ -30,9 +31,15 @@ async function fetchProjectSessions(projectId: string): Promise<ProjectSessionsR
   return projectSessionsResponseSchema.parse(await response.json())
 }
 
-async function fetchSessionTimeline(projectId: string, sessionId: string): Promise<SessionTimelineResponse> {
+async function fetchSessionTimeline(
+  projectId: string,
+  sessionId: string,
+  cursor: string | null = null,
+): Promise<SessionTimelineResponse> {
+  const params = new URLSearchParams({ limitTurns: '20' })
+  if (cursor) params.set('cursor', cursor)
   const response = await fetch(
-    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?limitTurns=20`,
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`,
   )
   if (!response.ok) {
     throw new Error(`Session timeline request failed: ${response.status}`)
@@ -106,11 +113,41 @@ function TimelineBlockView({ block }: { block: TimelineBlock }) {
 }
 
 function SessionTimeline({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const [turns, setTurns] = useState<TurnSummary[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+
   const timeline = useQuery({
     queryKey: ['session-timeline', projectId, sessionId],
     queryFn: () => fetchSessionTimeline(projectId, sessionId),
     retry: false,
   })
+
+  useEffect(() => {
+    if (!timeline.data) return
+    setTurns(timeline.data.turns)
+    setNextCursor(timeline.data.nextCursor)
+    setHasMore(timeline.data.hasMore)
+    setOlderError(null)
+  }, [timeline.data])
+
+  async function loadOlder() {
+    if (!nextCursor || loadingOlder) return
+    setLoadingOlder(true)
+    setOlderError(null)
+    try {
+      const page = await fetchSessionTimeline(projectId, sessionId, nextCursor)
+      setTurns((current) => [...page.turns, ...current])
+      setNextCursor(page.nextCursor)
+      setHasMore(page.hasMore)
+    } catch (error) {
+      setOlderError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLoadingOlder(false)
+    }
+  }
 
   if (timeline.isLoading) {
     return <div className="panel muted">Loading session timeline…</div>
@@ -124,19 +161,18 @@ function SessionTimeline({ projectId, sessionId }: { projectId: string; sessionI
     )
   }
 
-  const turns = timeline.data?.turns ?? []
-
   if (turns.length === 0) {
     return <div className="panel muted">This session has no projected turns yet.</div>
   }
 
   return (
     <section className="timeline-panel">
-      {timeline.data?.hasMore ? (
-        <button className="load-older" type="button" disabled>
-          Load older available after cursor wiring
+      {hasMore ? (
+        <button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>
+          {loadingOlder ? 'Loading older turns…' : 'Load older'}
         </button>
       ) : null}
+      {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
       {turns.map((turn) => (
         <article className="turn-card" key={turn.id}>
           <header>

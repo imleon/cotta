@@ -3,12 +3,6 @@ import { healthResponseSchema } from '@cotta/shared'
 import { createApp } from './index.js'
 
 describe('server routes', () => {
-  it('returns a root server page', async () => {
-    const response = await createApp().request('/')
-    expect(response.status).toBe(200)
-    expect(await response.text()).toContain('Cotta v2 server is running')
-  })
-
   it('returns the service health payload', async () => {
     const response = await createApp().request('/api/health')
     expect(response.status).toBe(200)

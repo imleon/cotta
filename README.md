@@ -32,10 +32,10 @@ Run the server:
 npm run dev
 ```
 
-The server listens on `0.0.0.0:3000` by default. Override with:
+The API server listens on `127.0.0.1:3000` by default. This is intentional for remote development: the Vite web dev server is the remote-facing entrypoint and proxies `/api` to the local API server. Override only when you intentionally want to expose the API server directly:
 
 ```bash
-HOST=127.0.0.1 PORT=3001 npm run dev
+HOST=0.0.0.0 PORT=3001 npm run dev
 ```
 
 Optional token protection:
@@ -52,8 +52,8 @@ Run the web app:
 npm run dev:web
 ```
 
-Open the Web UI with the same token when auth is enabled:
+`npm run dev:web` listens on `0.0.0.0:5173`, so for remote development open the Web UI from your local browser with the remote development machine's IP and the same token when auth is enabled:
 
 ```text
-http://localhost:5173/?token=dev-secret
+http://<remote-host>:5173/?token=dev-secret
 ```

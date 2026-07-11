@@ -32,8 +32,28 @@ Run the server:
 npm run dev
 ```
 
+The server listens on `0.0.0.0:3000` by default. Override with:
+
+```bash
+HOST=127.0.0.1 PORT=3001 npm run dev
+```
+
+Optional token protection:
+
+```bash
+COTTA_AUTH_TOKEN=dev-secret npm run dev
+```
+
+When `COTTA_AUTH_TOKEN` is set, API and SSE requests must include either `?token=dev-secret` or `Authorization: Bearer dev-secret`. `/api/health` remains unauthenticated for health checks.
+
 Run the web app:
 
 ```bash
 npm run dev:web
+```
+
+Open the Web UI with the same token when auth is enabled:
+
+```text
+http://localhost:5173/?token=dev-secret
 ```

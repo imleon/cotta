@@ -18,8 +18,20 @@ import {
 } from '@cotta/shared'
 import './styles.css'
 
+function authToken(): string | null {
+  return new URLSearchParams(window.location.search).get('token')
+}
+
+function withToken(path: string): string {
+  const token = authToken()
+  if (!token) return path
+  const url = new URL(path, window.location.origin)
+  url.searchParams.set('token', token)
+  return `${url.pathname}${url.search}`
+}
+
 async function fetchProjects(): Promise<ProjectsResponse> {
-  const response = await fetch('/api/projects')
+  const response = await fetch(withToken('/api/projects'))
   if (!response.ok) {
     throw new Error(`Projects request failed: ${response.status}`)
   }
@@ -27,7 +39,7 @@ async function fetchProjects(): Promise<ProjectsResponse> {
 }
 
 async function fetchProjectSessions(projectId: string): Promise<ProjectSessionsResponse> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions`)
+  const response = await fetch(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions`))
   if (!response.ok) {
     throw new Error(`Project sessions request failed: ${response.status}`)
   }
@@ -42,7 +54,7 @@ async function fetchSessionTimeline(
   const params = new URLSearchParams({ limitTurns: '20' })
   if (cursor) params.set('cursor', cursor)
   const response = await fetch(
-    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`,
+    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`),
   )
   if (!response.ok) {
     throw new Error(`Session timeline request failed: ${response.status}`)
@@ -54,7 +66,7 @@ async function createTurn(projectId: string, sessionId: string | null, text: str
   const path = sessionId
     ? `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns`
     : `/api/projects/${encodeURIComponent(projectId)}/sessions`
-  const response = await fetch(path, {
+  const response = await fetch(withToken(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
@@ -67,7 +79,7 @@ async function createTurn(projectId: string, sessionId: string | null, text: str
 
 async function interruptTurn(projectId: string, sessionId: string, turnId: string): Promise<void> {
   const response = await fetch(
-    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/interrupt`,
+    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/interrupt`),
     { method: 'POST' },
   )
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
@@ -206,7 +218,7 @@ function SessionTimeline({
   }, [timeline.data])
 
   useEffect(() => {
-    const events = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`)
+    const events = new EventSource(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`))
     events.onmessage = (message) => {
       const event = JSON.parse(message.data) as SessionStreamEvent
       if (event.type === 'live.raw') {

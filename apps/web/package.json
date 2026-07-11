@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@cotta/shared": "workspace:*",
+    "@cotta/shared": "*",
     "@vitejs/plugin-react": "^4.3.0",
     "@tanstack/react-query": "^5.66.0",
     "vite": "^6.0.0",

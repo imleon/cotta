@@ -3,17 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.30.3",
+  "packageManager": "npm@11.12.1",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev": "pnpm --filter @cotta/server run dev",
-    "dev:web": "pnpm --filter @cotta/web run dev",
-    "build": "pnpm -r --if-present run build",
-    "test": "pnpm -r --if-present run test",
-    "typecheck": "pnpm -r --if-present run typecheck"
+    "dev": "npm run dev --workspace @cotta/server",
+    "dev:web": "npm run dev --workspace @cotta/web",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

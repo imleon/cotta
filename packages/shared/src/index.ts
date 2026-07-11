@@ -7,13 +7,21 @@ export const healthResponseSchema = z.object({
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>
 
-export type ProjectSummary = {
-  id: string
-  name: string
-  path?: string
-  lastActivityAt?: number
-  sessionCount?: number
-}
+export const projectSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  path: z.string().optional(),
+  lastActivityAt: z.number().optional(),
+  sessionCount: z.number().optional(),
+})
+
+export type ProjectSummary = z.infer<typeof projectSummarySchema>
+
+export const projectsResponseSchema = z.object({
+  projects: z.array(projectSummarySchema),
+})
+
+export type ProjectsResponse = z.infer<typeof projectsResponseSchema>
 
 export type SessionSummary = {
   id: string

@@ -1,10 +1,14 @@
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
+import { createClaudeCodeApi, type ClaudeCodeApi } from './claude-code-api.js'
 import { registerHealthRoute } from './routes/health.js'
+import { registerProjectRoutes } from './routes/projects.js'
 
-export function createApp(): Hono {
+export function createApp(input: { claudeCodeApi?: ClaudeCodeApi } = {}): Hono {
   const app = new Hono()
+  const claudeCodeApi = input.claudeCodeApi ?? createClaudeCodeApi()
   registerHealthRoute(app)
+  registerProjectRoutes(app, { claudeCodeApi })
   return app
 }
 

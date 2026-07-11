@@ -11,9 +11,9 @@ import type { ClaudeCodeApi } from '../claude-code-api.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
 
-function parseLimitTurns(value: string | undefined): number {
+function parseLimit(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return 20
+  if (!Number.isFinite(parsed)) return fallback
   return Math.max(1, Math.min(100, Math.trunc(parsed)))
 }
 
@@ -57,7 +57,10 @@ export function registerProjectRoutes(
 
   app.get('/api/projects/:projectId/sessions', async (c) => {
     try {
-      const result = await input.claudeCodeApi.listProjectSessions(c.req.param('projectId'))
+      const result = await input.claudeCodeApi.listProjectSessions(c.req.param('projectId'), {
+        limit: parseLimit(c.req.query('limit'), 10),
+        cursor: parseCursor(c.req.query('cursor')),
+      })
       if (!result) {
         return c.json({ error: 'project_not_found' }, 404)
       }
@@ -152,7 +155,7 @@ export function registerProjectRoutes(
         return c.json({ error: 'session_not_found' }, 404)
       }
       const response: SessionTimelineResponse = projectSessionTimeline(c.req.param('sessionId'), messages, {
-        limitTurns: parseLimitTurns(c.req.query('limitTurns')),
+        limitTurns: parseLimit(c.req.query('limitTurns'), 20),
         cursor: parseCursor(c.req.query('cursor')),
       })
       return c.json(response)

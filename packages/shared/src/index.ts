@@ -44,6 +44,8 @@ export const projectSessionsResponseSchema = z.object({
   project: projectSummarySchema,
   sessions: z.array(sessionSummarySchema),
   defaultSessionId: z.string().nullable(),
+  hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
 })
 
 export type ProjectSessionsResponse = z.infer<typeof projectSessionsResponseSchema>

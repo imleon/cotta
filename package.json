@@ -9,7 +9,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run build --workspace @cotta/shared && npm run dev --workspace @cotta/server",
+    "dev": "npm run dev --workspace @cotta/server",
     "dev:web": "npm run build --workspace @cotta/shared && npm run dev --workspace @cotta/web",
     "build": "npm run build --workspace @cotta/shared && npm run build --workspace @cotta/server && npm run build --workspace @cotta/web",
     "test": "npm run build --workspace @cotta/shared && npm run test --workspaces --if-present",

@@ -73,12 +73,19 @@ function createTestApp() {
       async getProject(projectId) {
         return projectId === project.id ? project : null
       },
-      async listProjectSessions(projectId) {
+      async listProjectSessions(projectId, options = {}) {
         if (projectId !== project.id) return null
+        const limit = options.limit ?? sessions.length
+        const cursorIndex = options.cursor ? sessions.findIndex((session) => session.id === options.cursor) : -1
+        const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+        const page = sessions.slice(start, start + limit)
+        const hasMore = start + limit < sessions.length
         return {
           project,
-          sessions,
+          sessions: page,
           defaultSessionId: sessions[0]?.id ?? null,
+          hasMore,
+          nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
         }
       },
       async getSessionMessages(projectId, sessionId) {
@@ -112,6 +119,34 @@ describe('project routes', () => {
       project,
       sessions,
       defaultSessionId: 'session-newest',
+      hasMore: false,
+      nextCursor: null,
+    })
+  })
+
+  it('paginates project sessions', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions?limit=1`)
+
+    expect(response.status).toBe(200)
+    expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
+      project,
+      sessions: [sessions[0]],
+      defaultSessionId: 'session-newest',
+      hasMore: true,
+      nextCursor: 'session-newest',
+    })
+  })
+
+  it('loads project sessions after the cursor', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions?limit=1&cursor=session-newest`)
+
+    expect(response.status).toBe(200)
+    expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
+      project,
+      sessions: [sessions[1]],
+      defaultSessionId: 'session-newest',
+      hasMore: false,
+      nextCursor: null,
     })
   })
 

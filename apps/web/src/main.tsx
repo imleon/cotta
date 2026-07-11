@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { StrictMode, useEffect, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
@@ -36,8 +36,14 @@ async function fetchProjects(): Promise<ProjectsResponse> {
   return projectsResponseSchema.parse(await response.json())
 }
 
-async function fetchProjectSessions(projectId: string): Promise<ProjectSessionsResponse> {
-  const response = await fetch(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions`))
+async function fetchProjectSessions(
+  projectId: string,
+  cursor: string | null = null,
+  limit = 10,
+): Promise<ProjectSessionsResponse> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (cursor) params.set('cursor', cursor)
+  const response = await fetch(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`))
   if (!response.ok) throw new Error(`Project sessions request failed: ${response.status}`)
   return projectSessionsResponseSchema.parse(await response.json())
 }
@@ -229,45 +235,86 @@ function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent): TurnSu
   return turns
 }
 
+function ProjectSessionBranch({
+  project,
+  selectedProjectId,
+  selectedSessionId,
+  onSelectProject,
+  onSelectSession,
+}: {
+  project: ProjectSummary
+  selectedProjectId: string | null
+  selectedSessionId: string | null
+  onSelectProject: (projectId: string) => void
+  onSelectSession: (projectId: string, sessionId: string) => void
+}) {
+  const sessionsQuery = useInfiniteQuery({
+    queryKey: ['project-sessions-rail', project.id],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => fetchProjectSessions(project.id, pageParam, 10),
+    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+    retry: false,
+  })
+  const sessions = sessionsQuery.data?.pages.flatMap((page) => page.sessions) ?? []
+  const selected = project.id === selectedProjectId
+
+  return (
+    <div className="project-tree-item">
+      <ProjectCard project={project} selected={selected} onSelect={() => onSelectProject(project.id)} />
+      <div className="project-sessions">
+        <div className="project-sessions-heading">Sessions · {sessions.length}{sessionsQuery.hasNextPage ? '+' : ''}</div>
+        {sessionsQuery.isLoading ? <div className="rail-empty">Loading sessions…</div> : null}
+        {sessionsQuery.isError ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
+        {!sessionsQuery.isLoading && sessions.length === 0 ? <div className="rail-empty">No sessions</div> : null}
+        {sessions.length > 0 ? (
+          <ol className="session-list rail-session-list">
+            {sessions.map((session) => (
+              <SessionRow
+                key={session.id}
+                session={session}
+                selected={project.id === selectedProjectId && session.id === selectedSessionId}
+                onSelect={() => onSelectSession(project.id, session.id)}
+              />
+            ))}
+          </ol>
+        ) : null}
+        {sessionsQuery.hasNextPage ? (
+          <button className="load-more-sessions" type="button" onClick={() => sessionsQuery.fetchNextPage()} disabled={sessionsQuery.isFetchingNextPage}>
+            {sessionsQuery.isFetchingNextPage ? 'Loading…' : 'Load more sessions'}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function ProjectSessionRail({
   projects,
-  sessions,
   selectedProjectId,
   selectedSessionId,
   onSelectProject,
   onSelectSession,
 }: {
   projects: ProjectSummary[]
-  sessions: SessionSummary[]
   selectedProjectId: string | null
   selectedSessionId: string | null
   onSelectProject: (projectId: string) => void
-  onSelectSession: (sessionId: string) => void
+  onSelectSession: (projectId: string, sessionId: string) => void
 }) {
   return (
     <aside className="project-rail" aria-label="Projects and sessions">
       <div className="section-heading"><div><p className="eyebrow">Projects</p><h3>{projects.length} workspaces</h3></div></div>
       <div className="project-tree">
-        {projects.map((project) => {
-          const selected = project.id === selectedProjectId
-          return (
-            <div className="project-tree-item" key={project.id}>
-              <ProjectCard project={project} selected={selected} onSelect={() => onSelectProject(project.id)} />
-              {selected ? (
-                <div className="project-sessions">
-                  <div className="project-sessions-heading">Sessions · {sessions.length}</div>
-                  {sessions.length === 0 ? <div className="rail-empty">No sessions</div> : (
-                    <ol className="session-list rail-session-list">
-                      {sessions.map((session) => (
-                        <SessionRow key={session.id} session={session} selected={session.id === selectedSessionId} onSelect={() => onSelectSession(session.id)} />
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          )
-        })}
+        {projects.map((project) => (
+          <ProjectSessionBranch
+            key={project.id}
+            project={project}
+            selectedProjectId={selectedProjectId}
+            selectedSessionId={selectedSessionId}
+            onSelectProject={onSelectProject}
+            onSelectSession={onSelectSession}
+          />
+        ))}
       </div>
     </aside>
   )
@@ -429,11 +476,13 @@ function ProjectsDashboard() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const projects = useQuery({ queryKey: ['projects'], queryFn: fetchProjects, retry: false })
-  const projectSessions = useQuery({ queryKey: ['project-sessions', selectedProjectId], queryFn: () => fetchProjectSessions(selectedProjectId!), enabled: Boolean(selectedProjectId), retry: false })
+  const projectSessions = useQuery({ queryKey: ['project-sessions-detail', selectedProjectId], queryFn: () => fetchProjectSessions(selectedProjectId!), enabled: Boolean(selectedProjectId), retry: false })
   const items = projects.data?.projects ?? []
 
   useEffect(() => { if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id) }, [items, selectedProjectId])
-  useEffect(() => { setSelectedSessionId(projectSessions.data?.defaultSessionId ?? null) }, [projectSessions.data])
+  useEffect(() => {
+    if (!selectedSessionId) setSelectedSessionId(projectSessions.data?.defaultSessionId ?? null)
+  }, [projectSessions.data, selectedSessionId])
 
   if (projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
   if (projects.isError) return <div className="panel error">Failed to load projects: {projects.error instanceof Error ? projects.error.message : 'unknown error'}</div>
@@ -443,11 +492,10 @@ function ProjectsDashboard() {
     <div className="dashboard-layout">
       <ProjectSessionRail
         projects={items}
-        sessions={projectSessions.data?.sessions ?? []}
         selectedProjectId={selectedProjectId}
         selectedSessionId={selectedSessionId}
         onSelectProject={(projectId) => { setSelectedProjectId(projectId); setSelectedSessionId(null) }}
-        onSelectSession={setSelectedSessionId}
+        onSelectSession={(projectId, sessionId) => { setSelectedProjectId(projectId); setSelectedSessionId(sessionId) }}
       />
       {projectSessions.isError ? <div className="panel error">Failed to load project sessions: {projectSessions.error instanceof Error ? projectSessions.error.message : 'unknown error'}</div> : <WorkspacePanel projectId={selectedProjectId} detail={projectSessions.data} selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} />}
     </div>

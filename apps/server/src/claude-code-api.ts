@@ -29,6 +29,13 @@ function titleFromSession(session: SDKSessionInfo): string {
   return session.customTitle || session.summary || session.firstPrompt || session.sessionId
 }
 
+function sortSessions(sessions: SDKSessionInfo[]): SDKSessionInfo[] {
+  return [...sessions].sort((a, b) => {
+    const byTime = b.lastModified - a.lastModified
+    return byTime !== 0 ? byTime : a.sessionId.localeCompare(b.sessionId)
+  })
+}
+
 function toProjectSummary(path: string, sessions: SDKSessionInfo[]): ProjectSummary {
   return {
     id: projectIdFromPath(path),
@@ -41,14 +48,12 @@ function toProjectSummary(path: string, sessions: SDKSessionInfo[]): ProjectSumm
 
 function toProjectSummaries(sessions: SDKSessionInfo[]): ProjectSummary[] {
   const sessionsByPath = new Map<string, SDKSessionInfo[]>()
-
   for (const session of sessions) {
     if (!session.cwd) continue
     const projectSessions = sessionsByPath.get(session.cwd) ?? []
     projectSessions.push(session)
     sessionsByPath.set(session.cwd, projectSessions)
   }
-
   return [...sessionsByPath.entries()]
     .map(([path, projectSessions]) => toProjectSummary(path, projectSessions))
     .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
@@ -63,16 +68,23 @@ function toSessionSummary(projectId: string, session: SDKSessionInfo): SessionSu
   }
 }
 
+export type ProjectSessionsOptions = {
+  limit?: number
+  cursor?: string | null
+}
+
 export type ProjectSessions = {
   project: ProjectSummary
   sessions: SessionSummary[]
   defaultSessionId: string | null
+  hasMore: boolean
+  nextCursor: string | null
 }
 
 export type ClaudeCodeApi = {
   listProjects(): Promise<ProjectSummary[]>
   getProject(projectId: string): Promise<ProjectSummary | null>
-  listProjectSessions(projectId: string): Promise<ProjectSessions | null>
+  listProjectSessions(projectId: string, options?: ProjectSessionsOptions): Promise<ProjectSessions | null>
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
 
@@ -91,17 +103,23 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
       return toProjectSummary(projectPath, sessions)
     },
 
-    async listProjectSessions(projectId) {
+    async listProjectSessions(projectId, options = {}) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
-      const sessions = await listSessions({ dir: projectPath })
+      const sessions = sortSessions(await listSessions({ dir: projectPath }))
       if (sessions.length === 0) return null
       const project = toProjectSummary(projectPath, sessions)
-      const sessionSummaries = sessions.map((session) => toSessionSummary(project.id, session))
+      const limit = Math.max(1, Math.min(100, Math.trunc(options.limit ?? 10)))
+      const cursorIndex = options.cursor ? sessions.findIndex((session) => session.sessionId === options.cursor) : -1
+      const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+      const page = sessions.slice(start, start + limit)
+      const hasMore = start + limit < sessions.length
       return {
         project,
-        sessions: sessionSummaries,
-        defaultSessionId: sessionSummaries[0]?.id ?? null,
+        sessions: page.map((session) => toSessionSummary(project.id, session)),
+        defaultSessionId: sessions[0]?.sessionId ?? null,
+        hasMore,
+        nextCursor: hasMore ? page.at(-1)?.sessionId ?? null : null,
       }
     },
 

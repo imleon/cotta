@@ -11,6 +11,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function jsonData(value: unknown): unknown {
+  return value === undefined ? null : value
+}
+
 function textFromAssistantMessage(message: SDKMessage): string {
   if (!('message' in message) || !isRecord(message.message)) return ''
   const content = message.message.content
@@ -39,7 +43,7 @@ function timelineBlockFromSdkMessage(message: SDKMessage): TimelineBlock | null 
       id: `${uuid}:stream`,
       kind: `stream.${eventType}`,
       sourceEventIds: [uuid],
-      data: message.event,
+      data: jsonData(message.event),
     }
   }
 

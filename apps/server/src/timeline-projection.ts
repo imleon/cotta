@@ -5,6 +5,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function jsonData(value: unknown): unknown {
+  return value === undefined ? null : value
+}
+
 function messageContent(message: SessionMessage): unknown {
   return isRecord(message.message) ? message.message.content : undefined
 }
@@ -48,7 +52,7 @@ function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
         id: `${message.uuid}:tool_result`,
         kind: 'tool.result',
         sourceEventIds: [message.uuid],
-        data: message.message,
+        data: jsonData(message.message),
       }]
     }
     return [{
@@ -66,14 +70,14 @@ function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
         id: `${message.uuid}:assistant`,
         kind: 'assistant.message',
         sourceEventIds: [message.uuid],
-        data: message.message,
+        data: jsonData(message.message),
       }]
     }
     return rawContent.map((block, index) => ({
       id: `${message.uuid}:assistant:${index}`,
       kind: blockKindForContentBlock(block),
       sourceEventIds: [message.uuid],
-      data: block,
+      data: jsonData(block),
     }))
   }
 
@@ -81,7 +85,7 @@ function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
     id: `${message.uuid}:system`,
     kind: 'system.message',
     sourceEventIds: [message.uuid],
-    data: message.message,
+    data: jsonData(message.message),
   }]
 }
 

@@ -1,13 +1,16 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
-import { StrictMode, useEffect, useState } from 'react'
+import { StrictMode, useEffect, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
+  createTurnResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
   sessionTimelineResponseSchema,
+  type CreateTurnResponse,
   type ProjectSessionsResponse,
   type ProjectSummary,
   type ProjectsResponse,
+  type SessionStreamEvent,
   type SessionSummary,
   type SessionTimelineResponse,
   type TimelineBlock,
@@ -45,6 +48,29 @@ async function fetchSessionTimeline(
     throw new Error(`Session timeline request failed: ${response.status}`)
   }
   return sessionTimelineResponseSchema.parse(await response.json())
+}
+
+async function createTurn(projectId: string, sessionId: string | null, text: string): Promise<CreateTurnResponse> {
+  const path = sessionId
+    ? `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns`
+    : `/api/projects/${encodeURIComponent(projectId)}/sessions`
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!response.ok) {
+    throw new Error(`Create turn failed: ${response.status}`)
+  }
+  return createTurnResponseSchema.parse(await response.json())
+}
+
+async function interruptTurn(projectId: string, sessionId: string, turnId: string): Promise<void> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/interrupt`,
+    { method: 'POST' },
+  )
+  if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
 function formatLastActivity(value?: number): string {
@@ -112,12 +138,47 @@ function TimelineBlockView({ block }: { block: TimelineBlock }) {
   )
 }
 
-function SessionTimeline({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent): TurnSummary[] {
+  if (event.type === 'live.turn.started') {
+    return [...turns.filter((turn) => turn.id !== event.turnId), event.turn]
+  }
+
+  if (event.type === 'live.timeline.block') {
+    return turns.map((turn) => turn.id === event.turnId
+      ? { ...turn, blocks: [...turn.blocks.filter((block) => block.id !== event.block.id), event.block] }
+      : turn)
+  }
+
+  if (event.type === 'live.turn.completed' || event.type === 'live.turn.interrupted') {
+    return turns.map((turn) => turn.id === event.turnId
+      ? { ...turn, rawStatus: event.type === 'live.turn.interrupted' ? 'interrupted' : 'completed', displayStatus: event.type === 'live.turn.interrupted' ? 'interrupted' : 'complete' }
+      : turn)
+  }
+
+  if (event.type === 'live.turn.failed') {
+    return turns.map((turn) => turn.id === event.turnId
+      ? { ...turn, rawStatus: 'failed', displayStatus: 'failed', blocks: [...turn.blocks, { id: `${event.turnId}:error`, kind: 'error', sourceEventIds: [event.turnId], data: { error: event.error } }] }
+      : turn)
+  }
+
+  return turns
+}
+
+function SessionTimeline({
+  projectId,
+  sessionId,
+  onLiveTurnChange,
+}: {
+  projectId: string
+  sessionId: string
+  onLiveTurnChange?: (turnId: string | null) => void
+}) {
   const [turns, setTurns] = useState<TurnSummary[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [olderError, setOlderError] = useState<string | null>(null)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [debugEvents, setDebugEvents] = useState<unknown[]>([])
 
   const timeline = useQuery({
     queryKey: ['session-timeline', projectId, sessionId],
@@ -131,7 +192,29 @@ function SessionTimeline({ projectId, sessionId }: { projectId: string; sessionI
     setNextCursor(timeline.data.nextCursor)
     setHasMore(timeline.data.hasMore)
     setOlderError(null)
+    setDebugEvents([])
   }, [timeline.data])
+
+  useEffect(() => {
+    const events = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`)
+    events.onmessage = (message) => {
+      const event = JSON.parse(message.data) as SessionStreamEvent
+      if (event.type === 'live.raw') {
+        setDebugEvents((current) => [...current.slice(-49), event.raw])
+      }
+      if ('turnId' in event) {
+        if (event.type === 'live.turn.started') onLiveTurnChange?.(event.turnId)
+        if (event.type === 'live.turn.completed' || event.type === 'live.turn.failed' || event.type === 'live.turn.interrupted') {
+          onLiveTurnChange?.(null)
+        }
+      }
+      setTurns((current) => applyLiveEvent(current, event))
+    }
+    events.onerror = () => {
+      events.close()
+    }
+    return () => events.close()
+  }, [onLiveTurnChange, projectId, sessionId])
 
   async function loadOlder() {
     if (!nextCursor || loadingOlder) return
@@ -186,17 +269,32 @@ function SessionTimeline({ projectId, sessionId }: { projectId: string; sessionI
           </div>
         </article>
       ))}
+      <details className="debug-panel">
+        <summary>Debug Panel · raw live events ({debugEvents.length})</summary>
+        <pre>{JSON.stringify(debugEvents, null, 2)}</pre>
+      </details>
     </section>
   )
 }
 
 function ProjectDetail({ projectId }: { projectId: string | null }) {
+  const [inputText, setInputText] = useState('')
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [liveTurnId, setLiveTurnId] = useState<string | null>(null)
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const detail = useQuery({
     queryKey: ['project-sessions', projectId],
     queryFn: () => fetchProjectSessions(projectId!),
     enabled: Boolean(projectId),
     retry: false,
   })
+
+  useEffect(() => {
+    setActiveSessionId(null)
+    setLiveTurnId(null)
+    setSubmitError(null)
+  }, [projectId])
 
   if (!projectId) {
     return <div className="panel muted">Select a project to view its sessions.</div>
@@ -220,7 +318,33 @@ function ProjectDetail({ projectId }: { projectId: string | null }) {
   }
 
   const data = detail.data
-  const selectedSessionId = data.defaultSessionId
+  const selectedSessionId = activeSessionId ?? data.defaultSessionId
+
+  async function submitTurn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!projectId || !inputText.trim()) return
+    setSubmitting(true)
+    setSubmitError(null)
+    try {
+      const response = await createTurn(projectId, selectedSessionId, inputText)
+      setActiveSessionId(response.sessionId)
+      setLiveTurnId(response.turnId)
+      setInputText('')
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function stopLiveTurn() {
+    if (!projectId || !selectedSessionId || !liveTurnId) return
+    try {
+      await interruptTurn(projectId, selectedSessionId, liveTurnId)
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   return (
     <section className="detail-panel">
@@ -246,7 +370,29 @@ function ProjectDetail({ projectId }: { projectId: string | null }) {
         </ol>
       )}
 
-      {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} /> : null}
+      <form className="turn-form" onSubmit={submitTurn}>
+        <textarea
+          value={inputText}
+          onChange={(event) => setInputText(event.target.value)}
+          placeholder={selectedSessionId ? 'Continue the default session…' : 'Start a new session in this project…'}
+          rows={4}
+        />
+        <div className="turn-actions">
+          <button type="submit" disabled={submitting || !inputText.trim()}>
+            {submitting ? 'Sending…' : selectedSessionId ? 'Continue session' : 'Start new session'}
+          </button>
+          {liveTurnId && selectedSessionId ? (
+            <button type="button" className="danger" onClick={stopLiveTurn}>
+              Stop
+            </button>
+          ) : null}
+        </div>
+        {submitError ? <div className="panel error">{submitError}</div> : null}
+      </form>
+
+      {selectedSessionId ? (
+        <SessionTimeline projectId={projectId} sessionId={selectedSessionId} onLiveTurnChange={setLiveTurnId} />
+      ) : null}
     </section>
   )
 }

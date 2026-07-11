@@ -1,11 +1,14 @@
 import type { Hono } from 'hono'
-import type {
-  ProjectResponse,
-  ProjectsResponse,
-  ProjectSessionsResponse,
-  SessionTimelineResponse,
+import {
+  createTurnRequestSchema,
+  type CreateTurnResponse,
+  type ProjectResponse,
+  type ProjectsResponse,
+  type ProjectSessionsResponse,
+  type SessionTimelineResponse,
 } from '@cotta/shared'
 import type { ClaudeCodeApi } from '../claude-code-api.js'
+import type { LiveTurnManager } from '../live-turn-manager.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
 
 function parseLimitTurns(value: string | undefined): number {
@@ -18,7 +21,14 @@ function parseCursor(value: string | undefined): string | null {
   return value && value.trim() ? value.trim() : null
 }
 
-export function registerProjectRoutes(app: Hono, input: { claudeCodeApi: ClaudeCodeApi }): void {
+function encodeSse(data: unknown): string {
+  return `data: ${JSON.stringify(data)}\n\n`
+}
+
+export function registerProjectRoutes(
+  app: Hono,
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: LiveTurnManager },
+): void {
   app.get('/api/projects', async (c) => {
     try {
       const response: ProjectsResponse = {
@@ -57,6 +67,79 @@ export function registerProjectRoutes(app: Hono, input: { claudeCodeApi: ClaudeC
       console.error('projects:sessions failed', error)
       return c.json({ error: 'project_sessions_failed' }, 500)
     }
+  })
+
+  app.post('/api/projects/:projectId/sessions', async (c) => {
+    try {
+      const body = createTurnRequestSchema.parse(await c.req.json())
+      const result = await input.liveTurnManager.startTurn({
+        projectId: c.req.param('projectId'),
+        text: body.text,
+      })
+      const response: CreateTurnResponse = {
+        projectId: c.req.param('projectId'),
+        sessionId: result.sessionId,
+        turnId: result.turnId,
+      }
+      return c.json(response, 202)
+    } catch (error) {
+      console.error('sessions:create failed', error)
+      return c.json({ error: 'session_create_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects/:projectId/sessions/:sessionId/turns', async (c) => {
+    try {
+      const body = createTurnRequestSchema.parse(await c.req.json())
+      const result = await input.liveTurnManager.startTurn({
+        projectId: c.req.param('projectId'),
+        sessionId: c.req.param('sessionId'),
+        text: body.text,
+      })
+      const response: CreateTurnResponse = {
+        projectId: c.req.param('projectId'),
+        sessionId: result.sessionId,
+        turnId: result.turnId,
+      }
+      return c.json(response, 202)
+    } catch (error) {
+      console.error('turns:create failed', error)
+      return c.json({ error: 'turn_create_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects/:projectId/sessions/:sessionId/turns/:turnId/interrupt', async (c) => {
+    try {
+      const interrupted = await input.liveTurnManager.interrupt(c.req.param('sessionId'))
+      return c.json({ interrupted })
+    } catch (error) {
+      console.error('turns:interrupt failed', error)
+      return c.json({ error: 'turn_interrupt_failed' }, 500)
+    }
+  })
+
+  app.get('/api/projects/:projectId/sessions/:sessionId/events', (c) => {
+    const sessionId = c.req.param('sessionId')
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder()
+        controller.enqueue(encoder.encode(': connected\n\n'))
+        const unsubscribe = input.liveTurnManager.subscribe(sessionId, (event) => {
+          controller.enqueue(encoder.encode(encodeSse(event)))
+        })
+        c.req.raw.signal.addEventListener('abort', () => {
+          unsubscribe()
+          controller.close()
+        }, { once: true })
+      },
+    })
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    })
   })
 
   app.get('/api/projects/:projectId/sessions/:sessionId/timeline', async (c) => {

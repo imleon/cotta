@@ -11,9 +11,9 @@
   "scripts": {
     "dev": "npm run dev --workspace @cotta/server",
     "dev:web": "npm run dev --workspace @cotta/web",
-    "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "build": "npm run build --workspace @cotta/shared && npm run build --workspace @cotta/server && npm run build --workspace @cotta/web",
+    "test": "npm run build --workspace @cotta/shared && npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspace @cotta/shared && npm run typecheck --workspace @cotta/server && npm run typecheck --workspace @cotta/web"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -223,6 +223,49 @@ h1 {
   text-transform: uppercase;
 }
 
+.turn-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.turn-form textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #ded8ce;
+  border-radius: 18px;
+  background: #fffaf0;
+  padding: 16px;
+  color: #1f2933;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.turn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.turn-actions button {
+  border: 0;
+  border-radius: 999px;
+  background: #d97706;
+  padding: 10px 16px;
+  color: #fff;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.turn-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.turn-actions .danger {
+  background: #dc2626;
+}
+
 .timeline-panel {
   display: grid;
   gap: 16px;
@@ -301,6 +344,27 @@ h1 {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.debug-panel {
+  border: 1px dashed #cbd5e1;
+  border-radius: 18px;
+  background: #f8fafc;
+  padding: 14px;
+}
+
+.debug-panel summary {
+  cursor: pointer;
+  color: #475569;
+  font-weight: 800;
+}
+
+.debug-panel pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #334155;
+  font-size: 12px;
 }
 
 @media (max-width: 900px) {

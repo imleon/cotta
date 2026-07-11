@@ -79,9 +79,60 @@ export const sessionTimelineResponseSchema = z.object({
 
 export type SessionTimelineResponse = z.infer<typeof sessionTimelineResponseSchema>
 
-export type SessionStreamEvent = {
-  type: 'session.event'
-  projectId: string
-  sessionId: string
-  event: unknown
-}
+export const createTurnRequestSchema = z.object({
+  text: z.string().trim().min(1),
+})
+
+export type CreateTurnRequest = z.infer<typeof createTurnRequestSchema>
+
+export const createTurnResponseSchema = z.object({
+  projectId: z.string(),
+  sessionId: z.string(),
+  turnId: z.string(),
+})
+
+export type CreateTurnResponse = z.infer<typeof createTurnResponseSchema>
+
+export type SessionStreamEvent =
+  | {
+      type: 'live.turn.started'
+      projectId: string
+      sessionId: string
+      turnId: string
+      turn: TurnSummary
+    }
+  | {
+      type: 'live.timeline.block'
+      projectId: string
+      sessionId: string
+      turnId: string
+      block: TimelineBlock
+    }
+  | {
+      type: 'live.raw'
+      projectId: string
+      sessionId: string
+      turnId: string
+      raw: unknown
+    }
+  | {
+      type: 'live.turn.completed'
+      projectId: string
+      sessionId: string
+      turnId: string
+      raw: unknown
+    }
+  | {
+      type: 'live.turn.failed'
+      projectId: string
+      sessionId: string
+      turnId: string
+      error: string
+    }
+  | {
+      type: 'live.turn.interrupted'
+      projectId: string
+      sessionId: string
+      turnId: string
+    }
+

@@ -1,7 +1,14 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
-import { StrictMode } from 'react'
+import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { projectsResponseSchema, type ProjectSummary, type ProjectsResponse } from '@cotta/shared'
+import {
+  projectSessionsResponseSchema,
+  projectsResponseSchema,
+  type ProjectSessionsResponse,
+  type ProjectSummary,
+  type ProjectsResponse,
+  type SessionSummary,
+} from '@cotta/shared'
 import './styles.css'
 
 async function fetchProjects(): Promise<ProjectsResponse> {
@@ -12,6 +19,14 @@ async function fetchProjects(): Promise<ProjectsResponse> {
   return projectsResponseSchema.parse(await response.json())
 }
 
+async function fetchProjectSessions(projectId: string): Promise<ProjectSessionsResponse> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions`)
+  if (!response.ok) {
+    throw new Error(`Project sessions request failed: ${response.status}`)
+  }
+  return projectSessionsResponseSchema.parse(await response.json())
+}
+
 function formatLastActivity(value?: number): string {
   if (!value) return 'No activity yet'
   return new Intl.DateTimeFormat(undefined, {
@@ -20,9 +35,17 @@ function formatLastActivity(value?: number): string {
   }).format(new Date(value))
 }
 
-function ProjectCard({ project }: { project: ProjectSummary }) {
+function ProjectCard({
+  project,
+  selected,
+  onSelect,
+}: {
+  project: ProjectSummary
+  selected: boolean
+  onSelect: () => void
+}) {
   return (
-    <article className="project-card">
+    <button className={`project-card ${selected ? 'selected' : ''}`} type="button" onClick={onSelect}>
       <div>
         <h2>{project.name}</h2>
         {project.path ? <p className="project-path">{project.path}</p> : null}
@@ -37,16 +60,96 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
           <dd>{formatLastActivity(project.lastActivityAt)}</dd>
         </div>
       </dl>
-    </article>
+    </button>
+  )
+}
+
+function SessionRow({ session, selected }: { session: SessionSummary; selected: boolean }) {
+  return (
+    <li className={`session-row ${selected ? 'selected' : ''}`}>
+      <div>
+        <strong>{session.title}</strong>
+        <span>{formatLastActivity(session.lastActivityAt)}</span>
+      </div>
+      <span className="session-status">{session.displayStatus ?? session.rawStatus ?? 'idle'}</span>
+    </li>
+  )
+}
+
+function ProjectDetail({ projectId }: { projectId: string | null }) {
+  const detail = useQuery({
+    queryKey: ['project-sessions', projectId],
+    queryFn: () => fetchProjectSessions(projectId!),
+    enabled: Boolean(projectId),
+    retry: false,
+  })
+
+  if (!projectId) {
+    return <div className="panel muted">Select a project to view its sessions.</div>
+  }
+
+  if (detail.isLoading) {
+    return <div className="panel muted">Loading project sessions…</div>
+  }
+
+  if (detail.isError) {
+    return (
+      <div className="panel error">
+        Failed to load project sessions:{' '}
+        {detail.error instanceof Error ? detail.error.message : 'unknown error'}
+      </div>
+    )
+  }
+
+  if (!detail.data) {
+    return <div className="panel muted">No project session data was returned.</div>
+  }
+
+  const data = detail.data
+  const selectedSessionId = data.defaultSessionId
+
+  return (
+    <section className="detail-panel">
+      <header className="detail-header">
+        <div>
+          <p className="eyebrow">Project</p>
+          <h2>{data.project.name}</h2>
+          {data.project.path ? <p className="project-path">{data.project.path}</p> : null}
+        </div>
+        <div className="detail-stat">
+          <span>Default session</span>
+          <strong>{selectedSessionId ?? 'none'}</strong>
+        </div>
+      </header>
+
+      {data.sessions.length === 0 ? (
+        <div className="panel muted">No sessions were returned for this project.</div>
+      ) : (
+        <ol className="session-list">
+          {data.sessions.map((session) => (
+            <SessionRow key={session.id} session={session} selected={session.id === selectedSessionId} />
+          ))}
+        </ol>
+      )}
+    </section>
   )
 }
 
 function ProjectsDashboard() {
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const projects = useQuery({
     queryKey: ['projects'],
     queryFn: fetchProjects,
     retry: false,
   })
+
+  const items = projects.data?.projects ?? []
+
+  useEffect(() => {
+    if (!selectedProjectId && items.length > 0) {
+      setSelectedProjectId(items[0]!.id)
+    }
+  }, [items, selectedProjectId])
 
   if (projects.isLoading) {
     return <div className="panel muted">Loading Claude Code projects…</div>
@@ -60,7 +163,6 @@ function ProjectsDashboard() {
     )
   }
 
-  const items = projects.data?.projects ?? []
   if (items.length === 0) {
     return (
       <div className="panel muted">
@@ -71,10 +173,18 @@ function ProjectsDashboard() {
   }
 
   return (
-    <div className="project-grid">
-      {items.map((project) => (
-        <ProjectCard key={project.id} project={project} />
-      ))}
+    <div className="dashboard-layout">
+      <div className="project-grid">
+        {items.map((project) => (
+          <ProjectCard
+            key={project.id}
+            project={project}
+            selected={project.id === selectedProjectId}
+            onSelect={() => setSelectedProjectId(project.id)}
+          />
+        ))}
+      </div>
+      <ProjectDetail projectId={selectedProjectId} />
     </div>
   )
 }
@@ -86,8 +196,8 @@ function App() {
         <p className="eyebrow">Cotta v2</p>
         <h1>Claude Code Project Dashboard</h1>
         <p className="lede">
-          Projects are discovered from official Claude Agent SDK session APIs. The first MVP slice is
-          read-only project discovery; session timelines come next.
+          Projects are discovered from official Claude Agent SDK session APIs. Select a project to see
+          the latest sessions; timeline pagination comes next.
         </p>
       </section>
       <ProjectsDashboard />

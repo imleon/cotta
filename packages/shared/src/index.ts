@@ -23,14 +23,30 @@ export const projectsResponseSchema = z.object({
 
 export type ProjectsResponse = z.infer<typeof projectsResponseSchema>
 
-export type SessionSummary = {
-  id: string
-  title: string
-  projectId: string
-  lastActivityAt?: number
-  rawStatus?: string
-  displayStatus?: string
-}
+export const sessionSummarySchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  projectId: z.string(),
+  lastActivityAt: z.number().optional(),
+  rawStatus: z.string().optional(),
+  displayStatus: z.string().optional(),
+})
+
+export type SessionSummary = z.infer<typeof sessionSummarySchema>
+
+export const projectResponseSchema = z.object({
+  project: projectSummarySchema,
+})
+
+export type ProjectResponse = z.infer<typeof projectResponseSchema>
+
+export const projectSessionsResponseSchema = z.object({
+  project: projectSummarySchema,
+  sessions: z.array(sessionSummarySchema),
+  defaultSessionId: z.string().nullable(),
+})
+
+export type ProjectSessionsResponse = z.infer<typeof projectSessionsResponseSchema>
 
 export type TurnSummary = {
   id: string

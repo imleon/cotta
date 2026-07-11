@@ -3,9 +3,11 @@ import {
   projectResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  sessionTimelineResponseSchema,
   type ProjectSummary,
   type SessionSummary,
 } from '@cotta/shared'
+import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createApp } from '../index.js'
 
 const project: ProjectSummary = {
@@ -31,6 +33,37 @@ const sessions: SessionSummary[] = [
   },
 ]
 
+const messages: SessionMessage[] = [
+  {
+    type: 'user',
+    uuid: 'user-1',
+    session_id: 'session-newest',
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    message: { role: 'user', content: 'First prompt' },
+  },
+  {
+    type: 'assistant',
+    uuid: 'assistant-1',
+    session_id: 'session-newest',
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    message: {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'First answer' }],
+    },
+  },
+  {
+    type: 'user',
+    uuid: 'user-2',
+    session_id: 'session-newest',
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    message: { role: 'user', content: 'Second prompt' },
+  },
+]
+
 function createTestApp() {
   return createApp({
     claudeCodeApi: {
@@ -47,6 +80,10 @@ function createTestApp() {
           sessions,
           defaultSessionId: sessions[0]?.id ?? null,
         }
+      },
+      async getSessionMessages(projectId, sessionId) {
+        if (projectId !== project.id || sessionId !== 'session-newest') return null
+        return messages
       },
     },
   })
@@ -83,5 +120,19 @@ describe('project routes', () => {
 
     expect(response.status).toBe(404)
     expect(await response.json()).toEqual({ error: 'project_not_found' })
+  })
+
+  it('returns a turn-based timeline page for a session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`,
+    )
+
+    expect(response.status).toBe(200)
+    const body = sessionTimelineResponseSchema.parse(await response.json())
+    expect(body.sessionId).toBe('session-newest')
+    expect(body.turns).toHaveLength(1)
+    expect(body.turns[0]?.id).toBe('user-2')
+    expect(body.hasMore).toBe(true)
+    expect(body.nextCursor).toBe('user-2')
   })
 })

@@ -48,22 +48,36 @@ export const projectSessionsResponseSchema = z.object({
 
 export type ProjectSessionsResponse = z.infer<typeof projectSessionsResponseSchema>
 
-export type TurnSummary = {
-  id: string
-  sessionId: string
-  title?: string
-  startedAt?: number
-  completedAt?: number
-  rawStatus?: string
-  displayStatus?: string
-}
+export const timelineBlockSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  sourceEventIds: z.array(z.string()),
+  data: z.unknown(),
+})
 
-export type TimelineBlock = {
-  id: string
-  kind: string
-  sourceEventIds: string[]
-  data: unknown
-}
+export type TimelineBlock = z.infer<typeof timelineBlockSchema>
+
+export const turnSummarySchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  title: z.string().optional(),
+  startedAt: z.number().optional(),
+  completedAt: z.number().optional(),
+  rawStatus: z.string().optional(),
+  displayStatus: z.string().optional(),
+  blocks: z.array(timelineBlockSchema),
+})
+
+export type TurnSummary = z.infer<typeof turnSummarySchema>
+
+export const sessionTimelineResponseSchema = z.object({
+  sessionId: z.string(),
+  turns: z.array(turnSummarySchema),
+  hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
+})
+
+export type SessionTimelineResponse = z.infer<typeof sessionTimelineResponseSchema>
 
 export type SessionStreamEvent = {
   type: 'session.event'

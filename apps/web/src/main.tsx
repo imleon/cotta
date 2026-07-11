@@ -4,10 +4,13 @@ import { createRoot } from 'react-dom/client'
 import {
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  sessionTimelineResponseSchema,
   type ProjectSessionsResponse,
   type ProjectSummary,
   type ProjectsResponse,
   type SessionSummary,
+  type SessionTimelineResponse,
+  type TimelineBlock,
 } from '@cotta/shared'
 import './styles.css'
 
@@ -27,12 +30,29 @@ async function fetchProjectSessions(projectId: string): Promise<ProjectSessionsR
   return projectSessionsResponseSchema.parse(await response.json())
 }
 
+async function fetchSessionTimeline(projectId: string, sessionId: string): Promise<SessionTimelineResponse> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?limitTurns=20`,
+  )
+  if (!response.ok) {
+    throw new Error(`Session timeline request failed: ${response.status}`)
+  }
+  return sessionTimelineResponseSchema.parse(await response.json())
+}
+
 function formatLastActivity(value?: number): string {
   if (!value) return 'No activity yet'
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))
+}
+
+function dataPreview(value: unknown): string {
+  if (typeof value === 'object' && value !== null && 'text' in value && typeof value.text === 'string') {
+    return value.text
+  }
+  return JSON.stringify(value, null, 2) ?? ''
 }
 
 function ProjectCard({
@@ -73,6 +93,64 @@ function SessionRow({ session, selected }: { session: SessionSummary; selected: 
       </div>
       <span className="session-status">{session.displayStatus ?? session.rawStatus ?? 'idle'}</span>
     </li>
+  )
+}
+
+function TimelineBlockView({ block }: { block: TimelineBlock }) {
+  return (
+    <div className={`timeline-block ${block.kind.replaceAll('.', '-')}`}>
+      <div className="timeline-kind">{block.kind}</div>
+      <pre>{dataPreview(block.data)}</pre>
+    </div>
+  )
+}
+
+function SessionTimeline({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const timeline = useQuery({
+    queryKey: ['session-timeline', projectId, sessionId],
+    queryFn: () => fetchSessionTimeline(projectId, sessionId),
+    retry: false,
+  })
+
+  if (timeline.isLoading) {
+    return <div className="panel muted">Loading session timeline…</div>
+  }
+
+  if (timeline.isError) {
+    return (
+      <div className="panel error">
+        Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}
+      </div>
+    )
+  }
+
+  const turns = timeline.data?.turns ?? []
+
+  if (turns.length === 0) {
+    return <div className="panel muted">This session has no projected turns yet.</div>
+  }
+
+  return (
+    <section className="timeline-panel">
+      {timeline.data?.hasMore ? (
+        <button className="load-older" type="button" disabled>
+          Load older available after cursor wiring
+        </button>
+      ) : null}
+      {turns.map((turn) => (
+        <article className="turn-card" key={turn.id}>
+          <header>
+            <span className="session-status">{turn.displayStatus ?? turn.rawStatus ?? 'complete'}</span>
+            <h3>{turn.title ?? 'Untitled turn'}</h3>
+          </header>
+          <div className="timeline-blocks">
+            {turn.blocks.map((block) => (
+              <TimelineBlockView block={block} key={block.id} />
+            ))}
+          </div>
+        </article>
+      ))}
+    </section>
   )
 }
 
@@ -131,6 +209,8 @@ function ProjectDetail({ projectId }: { projectId: string | null }) {
           ))}
         </ol>
       )}
+
+      {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} /> : null}
     </section>
   )
 }
@@ -197,7 +277,7 @@ function App() {
         <h1>Claude Code Project Dashboard</h1>
         <p className="lede">
           Projects are discovered from official Claude Agent SDK session APIs. Select a project to see
-          the latest sessions; timeline pagination comes next.
+          recent sessions and the first projected timeline page.
         </p>
       </section>
       <ProjectsDashboard />

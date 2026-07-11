@@ -1,11 +1,16 @@
-import { listSessions, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
+import {
+  getSessionMessages,
+  listSessions,
+  type SDKSessionInfo,
+  type SessionMessage,
+} from '@anthropic-ai/claude-agent-sdk'
 import type { ProjectSummary, SessionSummary } from '@cotta/shared'
 
 function projectIdFromPath(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
 }
 
-function projectPathFromId(id: string): string | null {
+export function projectPathFromId(id: string): string | null {
   try {
     const decoded = Buffer.from(id, 'base64url').toString('utf8')
     return decoded || null
@@ -68,6 +73,7 @@ export type ClaudeCodeApi = {
   listProjects(): Promise<ProjectSummary[]>
   getProject(projectId: string): Promise<ProjectSummary | null>
   listProjectSessions(projectId: string): Promise<ProjectSessions | null>
+  getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
 
 export function createClaudeCodeApi(): ClaudeCodeApi {
@@ -97,6 +103,17 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
         sessions: sessionSummaries,
         defaultSessionId: sessionSummaries[0]?.id ?? null,
       }
+    },
+
+    async getSessionMessages(projectId, sessionId) {
+      const projectPath = projectPathFromId(projectId)
+      if (!projectPath) return null
+      return getSessionMessages(sessionId, {
+        dir: projectPath,
+        limit: 10_000,
+        offset: 0,
+        includeSystemMessages: true,
+      })
     },
   }
 }

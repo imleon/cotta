@@ -78,7 +78,7 @@ h1 {
 
 .dashboard-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 0.85fr) minmax(420px, 1.15fr);
+  grid-template-columns: minmax(320px, 0.8fr) minmax(480px, 1.2fr);
   gap: 24px;
   margin-top: 24px;
 }
@@ -221,6 +221,86 @@ h1 {
   font-size: 12px !important;
   font-weight: 700;
   text-transform: uppercase;
+}
+
+.timeline-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.load-older {
+  border: 1px dashed #cbd5e1;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 12px;
+  color: #64748b;
+}
+
+.turn-card {
+  border: 1px solid #e7e0d4;
+  border-radius: 20px;
+  background: #fffaf0;
+  padding: 18px;
+}
+
+.turn-card header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.turn-card h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.timeline-blocks {
+  display: grid;
+  gap: 12px;
+}
+
+.timeline-block {
+  border-left: 4px solid #cbd5e1;
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 12px 14px;
+}
+
+.timeline-block.user-message {
+  border-left-color: #2563eb;
+}
+
+.timeline-block.assistant-text {
+  border-left-color: #16a34a;
+}
+
+.timeline-block.tool-result,
+.timeline-block.assistant-tool_use {
+  border-left-color: #d97706;
+}
+
+.timeline-kind {
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.timeline-block pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 @media (max-width: 900px) {

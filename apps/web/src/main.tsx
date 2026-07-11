@@ -87,9 +87,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function dataPreview(value: unknown): string {
-  if (typeof value === 'object' && value !== null && 'text' in value && typeof value.text === 'string') {
-    return value.text
-  }
+  if (typeof value === 'object' && value !== null && 'text' in value && typeof value.text === 'string') return value.text
   return JSON.stringify(value, null, 2) ?? ''
 }
 
@@ -231,6 +229,50 @@ function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent): TurnSu
   return turns
 }
 
+function ProjectSessionRail({
+  projects,
+  sessions,
+  selectedProjectId,
+  selectedSessionId,
+  onSelectProject,
+  onSelectSession,
+}: {
+  projects: ProjectSummary[]
+  sessions: SessionSummary[]
+  selectedProjectId: string | null
+  selectedSessionId: string | null
+  onSelectProject: (projectId: string) => void
+  onSelectSession: (sessionId: string) => void
+}) {
+  return (
+    <aside className="project-rail" aria-label="Projects and sessions">
+      <div className="section-heading"><div><p className="eyebrow">Projects</p><h3>{projects.length} workspaces</h3></div></div>
+      <div className="project-tree">
+        {projects.map((project) => {
+          const selected = project.id === selectedProjectId
+          return (
+            <div className="project-tree-item" key={project.id}>
+              <ProjectCard project={project} selected={selected} onSelect={() => onSelectProject(project.id)} />
+              {selected ? (
+                <div className="project-sessions">
+                  <div className="project-sessions-heading">Sessions · {sessions.length}</div>
+                  {sessions.length === 0 ? <div className="rail-empty">No sessions</div> : (
+                    <ol className="session-list rail-session-list">
+                      {sessions.map((session) => (
+                        <SessionRow key={session.id} session={session} selected={session.id === selectedSessionId} onSelect={() => onSelectSession(session.id)} />
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+    </aside>
+  )
+}
+
 function SessionTimeline({ projectId, sessionId, onLiveTurnChange }: {
   projectId: string
   sessionId: string
@@ -243,11 +285,7 @@ function SessionTimeline({ projectId, sessionId, onLiveTurnChange }: {
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [debugEvents, setDebugEvents] = useState<unknown[]>([])
 
-  const timeline = useQuery({
-    queryKey: ['session-timeline', projectId, sessionId],
-    queryFn: () => fetchSessionTimeline(projectId, sessionId),
-    retry: false,
-  })
+  const timeline = useQuery({ queryKey: ['session-timeline', projectId, sessionId], queryFn: () => fetchSessionTimeline(projectId, sessionId), retry: false })
 
   useEffect(() => {
     if (!timeline.data) return
@@ -290,18 +328,13 @@ function SessionTimeline({ projectId, sessionId, onLiveTurnChange }: {
   }
 
   if (timeline.isLoading) return <div className="panel muted">Loading session timeline…</div>
-  if (timeline.isError) {
-    return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
-  }
+  if (timeline.isError) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
   if (turns.length === 0) return <div className="panel muted">This session has no projected turns yet.</div>
 
   return (
     <section className="timeline-panel" aria-label="Session timeline">
       <div className="section-heading">
-        <div>
-          <p className="eyebrow">Timeline</p>
-          <h3>{turns.length} loaded turns</h3>
-        </div>
+        <div><p className="eyebrow">Timeline</p><h3>{turns.length} loaded turns</h3></div>
         {hasMore ? <button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older'}</button> : null}
       </div>
       {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
@@ -309,45 +342,36 @@ function SessionTimeline({ projectId, sessionId, onLiveTurnChange }: {
         const state = statusValue(turn.displayStatus, turn.rawStatus, 'complete')
         return (
           <article className="turn-card" key={turn.id}>
-            <header>
-              <StatusBadge value={state} />
-              <h3>{turn.title ?? 'Untitled turn'}</h3>
-            </header>
-            <div className="timeline-blocks">
-              {turn.blocks.map((block) => <TimelineBlockView block={block} key={block.id} />)}
-            </div>
+            <header><StatusBadge value={state} /><h3>{turn.title ?? 'Untitled turn'}</h3></header>
+            <div className="timeline-blocks">{turn.blocks.map((block) => <TimelineBlockView block={block} key={block.id} />)}</div>
           </article>
         )
       })}
-      <details className="debug-panel">
-        <summary>Debug · raw live events ({debugEvents.length})</summary>
-        <pre>{JSON.stringify(debugEvents, null, 2)}</pre>
-      </details>
+      <details className="debug-panel"><summary>Debug · raw live events ({debugEvents.length})</summary><pre>{JSON.stringify(debugEvents, null, 2)}</pre></details>
     </section>
   )
 }
 
-function ProjectDetail({ projectId }: { projectId: string | null }) {
+function WorkspacePanel({
+  projectId,
+  detail,
+  selectedSessionId,
+  setSelectedSessionId,
+}: {
+  projectId: string | null
+  detail: ProjectSessionsResponse | undefined
+  selectedSessionId: string | null
+  setSelectedSessionId: (sessionId: string | null) => void
+}) {
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [liveTurnId, setLiveTurnId] = useState<string | null>(null)
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
-  const detail = useQuery({ queryKey: ['project-sessions', projectId], queryFn: () => fetchProjectSessions(projectId!), enabled: Boolean(projectId), retry: false })
 
-  useEffect(() => {
-    setActiveSessionId(null)
-    setLiveTurnId(null)
-    setSubmitError(null)
-  }, [projectId])
+  useEffect(() => { setLiveTurnId(null); setSubmitError(null) }, [projectId, selectedSessionId])
 
-  if (!projectId) return <div className="panel muted">Select a project to view its sessions.</div>
-  if (detail.isLoading) return <div className="panel muted">Loading project sessions…</div>
-  if (detail.isError) return <div className="panel error">Failed to load project sessions: {detail.error instanceof Error ? detail.error.message : 'unknown error'}</div>
-  if (!detail.data) return <div className="panel muted">No project session data was returned.</div>
-
-  const data = detail.data
-  const selectedSessionId = activeSessionId ?? data.defaultSessionId
+  if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
+  if (!detail) return <div className="panel muted">Loading project sessions…</div>
 
   async function submitTurn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -356,7 +380,7 @@ function ProjectDetail({ projectId }: { projectId: string | null }) {
     setSubmitError(null)
     try {
       const response = await createTurn(projectId, selectedSessionId, inputText)
-      setActiveSessionId(response.sessionId)
+      setSelectedSessionId(response.sessionId)
       setLiveTurnId(response.turnId)
       setInputText('')
     } catch (error) {
@@ -376,34 +400,18 @@ function ProjectDetail({ projectId }: { projectId: string | null }) {
   }
 
   return (
-    <section className="detail-panel">
+    <section className="detail-panel workspace-panel">
       <header className="detail-header">
-        <div>
-          <p className="eyebrow">Project</p>
-          <h2>{data.project.name}</h2>
-          {data.project.path ? <p className="project-path">{data.project.path}</p> : null}
-        </div>
-        <div className="detail-stat"><span>Active session</span><strong>{selectedSessionId ?? 'none'}</strong></div>
+        <div><p className="eyebrow">Project</p><h2>{detail.project.name}</h2>{detail.project.path ? <p className="project-path">{detail.project.path}</p> : null}</div>
+        <div className="detail-stat"><span>Active session</span><strong>{selectedSessionId ?? 'new session'}</strong></div>
       </header>
 
-      <section className="detail-section">
-        <div className="section-heading"><div><p className="eyebrow">Sessions</p><h3>{data.sessions.length} sessions</h3></div></div>
-        {data.sessions.length === 0 ? <div className="panel muted">No sessions were returned for this project.</div> : (
-          <ol className="session-list">
-            {data.sessions.map((session) => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                selected={session.id === selectedSessionId}
-                onSelect={() => { setActiveSessionId(session.id); setLiveTurnId(null); setSubmitError(null) }}
-              />
-            ))}
-          </ol>
-        )}
-      </section>
+      <div className="workspace-timeline">
+        {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} onLiveTurnChange={setLiveTurnId} /> : <div className="panel muted">Start a new session from the composer below.</div>}
+      </div>
 
-      <section className="composer-card">
-        <div className="section-heading"><div><p className="eyebrow">Compose</p><h3>{selectedSessionId ? 'Continue session' : 'Start new session'}</h3></div></div>
+      <section className="composer-card composer-card-bottom">
+        <div className="section-heading"><div><p className="eyebrow">Compose</p><h3>{selectedSessionId ? 'Continue selected session' : 'Start new session'}</h3></div></div>
         <form className="turn-form" onSubmit={submitTurn}>
           <textarea value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder={selectedSessionId ? 'Continue the selected session…' : 'Start a new session in this project…'} rows={4} />
           <div className="turn-actions">
@@ -413,20 +421,19 @@ function ProjectDetail({ projectId }: { projectId: string | null }) {
           {submitError ? <div className="panel error">{submitError}</div> : null}
         </form>
       </section>
-
-      {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} onLiveTurnChange={setLiveTurnId} /> : null}
     </section>
   )
 }
 
 function ProjectsDashboard() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const projects = useQuery({ queryKey: ['projects'], queryFn: fetchProjects, retry: false })
+  const projectSessions = useQuery({ queryKey: ['project-sessions', selectedProjectId], queryFn: () => fetchProjectSessions(selectedProjectId!), enabled: Boolean(selectedProjectId), retry: false })
   const items = projects.data?.projects ?? []
 
-  useEffect(() => {
-    if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id)
-  }, [items, selectedProjectId])
+  useEffect(() => { if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id) }, [items, selectedProjectId])
+  useEffect(() => { setSelectedSessionId(projectSessions.data?.defaultSessionId ?? null) }, [projectSessions.data])
 
   if (projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
   if (projects.isError) return <div className="panel error">Failed to load projects: {projects.error instanceof Error ? projects.error.message : 'unknown error'}</div>
@@ -434,13 +441,15 @@ function ProjectsDashboard() {
 
   return (
     <div className="dashboard-layout">
-      <aside className="project-rail" aria-label="Projects">
-        <div className="section-heading"><div><p className="eyebrow">Projects</p><h3>{items.length} workspaces</h3></div></div>
-        <div className="project-grid">
-          {items.map((project) => <ProjectCard key={project.id} project={project} selected={project.id === selectedProjectId} onSelect={() => setSelectedProjectId(project.id)} />)}
-        </div>
-      </aside>
-      <ProjectDetail projectId={selectedProjectId} />
+      <ProjectSessionRail
+        projects={items}
+        sessions={projectSessions.data?.sessions ?? []}
+        selectedProjectId={selectedProjectId}
+        selectedSessionId={selectedSessionId}
+        onSelectProject={(projectId) => { setSelectedProjectId(projectId); setSelectedSessionId(null) }}
+        onSelectSession={setSelectedSessionId}
+      />
+      {projectSessions.isError ? <div className="panel error">Failed to load project sessions: {projectSessions.error instanceof Error ? projectSessions.error.message : 'unknown error'}</div> : <WorkspacePanel projectId={selectedProjectId} detail={projectSessions.data} selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} />}
     </div>
   )
 }
@@ -448,11 +457,7 @@ function ProjectsDashboard() {
 function App() {
   return (
     <main className="shell">
-      <section className="hero">
-        <p className="eyebrow">Cotta v2</p>
-        <h1>Claude Code Project Dashboard</h1>
-        <p className="lede">Reconnect to Claude Code projects, inspect session timelines, and continue work from the browser.</p>
-      </section>
+      <section className="hero"><p className="eyebrow">Cotta v2</p><h1>Claude Code Project Dashboard</h1><p className="lede">Reconnect to Claude Code projects, inspect session timelines, and continue work from the browser.</p></section>
       <ProjectsDashboard />
     </main>
   )
@@ -461,9 +466,5 @@ function App() {
 const queryClient = new QueryClient()
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
-  </StrictMode>,
+  <StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>,
 )

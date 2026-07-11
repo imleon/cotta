@@ -124,10 +124,36 @@ h1 {
   letter-spacing: -0.03em;
 }
 
-.project-grid {
+.project-grid,
+.project-tree {
   display: grid;
   align-content: start;
   gap: 10px;
+}
+
+.project-tree-item {
+  display: grid;
+  gap: 8px;
+}
+
+.project-sessions {
+  margin-left: 12px;
+  border-left: 2px solid #eadfce;
+  padding-left: 10px;
+}
+
+.project-sessions-heading,
+.rail-empty {
+  margin: 6px 0;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.rail-session-list {
+  margin-top: 8px !important;
 }
 
 .project-card {
@@ -205,6 +231,18 @@ h1 {
 .timeline-panel {
   border-top: 1px solid #ece5da;
   padding-top: 18px;
+}
+
+.workspace-panel {
+  min-height: calc(100vh - 168px);
+}
+
+.workspace-timeline {
+  min-height: 320px;
+}
+
+.composer-card-bottom {
+  align-self: end;
 }
 
 .detail-stat {

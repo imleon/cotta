@@ -1,33 +1,22 @@
 {
-  "name": "cotta",
+  "name": "cotta-v2",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "postinstall": "cd web && npm install",
-    "dev": "tsx watch runtime/server/index.ts",
-    "dev:web": "cd web && npm run dev",
-    "build": "tsc -p tsconfig.json",
-    "build:web": "cd web && npm run build",
-    "build:all": "npm run build && npm run build:web",
-    "start": "node dist/runtime/server/index.js",
-    "test": "vitest run --config vitest.config.ts",
-    "test:cli": "echo \"test:cli removed (legacy agent runner)\""
-  },
-  "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
-    "@hono/node-server": "^1.14.0",
-    "@hono/node-ws": "^1.1.0",
-    "@larksuiteoapi/node-sdk": "^1.60.0",
-    "better-sqlite3": "^9.6.0",
-    "dotenv": "^16.4.0",
-    "hono": "^4.7.0",
-    "zod": "^4.3.6"
+    "dev": "pnpm --filter @cotta/server run dev",
+    "dev:web": "pnpm --filter @cotta/web run dev",
+    "build": "pnpm -r --if-present run build",
+    "test": "pnpm -r --if-present run test",
+    "typecheck": "pnpm -r --if-present run typecheck"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.5"
   }

@@ -1,17 +1,8 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "outDir": "dist",
-    "rootDir": ".",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "resolveJsonModule": true
-  },
-  "include": ["runtime/**/*"],
-  "exclude": ["node_modules", "dist", "src", "web"]
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "apps/server" },
+    { "path": "apps/web" }
+  ]
 }

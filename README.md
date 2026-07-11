@@ -1,15 +1,39 @@
-# Cotta
+# Cotta v2
 
-Cotta is built to wield Claude's intelligence.
+Cotta v2 is a Web-first Claude Code Project Dashboard.
 
-Cotta does not claim the intelligence as its own. Its capability is built on Claude — one of the most powerful language models in the world. What Cotta contributes is the system around that intelligence: a personal interface, explicit boundaries, local control, and clear visibility into what the agent is doing.
+The MVP goal is to let Claude Code project/session work continue outside the terminal: discover Claude Code projects and sessions through official APIs, render historical and live session timelines, continue existing sessions, create new sessions inside existing projects, and interrupt a running turn.
 
-## Philosophy
+See:
 
-- **Built on Claude**: the source of capability is Claude itself. Cotta is built on that foundation to make it more personal, structured, and controllable.
-- **Local first**: the service and interface run in your own environment, and you decide when it starts and stops.
-- **Minimum necessary capability**: it only presents capabilities that are actually implemented, without pretending to have broader powers than it does.
-- **Honest about boundaries**: it says clearly what it can and cannot do, instead of hiding uncertainty behind vague product language.
-- **Traceable by design**: sessions, messages, run states, and logs stay inspectable, so powerful behavior never becomes invisible behavior.
+- `docs/product-goal-v2.md` — product goal and MVP boundaries
+- `docs/development-plan-v2-mvp.md` — phased development plan
+- `docs/agent-sdk-capability-spike.md` — Agent SDK capability findings
 
-Cotta is built because Claude is powerful enough to deserve a better tool around it. Claude is the engine; Cotta is the layer that makes that power usable.
+## MVP architecture
+
+```text
+apps/server      Hono + Claude Agent SDK + HTTP/SSE
+apps/web         React + Vite + TanStack Query
+packages/shared  Shared API, event, and timeline types
+```
+
+## Current skeleton
+
+```bash
+npm install
+npm run build
+npm test
+```
+
+Run the server:
+
+```bash
+npm run dev
+```
+
+Run the web app:
+
+```bash
+npm run dev:web
+```

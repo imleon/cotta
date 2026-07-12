@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { StrictMode, useEffect, useState, type FormEvent } from 'react'
+import { StrictMode, useEffect, useRef, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
@@ -83,9 +83,19 @@ async function interruptTurn(projectId: string, sessionId: string, turnId: strin
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
-function formatLastActivity(value?: number): string {
-  if (!value) return 'No activity yet'
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+function formatAge(value?: number): string {
+  if (!value) return '—'
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - value) / 1000))
+  if (elapsedSeconds < 60) return 'now'
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m`
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) return `${elapsedHours}h`
+  const elapsedDays = Math.floor(elapsedHours / 24)
+  if (elapsedDays < 30) return `${elapsedDays}d`
+  const elapsedMonths = Math.floor(elapsedDays / 30)
+  if (elapsedMonths < 12) return `${elapsedMonths}mo`
+  return `${Math.floor(elapsedMonths / 12)}y`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -111,6 +121,15 @@ function textFromData(value: unknown): string | null {
   return null
 }
 
+function timelineDebugPayload(turns: TurnSummary[], rawLiveEvents: unknown[]) {
+  return {
+    loadedTurns: turns.length,
+    loadedBlocks: turns.reduce((count, turn) => count + turn.blocks.length, 0),
+    timeline: turns,
+    rawLiveEvents,
+  }
+}
+
 function statusValue(displayStatus?: string, rawStatus?: string, fallback = 'idle'): string {
   return displayStatus ?? rawStatus ?? fallback
 }
@@ -126,7 +145,10 @@ function statusTone(value?: string): string {
 
 function statusLabel(value?: string): string {
   if (!value) return 'Idle'
-  if (value === 'complete') return 'Complete'
+  const normalized = value.toLowerCase()
+  if (normalized === 'complete' || normalized === 'completed') return 'Complete'
+  if (normalized.includes('requires')) return 'Action'
+  if (normalized.includes('interrupt')) return 'Stopped'
   return value.replaceAll('_', ' ')
 }
 
@@ -163,32 +185,54 @@ function ProjectCard({ project, selected, onSelect }: { project: ProjectSummary;
     <button className={`project-card ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
       <div className="project-card-main">
         <h2>{project.name}</h2>
-        {project.path ? <p className="project-path">{project.path}</p> : null}
-      </div>
-      <div className="project-card-meta">
-        <span>{project.sessionCount ?? 0} sessions</span>
-        <span>{formatLastActivity(project.lastActivityAt)}</span>
       </div>
     </button>
   )
 }
 
 function StatusBadge({ value }: { value?: string }) {
-  return <span className={`status-badge status-${statusTone(value)}`}>{statusLabel(value)}</span>
+  const tone = statusTone(value)
+  if (tone === 'neutral') return null
+  return <span className={`status-badge status-${tone}`}>{statusLabel(value)}</span>
 }
 
-function SessionRow({ session, selected, onSelect }: { session: SessionSummary; selected: boolean; onSelect: () => void }) {
-  const state = statusValue(session.displayStatus, session.rawStatus)
+function previewSessionStatus(index: number): string | undefined {
+  return ['running', 'complete', 'requires_action', 'failed'][index]
+}
+
+function SessionRow({ session, selected, onSelect, previewStatus }: { session: SessionSummary; selected: boolean; onSelect: () => void; previewStatus?: string }) {
+  const actualState = statusValue(session.displayStatus, session.rawStatus)
+  const state = statusTone(actualState) === 'neutral' ? previewStatus ?? actualState : actualState
   return (
     <li>
       <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
-        <div className="session-main">
-          <strong>{session.title}</strong>
-          <span>{formatLastActivity(session.lastActivityAt)}</span>
+        <div className="session-content">
+          <div className="session-main">
+            <strong>{session.title}</strong>
+          </div>
+          <StatusBadge value={state} />
         </div>
-        <StatusBadge value={state} />
+        <span className="session-age">{formatAge(session.lastActivityAt)}</span>
       </button>
     </li>
+  )
+}
+
+function SessionDebugView({ debugPayload, rawLiveEventCount }: {
+  debugPayload: ReturnType<typeof timelineDebugPayload>
+  rawLiveEventCount: number
+}) {
+  return (
+    <section className="debug-panel debug-view" aria-label="Session debug">
+      <div className="debug-view-header">
+        <h3>Debug</h3>
+        <p>
+          loaded timeline payloads ({debugPayload.loadedTurns} turns / {debugPayload.loadedBlocks} blocks)
+          {rawLiveEventCount > 0 ? ` · raw live events (${rawLiveEventCount})` : ''}
+        </p>
+      </div>
+      <pre>{JSON.stringify(debugPayload, null, 2)}</pre>
+    </section>
   )
 }
 
@@ -262,17 +306,17 @@ function ProjectSessionBranch({
     <div className="project-tree-item">
       <ProjectCard project={project} selected={selected} onSelect={() => onSelectProject(project.id)} />
       <div className="project-sessions">
-        <div className="project-sessions-heading">Sessions · {sessions.length}{sessionsQuery.hasNextPage ? '+' : ''}</div>
         {sessionsQuery.isLoading ? <div className="rail-empty">Loading sessions…</div> : null}
         {sessionsQuery.isError ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
         {!sessionsQuery.isLoading && sessions.length === 0 ? <div className="rail-empty">No sessions</div> : null}
         {sessions.length > 0 ? (
           <ol className="session-list rail-session-list">
-            {sessions.map((session) => (
+            {sessions.map((session, index) => (
               <SessionRow
                 key={session.id}
                 session={session}
                 selected={project.id === selectedProjectId && session.id === selectedSessionId}
+                previewStatus={previewSessionStatus(index)}
                 onSelect={() => onSelectSession(project.id, session.id)}
               />
             ))}
@@ -303,7 +347,6 @@ function ProjectSessionRail({
 }) {
   return (
     <aside className="project-rail" aria-label="Projects and sessions">
-      <div className="section-heading"><div><p className="eyebrow">Projects</p><h3>{projects.length} workspaces</h3></div></div>
       <div className="project-tree">
         {projects.map((project) => (
           <ProjectSessionBranch
@@ -320,9 +363,10 @@ function ProjectSessionRail({
   )
 }
 
-function SessionTimeline({ projectId, sessionId, onLiveTurnChange }: {
+function SessionTimeline({ projectId, sessionId, debugEnabled, onLiveTurnChange }: {
   projectId: string
   sessionId: string
+  debugEnabled: boolean
   onLiveTurnChange?: (turnId: string | null) => void
 }) {
   const [turns, setTurns] = useState<TurnSummary[]>([])
@@ -331,17 +375,26 @@ function SessionTimeline({ projectId, sessionId, onLiveTurnChange }: {
   const [olderError, setOlderError] = useState<string | null>(null)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [debugEvents, setDebugEvents] = useState<unknown[]>([])
+  const timelineEndRef = useRef<HTMLDivElement | null>(null)
+  const shouldScrollToBottomRef = useRef(false)
 
   const timeline = useQuery({ queryKey: ['session-timeline', projectId, sessionId], queryFn: () => fetchSessionTimeline(projectId, sessionId), retry: false })
 
   useEffect(() => {
     if (!timeline.data) return
+    shouldScrollToBottomRef.current = true
     setTurns(timeline.data.turns)
     setNextCursor(timeline.data.nextCursor)
     setHasMore(timeline.data.hasMore)
     setOlderError(null)
     setDebugEvents([])
   }, [timeline.data])
+
+  useEffect(() => {
+    if (!shouldScrollToBottomRef.current) return
+    shouldScrollToBottomRef.current = false
+    timelineEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [turns])
 
   useEffect(() => {
     const events = new EventSource(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`))
@@ -376,25 +429,26 @@ function SessionTimeline({ projectId, sessionId, onLiveTurnChange }: {
 
   if (timeline.isLoading) return <div className="panel muted">Loading session timeline…</div>
   if (timeline.isError) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
-  if (turns.length === 0) return <div className="panel muted">This session has no projected turns yet.</div>
+
+  const debugPayload = timelineDebugPayload(turns, debugEvents)
 
   return (
-    <section className="timeline-panel" aria-label="Session timeline">
-      <div className="section-heading">
-        <div><p className="eyebrow">Timeline</p><h3>{turns.length} loaded turns</h3></div>
-        {hasMore ? <button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older'}</button> : null}
-      </div>
-      {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
-      {turns.map((turn) => {
-        const state = statusValue(turn.displayStatus, turn.rawStatus, 'complete')
-        return (
-          <article className="turn-card" key={turn.id}>
-            <header><StatusBadge value={state} /><h3>{turn.title ?? 'Untitled turn'}</h3></header>
-            <div className="timeline-blocks">{turn.blocks.map((block) => <TimelineBlockView block={block} key={block.id} />)}</div>
-          </article>
-        )
-      })}
-      <details className="debug-panel"><summary>Debug · raw live events ({debugEvents.length})</summary><pre>{JSON.stringify(debugEvents, null, 2)}</pre></details>
+    <section className={`session-workspace-view ${debugEnabled ? 'debug-enabled' : ''}`} aria-label="Session workspace">
+      <section className="timeline-panel" aria-label="Session timeline">
+        {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older'}</button></div> : null}
+        {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
+        {turns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : turns.map((turn) => {
+          const state = statusValue(turn.displayStatus, turn.rawStatus, 'complete')
+          return (
+            <article className="turn-card" key={turn.id}>
+              <header><StatusBadge value={state} /><h3>{turn.title ?? 'Untitled turn'}</h3></header>
+              <div className="timeline-blocks">{turn.blocks.map((block) => <TimelineBlockView block={block} key={block.id} />)}</div>
+            </article>
+          )
+        })}
+        <div ref={timelineEndRef} />
+      </section>
+      {debugEnabled ? <SessionDebugView debugPayload={debugPayload} rawLiveEventCount={debugEvents.length} /> : null}
     </section>
   )
 }
@@ -414,6 +468,7 @@ function WorkspacePanel({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [liveTurnId, setLiveTurnId] = useState<string | null>(null)
+  const [debugEnabled, setDebugEnabled] = useState(false)
 
   useEffect(() => { setLiveTurnId(null); setSubmitError(null) }, [projectId, selectedSessionId])
 
@@ -447,26 +502,35 @@ function WorkspacePanel({
   }
 
   return (
-    <section className="detail-panel workspace-panel">
-      <header className="detail-header">
-        <div><p className="eyebrow">Project</p><h2>{detail.project.name}</h2>{detail.project.path ? <p className="project-path">{detail.project.path}</p> : null}</div>
-        <div className="detail-stat"><span>Active session</span><strong>{selectedSessionId ?? 'new session'}</strong></div>
-      </header>
-
-      <div className="workspace-timeline">
-        {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} onLiveTurnChange={setLiveTurnId} /> : <div className="panel muted">Start a new session from the composer below.</div>}
-      </div>
-
-      <section className="composer-card composer-card-bottom">
-        <div className="section-heading"><div><p className="eyebrow">Compose</p><h3>{selectedSessionId ? 'Continue selected session' : 'Start new session'}</h3></div></div>
-        <form className="turn-form" onSubmit={submitTurn}>
-          <textarea value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder={selectedSessionId ? 'Continue the selected session…' : 'Start a new session in this project…'} rows={4} />
-          <div className="turn-actions">
-            <button type="submit" disabled={submitting || !inputText.trim()}>{submitting ? 'Sending…' : selectedSessionId ? 'Continue session' : 'Start new session'}</button>
-            {liveTurnId && selectedSessionId ? <button type="button" className="danger" onClick={stopLiveTurn}>Stop</button> : null}
+    <section className="workspace-panel">
+      <section className="detail-panel workspace-main-panel">
+        <header className="detail-header">
+          <div className="project-title-block">
+            <h2>{detail.project.name}</h2>
+            <button type="button" className={`debug-toggle ${debugEnabled ? 'active' : ''}`} aria-pressed={debugEnabled} onClick={() => setDebugEnabled((value) => !value)}>Debug</button>
           </div>
-          {submitError ? <div className="panel error">{submitError}</div> : null}
-        </form>
+          <div className="project-meta-lines">
+            {detail.project.path ? <p className="project-directory">{detail.project.path}</p> : null}
+            <p className="project-session-id">{selectedSessionId ?? 'new session'}</p>
+          </div>
+        </header>
+
+        <div className="workspace-timeline">
+          {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} debugEnabled={debugEnabled} onLiveTurnChange={setLiveTurnId} /> : <div className="panel muted">Start a new session from the composer below.</div>}
+        </div>
+
+        <section className="composer-card composer-card-bottom">
+          <form className="turn-form" onSubmit={submitTurn}>
+            <div className="turn-form-row">
+              <textarea value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder={selectedSessionId ? 'Continue the selected session…' : 'Start a new session in this project…'} rows={1} />
+              <div className="turn-actions">
+                <button type="submit" disabled={submitting || !inputText.trim()}>{submitting ? 'Sending…' : selectedSessionId ? 'Continue session' : 'Start new session'}</button>
+                {liveTurnId && selectedSessionId ? <button type="button" className="danger" onClick={stopLiveTurn}>Stop</button> : null}
+              </div>
+            </div>
+            {submitError ? <div className="panel error">{submitError}</div> : null}
+          </form>
+        </section>
       </section>
     </section>
   )
@@ -505,7 +569,7 @@ function ProjectsDashboard() {
 function App() {
   return (
     <main className="shell">
-      <section className="hero"><p className="eyebrow">Cotta v2</p><h1>Claude Code Project Dashboard</h1><p className="lede">Reconnect to Claude Code projects, inspect session timelines, and continue work from the browser.</p></section>
+      <nav className="hero top-nav" aria-label="Main navigation"><div className="top-nav-brand"><h1>Navigator</h1></div><div className="top-nav-links"><a href="/">Home</a></div></nav>
       <ProjectsDashboard />
     </main>
   )

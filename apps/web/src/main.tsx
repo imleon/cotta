@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { StrictMode, useEffect, useState, type FormEvent } from 'react'
+import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
@@ -275,7 +275,7 @@ function SessionDebugView({ rawMessages }: { rawMessages: unknown[] }) {
         {rawMessages.length === 0 ? <p className="debug-empty">No raw messages loaded.</p> : (
           <div className="debug-table-wrap">
             <table className="debug-table">
-              <thead><tr><th>Timestamp</th><th>Type</th><th>block.type</th><th>block.id</th><th>block.name</th><th>block.is_err</th><th>block.value</th><th>message.model</th><th>message.usage</th></tr></thead>
+              <thead><tr><th>Timestamp</th><th>Type</th><th>block.type</th><th>block.id</th><th>block.name</th><th>block.is_err</th><th>block.value</th><th>raw message</th><th>message.model</th><th>message.usage</th></tr></thead>
               <tbody>
                 {rawMessages.map((message, index) => {
                   const timestamp = rawTimestampParts(message)
@@ -291,6 +291,7 @@ function SessionDebugView({ rawMessages }: { rawMessages: unknown[] }) {
                       <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockName} /></td>
                       <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockIsErr} /></td>
                       <td className="debug-content-cell"><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockValue} markdownForBlock={shouldRenderBlockValueMarkdown} max={520} /></td>
+                      <td className="debug-content-cell debug-raw-message-cell"><DebugContentCellValue value={message} json /></td>
                       <td>{debugFieldPreview(rawMessageField(message, 'model'))}</td>
                       <td className="debug-usage-cell"><pre className="debug-inline-json">{dataPreview(rawMessageField(message, 'usage'), 0)}</pre></td>
                     </tr>
@@ -329,15 +330,23 @@ function WorkspacePanel({
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [interrupting, setInterrupting] = useState(false)
   const [liveTurnId, setLiveTurnId] = useState<string | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
 
-  useEffect(() => { setLiveTurnId(null); setSubmitError(null) }, [projectId, selectedSessionId])
+  useEffect(() => { setLiveTurnId(null); setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
+  useEffect(() => { if (!liveTurnId) setInterrupting(false) }, [liveTurnId])
+  useEffect(() => {
+    const input = inputRef.current
+    if (!input) return
+    input.style.height = 'auto'
+    input.style.height = `${Math.min(input.scrollHeight, 112)}px`
+  }, [inputText])
 
   if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
   if (!detail) return <div className="panel muted">Loading project sessions…</div>
 
-  async function submitTurn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  async function submitTurn() {
     if (!projectId || !inputText.trim()) return
     setSubmitting(true)
     setSubmitError(null)
@@ -360,13 +369,18 @@ function WorkspacePanel({
   }
 
   async function stopLiveTurn() {
-    if (!projectId || !selectedSessionId || !liveTurnId) return
+    if (!projectId || !selectedSessionId || !liveTurnId || interrupting) return
+    setInterrupting(true)
+    setSubmitError(null)
     try {
       await interruptTurn(projectId, selectedSessionId, liveTurnId)
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
+      setInterrupting(false)
     }
   }
+
+  const actionMode = submitting || interrupting ? 'loading' : liveTurnId ? 'stop' : 'submit'
 
   return (
     <section className="workspace-panel">
@@ -374,10 +388,7 @@ function WorkspacePanel({
         <header className="detail-header">
           <div className="project-title-block">
             <h2>{detail.project.name}</h2>
-          </div>
-          <div className="project-meta-lines">
             {detail.project.path ? <p className="project-directory">{detail.project.path}</p> : null}
-            <p className="project-session-id">{selectedSessionId ?? 'new session'}</p>
           </div>
         </header>
 
@@ -386,12 +397,30 @@ function WorkspacePanel({
         </div>
 
         <section className="composer-card composer-card-bottom">
-          <form className="turn-form" onSubmit={submitTurn}>
-            <div className="turn-form-row">
-              <textarea value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder={selectedSessionId ? 'Continue the selected session…' : 'Start a new session in this project…'} rows={1} />
-              <div className="turn-actions">
-                <button type="submit" disabled={submitting || !inputText.trim()}>{submitting ? 'Sending…' : selectedSessionId ? 'Continue session' : 'Start new session'}</button>
-                {liveTurnId && selectedSessionId ? <button type="button" className="danger" onClick={stopLiveTurn}>Stop</button> : null}
+          <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn() }}>
+            <div className="turn-composer">
+              <textarea
+                ref={inputRef}
+                value={inputText}
+                onChange={(event) => setInputText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' || event.shiftKey || submitting || !inputText.trim()) return
+                  event.preventDefault()
+                  void submitTurn()
+                }}
+                placeholder={selectedSessionId ? 'Continue the selected session…' : 'Start a new session in this project…'}
+                rows={1}
+              />
+              <div className="turn-composer-footer">
+                <button
+                  type={actionMode === 'submit' ? 'submit' : 'button'}
+                  className="turn-action-button"
+                  onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
+                  disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
+                  aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
+                >
+                  {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
+                </button>
               </div>
             </div>
             {submitError ? <div className="panel error">{submitError}</div> : null}

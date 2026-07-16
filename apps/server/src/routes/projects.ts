@@ -13,6 +13,8 @@ import type { ClaudeCodeApi } from '../claude-code-api.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
 
+export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'interrupt' | 'sessionState' | 'startTurn' | 'subscribe'>
+
 function parseLimit(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
@@ -29,7 +31,7 @@ function encodeSse(data: unknown): string {
 
 export function registerProjectRoutes(
   app: Hono,
-  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: LiveTurnManager },
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager },
 ): void {
   app.get('/api/projects', async (c) => {
     try {
@@ -66,7 +68,13 @@ export function registerProjectRoutes(
       if (!result) {
         return c.json({ error: 'project_not_found' }, 404)
       }
-      const response: ProjectSessionsResponse = result
+      const response: ProjectSessionsResponse = {
+        ...result,
+        sessions: result.sessions.map((session) => {
+          const liveState = input.liveTurnManager.sessionState(session.id)
+          return liveState ? { ...session, rawStatus: liveState, displayStatus: liveState } : session
+        }),
+      }
       return c.json(response)
     } catch (error) {
       console.error('projects:sessions failed', error)

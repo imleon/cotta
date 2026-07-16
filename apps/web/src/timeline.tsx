@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -67,12 +67,13 @@ function timelineDebugPayload(turns: TurnSummary[], rawLiveEvents: unknown[]) {
 function TimelineTimestamp({ value, className = '' }: { value?: number; className?: string }) {
   const label = formatTimestamp(value)
   if (!label || !value) return null
-  return <time className={`timeline-timestamp ${className}`} dateTime={new Date(value).toISOString()} title={new Date(value).toISOString()}>{label}</time>
+  return <time className={[timelineMessageClass.timestamp, className].filter(Boolean).join(' ')} dateTime={new Date(value).toISOString()} title={new Date(value).toISOString()}>{label}</time>
 }
 
 function blockTitle(kind: string): string {
   if (kind === 'user.message') return 'User'
   if (kind === 'assistant.text') return 'Assistant'
+  if (kind === 'assistant.task_notification') return 'Task notification'
   if (kind === 'assistant.tool_use') return 'Tool use'
   if (kind === 'tool.result') return 'Tool result'
   if (kind === 'error') return 'Error'
@@ -84,7 +85,7 @@ function blockTitle(kind: string): string {
 
 function blockTone(kind: string): string {
   if (kind === 'user.message') return 'user'
-  if (kind === 'assistant.text' || kind === 'assistant.message') return 'assistant'
+  if (kind === 'assistant.text' || kind === 'assistant.message' || kind === 'assistant.task_notification') return 'assistant'
   if (kind === 'assistant.tool_use' || kind === 'tool.result') return 'tool'
   if (kind === 'error') return 'danger'
   return 'muted'
@@ -107,6 +108,49 @@ type AssistantResponseFrameItem = { type: 'assistant-response-frame'; id: string
 type TimelineDisplayItem =
   | { type: 'item'; item: TimelineRenderItem }
   | AssistantResponseFrameItem
+
+const disclosureCardClass = {
+  root: 'group overflow-hidden rounded-[14px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-surface)]',
+  header: 'flex cursor-pointer list-none items-center justify-between gap-[9px] border-b border-transparent bg-[#f5f5f7] px-3 py-1.5 [&::-webkit-details-marker]:hidden group-open:border-[rgb(60_60_67_/_10%)]',
+  heading: 'flex min-w-0 flex-1 items-center gap-2',
+  icon: 'inline-grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[rgb(60_60_67_/_8%)] text-[11px] font-black leading-none text-[#636366]',
+  title: 'flex min-w-0 flex-1 flex-nowrap items-center gap-[5px] overflow-hidden',
+  name: 'min-w-0 truncate text-xs font-medium leading-[1.2] text-[#1d1d1f]',
+  summary: 'min-w-0 max-w-[min(46vw,520px)] flex-[1_1_0] truncate text-[11px] font-normal leading-[1.2] text-[var(--tl-muted,var(--color-muted))]',
+  summaryDot: 'mr-[7px] text-[rgb(60_60_67_/_55%)]',
+  expand: 'inline-grid h-6 w-6 shrink-0 place-items-center rounded-full leading-none text-[rgb(60_60_67_/_78%)]',
+  chevron: 'h-[13px] w-[13px] overflow-visible fill-none stroke-current stroke-[1.8] transition-transform duration-[140ms] [stroke-linecap:round] [stroke-linejoin:round] group-open:rotate-90',
+  body: 'grid gap-0 bg-[#fbfbfd]',
+}
+
+const toolTimelineClass = {
+  state: 'shrink-0 rounded-full bg-[rgb(60_60_67_/_8%)] px-1.5 py-px text-[9px] font-extrabold uppercase tracking-[0.04em] text-[#636366]',
+  stateError: 'bg-[var(--tl-danger-soft)] text-[var(--tl-danger)]',
+  section: 'grid gap-2 px-3.5 py-3 [&+&]:pt-0',
+  sectionLabel: 'text-[11px] font-extrabold uppercase tracking-[0.08em] text-[var(--tl-muted)]',
+  inputCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[13px] leading-[1.6] text-[#2c2c2e]',
+  resultCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[13px] leading-[1.6] text-[#2c2c2e]',
+  outputText: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-[inherit] text-[13px] leading-[1.6] text-[#334155]',
+  result: 'rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 text-[13px] leading-[1.6] text-[#1d1d1f]',
+  resultError: 'border-[rgb(166_83_75_/_20%)] bg-[var(--tl-danger-soft)] text-[#8f4039]',
+  pending: 'text-[13px] italic text-[var(--color-muted)]',
+}
+
+const thinkingTimelineClass = {
+  body: 'px-3.5 py-3 text-sm leading-[1.65] text-[#1d1d1f]',
+  code: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-xs leading-[1.55] text-[#2c2c2e]',
+}
+
+const timelineMessageClass = {
+  rowUser: 'flex min-w-0 items-end justify-end gap-[9px]',
+  userStack: 'grid max-w-[min(76%,720px)] justify-items-end gap-1 max-[720px]:max-w-full max-[560px]:max-w-[min(86%,720px)]',
+  userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[18px_18px_6px_18px] border border-[rgb(60_60_67_/_13%)] bg-[linear-gradient(180deg,#ffffff,var(--tl-user-soft))] px-3.5 py-2.5 text-sm leading-[1.6] text-[#1d1d1f] shadow-[var(--tl-shadow-soft)]',
+  timestamp: 'whitespace-nowrap text-[11px] leading-[1.3] text-[var(--tl-muted,var(--color-muted))]',
+  timestampUser: 'pr-1 text-right',
+  timestampAssistant: 'block -mt-[5px] px-1',
+  assistantFrame: 'w-full max-w-none justify-self-stretch rounded-[22px_22px_22px_7px] border border-[rgb(60_60_67_/_13%)] bg-[linear-gradient(180deg,rgb(255_255_255_/_96%),rgb(247_247_248_/_96%)),var(--tl-surface)] p-3 shadow-[var(--tl-shadow-soft)] [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
+  assistantFrameBody: 'grid min-w-0 gap-2.5',
+}
 
 function thinkingTextFromBlock(block: TimelineBlock): string | null {
   const value = thinkingValue(block)
@@ -277,12 +321,12 @@ function thinkingSummary(value: unknown): string | null {
 }
 
 function ToolResultTextValue({ value }: { value: string }) {
-  return <pre className="timeline-tool-output-text">{value}</pre>
+  return <pre className={toolTimelineClass.outputText}>{value}</pre>
 }
 
 function ToolResultValue({ value }: { value: unknown }) {
   if (typeof value === 'string') return <ToolResultTextValue value={value} />
-  return <pre className="timeline-tool-code">{dataPreview(value)}</pre>
+  return <pre className={toolTimelineClass.resultCode}>{dataPreview(value)}</pre>
 }
 
 function ToolCallBlockView({ toolUse, results }: { toolUse: TimelineBlock | null; results: TimelineBlock[] }) {
@@ -291,35 +335,40 @@ function ToolCallBlockView({ toolUse, results }: { toolUse: TimelineBlock | null
   const summary = toolInputSummary(toolInput)
   const hasError = results.some(toolResultIsError)
   return (
-    <details className="toolcard" aria-label={`Tool call ${toolName}`}>
-      <summary className="toolcard-header">
-        <div className="toolcard-heading">
-          <span className="toolcard-icon" aria-hidden="true">⌘</span>
-          <div className="toolcard-title">
-            <strong className="toolcard-name">{toolName}</strong>
-            {summary ? <span className="toolcard-summary">{summary}</span> : null}
-            {!toolUse ? <span className="timeline-tool-unmatched">Unmatched</span> : null}
-            {results.length === 0 ? <span className="timeline-tool-state">Pending</span> : null}
-            {hasError ? <span className="timeline-tool-state timeline-tool-state-error">Error</span> : null}
+    <details className={disclosureCardClass.root} aria-label={`Tool call ${toolName}`}>
+      <summary className={disclosureCardClass.header}>
+        <div className={disclosureCardClass.heading}>
+          <span className={disclosureCardClass.icon} aria-hidden="true">⌘</span>
+          <div className={disclosureCardClass.title}>
+            <strong className={disclosureCardClass.name}>{toolName}</strong>
+            {summary ? (
+              <span className={disclosureCardClass.summary}>
+                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
+                {summary}
+              </span>
+            ) : null}
+            {!toolUse ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Unmatched</span> : null}
+            {results.length === 0 ? <span className={toolTimelineClass.state}>Pending</span> : null}
+            {hasError ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Error</span> : null}
           </div>
         </div>
-        <span className="toolcard-expand" aria-hidden="true">
-          <svg viewBox="0 0 12 12" className="toolcard-chevron" focusable="false">
+        <span className={disclosureCardClass.expand} aria-hidden="true">
+          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
             <path d="M4 2.5 8 6 4 9.5" />
           </svg>
         </span>
       </summary>
-      <div className="toolcard-body">
+      <div className={disclosureCardClass.body}>
         {toolUse ? (
-          <section className="timeline-tool-section">
-            <div className="timeline-tool-section-label">Input</div>
-            <pre className="timeline-tool-code">{dataPreview(toolInput)}</pre>
+          <section className={toolTimelineClass.section}>
+            <div className={toolTimelineClass.sectionLabel}>Input</div>
+            <pre className={toolTimelineClass.inputCode}>{dataPreview(toolInput)}</pre>
           </section>
         ) : null}
-        <section className="timeline-tool-section">
-          <div className="timeline-tool-section-label">Output</div>
-          {results.length === 0 ? <div className="timeline-tool-pending">Waiting for tool result…</div> : results.map((result) => (
-            <article className={`timeline-tool-result ${toolResultIsError(result) ? 'timeline-tool-result-error' : ''}`} key={result.id}>
+        <section className={toolTimelineClass.section}>
+          <div className={toolTimelineClass.sectionLabel}>Output</div>
+          {results.length === 0 ? <div className={toolTimelineClass.pending}>Waiting for tool result…</div> : results.map((result) => (
+            <article className={[toolTimelineClass.result, toolResultIsError(result) ? toolTimelineClass.resultError : null].filter(Boolean).join(' ')} key={result.id}>
               <ToolResultValue value={toolResultValue(result)} />
             </article>
           ))}
@@ -338,23 +387,97 @@ function ThinkingBlockView({ block }: { block: TimelineBlock }) {
   const value = thinkingValue(block)
   const summary = thinkingSummary(value)
   return (
-    <details className="toolcard" aria-label="Assistant thinking">
-      <summary className="toolcard-header">
-        <div className="toolcard-heading">
-          <span className="toolcard-icon" aria-hidden="true">✦</span>
-          <div className="toolcard-title">
-            <strong className="toolcard-name">Thinking</strong>
-            {summary ? <span className="toolcard-summary">{summary}</span> : null}
+    <details className={disclosureCardClass.root} aria-label="Assistant thinking">
+      <summary className={disclosureCardClass.header}>
+        <div className={disclosureCardClass.heading}>
+          <span className={disclosureCardClass.icon} aria-hidden="true">✦</span>
+          <div className={disclosureCardClass.title}>
+            <strong className={disclosureCardClass.name}>Thinking</strong>
+            {summary ? (
+              <span className={disclosureCardClass.summary}>
+                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
+                {summary}
+              </span>
+            ) : null}
           </div>
         </div>
-        <span className="toolcard-expand" aria-hidden="true">
-          <svg viewBox="0 0 12 12" className="toolcard-chevron" focusable="false">
+        <span className={disclosureCardClass.expand} aria-hidden="true">
+          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
             <path d="M4 2.5 8 6 4 9.5" />
           </svg>
         </span>
       </summary>
-      <div className="toolcard-body timeline-thinking-body">
-        {typeof value === 'string' ? <MarkdownValue value={value} /> : <pre className="timeline-thinking-code">{dataPreview(value)}</pre>}
+      <div className={[disclosureCardClass.body, thinkingTimelineClass.body].join(' ')}>
+        {typeof value === 'string' ? <MarkdownValue value={value} /> : <pre className={thinkingTimelineClass.code}>{dataPreview(value)}</pre>}
+      </div>
+    </details>
+  )
+}
+
+function taskNotificationField(block: TimelineBlock, key: string): string | null {
+  if (!isRecord(block.data)) return null
+  const value = block.data[key]
+  return typeof value === 'string' && value ? value : null
+}
+
+function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
+  const summary = taskNotificationField(block, 'summary')
+  const status = taskNotificationField(block, 'status')
+  const taskId = taskNotificationField(block, 'taskId')
+  const toolUseId = taskNotificationField(block, 'toolUseId')
+  const outputFile = taskNotificationField(block, 'outputFile')
+  const result = taskNotificationField(block, 'result')
+  const text = taskNotificationField(block, 'text')
+  const fields = [
+    ['Task ID', taskId],
+    ['Tool use ID', toolUseId],
+    ['Output file', outputFile],
+  ].filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0)
+
+  return (
+    <details className={disclosureCardClass.root} aria-label="Task notification">
+      <summary className={disclosureCardClass.header}>
+        <div className={disclosureCardClass.heading}>
+          <span className={disclosureCardClass.icon} aria-hidden="true">↯</span>
+          <div className={disclosureCardClass.title}>
+            <strong className={disclosureCardClass.name}>Task Notification</strong>
+            {summary ? (
+              <span className={disclosureCardClass.summary}>
+                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
+                {summary}
+              </span>
+            ) : null}
+            {status ? <span className={toolTimelineClass.state}>{status}</span> : null}
+          </div>
+        </div>
+        <span className={disclosureCardClass.expand} aria-hidden="true">
+          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
+            <path d="M4 2.5 8 6 4 9.5" />
+          </svg>
+        </span>
+      </summary>
+      <div className={disclosureCardClass.body}>
+        {fields.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5 px-3.5 pt-3 text-[11px] leading-[1.35] text-[#334155]">
+            {fields.map(([label, value]) => (
+              <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-[rgb(60_60_67_/_10%)] bg-[rgb(60_60_67_/_5%)] px-2 py-1" key={label}>
+                <span className="shrink-0 font-semibold text-[var(--tl-muted)]">{label}</span>
+                <span className="min-w-0 truncate font-mono text-[10px] text-[#2c2c2e]" title={value}>{value}</span>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {result ? (
+          <section className={toolTimelineClass.section}>
+            <div className={toolTimelineClass.sectionLabel}>Result</div>
+            <MarkdownValue value={result} />
+          </section>
+        ) : (
+          <section className={toolTimelineClass.section}>
+            <div className={toolTimelineClass.sectionLabel}>Raw notification</div>
+            <pre className={toolTimelineClass.outputText}>{text ?? dataPreview(block.data)}</pre>
+          </section>
+        )}
       </div>
     </details>
   )
@@ -364,6 +487,7 @@ function TimelineBlockView({ block, timestamp }: { block: TimelineBlock; timesta
   const text = textFromData(block.data)
 
   if (block.kind === 'assistant.thinking') return <ThinkingBlockView block={block} />
+  if (block.kind === 'assistant.task_notification') return <TaskNotificationBlockView block={block} />
 
   if (block.kind === 'assistant.text') {
     return <div className="timeline-assistant-text"><MarkdownValue value={text ?? dataPreview(block.data)} /></div>
@@ -371,10 +495,10 @@ function TimelineBlockView({ block, timestamp }: { block: TimelineBlock; timesta
 
   if (block.kind === 'user.message') {
     return (
-      <div className="timeline-message-row timeline-message-row-user">
-        <div className="timeline-user-stack">
-          <div className="timeline-user-bubble">{text ?? dataPreview(block.data)}</div>
-          <TimelineTimestamp value={timestamp} className="timeline-timestamp-user" />
+      <div className={timelineMessageClass.rowUser}>
+        <div className={timelineMessageClass.userStack}>
+          <div className={timelineMessageClass.userBubble}>{text ?? dataPreview(block.data)}</div>
+          <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampUser} />
         </div>
       </div>
     )
@@ -409,12 +533,12 @@ function TimelineRenderItemView({ item, timestamp }: { item: TimelineRenderItem;
 function AssistantResponseFrameView({ item, timestamp }: { item: AssistantResponseFrameItem; timestamp?: number }) {
   return (
     <>
-      <section className="timeline-assistant-response-frame" aria-label="Turn response">
-        <div className="timeline-assistant-response-frame-body">
+      <section className={timelineMessageClass.assistantFrame} aria-label="Turn response">
+        <div className={timelineMessageClass.assistantFrameBody}>
           {item.items.map((child) => <TimelineRenderItemView item={child} key={timelineRenderItemKey(child)} />)}
         </div>
       </section>
-      <TimelineTimestamp value={timestamp} className="timeline-timestamp-assistant" />
+      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} />
     </>
   )
 }
@@ -466,7 +590,7 @@ function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSummary[])
   const newerOrUnknown: TurnSummary[] = []
   for (const turn of unreconciled) {
     const order = turnOrderValue(turn)
-    if (order !== null && order < firstIncomingOrder) older.push(turn)
+    if (order === null || order < firstIncomingOrder) older.push(turn)
     else newerOrUnknown.push(turn)
   }
   return [...older, ...incoming, ...newerOrUnknown]
@@ -502,6 +626,7 @@ function useSessionTimelineData(
   sessionId: string | null,
   onLiveTurnChange?: (turnId: string | null) => void,
   onSessionListStale?: () => void,
+  isTimelineAtBottom?: () => boolean,
 ) {
   const [turns, setTurns] = useState<TurnSummary[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -511,7 +636,7 @@ function useSessionTimelineData(
   const [debugEvents, setDebugEvents] = useState<unknown[]>([])
   const shouldScrollToBottomRef = useRef(false)
   const lastAppliedTimelineVersionRef = useRef<string | null>(null)
-  const liveTurnIdRef = useRef<string | null>(null)
+  const liveTurnIdsRef = useRef(new Set<string>())
   const pendingStateVersionRef = useRef<string | null>(null)
   const enabled = Boolean(projectId && sessionId)
 
@@ -538,7 +663,7 @@ function useSessionTimelineData(
     setOlderError(null)
     setDebugEvents([])
     lastAppliedTimelineVersionRef.current = null
-    liveTurnIdRef.current = null
+    liveTurnIdsRef.current.clear()
     pendingStateVersionRef.current = null
   }, [projectId, sessionId])
 
@@ -546,7 +671,7 @@ function useSessionTimelineData(
     if (!timeline.data) return
     const previousVersion = lastAppliedTimelineVersionRef.current
     const nextVersion = timeline.data.state.version
-    shouldScrollToBottomRef.current = true
+    shouldScrollToBottomRef.current ||= isTimelineAtBottom?.() ?? true
     setTurns((current) => reconcileTimelineTurns(current, timeline.data.turns))
     setNextCursor(timeline.data.nextCursor)
     setHasMore(timeline.data.hasMore)
@@ -555,14 +680,14 @@ function useSessionTimelineData(
     lastAppliedTimelineVersionRef.current = nextVersion
     pendingStateVersionRef.current = null
     if (previousVersion && previousVersion !== nextVersion) onSessionListStale?.()
-  }, [onSessionListStale, timeline.data])
+  }, [isTimelineAtBottom, onSessionListStale, timeline.data])
 
   useEffect(() => {
     const version = timelineState.data?.state.version
     if (!version) return
     if (!lastAppliedTimelineVersionRef.current) return
     if (version === lastAppliedTimelineVersionRef.current) return
-    if (liveTurnIdRef.current) {
+    if (liveTurnIdsRef.current.size > 0) {
       pendingStateVersionRef.current = version
       return
     }
@@ -579,20 +704,23 @@ function useSessionTimelineData(
       if (event.type === 'live.raw') setDebugEvents((current) => [...current.slice(-49), event.raw])
       if ('turnId' in event) {
         if (event.type === 'live.turn.started') {
-          liveTurnIdRef.current = event.turnId
+          liveTurnIdsRef.current.add(event.turnId)
           onLiveTurnChange?.(event.turnId)
         }
         if (event.type === 'live.turn.completed' || event.type === 'live.turn.failed' || event.type === 'live.turn.interrupted') {
-          liveTurnIdRef.current = null
-          onLiveTurnChange?.(null)
-          void refetchTimeline()
+          liveTurnIdsRef.current.delete(event.turnId)
+          if (liveTurnIdsRef.current.size === 0) {
+            onLiveTurnChange?.(null)
+            void refetchTimeline()
+          }
         }
       }
+      shouldScrollToBottomRef.current ||= isTimelineAtBottom?.() ?? true
       setTurns((current) => applyLiveEvent(current, event))
     }
     events.onerror = () => events.close()
     return () => events.close()
-  }, [onLiveTurnChange, projectId, refetchTimeline, sessionId])
+  }, [isTimelineAtBottom, onLiveTurnChange, projectId, refetchTimeline, sessionId])
 
   async function loadOlder() {
     if (!projectId || !sessionId || !nextCursor || loadingOlder) return
@@ -629,13 +757,19 @@ export function SessionTimeline({ projectId, sessionId, onLiveTurnChange, onSess
   onLiveTurnChange?: (turnId: string | null) => void
   onSessionListStale?: () => void
 }) {
-  const timelineEndRef = useRef<HTMLDivElement | null>(null)
-  const { turns, hasMore, olderError, loadingOlder, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, onLiveTurnChange, onSessionListStale)
+  const timelinePanelRef = useRef<HTMLElement | null>(null)
+  const isTimelineAtBottom = useCallback(() => {
+    const panel = timelinePanelRef.current
+    if (!panel) return true
+    return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
+  }, [])
+  const { turns, hasMore, olderError, loadingOlder, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!shouldScrollToBottomRef.current) return
     shouldScrollToBottomRef.current = false
-    timelineEndRef.current?.scrollIntoView({ block: 'end' })
+    const panel = timelinePanelRef.current
+    if (panel) panel.scrollTop = panel.scrollHeight
   }, [shouldScrollToBottomRef, turns])
 
   if (timeline.isLoading) return <div className="panel muted">Loading session timeline…</div>
@@ -643,7 +777,7 @@ export function SessionTimeline({ projectId, sessionId, onLiveTurnChange, onSess
 
   return (
     <section className="session-workspace-view" aria-label="Session workspace">
-      <section className="timeline-panel" aria-label="Session timeline">
+      <section className="timeline-panel" aria-label="Session timeline" ref={timelinePanelRef}>
         {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older'}</button></div> : null}
         {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
         {turns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : turns.map((turn) => {
@@ -658,7 +792,6 @@ export function SessionTimeline({ projectId, sessionId, onLiveTurnChange, onSess
             </article>
           )
         })}
-        <div ref={timelineEndRef} />
       </section>
     </section>
   )

@@ -30,13 +30,56 @@ function messageContent(message: SessionMessage): unknown {
   return isRecord(message.message) ? message.message.content : undefined
 }
 
+const taskNotificationStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
+
+type TaskNotificationMetadata = {
+  text: string
+  taskId: string
+  toolUseId: string
+  outputFile: string
+  status: string
+  summary: string
+  result?: string
+}
+
 function isToolResultMessage(message: SessionMessage): boolean {
   const content = messageContent(message)
   return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
 }
 
+function tagText(content: string, tagName: string): string | null {
+  const match = content.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`))
+  return match?.[1]?.trim() || null
+}
+
+function taskNotificationMetadata(message: SessionMessage): TaskNotificationMetadata | null {
+  if (message.type !== 'user' || !isRecord(message.message) || message.message.role !== 'user') return null
+  const content = messageContent(message)
+  if (typeof content !== 'string') return null
+
+  const text = content.trim()
+  const wrapperMatch = text.match(/^<task-notification(?:\s[^>]*)?>([\s\S]*)<\/task-notification>$/)
+  if (!wrapperMatch) return null
+
+  const body = wrapperMatch[1] ?? ''
+  const taskId = tagText(body, 'task-id')
+  const toolUseId = tagText(body, 'tool-use-id')
+  const outputFile = tagText(body, 'output-file')
+  const status = tagText(body, 'status')
+  const summary = tagText(body, 'summary')
+  const result = tagText(body, 'result') ?? undefined
+  if (!taskId || !toolUseId || !outputFile || !status || !summary) return null
+  if (!taskNotificationStatuses.has(status)) return null
+
+  return { text, taskId, toolUseId, outputFile, status, summary, ...(result ? { result } : {}) }
+}
+
+function isTaskNotificationMessage(message: SessionMessage): boolean {
+  return taskNotificationMetadata(message) !== null
+}
+
 function isPrimaryUserMessage(message: SessionMessage): boolean {
-  return message.type === 'user' && !isToolResultMessage(message)
+  return message.type === 'user' && !isToolResultMessage(message) && !isTaskNotificationMessage(message)
 }
 
 function textFromUnknownContent(content: unknown): string {
@@ -71,6 +114,17 @@ function toolUseMetadata(block: unknown): Pick<TimelineBlock, 'contentBlockId' |
 
 function messageApiMessageId(message: SessionMessage): string | undefined {
   return isRecord(message.message) && typeof message.message.id === 'string' ? message.message.id : undefined
+}
+
+function timelineBlocksForTaskNotificationMessage(message: SessionMessage): TimelineBlock[] {
+  const metadata = taskNotificationMetadata(message)
+  if (!metadata) return []
+  return [{
+    id: `${message.uuid}:task_notification`,
+    kind: 'assistant.task_notification',
+    sourceEventIds: [message.uuid],
+    data: { ...metadata, raw: message.message },
+  }]
 }
 
 function timelineBlocksForToolResultMessage(message: SessionMessage): TimelineBlock[] {
@@ -108,6 +162,7 @@ function timelineBlocksForToolResultMessage(message: SessionMessage): TimelineBl
 function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
   if (message.type === 'user') {
     if (isToolResultMessage(message)) return timelineBlocksForToolResultMessage(message)
+    if (isTaskNotificationMessage(message)) return timelineBlocksForTaskNotificationMessage(message)
     return [{
       id: `${message.uuid}:user`,
       kind: 'user.message',

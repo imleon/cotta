@@ -100,6 +100,18 @@ const messages: TimestampedSessionMessage[] = [
   },
   {
     type: 'user',
+    uuid: 'task-notification-1',
+    session_id: 'session-newest',
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    timestamp: '2026-07-14T08:01:20.000Z',
+    message: {
+      role: 'user',
+      content: '<task-notification>\n<task-id>task_123</task-id>\n<tool-use-id>call_123</tool-use-id>\n<output-file>/tmp/task.output</output-file>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>## Done\n\n- Found issue\n- Fixed issue</result>\n</task-notification>',
+    },
+  },
+  {
+    type: 'user',
     uuid: 'tool-result-1',
     session_id: 'session-newest',
     parent_tool_use_id: 'toolu_123',
@@ -112,8 +124,17 @@ const messages: TimestampedSessionMessage[] = [
   },
 ]
 
-function createTestApp() {
+function createTestApp(
+  liveStates: Record<string, 'running' | 'requires_action'> = {},
+  sessionMessages: TimestampedSessionMessage[] = messages,
+) {
   return createApp({
+    liveTurnManager: {
+      sessionState: (sessionId) => liveStates[sessionId] ?? null,
+      startTurn: async () => { throw new Error('not implemented') },
+      interrupt: async () => false,
+      subscribe: () => () => {},
+    },
     claudeCodeApi: {
       async listProjects() {
         return [project]
@@ -142,7 +163,7 @@ function createTestApp() {
       },
       async getSessionMessages(projectId, sessionId) {
         if (projectId !== project.id || sessionId !== 'session-newest') return null
-        return messages
+        return sessionMessages
       },
     },
   })
@@ -170,6 +191,22 @@ describe('project routes', () => {
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
       project,
       sessions,
+      defaultSessionId: 'session-newest',
+      hasMore: false,
+      nextCursor: null,
+    })
+  })
+
+  it('overlays live session status on project sessions', async () => {
+    const response = await createTestApp({ 'session-newest': 'running', 'session-older': 'requires_action' }).request(`/api/projects/${project.id}/sessions`)
+
+    expect(response.status).toBe(200)
+    expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
+      project,
+      sessions: [
+        { ...sessions[0], rawStatus: 'running', displayStatus: 'running' },
+        { ...sessions[1], rawStatus: 'requires_action', displayStatus: 'requires_action' },
+      ],
       defaultSessionId: 'session-newest',
       hasMore: false,
       nextCursor: null,
@@ -237,15 +274,58 @@ describe('project routes', () => {
         data: expect.objectContaining({ id: 'toolu_123', name: 'Read' }),
       }),
       expect.objectContaining({
+        id: 'task-notification-1:task_notification',
+        kind: 'assistant.task_notification',
+        data: expect.objectContaining({
+          taskId: 'task_123',
+          toolUseId: 'call_123',
+          outputFile: '/tmp/task.output',
+          status: 'completed',
+          summary: 'Agent finished',
+          result: '## Done\n\n- Found issue\n- Fixed issue',
+        }),
+      }),
+      expect.objectContaining({
         id: 'tool-result-1:tool_result:0',
         kind: 'tool.result',
         toolUseId: 'toolu_123',
         data: expect.objectContaining({ tool_use_id: 'toolu_123', content: 'file contents' }),
       }),
     ]))
+    expect(body.turns[0]?.blocks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'task-notification-1:user',
+        kind: 'user.message',
+      }),
+    ]))
     expect(body.hasMore).toBe(true)
     expect(body.nextCursor).toBe('user-2')
     expect(body.state).toEqual(timelineState)
+  })
+
+  it('keeps user-authored task-notification wrappers as user messages', async () => {
+    const literalTaskTagMessages: TimestampedSessionMessage[] = [{
+      type: 'user',
+      uuid: 'literal-task-tag-user',
+      session_id: 'session-newest',
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      timestamp: '2026-07-14T08:02:00.000Z',
+      message: { role: 'user', content: '<task-notification>...</task-notification>' },
+    }]
+    const response = await createTestApp({}, literalTaskTagMessages).request(
+      `/api/projects/${project.id}/sessions/session-newest/timeline`,
+    )
+
+    expect(response.status).toBe(200)
+    const body = sessionTimelineResponseSchema.parse(await response.json())
+    expect(body.turns).toHaveLength(1)
+    expect(body.turns[0]?.id).toBe('literal-task-tag-user')
+    expect(body.turns[0]?.blocks).toEqual([expect.objectContaining({
+      id: 'literal-task-tag-user:user',
+      kind: 'user.message',
+      data: expect.objectContaining({ text: '<task-notification>...</task-notification>' }),
+    })])
   })
 
   it('returns timeline state for a session', async () => {

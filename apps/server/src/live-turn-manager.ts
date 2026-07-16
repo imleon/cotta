@@ -41,6 +41,15 @@ function sdkMessageUuid(message: SDKMessage): string {
 
 const debugLiveIds = process.env.COTTA_DEBUG_LIVE_IDS === '1'
 
+type LiveSessionState = 'idle' | 'running' | 'requires_action'
+type VisibleLiveSessionState = Exclude<LiveSessionState, 'idle'>
+
+function liveSessionStateFromSdkMessage(message: SDKMessage): LiveSessionState | null {
+  if (message.type !== 'system' || !('subtype' in message) || message.subtype !== 'session_state_changed') return null
+  if (!('state' in message) || typeof message.state !== 'string') return null
+  return message.state === 'idle' || message.state === 'running' || message.state === 'requires_action' ? message.state : null
+}
+
 type LiveAssistantBlockDraft = {
   id: string
   index: number
@@ -288,6 +297,11 @@ export class LiveTurnManager {
   private readonly liveQueries = new Map<string, Query>()
   private readonly liveTurnBySession = new Map<string, string>()
   private readonly liveProjectByTurn = new Map<string, string>()
+  private readonly liveStateBySession = new Map<string, VisibleLiveSessionState>()
+
+  sessionState(sessionId: string): VisibleLiveSessionState | null {
+    return this.liveStateBySession.get(sessionId) ?? null
+  }
 
   subscribe(sessionId: string, subscriber: LiveTurnSubscriber): () => void {
     const set = this.subscribers.get(sessionId) ?? new Set<LiveTurnSubscriber>()
@@ -324,6 +338,7 @@ export class LiveTurnManager {
           if (!sessionId && 'session_id' in message && typeof message.session_id === 'string') {
             sessionId = message.session_id
             this.liveTurnBySession.set(sessionId, turnId)
+            this.liveStateBySession.set(sessionId, 'running')
             const turn: TurnSummary = {
               id: turnId,
               sessionId,
@@ -349,6 +364,9 @@ export class LiveTurnManager {
 
           const currentSessionId = sessionId ?? ('session_id' in message && typeof message.session_id === 'string' ? message.session_id : null)
           if (!currentSessionId) continue
+          const liveState = liveSessionStateFromSdkMessage(message)
+          if (liveState === 'idle') this.liveStateBySession.delete(currentSessionId)
+          else if (liveState) this.liveStateBySession.set(currentSessionId, liveState)
           this.publish(currentSessionId, {
             type: 'live.raw',
             projectId: input.projectId,
@@ -373,6 +391,7 @@ export class LiveTurnManager {
           }
 
           if (message.type === 'result') {
+            this.liveStateBySession.delete(currentSessionId)
             const completedAt = Date.now()
             if (message.is_error) {
               this.publish(currentSessionId, {
@@ -409,12 +428,16 @@ export class LiveTurnManager {
       } finally {
         this.liveQueries.delete(turnId)
         this.liveProjectByTurn.delete(turnId)
-        if (sessionId) this.liveTurnBySession.delete(sessionId)
+        if (sessionId) {
+          this.liveTurnBySession.delete(sessionId)
+          this.liveStateBySession.delete(sessionId)
+        }
       }
     })()
 
     if (sessionId) {
       this.liveTurnBySession.set(sessionId, turnId)
+      this.liveStateBySession.set(sessionId, 'running')
       this.publish(sessionId, {
         type: 'live.turn.started',
         projectId: input.projectId,
@@ -446,6 +469,7 @@ export class LiveTurnManager {
     const q = this.liveQueries.get(turnId)
     if (!q) return false
     await q.interrupt()
+    this.liveStateBySession.delete(sessionId)
     this.publish(sessionId, {
       type: 'live.turn.interrupted',
       projectId: this.liveProjectByTurn.get(turnId) ?? '',

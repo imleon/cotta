@@ -314,27 +314,20 @@ function StatusBadge({ value }: { value?: string }) {
   return <span className={`status-badge status-${tone}`}>{statusLabel(value)}</span>
 }
 
-function previewSessionStatus(index: number): string | undefined {
-  return ['running', 'complete', 'requires_action', 'failed'][index]
-}
-
 function SessionRow({
   session,
   selected,
   onSelect,
-  previewStatus,
   itemRef,
   motionState,
 }: {
   session: SessionSummary
   selected: boolean
   onSelect: () => void
-  previewStatus?: string
   itemRef?: (node: HTMLLIElement | null) => void
   motionState?: SidebarMotionState
 }) {
-  const actualState = statusValue(session.displayStatus, session.rawStatus)
-  const state = statusTone(actualState) === 'neutral' ? previewStatus ?? actualState : actualState
+  const state = statusValue(session.displayStatus, session.rawStatus)
   return (
     <li ref={itemRef} className={`sidebar-motion-item${motionStateClass(motionState)}`}>
       <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
@@ -398,14 +391,13 @@ function ProjectSessionBranch({
           {!sessionsQuery.isLoading && sessions.length === 0 && sessionMotion.items.length === 0 ? <div className="rail-empty">No sessions</div> : null}
           {sessionMotion.items.length > 0 ? (
             <ol className="session-list rail-session-list">
-              {sessionMotion.items.map(({ key, item: session, motionState }, index) => (
+              {sessionMotion.items.map(({ key, item: session, motionState }) => (
                 <SessionRow
                   key={key}
                   itemRef={(node) => sessionMotion.setItemNode(key, node)}
                   motionState={motionState}
                   session={session}
                   selected={project.id === selectedProjectId && session.id === selectedSessionId}
-                  previewStatus={previewSessionStatus(index)}
                   onSelect={() => onSelectSession(project.id, session.id)}
                 />
               ))}

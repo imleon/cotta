@@ -5,7 +5,9 @@ import {
   type ProjectResponse,
   type ProjectsResponse,
   type ProjectSessionsResponse,
+  type SessionRawMessagesResponse,
   type SessionTimelineResponse,
+  type SessionTimelineStateResponse,
 } from '@cotta/shared'
 import type { ClaudeCodeApi } from '../claude-code-api.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
@@ -145,7 +147,54 @@ export function registerProjectRoutes(
     })
   })
 
+  app.get('/api/projects/:projectId/sessions/:sessionId/timeline/state', async (c) => {
+    try {
+      const state = await input.claudeCodeApi.getSessionTimelineState(
+        c.req.param('projectId'),
+        c.req.param('sessionId'),
+      )
+      if (!state) {
+        return c.json({ error: 'session_not_found' }, 404)
+      }
+      const response: SessionTimelineStateResponse = { state }
+      return c.json(response)
+    } catch (error) {
+      console.error('session:timeline-state failed', error)
+      return c.json({ error: 'session_timeline_state_failed' }, 500)
+    }
+  })
+
   app.get('/api/projects/:projectId/sessions/:sessionId/timeline', async (c) => {
+    try {
+      const state = await input.claudeCodeApi.getSessionTimelineState(
+        c.req.param('projectId'),
+        c.req.param('sessionId'),
+      )
+      if (!state) {
+        return c.json({ error: 'session_not_found' }, 404)
+      }
+      const messages = await input.claudeCodeApi.getSessionMessages(
+        c.req.param('projectId'),
+        c.req.param('sessionId'),
+      )
+      if (!messages) {
+        return c.json({ error: 'session_not_found' }, 404)
+      }
+      const response: SessionTimelineResponse = {
+        ...projectSessionTimeline(c.req.param('sessionId'), messages, {
+          limitTurns: parseLimit(c.req.query('limitTurns'), 20),
+          cursor: parseCursor(c.req.query('cursor')),
+        }),
+        state,
+      }
+      return c.json(response)
+    } catch (error) {
+      console.error('session:timeline failed', error)
+      return c.json({ error: 'session_timeline_failed' }, 500)
+    }
+  })
+
+  app.get('/api/projects/:projectId/sessions/:sessionId/raw-messages', async (c) => {
     try {
       const messages = await input.claudeCodeApi.getSessionMessages(
         c.req.param('projectId'),
@@ -154,14 +203,14 @@ export function registerProjectRoutes(
       if (!messages) {
         return c.json({ error: 'session_not_found' }, 404)
       }
-      const response: SessionTimelineResponse = projectSessionTimeline(c.req.param('sessionId'), messages, {
-        limitTurns: parseLimit(c.req.query('limitTurns'), 20),
-        cursor: parseCursor(c.req.query('cursor')),
-      })
+      const response: SessionRawMessagesResponse = {
+        sessionId: c.req.param('sessionId'),
+        messages,
+      }
       return c.json(response)
     } catch (error) {
-      console.error('session:timeline failed', error)
-      return c.json({ error: 'session_timeline_failed' }, 500)
+      console.error('session:raw-messages failed', error)
+      return c.json({ error: 'session_raw_messages_failed' }, 500)
     }
   })
 }

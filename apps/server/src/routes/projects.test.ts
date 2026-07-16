@@ -3,9 +3,12 @@ import {
   projectResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  sessionRawMessagesResponseSchema,
   sessionTimelineResponseSchema,
+  sessionTimelineStateResponseSchema,
   type ProjectSummary,
   type SessionSummary,
+  type SessionTimelineState,
 } from '@cotta/shared'
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createApp } from '../index.js'
@@ -33,13 +36,26 @@ const sessions: SessionSummary[] = [
   },
 ]
 
-const messages: SessionMessage[] = [
+const timelineState: SessionTimelineState = {
+  projectId: project.id,
+  sessionId: 'session-newest',
+  version: 'timeline-state-v1:mtime=123;size=456',
+  signature: 'mtime=123;size=456',
+  lastActivityAt: 123,
+  fileSize: 456,
+  generatedAt: 789,
+}
+
+type TimestampedSessionMessage = SessionMessage & { timestamp?: string }
+
+const messages: TimestampedSessionMessage[] = [
   {
     type: 'user',
     uuid: 'user-1',
     session_id: 'session-newest',
     parent_tool_use_id: null,
     parent_agent_id: null,
+    timestamp: '2026-07-14T08:00:00.000Z',
     message: { role: 'user', content: 'First prompt' },
   },
   {
@@ -48,7 +64,9 @@ const messages: SessionMessage[] = [
     session_id: 'session-newest',
     parent_tool_use_id: null,
     parent_agent_id: null,
+    timestamp: '2026-07-14T08:00:10.000Z',
     message: {
+      id: 'msg_assistant_1',
       type: 'message',
       role: 'assistant',
       content: [{ type: 'text', text: 'First answer' }],
@@ -60,7 +78,37 @@ const messages: SessionMessage[] = [
     session_id: 'session-newest',
     parent_tool_use_id: null,
     parent_agent_id: null,
+    timestamp: '2026-07-14T08:01:00.000Z',
     message: { role: 'user', content: 'Second prompt' },
+  },
+  {
+    type: 'assistant',
+    uuid: 'assistant-2',
+    session_id: 'session-newest',
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    timestamp: '2026-07-14T08:01:15.000Z',
+    message: {
+      id: 'msg_assistant_2',
+      type: 'message',
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'Checking the file' },
+        { type: 'tool_use', id: 'toolu_123', name: 'Read', input: { file_path: '/tmp/example.ts' } },
+      ],
+    },
+  },
+  {
+    type: 'user',
+    uuid: 'tool-result-1',
+    session_id: 'session-newest',
+    parent_tool_use_id: 'toolu_123',
+    parent_agent_id: null,
+    timestamp: '2026-07-14T08:01:30.000Z',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'toolu_123', content: 'file contents' }],
+    },
   },
 ]
 
@@ -87,6 +135,10 @@ function createTestApp() {
           hasMore,
           nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
         }
+      },
+      async getSessionTimelineState(projectId, sessionId) {
+        if (projectId !== project.id || sessionId !== 'session-newest') return null
+        return timelineState
       },
       async getSessionMessages(projectId, sessionId) {
         if (projectId !== project.id || sessionId !== 'session-newest') return null
@@ -167,7 +219,71 @@ describe('project routes', () => {
     expect(body.sessionId).toBe('session-newest')
     expect(body.turns).toHaveLength(1)
     expect(body.turns[0]?.id).toBe('user-2')
+    expect(body.turns[0]?.startedAt).toBe(Date.parse('2026-07-14T08:01:00.000Z'))
+    expect(body.turns[0]?.completedAt).toBe(Date.parse('2026-07-14T08:01:30.000Z'))
+    expect(body.turns[0]?.blocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'assistant-2:assistant:0',
+        kind: 'assistant.text',
+        apiMessageId: 'msg_assistant_2',
+        data: expect.objectContaining({ text: 'Checking the file' }),
+      }),
+      expect.objectContaining({
+        id: 'assistant-2:assistant:1',
+        kind: 'assistant.tool_use',
+        apiMessageId: 'msg_assistant_2',
+        contentBlockId: 'toolu_123',
+        toolUseId: 'toolu_123',
+        data: expect.objectContaining({ id: 'toolu_123', name: 'Read' }),
+      }),
+      expect.objectContaining({
+        id: 'tool-result-1:tool_result:0',
+        kind: 'tool.result',
+        toolUseId: 'toolu_123',
+        data: expect.objectContaining({ tool_use_id: 'toolu_123', content: 'file contents' }),
+      }),
+    ]))
     expect(body.hasMore).toBe(true)
     expect(body.nextCursor).toBe('user-2')
+    expect(body.state).toEqual(timelineState)
+  })
+
+  it('returns timeline state for a session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/session-newest/timeline/state`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(sessionTimelineStateResponseSchema.parse(await response.json())).toEqual({ state: timelineState })
+  })
+
+  it('returns 404 for timeline state of an unknown session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/missing/timeline/state`,
+    )
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
+  it('returns raw messages for a session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/session-newest/raw-messages`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(sessionRawMessagesResponseSchema.parse(await response.json())).toEqual({
+      sessionId: 'session-newest',
+      messages,
+    })
+  })
+
+  it('returns 404 for raw messages of an unknown session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/missing/raw-messages`,
+    )
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
   })
 })

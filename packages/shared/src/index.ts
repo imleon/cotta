@@ -54,6 +54,9 @@ export const timelineBlockSchema = z.object({
   id: z.string(),
   kind: z.string(),
   sourceEventIds: z.array(z.string()),
+  apiMessageId: z.string().optional(),
+  contentBlockId: z.string().optional(),
+  toolUseId: z.string().optional(),
   data: z.unknown(),
 })
 
@@ -72,14 +75,44 @@ export const turnSummarySchema = z.object({
 
 export type TurnSummary = z.infer<typeof turnSummarySchema>
 
+export const sessionTimelineStateSchema = z.object({
+  projectId: z.string(),
+  sessionId: z.string(),
+  version: z.string(),
+  signature: z.string(),
+  lastActivityAt: z.number().optional(),
+  fileSize: z.number().optional(),
+  generatedAt: z.number(),
+})
+
+export type SessionTimelineState = z.infer<typeof sessionTimelineStateSchema>
+
+export const sessionTimelineStateResponseSchema = z.object({
+  state: sessionTimelineStateSchema,
+})
+
+export type SessionTimelineStateResponse = z.infer<typeof sessionTimelineStateResponseSchema>
+
 export const sessionTimelineResponseSchema = z.object({
   sessionId: z.string(),
   turns: z.array(turnSummarySchema),
   hasMore: z.boolean(),
   nextCursor: z.string().nullable(),
+  state: sessionTimelineStateSchema,
 })
 
 export type SessionTimelineResponse = z.infer<typeof sessionTimelineResponseSchema>
+
+export const rawSessionMessageSchema = z.unknown()
+
+export type RawSessionMessage = z.infer<typeof rawSessionMessageSchema>
+
+export const sessionRawMessagesResponseSchema = z.object({
+  sessionId: z.string(),
+  messages: z.array(rawSessionMessageSchema),
+})
+
+export type SessionRawMessagesResponse = z.infer<typeof sessionRawMessagesResponseSchema>
 
 export const createTurnRequestSchema = z.object({
   text: z.string().trim().min(1),
@@ -122,6 +155,7 @@ export type SessionStreamEvent =
       projectId: string
       sessionId: string
       turnId: string
+      completedAt: number
       raw: unknown
     }
   | {
@@ -129,6 +163,7 @@ export type SessionStreamEvent =
       projectId: string
       sessionId: string
       turnId: string
+      completedAt: number
       error: string
     }
   | {
@@ -136,5 +171,6 @@ export type SessionStreamEvent =
       projectId: string
       sessionId: string
       turnId: string
+      completedAt: number
     }
 

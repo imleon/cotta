@@ -4,7 +4,7 @@ import {
   type SDKSessionInfo,
   type SessionMessage,
 } from '@anthropic-ai/claude-agent-sdk'
-import type { ProjectSummary, SessionSummary } from '@cotta/shared'
+import type { ProjectSummary, SessionSummary, SessionTimelineState } from '@cotta/shared'
 
 function projectIdFromPath(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
@@ -68,6 +68,26 @@ function toSessionSummary(projectId: string, session: SDKSessionInfo): SessionSu
   }
 }
 
+export function sessionTimelineSignature(session: SDKSessionInfo): string {
+  return [`mtime=${session.lastModified}`, `size=${session.fileSize ?? 'unknown'}`].join(';')
+}
+
+export function sessionTimelineVersion(session: SDKSessionInfo): string {
+  return `timeline-state-v1:${sessionTimelineSignature(session)}`
+}
+
+function toSessionTimelineState(projectId: string, session: SDKSessionInfo): SessionTimelineState {
+  return {
+    projectId,
+    sessionId: session.sessionId,
+    version: sessionTimelineVersion(session),
+    signature: sessionTimelineSignature(session),
+    lastActivityAt: session.lastModified,
+    fileSize: session.fileSize,
+    generatedAt: Date.now(),
+  }
+}
+
 export type ProjectSessionsOptions = {
   limit?: number
   cursor?: string | null
@@ -85,6 +105,7 @@ export type ClaudeCodeApi = {
   listProjects(): Promise<ProjectSummary[]>
   getProject(projectId: string): Promise<ProjectSummary | null>
   listProjectSessions(projectId: string, options?: ProjectSessionsOptions): Promise<ProjectSessions | null>
+  getSessionTimelineState(projectId: string, sessionId: string): Promise<SessionTimelineState | null>
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
 
@@ -121,6 +142,15 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
         hasMore,
         nextCursor: hasMore ? page.at(-1)?.sessionId ?? null : null,
       }
+    },
+
+    async getSessionTimelineState(projectId, sessionId) {
+      const projectPath = projectPathFromId(projectId)
+      if (!projectPath) return null
+      const sessions = await listSessions({ dir: projectPath })
+      const session = sessions.find((candidate) => candidate.sessionId === sessionId)
+      if (!session) return null
+      return toSessionTimelineState(projectId, session)
     },
 
     async getSessionMessages(projectId, sessionId) {

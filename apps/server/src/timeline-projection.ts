@@ -1,12 +1,29 @@
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { SessionTimelineResponse, TimelineBlock, TurnSummary } from '@cotta/shared'
 
+type ProjectedSessionTimeline = Omit<SessionTimelineResponse, 'state'>
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
 function jsonData(value: unknown): unknown {
   return value === undefined ? null : value
+}
+
+function hasMessageValue(message: SessionMessage): boolean {
+  return message.message !== undefined && message.message !== null
+}
+
+function timestampMs(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return undefined
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? undefined : parsed
+}
+
+function messageTimestampMs(message: SessionMessage): number | undefined {
+  return timestampMs('timestamp' in message ? message.timestamp : undefined)
 }
 
 function messageContent(message: SessionMessage): unknown {
@@ -45,16 +62,52 @@ function blockKindForContentBlock(block: unknown): string {
   return `assistant.${block.type}`
 }
 
-function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
-  if (message.type === 'user') {
-    if (isToolResultMessage(message)) {
-      return [{
-        id: `${message.uuid}:tool_result`,
+function toolUseMetadata(block: unknown): Pick<TimelineBlock, 'contentBlockId' | 'toolUseId'> {
+  if (!isRecord(block)) return {}
+  if (block.type === 'tool_use' && typeof block.id === 'string') return { contentBlockId: block.id, toolUseId: block.id }
+  if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') return { toolUseId: block.tool_use_id }
+  return {}
+}
+
+function messageApiMessageId(message: SessionMessage): string | undefined {
+  return isRecord(message.message) && typeof message.message.id === 'string' ? message.message.id : undefined
+}
+
+function timelineBlocksForToolResultMessage(message: SessionMessage): TimelineBlock[] {
+  const content = messageContent(message)
+  if (!Array.isArray(content)) {
+    return [{
+      id: `${message.uuid}:tool_result`,
+      kind: 'tool.result',
+      sourceEventIds: [message.uuid],
+      data: jsonData(message.message),
+    }]
+  }
+
+  const blocks = content
+    .map((block, index): TimelineBlock | null => {
+      if (!isRecord(block) || block.type !== 'tool_result') return null
+      return {
+        id: `${message.uuid}:tool_result:${index}`,
         kind: 'tool.result',
         sourceEventIds: [message.uuid],
-        data: jsonData(message.message),
-      }]
-    }
+        ...toolUseMetadata(block),
+        data: jsonData(block),
+      }
+    })
+    .filter((block): block is TimelineBlock => block !== null)
+
+  return blocks.length > 0 ? blocks : [{
+    id: `${message.uuid}:tool_result`,
+    kind: 'tool.result',
+    sourceEventIds: [message.uuid],
+    data: jsonData(message.message),
+  }]
+}
+
+function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
+  if (message.type === 'user') {
+    if (isToolResultMessage(message)) return timelineBlocksForToolResultMessage(message)
     return [{
       id: `${message.uuid}:user`,
       kind: 'user.message',
@@ -65,11 +118,13 @@ function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
 
   if (message.type === 'assistant') {
     const rawContent = messageContent(message)
+    const apiMessageId = messageApiMessageId(message)
     if (!Array.isArray(rawContent)) {
       return [{
         id: `${message.uuid}:assistant`,
         kind: 'assistant.message',
         sourceEventIds: [message.uuid],
+        ...(apiMessageId ? { apiMessageId } : {}),
         data: jsonData(message.message),
       }]
     }
@@ -77,10 +132,13 @@ function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
       id: `${message.uuid}:assistant:${index}`,
       kind: blockKindForContentBlock(block),
       sourceEventIds: [message.uuid],
+      ...(apiMessageId ? { apiMessageId } : {}),
+      ...toolUseMetadata(block),
       data: jsonData(block),
     }))
   }
 
+  if (!hasMessageValue(message)) return []
   return [{
     id: `${message.uuid}:system`,
     kind: 'system.message',
@@ -100,11 +158,14 @@ function projectTurns(messages: SessionMessage[]): TurnSummary[] {
   let current: TurnSummary | null = null
 
   for (const message of messages) {
-    if (isPrimaryUserMessage(message) || current === null) {
+    const isPrimary = isPrimaryUserMessage(message)
+    const timestamp = messageTimestampMs(message)
+    if (isPrimary || current === null) {
       current = {
         id: message.uuid,
         sessionId: message.session_id,
-        title: isPrimaryUserMessage(message) ? turnTitleFromMessage(message) : 'Session events',
+        title: isPrimary ? turnTitleFromMessage(message) : 'Session events',
+        startedAt: timestamp,
         rawStatus: 'complete',
         displayStatus: 'complete',
         blocks: [],
@@ -113,6 +174,7 @@ function projectTurns(messages: SessionMessage[]): TurnSummary[] {
     }
 
     current.blocks.push(...timelineBlocksForMessage(message))
+    if (!isPrimary && timestamp !== undefined) current.completedAt = timestamp
   }
 
   return turns
@@ -122,7 +184,7 @@ export function projectSessionTimeline(
   sessionId: string,
   messages: SessionMessage[],
   options: { limitTurns: number; cursor: string | null },
-): SessionTimelineResponse {
+): ProjectedSessionTimeline {
   const allTurns = projectTurns(messages)
   const endExclusive = options.cursor
     ? Math.max(0, allTurns.findIndex((turn) => turn.id === options.cursor))

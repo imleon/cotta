@@ -30,9 +30,49 @@ describe('server routes', () => {
         async listProjects() { return [] },
         async getProject() { return null },
         async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
     }).request('/api/projects?token=secret')
+    expect(response.status).toBe(200)
+  })
+
+  it('accepts bearer token for protected API requests', async () => {
+    const response = await createApp({
+      authToken: 'secret',
+      claudeCodeApi: {
+        async listProjects() { return [] },
+        async getProject() { return null },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    }).request('/api/projects', { headers: { authorization: 'Bearer secret' } })
+    expect(response.status).toBe(200)
+  })
+
+  it('rejects protected API requests with wrong query token', async () => {
+    const response = await createApp({ authToken: 'secret' }).request('/api/projects?token=wrong')
+    expect(response.status).toBe(401)
+    expect(await response.json()).toEqual({ error: 'unauthorized' })
+  })
+
+  it('rejects protected API requests with wrong bearer token', async () => {
+    const response = await createApp({ authToken: 'secret' }).request('/api/projects', { headers: { authorization: 'Bearer wrong' } })
+    expect(response.status).toBe(401)
+    expect(await response.json()).toEqual({ error: 'unauthorized' })
+  })
+
+  it('leaves protected API requests open when auth is not configured', async () => {
+    const response = await createApp({
+      claudeCodeApi: {
+        async listProjects() { return [] },
+        async getProject() { return null },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    }).request('/api/projects')
     expect(response.status).toBe(200)
   })
 })

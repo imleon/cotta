@@ -44,7 +44,17 @@ Optional token protection:
 COTTA_AUTH_TOKEN=dev-secret npm run dev
 ```
 
-When `COTTA_AUTH_TOKEN` is set, API and SSE requests must include either `?token=dev-secret` or `Authorization: Bearer dev-secret`. `/api/health` remains unauthenticated for health checks.
+`COTTA_AUTH_TOKEN` must be present in the server process environment. When it is set, API and SSE requests must include either `?token=dev-secret` or `Authorization: Bearer dev-secret`. `/api/health` remains unauthenticated for health checks.
+
+Verify the server is protected before exposing the Web UI remotely:
+
+```bash
+curl -i http://127.0.0.1:3000/api/projects
+# expected: 401 when COTTA_AUTH_TOKEN is set
+
+curl -i "http://127.0.0.1:3000/api/projects?token=dev-secret"
+# expected: 200
+```
 
 Run the web app:
 
@@ -57,3 +67,5 @@ npm run dev:web
 ```text
 http://<remote-host>:5173/?token=dev-secret
 ```
+
+Opening `http://<remote-host>:5173/` without a token shows an access-required page and does not load project/session data.

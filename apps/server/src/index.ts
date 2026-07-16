@@ -25,10 +25,25 @@ const host = process.env.HOST ?? '127.0.0.1'
 const port = Number(process.env.PORT ?? 3000)
 
 if (process.env.NODE_ENV !== 'test') {
-  serve({
-    fetch: createApp().fetch,
-    hostname: host,
-    port,
+  const server = serve(
+    {
+      fetch: createApp().fetch,
+      hostname: host,
+      port,
+    },
+    () => {
+      console.log(`Cotta server listening on http://${host}:${port}`)
+    },
+  )
+
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Cotta server failed to start: http://${host}:${port} is already in use.`)
+      console.error('Stop the process using that port, or start Cotta with a different PORT.')
+      process.exitCode = 1
+      return
+    }
+
+    throw error
   })
-  console.log(`Cotta server listening on http://${host}:${port}`)
 }

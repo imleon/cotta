@@ -411,14 +411,14 @@ h2 {
 .detail-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
-  align-items: start;
+  align-items: center;
   gap: 18px;
   width: calc(100% + 48px);
   margin: -24px -24px 0;
   border-bottom: 1px solid var(--color-border);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: #f8fafc;
-  padding: 10px 24px 8px;
+  background: #f1f5f9;
+  padding: 12px 52px 10px 32px;
 }
 
 .project-title-block {
@@ -426,6 +426,28 @@ h2 {
   min-width: 0;
   justify-items: start;
   gap: 3px;
+}
+
+.project-session-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-session-title span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-session-title span::before {
+  content: '/';
+  margin-right: 8px;
+  color: rgb(100 116 139 / 42%);
 }
 
 .debug-toggle {
@@ -447,9 +469,71 @@ h2 {
 }
 
 .project-meta-lines {
-  display: grid;
-  justify-items: end;
+  display: flex;
+  align-items: center;
+  justify-content: end;
   min-width: 0;
+  gap: 8px;
+}
+
+.project-meta-icon {
+  position: relative;
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid rgb(100 116 139 / 30%);
+  border-radius: 999px;
+  color: rgb(100 116 139 / 76%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1;
+  cursor: help;
+}
+
+.project-meta-icon::after {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: max-content;
+  max-width: min(420px, 70vw);
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #fff;
+  content: attr(data-tooltip);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  white-space: pre-wrap;
+}
+
+.project-meta-icon:hover,
+.project-meta-icon:focus-visible {
+  border-color: rgb(100 116 139 / 55%);
+  background: rgb(100 116 139 / 8%);
+  color: var(--color-text);
+}
+
+.project-meta-icon:hover::after,
+.project-meta-icon:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.project-path-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
 }
 
 .project-directory,
@@ -457,7 +541,7 @@ h2 {
   max-width: 100%;
   margin: 0;
   overflow-wrap: anywhere;
-  color: var(--color-muted);
+  color: #64748b;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 11px;
   font-weight: 400;
@@ -465,15 +549,15 @@ h2 {
 }
 
 .project-directory {
-  text-align: left;
+  justify-self: end;
+  text-align: right;
 }
 
 .project-session-id {
-  justify-self: center;
-  margin-bottom: -5px;
+  justify-self: end;
   padding: 0;
-  color: rgb(100 116 139 / 58%);
-  text-align: center;
+  color: var(--color-muted);
+  text-align: right;
 }
 
 .detail-section,

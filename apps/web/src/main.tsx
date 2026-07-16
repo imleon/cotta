@@ -381,14 +381,23 @@ function WorkspacePanel({
   }
 
   const actionMode = submitting || interrupting ? 'loading' : liveTurnId ? 'stop' : 'submit'
+  const selectedSession = detail.sessions.find((session) => session.id === selectedSessionId)
 
   return (
     <section className="workspace-panel">
       <section className="detail-panel workspace-main-panel">
         <header className="detail-header">
           <div className="project-title-block">
-            <h2>{detail.project.name}</h2>
-            {detail.project.path ? <p className="project-directory">{detail.project.path}</p> : null}
+            <div className="project-session-title">
+              <h2>{detail.project.name}</h2>
+              {selectedSession ? <span>{selectedSession.title}</span> : null}
+            </div>
+          </div>
+          <div className="project-meta-lines">
+            {selectedSessionId ? <span className="project-meta-icon" data-tooltip={`Session ID: ${selectedSessionId}`} aria-label={`Session ID: ${selectedSessionId}`}>#</span> : null}
+            {detail.project.path ? <span className="project-meta-icon project-path-icon" data-tooltip={`Project directory: ${detail.project.path}`} aria-label={`Project directory: ${detail.project.path}`}>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h5l1.5 2h6.5v5.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 1.5 12Z" /></svg>
+            </span> : null}
           </div>
         </header>
 

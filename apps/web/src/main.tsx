@@ -1,65 +1,27 @@
-import { QueryClient, QueryClientProvider, useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { StrictMode, useEffect, useRef, useState, type FormEvent } from 'react'
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { StrictMode, useEffect, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
-  projectSessionsResponseSchema,
-  projectsResponseSchema,
-  sessionTimelineResponseSchema,
+  sessionRawMessagesResponseSchema,
   type CreateTurnResponse,
   type ProjectSessionsResponse,
-  type ProjectSummary,
-  type ProjectsResponse,
-  type SessionStreamEvent,
-  type SessionSummary,
-  type SessionTimelineResponse,
-  type TimelineBlock,
-  type TurnSummary,
+  type SessionRawMessagesResponse,
 } from '@cotta/shared'
+import { authToken, withToken } from './api'
+import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
+import { refreshProjectSessionLists } from './session-query-refresh'
+import { SessionTimeline } from './timeline'
 import './styles.css'
 
-function authToken(): string | null {
-  return new URLSearchParams(window.location.search).get('token')
-}
-
-function withToken(path: string): string {
-  const token = authToken()
-  if (!token) return path
-  const url = new URL(path, window.location.origin)
-  url.searchParams.set('token', token)
-  return `${url.pathname}${url.search}`
-}
-
-async function fetchProjects(): Promise<ProjectsResponse> {
-  const response = await fetch(withToken('/api/projects'))
-  if (!response.ok) throw new Error(`Projects request failed: ${response.status}`)
-  return projectsResponseSchema.parse(await response.json())
-}
-
-async function fetchProjectSessions(
-  projectId: string,
-  cursor: string | null = null,
-  limit = 10,
-): Promise<ProjectSessionsResponse> {
-  const params = new URLSearchParams({ limit: String(limit) })
-  if (cursor) params.set('cursor', cursor)
-  const response = await fetch(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`))
-  if (!response.ok) throw new Error(`Project sessions request failed: ${response.status}`)
-  return projectSessionsResponseSchema.parse(await response.json())
-}
-
-async function fetchSessionTimeline(
-  projectId: string,
-  sessionId: string,
-  cursor: string | null = null,
-): Promise<SessionTimelineResponse> {
-  const params = new URLSearchParams({ limitTurns: '20' })
-  if (cursor) params.set('cursor', cursor)
+async function fetchSessionRawMessages(projectId: string, sessionId: string): Promise<SessionRawMessagesResponse> {
   const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`),
+    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/raw-messages`),
   )
-  if (!response.ok) throw new Error(`Session timeline request failed: ${response.status}`)
-  return sessionTimelineResponseSchema.parse(await response.json())
+  if (!response.ok) throw new Error(`Session raw messages request failed: ${response.status}`)
+  return sessionRawMessagesResponseSchema.parse(await response.json())
 }
 
 async function createTurn(projectId: string, sessionId: string | null, text: string): Promise<CreateTurnResponse> {
@@ -83,28 +45,13 @@ async function interruptTurn(projectId: string, sessionId: string, turnId: strin
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
-function formatAge(value?: number): string {
-  if (!value) return '—'
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - value) / 1000))
-  if (elapsedSeconds < 60) return 'now'
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
-  if (elapsedMinutes < 60) return `${elapsedMinutes}m`
-  const elapsedHours = Math.floor(elapsedMinutes / 60)
-  if (elapsedHours < 24) return `${elapsedHours}h`
-  const elapsedDays = Math.floor(elapsedHours / 24)
-  if (elapsedDays < 30) return `${elapsedDays}d`
-  const elapsedMonths = Math.floor(elapsedDays / 30)
-  if (elapsedMonths < 12) return `${elapsedMonths}mo`
-  return `${Math.floor(elapsedMonths / 12)}y`
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function dataPreview(value: unknown): string {
+function dataPreview(value: unknown, space = 2): string {
   if (typeof value === 'object' && value !== null && 'text' in value && typeof value.text === 'string') return value.text
-  return JSON.stringify(value, null, 2) ?? ''
+  return JSON.stringify(value, null, space) ?? ''
 }
 
 function textFromData(value: unknown): string | null {
@@ -121,336 +68,250 @@ function textFromData(value: unknown): string | null {
   return null
 }
 
-function timelineDebugPayload(turns: TurnSummary[], rawLiveEvents: unknown[]) {
-  return {
-    loadedTurns: turns.length,
-    loadedBlocks: turns.reduce((count, turn) => count + turn.blocks.length, 0),
-    timeline: turns,
-    rawLiveEvents,
-  }
+function shortText(value: string, max = 140): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (!normalized) return '—'
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized
 }
 
-function statusValue(displayStatus?: string, rawStatus?: string, fallback = 'idle'): string {
-  return displayStatus ?? rawStatus ?? fallback
+function debugDataPreview(value: unknown, max = 180): string {
+  return shortText(textFromData(value) ?? dataPreview(value), max)
 }
 
-function statusTone(value?: string): string {
-  const normalized = value?.toLowerCase() ?? ''
-  if (normalized.includes('running') || normalized.includes('live')) return 'running'
-  if (normalized.includes('fail') || normalized.includes('error')) return 'danger'
-  if (normalized.includes('interrupt') || normalized.includes('blocked') || normalized.includes('requires')) return 'warning'
-  if (normalized.includes('complete') || normalized.includes('success')) return 'success'
-  return 'neutral'
+function rawField(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined
 }
 
-function statusLabel(value?: string): string {
-  if (!value) return 'Idle'
-  const normalized = value.toLowerCase()
-  if (normalized === 'complete' || normalized === 'completed') return 'Complete'
-  if (normalized.includes('requires')) return 'Action'
-  if (normalized.includes('interrupt')) return 'Stopped'
-  return value.replaceAll('_', ' ')
+function rawStringField(value: unknown, key: string): string {
+  const field = rawField(value, key)
+  return typeof field === 'string' ? field : '—'
 }
 
-function blockTitle(kind: string): string {
-  if (kind === 'user.message') return 'User'
-  if (kind === 'assistant.text') return 'Assistant'
-  if (kind === 'assistant.tool_use') return 'Tool use'
-  if (kind === 'tool.result') return 'Tool result'
-  if (kind === 'error') return 'Error'
-  if (kind.startsWith('stream.')) return 'Stream event'
-  if (kind.startsWith('system.')) return 'System event'
-  if (kind.startsWith('raw.')) return 'Raw event'
-  return kind
+function rawMessagePreview(value: unknown): string {
+  return debugDataPreview(rawField(value, 'message') ?? value)
 }
 
-function blockTone(kind: string): string {
-  if (kind === 'user.message') return 'user'
-  if (kind === 'assistant.text' || kind === 'assistant.message') return 'assistant'
-  if (kind === 'assistant.tool_use' || kind === 'tool.result') return 'tool'
-  if (kind === 'error') return 'danger'
-  return 'muted'
+function rawMessageField(value: unknown, key: string): unknown {
+  const message = rawField(value, 'message')
+  return isRecord(message) ? message[key] : undefined
 }
 
-function shouldCollapseBlock(kind: string): boolean {
-  return kind.startsWith('stream.')
-    || kind.startsWith('raw.')
-    || kind.startsWith('system.')
-    || kind === 'assistant.tool_use'
-    || kind === 'tool.result'
+function debugFieldPreview(value: unknown, max = 180): string {
+  if (value === undefined || value === null) return '—'
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return shortText(String(value), max)
+  return debugDataPreview(value, max)
 }
 
-function ProjectCard({ project, selected, onSelect }: { project: ProjectSummary; selected: boolean; onSelect: () => void }) {
+function rawTimestampParts(value: unknown): { date: string; time: string } {
+  const timestamp = rawStringField(value, 'timestamp')
+  if (timestamp === '—') return { date: '—', time: '—' }
+  const [date, timeWithZone] = timestamp.split('T')
+  return { date: date || timestamp, time: timeWithZone ?? '—' }
+}
+
+function rawStopReason(value: unknown): string | null {
+  const stopReason = rawMessageField(value, 'stop_reason')
+  return typeof stopReason === 'string' && stopReason ? stopReason : null
+}
+
+function containsToolResult(content: unknown): boolean {
+  return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
+}
+
+function hasUserTextContent(content: unknown): boolean {
+  if (typeof content === 'string') return content.trim().length > 0
+  return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)
+}
+
+function isPrimaryUserMessage(value: unknown): boolean {
+  const message = rawField(value, 'message')
+  const content = isRecord(message) ? message.content : undefined
+  return rawStringField(value, 'type') === 'user'
+    && isRecord(message)
+    && message.role === 'user'
+    && !containsToolResult(content)
+    && hasUserTextContent(content)
+}
+
+function sourceEventLabel(ids: string[]): string {
+  if (ids.length === 0) return '—'
+  if (ids.length <= 2) return ids.join(', ')
+  return `${ids.slice(0, 2).join(', ')} +${ids.length - 2}`
+}
+
+function debugContentClassName(type: string | undefined): string {
+  if (type === 'text') return 'debug-content-block-text'
+  if (type === 'tool_use') return 'debug-content-block-tool-use'
+  if (type === 'tool_result') return 'debug-content-block-tool-result'
+  return 'debug-content-block-unknown'
+}
+
+function DebugContentField({ label, value, json = false, max = 260 }: { label: string; value: unknown; json?: boolean; max?: number }) {
+  if (value === undefined || value === null) return null
   return (
-    <button className={`project-card ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
-      <div className="project-card-main">
-        <h2>{project.name}</h2>
+    <div className="debug-content-field">
+      <span className="debug-content-label">{label}</span>
+      <div className="debug-content-value">
+        {json ? <pre className="debug-content-pre">{dataPreview(value)}</pre> : debugFieldPreview(value, max)}
       </div>
-    </button>
-  )
-}
-
-function StatusBadge({ value }: { value?: string }) {
-  const tone = statusTone(value)
-  if (tone === 'neutral') return null
-  return <span className={`status-badge status-${tone}`}>{statusLabel(value)}</span>
-}
-
-function previewSessionStatus(index: number): string | undefined {
-  return ['running', 'complete', 'requires_action', 'failed'][index]
-}
-
-function SessionRow({ session, selected, onSelect, previewStatus }: { session: SessionSummary; selected: boolean; onSelect: () => void; previewStatus?: string }) {
-  const actualState = statusValue(session.displayStatus, session.rawStatus)
-  const state = statusTone(actualState) === 'neutral' ? previewStatus ?? actualState : actualState
-  return (
-    <li>
-      <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
-        <div className="session-content">
-          <div className="session-main">
-            <strong>{session.title}</strong>
-          </div>
-          <StatusBadge value={state} />
-        </div>
-        <span className="session-age">{formatAge(session.lastActivityAt)}</span>
-      </button>
-    </li>
-  )
-}
-
-function SessionDebugView({ debugPayload, rawLiveEventCount }: {
-  debugPayload: ReturnType<typeof timelineDebugPayload>
-  rawLiveEventCount: number
-}) {
-  return (
-    <section className="debug-panel debug-view" aria-label="Session debug">
-      <div className="debug-view-header">
-        <h3>Debug</h3>
-        <p>
-          loaded timeline payloads ({debugPayload.loadedTurns} turns / {debugPayload.loadedBlocks} blocks)
-          {rawLiveEventCount > 0 ? ` · raw live events (${rawLiveEventCount})` : ''}
-        </p>
-      </div>
-      <pre>{JSON.stringify(debugPayload, null, 2)}</pre>
-    </section>
-  )
-}
-
-function TimelineBlockView({ block }: { block: TimelineBlock }) {
-  const text = textFromData(block.data)
-  const collapsible = shouldCollapseBlock(block.kind)
-  return (
-    <div className={`timeline-block timeline-block-${blockTone(block.kind)} ${block.kind.replaceAll('.', '-')}`}>
-      <div className="timeline-block-header">
-        <span className="timeline-kind">{blockTitle(block.kind)}</span>
-        <span className="timeline-kind-raw">{block.kind}</span>
-      </div>
-      {text && !collapsible ? (
-        <div className="timeline-text">{text}</div>
-      ) : collapsible ? (
-        <details className="timeline-raw">
-          <summary>{text ? text.slice(0, 120) : 'View raw payload'}</summary>
-          <pre>{dataPreview(block.data)}</pre>
-        </details>
-      ) : (
-        <pre className="timeline-json">{dataPreview(block.data)}</pre>
-      )}
     </div>
   )
 }
 
-function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent): TurnSummary[] {
-  if (event.type === 'live.turn.started') return [...turns.filter((turn) => turn.id !== event.turnId), event.turn]
-  if (event.type === 'live.timeline.block') {
-    return turns.map((turn) => turn.id === event.turnId
-      ? { ...turn, blocks: [...turn.blocks.filter((block) => block.id !== event.block.id), event.block] }
-      : turn)
+function DebugContentBlock({ block, index }: { block: unknown; index: number }) {
+  if (!isRecord(block)) {
+    return (
+      <div className="debug-content-block debug-content-block-unknown">
+        <div className="debug-content-block-header">#{index + 1} value</div>
+        <DebugContentField label="value" value={block} />
+      </div>
+    )
   }
-  if (event.type === 'live.turn.completed' || event.type === 'live.turn.interrupted') {
-    return turns.map((turn) => turn.id === event.turnId
-      ? { ...turn, rawStatus: event.type === 'live.turn.interrupted' ? 'interrupted' : 'completed', displayStatus: event.type === 'live.turn.interrupted' ? 'interrupted' : 'complete' }
-      : turn)
-  }
-  if (event.type === 'live.turn.failed') {
-    return turns.map((turn) => turn.id === event.turnId
-      ? { ...turn, rawStatus: 'failed', displayStatus: 'failed', blocks: [...turn.blocks, { id: `${event.turnId}:error`, kind: 'error', sourceEventIds: [event.turnId], data: { error: event.error } }] }
-      : turn)
-  }
-  return turns
+
+  const type = typeof block.type === 'string' ? block.type : undefined
+  const isJsonContent = isRecord(block.content) || Array.isArray(block.content)
+  return (
+    <div className={`debug-content-block ${debugContentClassName(type)}`}>
+      <div className="debug-content-block-header">#{index + 1} {type ?? 'unknown'}</div>
+      {type === 'text' ? <DebugContentField label="text" value={block.text} max={520} /> : null}
+      {type === 'tool_use' ? (
+        <>
+          <DebugContentField label="id" value={block.id} />
+          <DebugContentField label="name" value={block.name} />
+          <DebugContentField label="input" value={block.input} json />
+        </>
+      ) : null}
+      {type === 'tool_result' ? (
+        <>
+          <DebugContentField label="tool_use_id" value={block.tool_use_id} />
+          <DebugContentField label="is_error" value={block.is_error} />
+          <DebugContentField label="content" value={block.content} json={isJsonContent} max={520} />
+        </>
+      ) : null}
+      {!type || (type !== 'text' && type !== 'tool_use' && type !== 'tool_result') ? <DebugContentField label="data" value={block} json /> : null}
+    </div>
+  )
 }
 
-function ProjectSessionBranch({
-  project,
-  selectedProjectId,
-  selectedSessionId,
-  onSelectProject,
-  onSelectSession,
-}: {
-  project: ProjectSummary
-  selectedProjectId: string | null
-  selectedSessionId: string | null
-  onSelectProject: (projectId: string) => void
-  onSelectSession: (projectId: string, sessionId: string) => void
-}) {
-  const sessionsQuery = useInfiniteQuery({
-    queryKey: ['project-sessions-rail', project.id],
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => fetchProjectSessions(project.id, pageParam, 10),
-    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+function debugContentRows(content: unknown): unknown[] {
+  if (Array.isArray(content)) return content.length > 0 ? content : [undefined]
+  if (typeof content === 'string') return [{ type: 'text', text: content }]
+  if (content === undefined || content === null) return [undefined]
+  return [content]
+}
+
+function contentBlockType(block: unknown): string {
+  if (block === undefined || block === null) return '—'
+  if (!isRecord(block)) return 'value'
+  return typeof block.type === 'string' ? block.type : 'unknown'
+}
+
+function contentBlockId(block: unknown): unknown {
+  if (!isRecord(block)) return undefined
+  return block.id ?? block.tool_use_id
+}
+
+function contentBlockName(block: unknown): unknown {
+  return isRecord(block) ? block.name : undefined
+}
+
+function contentBlockIsErr(block: unknown): unknown {
+  if (!isRecord(block)) return undefined
+  return block.is_err ?? block.is_error
+}
+
+const contentBlockMetadataKeys = new Set(['type', 'id', 'tool_use_id', 'name', 'is_err', 'is_error'])
+
+function contentBlockValue(block: unknown): unknown {
+  if (!isRecord(block)) return block
+  const entries = Object.entries(block).filter(([key]) => !contentBlockMetadataKeys.has(key))
+  if (entries.length === 0) return undefined
+  if (entries.length === 1) return entries[0]?.[1]
+  return Object.fromEntries(entries)
+}
+
+function shouldRenderBlockValueMarkdown(block: unknown, value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  if (!isRecord(block)) return false
+  return (block.type === 'text' && typeof block.text === 'string')
+    || (block.type === 'tool_result' && typeof block.content === 'string')
+}
+
+function DebugMarkdownValue({ value }: { value: string }) {
+  return (
+    <div className="debug-markdown">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+    </div>
+  )
+}
+
+function DebugContentCellValue({ value, json = false, max = 260, markdown = false }: { value: unknown; json?: boolean; max?: number; markdown?: boolean }) {
+  if (value === undefined || value === null) return <span className="debug-content-empty">—</span>
+  if (json || isRecord(value) || Array.isArray(value)) return <pre className="debug-content-code">{dataPreview(value)}</pre>
+  if (markdown && typeof value === 'string') return <DebugMarkdownValue value={value} />
+  return <>{debugFieldPreview(value, max)}</>
+}
+
+function DebugContentStackCell({ blocks, valueForBlock, max = 260, markdownForBlock }: { blocks: unknown[]; valueForBlock: (block: unknown) => unknown; max?: number; markdownForBlock?: (block: unknown, value: unknown) => boolean }) {
+  return (
+    <div className="debug-content-stack">
+      {blocks.map((block, index) => {
+        const value = valueForBlock(block)
+        return (
+          <div key={index}>
+            <DebugContentCellValue value={value} max={max} markdown={markdownForBlock?.(block, value) ?? false} />
+            {index < blocks.length - 1 ? <div className="debug-content-separator">---</div> : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function SessionDebugView({ rawMessages }: { rawMessages: unknown[] }) {
+  return (
+    <section className="debug-view" aria-label="Session debug">
+      <section className="debug-table-section" aria-label="Raw messages">
+        {rawMessages.length === 0 ? <p className="debug-empty">No raw messages loaded.</p> : (
+          <div className="debug-table-wrap">
+            <table className="debug-table">
+              <thead><tr><th>Timestamp</th><th>Type</th><th>block.type</th><th>block.id</th><th>block.name</th><th>block.is_err</th><th>block.value</th><th>message.model</th><th>message.usage</th></tr></thead>
+              <tbody>
+                {rawMessages.map((message, index) => {
+                  const timestamp = rawTimestampParts(message)
+                  const stopReason = rawStopReason(message)
+                  const contentRows = debugContentRows(rawMessageField(message, 'content'))
+                  const rowClassName = isPrimaryUserMessage(message) ? 'debug-row-user' : undefined
+                  return (
+                    <tr className={rowClassName} key={`${rawStringField(message, 'uuid')}:${index}`}>
+                      <td className="debug-mono debug-timestamp-cell"><div>{timestamp.date}</div><div className="debug-muted">{timestamp.time}</div></td>
+                      <td className="debug-type-cell"><strong>{rawStringField(message, 'type')}</strong>{stopReason ? <div className="debug-muted">(stop_reason: {stopReason})</div> : null}</td>
+                      <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockType} /></td>
+                      <td className="debug-mono debug-block-id-cell"><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockId} /></td>
+                      <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockName} /></td>
+                      <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockIsErr} /></td>
+                      <td className="debug-content-cell"><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockValue} markdownForBlock={shouldRenderBlockValueMarkdown} max={520} /></td>
+                      <td>{debugFieldPreview(rawMessageField(message, 'model'))}</td>
+                      <td className="debug-usage-cell"><pre className="debug-inline-json">{dataPreview(rawMessageField(message, 'usage'), 0)}</pre></td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </section>
+  )
+}
+
+function useSessionRawMessages(projectId: string | null, sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session-raw-messages', projectId, sessionId],
+    queryFn: () => fetchSessionRawMessages(projectId!, sessionId!),
+    enabled: Boolean(projectId && sessionId),
     retry: false,
   })
-  const sessions = sessionsQuery.data?.pages.flatMap((page) => page.sessions) ?? []
-  const selected = project.id === selectedProjectId
-
-  return (
-    <div className="project-tree-item">
-      <ProjectCard project={project} selected={selected} onSelect={() => onSelectProject(project.id)} />
-      <div className="project-sessions">
-        {sessionsQuery.isLoading ? <div className="rail-empty">Loading sessions…</div> : null}
-        {sessionsQuery.isError ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
-        {!sessionsQuery.isLoading && sessions.length === 0 ? <div className="rail-empty">No sessions</div> : null}
-        {sessions.length > 0 ? (
-          <ol className="session-list rail-session-list">
-            {sessions.map((session, index) => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                selected={project.id === selectedProjectId && session.id === selectedSessionId}
-                previewStatus={previewSessionStatus(index)}
-                onSelect={() => onSelectSession(project.id, session.id)}
-              />
-            ))}
-          </ol>
-        ) : null}
-        {sessionsQuery.hasNextPage ? (
-          <button className="load-more-sessions" type="button" onClick={() => sessionsQuery.fetchNextPage()} disabled={sessionsQuery.isFetchingNextPage}>
-            {sessionsQuery.isFetchingNextPage ? 'Loading…' : 'Load more sessions'}
-          </button>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function ProjectSessionRail({
-  projects,
-  selectedProjectId,
-  selectedSessionId,
-  onSelectProject,
-  onSelectSession,
-}: {
-  projects: ProjectSummary[]
-  selectedProjectId: string | null
-  selectedSessionId: string | null
-  onSelectProject: (projectId: string) => void
-  onSelectSession: (projectId: string, sessionId: string) => void
-}) {
-  return (
-    <aside className="project-rail" aria-label="Projects and sessions">
-      <div className="project-tree">
-        {projects.map((project) => (
-          <ProjectSessionBranch
-            key={project.id}
-            project={project}
-            selectedProjectId={selectedProjectId}
-            selectedSessionId={selectedSessionId}
-            onSelectProject={onSelectProject}
-            onSelectSession={onSelectSession}
-          />
-        ))}
-      </div>
-    </aside>
-  )
-}
-
-function SessionTimeline({ projectId, sessionId, debugEnabled, onLiveTurnChange }: {
-  projectId: string
-  sessionId: string
-  debugEnabled: boolean
-  onLiveTurnChange?: (turnId: string | null) => void
-}) {
-  const [turns, setTurns] = useState<TurnSummary[]>([])
-  const [nextCursor, setNextCursor] = useState<string | null>(null)
-  const [hasMore, setHasMore] = useState(false)
-  const [olderError, setOlderError] = useState<string | null>(null)
-  const [loadingOlder, setLoadingOlder] = useState(false)
-  const [debugEvents, setDebugEvents] = useState<unknown[]>([])
-  const timelineEndRef = useRef<HTMLDivElement | null>(null)
-  const shouldScrollToBottomRef = useRef(false)
-
-  const timeline = useQuery({ queryKey: ['session-timeline', projectId, sessionId], queryFn: () => fetchSessionTimeline(projectId, sessionId), retry: false })
-
-  useEffect(() => {
-    if (!timeline.data) return
-    shouldScrollToBottomRef.current = true
-    setTurns(timeline.data.turns)
-    setNextCursor(timeline.data.nextCursor)
-    setHasMore(timeline.data.hasMore)
-    setOlderError(null)
-    setDebugEvents([])
-  }, [timeline.data])
-
-  useEffect(() => {
-    if (!shouldScrollToBottomRef.current) return
-    shouldScrollToBottomRef.current = false
-    timelineEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [turns])
-
-  useEffect(() => {
-    const events = new EventSource(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`))
-    events.onmessage = (message) => {
-      const event = JSON.parse(message.data) as SessionStreamEvent
-      if (event.type === 'live.raw') setDebugEvents((current) => [...current.slice(-49), event.raw])
-      if ('turnId' in event) {
-        if (event.type === 'live.turn.started') onLiveTurnChange?.(event.turnId)
-        if (event.type === 'live.turn.completed' || event.type === 'live.turn.failed' || event.type === 'live.turn.interrupted') onLiveTurnChange?.(null)
-      }
-      setTurns((current) => applyLiveEvent(current, event))
-    }
-    events.onerror = () => events.close()
-    return () => events.close()
-  }, [onLiveTurnChange, projectId, sessionId])
-
-  async function loadOlder() {
-    if (!nextCursor || loadingOlder) return
-    setLoadingOlder(true)
-    setOlderError(null)
-    try {
-      const page = await fetchSessionTimeline(projectId, sessionId, nextCursor)
-      setTurns((current) => [...page.turns, ...current])
-      setNextCursor(page.nextCursor)
-      setHasMore(page.hasMore)
-    } catch (error) {
-      setOlderError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setLoadingOlder(false)
-    }
-  }
-
-  if (timeline.isLoading) return <div className="panel muted">Loading session timeline…</div>
-  if (timeline.isError) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
-
-  const debugPayload = timelineDebugPayload(turns, debugEvents)
-
-  return (
-    <section className={`session-workspace-view ${debugEnabled ? 'debug-enabled' : ''}`} aria-label="Session workspace">
-      <section className="timeline-panel" aria-label="Session timeline">
-        {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older'}</button></div> : null}
-        {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
-        {turns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : turns.map((turn) => {
-          const state = statusValue(turn.displayStatus, turn.rawStatus, 'complete')
-          return (
-            <article className="turn-card" key={turn.id}>
-              <header><StatusBadge value={state} /><h3>{turn.title ?? 'Untitled turn'}</h3></header>
-              <div className="timeline-blocks">{turn.blocks.map((block) => <TimelineBlockView block={block} key={block.id} />)}</div>
-            </article>
-          )
-        })}
-        <div ref={timelineEndRef} />
-      </section>
-      {debugEnabled ? <SessionDebugView debugPayload={debugPayload} rawLiveEventCount={debugEvents.length} /> : null}
-    </section>
-  )
 }
 
 function WorkspacePanel({
@@ -464,11 +325,11 @@ function WorkspacePanel({
   selectedSessionId: string | null
   setSelectedSessionId: (sessionId: string | null) => void
 }) {
+  const queryClient = useQueryClient()
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [liveTurnId, setLiveTurnId] = useState<string | null>(null)
-  const [debugEnabled, setDebugEnabled] = useState(false)
 
   useEffect(() => { setLiveTurnId(null); setSubmitError(null) }, [projectId, selectedSessionId])
 
@@ -485,11 +346,17 @@ function WorkspacePanel({
       setSelectedSessionId(response.sessionId)
       setLiveTurnId(response.turnId)
       setInputText('')
+      refreshProjectSessionLists(queryClient, projectId)
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
     } finally {
       setSubmitting(false)
     }
+  }
+
+  function refreshSessionListsForCurrentProject() {
+    if (!projectId) return
+    refreshProjectSessionLists(queryClient, projectId)
   }
 
   async function stopLiveTurn() {
@@ -507,7 +374,6 @@ function WorkspacePanel({
         <header className="detail-header">
           <div className="project-title-block">
             <h2>{detail.project.name}</h2>
-            <button type="button" className={`debug-toggle ${debugEnabled ? 'active' : ''}`} aria-pressed={debugEnabled} onClick={() => setDebugEnabled((value) => !value)}>Debug</button>
           </div>
           <div className="project-meta-lines">
             {detail.project.path ? <p className="project-directory">{detail.project.path}</p> : null}
@@ -516,7 +382,7 @@ function WorkspacePanel({
         </header>
 
         <div className="workspace-timeline">
-          {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} debugEnabled={debugEnabled} onLiveTurnChange={setLiveTurnId} /> : <div className="panel muted">Start a new session from the composer below.</div>}
+          {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} onLiveTurnChange={setLiveTurnId} onSessionListStale={refreshSessionListsForCurrentProject} /> : <div className="panel muted">Start a new session from the composer below.</div>}
         </div>
 
         <section className="composer-card composer-card-bottom">
@@ -537,40 +403,96 @@ function WorkspacePanel({
 }
 
 function ProjectsDashboard() {
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
-  const projects = useQuery({ queryKey: ['projects'], queryFn: fetchProjects, retry: false })
-  const projectSessions = useQuery({ queryKey: ['project-sessions-detail', selectedProjectId], queryFn: () => fetchProjectSessions(selectedProjectId!), enabled: Boolean(selectedProjectId), retry: false })
-  const items = projects.data?.projects ?? []
+  const selection = useProjectSessionSelection()
 
-  useEffect(() => { if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id) }, [items, selectedProjectId])
-  useEffect(() => {
-    if (!selectedSessionId) setSelectedSessionId(projectSessions.data?.defaultSessionId ?? null)
-  }, [projectSessions.data, selectedSessionId])
-
-  if (projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
-  if (projects.isError) return <div className="panel error">Failed to load projects: {projects.error instanceof Error ? projects.error.message : 'unknown error'}</div>
-  if (items.length === 0) return <div className="panel muted">No Claude Code projects were returned by the Agent SDK yet. Run Claude Code in a project first, then refresh this dashboard.</div>
+  if (selection.projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
+  if (selection.projects.isError) return <div className="panel error">Failed to load projects: {selection.projects.error instanceof Error ? selection.projects.error.message : 'unknown error'}</div>
+  if (selection.items.length === 0) return <div className="panel muted">No Claude Code projects were returned by the Agent SDK yet. Run Claude Code in a project first, then refresh this dashboard.</div>
 
   return (
     <div className="dashboard-layout">
       <ProjectSessionRail
-        projects={items}
-        selectedProjectId={selectedProjectId}
-        selectedSessionId={selectedSessionId}
-        onSelectProject={(projectId) => { setSelectedProjectId(projectId); setSelectedSessionId(null) }}
-        onSelectSession={(projectId, sessionId) => { setSelectedProjectId(projectId); setSelectedSessionId(sessionId) }}
+        projects={selection.items}
+        selectedProjectId={selection.selectedProjectId}
+        selectedSessionId={selection.selectedSessionId}
+        onSelectProject={selection.selectProject}
+        onSelectSession={selection.selectSession}
       />
-      {projectSessions.isError ? <div className="panel error">Failed to load project sessions: {projectSessions.error instanceof Error ? projectSessions.error.message : 'unknown error'}</div> : <WorkspacePanel projectId={selectedProjectId} detail={projectSessions.data} selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} />}
+      {selection.projectSessions.isError ? <div className="panel error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} setSelectedSessionId={selection.setSelectedSessionId} />}
     </div>
   )
 }
 
+function DebugDashboard() {
+  const selection = useProjectSessionSelection({ sessionLimit: 100 })
+  const rawMessages = useSessionRawMessages(selection.selectedProjectId, selection.selectedSessionId)
+  const sessions = selection.projectSessions.data?.sessions ?? []
+
+  if (selection.projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
+  if (selection.projects.isError) return <div className="panel error">Failed to load projects: {selection.projects.error instanceof Error ? selection.projects.error.message : 'unknown error'}</div>
+  if (selection.items.length === 0) return <div className="panel muted">No Claude Code projects were returned by the Agent SDK yet. Run Claude Code in a project first, then refresh this dashboard.</div>
+
+  return (
+    <section className="detail-panel debug-page-panel debug-page-single" aria-label="Debug workspace">
+      <div className="debug-filter-bar" aria-label="Debug filters">
+        <label className="debug-filter-field">
+          <span>Project</span>
+          <select value={selection.selectedProjectId ?? ''} onChange={(event) => selection.selectProject(event.target.value)}>
+            {selection.items.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>
+        </label>
+        <label className="debug-filter-field">
+          <span>Session</span>
+          <select
+            value={selection.selectedSessionId ?? ''}
+            onChange={(event) => {
+              if (!selection.selectedProjectId || !event.target.value) return
+              selection.selectSession(selection.selectedProjectId, event.target.value)
+            }}
+            disabled={selection.projectSessions.isLoading || sessions.length === 0}
+          >
+            {selection.projectSessions.isLoading ? <option value="">Loading sessions…</option> : null}
+            {!selection.projectSessions.isLoading && sessions.length === 0 ? <option value="">No sessions</option> : null}
+            {sessions.map((session) => <option key={session.id} value={session.id}>{session.id} — {session.title}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="debug-page-content">
+        {selection.projectSessions.isError ? <div className="panel error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : null}
+        {selection.projectSessions.isLoading ? <div className="panel muted">Loading project sessions…</div> : null}
+        {!selection.projectSessions.isLoading && !selection.selectedSessionId ? <div className="panel muted">Select a session to inspect raw messages.</div> : null}
+        {selection.selectedSessionId && rawMessages.isLoading ? <div className="panel muted">Loading raw messages…</div> : null}
+        {selection.selectedSessionId && rawMessages.isError ? <div className="panel error">Failed to load raw messages: {rawMessages.error instanceof Error ? rawMessages.error.message : 'unknown error'}</div> : null}
+        {selection.selectedSessionId && rawMessages.data ? <SessionDebugView rawMessages={rawMessages.data.messages} /> : null}
+      </div>
+    </section>
+  )
+}
+
+function AccessRequired() {
+  return (
+    <section className="panel access-required">
+      <p className="eyebrow">Token required</p>
+      <h2>Open this dashboard with a token.</h2>
+      <p className="lede">Add <code>?token=&lt;token&gt;</code> to the URL to load projects and sessions.</p>
+    </section>
+  )
+}
+
 function App() {
+  const token = authToken()
+  const page = new URLSearchParams(window.location.search).get('page') === 'debug' ? 'debug' : 'home'
+
   return (
     <main className="shell">
-      <nav className="hero top-nav" aria-label="Main navigation"><div className="top-nav-brand"><h1>Navigator</h1></div><div className="top-nav-links"><a href="/">Home</a></div></nav>
-      <ProjectsDashboard />
+      <nav className="hero top-nav" aria-label="Main navigation">
+        <div className="top-nav-brand"><h1>Navigator</h1></div>
+        <div className="top-nav-links">
+          <a className={page === 'home' ? 'active' : ''} href={withToken('/')}>Home</a>
+          <a className={page === 'debug' ? 'active' : ''} href={withToken('/?page=debug')}>Debug</a>
+        </div>
+      </nav>
+      {token ? (page === 'debug' ? <DebugDashboard /> : <ProjectsDashboard />) : <AccessRequired />}
     </main>
   )
 }

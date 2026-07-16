@@ -10,11 +10,13 @@
   },
   "dependencies": {
     "@cotta/shared": "*",
-    "@vitejs/plugin-react": "^4.3.0",
     "@tanstack/react-query": "^5.66.0",
-    "vite": "^6.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^6.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",

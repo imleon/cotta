@@ -21,8 +21,7 @@
   --focus-ring: 0 0 0 3px rgb(37 99 235 / 20%);
   color: var(--color-text);
   background: var(--color-bg);
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -418,7 +417,7 @@ h2 {
   border-bottom: 1px solid var(--color-border);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   background: #f1f5f9;
-  padding: 12px 52px 10px 32px;
+  padding: 12px 24px 10px;
 }
 
 .project-title-block {
@@ -595,7 +594,7 @@ h2 {
   min-width: 0;
   align-self: end;
   border-top: 0;
-  padding: 0 28px 0 8px;
+  padding: 0 56px;
 }
 
 .detail-stat {
@@ -1030,7 +1029,7 @@ h2 {
   --tl-surface: #ffffff;
   --tl-surface-soft: #f7f7f8;
   --tl-ink: #1d1d1f;
-  --tl-muted: #86868b;
+  --tl-muted: #1d1d1f;
   --tl-border: #d2d2d7;
   --tl-border-soft: rgb(60 60 67 / 14%);
   --tl-shadow: 0 10px 26px rgb(0 0 0 / 5%);
@@ -1045,10 +1044,11 @@ h2 {
   --tl-thinking-soft: #f7f7f8;
   --tl-danger: #b42318;
   --tl-danger-soft: #fff1f0;
-  --tl-code-bg: #f5f5f7;
+  --tl-code-bg: #f5f6f7;
+  font-size: 14px;
   gap: 18px;
   margin-right: -24px;
-  padding: 4px 42px 18px 8px;
+  padding: 4px 70px 18px 56px;
   scrollbar-gutter: stable;
 }
 
@@ -1065,6 +1065,10 @@ h2 {
 
 .session-workspace-view .turn-card {
   padding: 0 0 18px;
+}
+
+.assistant-response {
+  margin-top: 12px;
 }
 
 .session-workspace-view .timeline-blocks {
@@ -1345,7 +1349,7 @@ h2 {
 .debug-markdown tt {
   margin: 0;
   border-radius: 6px;
-  background-color: var(--bgColor-neutral-muted, var(--color-surface-muted));
+  background-color: #f5f6f7;
   padding: .2em .4em;
   white-space: break-spaces;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -1355,7 +1359,7 @@ h2 {
 .debug-markdown pre {
   overflow: auto;
   border-radius: 8px;
-  background: var(--color-surface-muted);
+  background: #f5f6f7;
   padding: 8px;
 }
 

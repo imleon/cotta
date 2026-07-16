@@ -64,10 +64,84 @@ function timelineDebugPayload(turns: TurnSummary[], rawLiveEvents: unknown[]) {
   }
 }
 
-function TimelineTimestamp({ value, className = '' }: { value?: number; className?: string }) {
+async function writeClipboard(value: string) {
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(value)
+      return
+    }
+  } catch {
+    // Fall back for HTTP origins or denied clipboard permissions.
+  }
+
+  const input = document.createElement('textarea')
+  input.value = value
+  input.setAttribute('readonly', '')
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  document.body.append(input)
+  input.select()
+  const copied = document.execCommand('copy')
+  input.remove()
+  if (!copied) throw new Error('Copy failed')
+}
+
+function TimelineTimestamp({
+  value,
+  className = '',
+  copyText,
+  copyLabel,
+}: {
+  value?: number
+  className?: string
+  copyText?: string | null
+  copyLabel?: string
+}) {
+  const [copyStatus, setCopyStatus] = useState<'Copied' | 'Copy failed' | null>(null)
+  const clearStatusRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const label = formatTimestamp(value)
+
+  useEffect(() => () => {
+    if (clearStatusRef.current) clearTimeout(clearStatusRef.current)
+  }, [])
+
   if (!label || !value) return null
-  return <time className={[timelineMessageClass.timestamp, className].filter(Boolean).join(' ')} dateTime={new Date(value).toISOString()} title={new Date(value).toISOString()}>{label}</time>
+
+  function showStatus(status: 'Copied' | 'Copy failed') {
+    if (clearStatusRef.current) clearTimeout(clearStatusRef.current)
+    setCopyStatus(status)
+    clearStatusRef.current = setTimeout(() => setCopyStatus(null), 1600)
+  }
+
+  const contents = (
+    <>
+      <svg viewBox="0 0 24 24" className="h-3 w-3 -scale-x-100" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+      <time dateTime={new Date(value).toISOString()}>{label}</time>
+      <span className="sr-only" aria-live="polite">{copyStatus}</span>
+      {copyStatus ? <span aria-hidden="true">{copyStatus}</span> : null}
+    </>
+  )
+
+  if (!copyText) return <span className={[timelineMessageClass.timestamp, className].filter(Boolean).join(' ')}>{contents}</span>
+
+  return (
+    <button
+      type="button"
+      className={[timelineMessageClass.timestamp, className].filter(Boolean).join(' ')}
+      style={{ fontSize: '0.75rem' }}
+      aria-label={copyLabel}
+      onClick={async () => {
+        try {
+          await writeClipboard(copyText)
+          showStatus('Copied')
+        } catch {
+          showStatus('Copy failed')
+        }
+      }}
+    >
+      {contents}
+    </button>
+  )
 }
 
 function blockTitle(kind: string): string {
@@ -109,9 +183,18 @@ type TimelineDisplayItem =
   | { type: 'item'; item: TimelineRenderItem }
   | AssistantResponseFrameItem
 
+function assistantResponseText(items: TimelineRenderItem[]): string | null {
+  const text = items.flatMap((item) => {
+    if (item.type !== 'block' || (item.block.kind !== 'assistant.text' && item.block.kind !== 'assistant.message')) return []
+    const value = textFromData(item.block.data)
+    return value ? [value] : []
+  }).join('\n\n')
+  return text || null
+}
+
 const disclosureCardClass = {
   root: 'group overflow-hidden rounded-[14px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-surface)]',
-  header: 'flex cursor-pointer list-none items-center justify-between gap-[9px] border-b border-transparent bg-[#f5f5f7] px-3 py-1.5 [&::-webkit-details-marker]:hidden group-open:border-[rgb(60_60_67_/_10%)]',
+  header: 'flex cursor-pointer list-none items-center justify-between gap-[9px] border-b border-transparent bg-[#f8f9fa] px-3 py-1.5 [&::-webkit-details-marker]:hidden group-open:border-[rgb(60_60_67_/_10%)]',
   heading: 'flex min-w-0 flex-1 items-center gap-2',
   icon: 'inline-grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[rgb(60_60_67_/_8%)] text-[11px] font-black leading-none text-[#636366]',
   title: 'flex min-w-0 flex-1 flex-nowrap items-center gap-[5px] overflow-hidden',
@@ -128,27 +211,27 @@ const toolTimelineClass = {
   stateError: 'bg-[var(--tl-danger-soft)] text-[var(--tl-danger)]',
   section: 'grid gap-2 px-3.5 py-3 [&+&]:pt-0',
   sectionLabel: 'text-[11px] font-extrabold uppercase tracking-[0.08em] text-[var(--tl-muted)]',
-  inputCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[13px] leading-[1.6] text-[#2c2c2e]',
-  resultCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[13px] leading-[1.6] text-[#2c2c2e]',
-  outputText: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-[inherit] text-[13px] leading-[1.6] text-[#334155]',
-  result: 'rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 text-[13px] leading-[1.6] text-[#1d1d1f]',
+  inputCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[11px] leading-[1.6] text-[#2c2c2e]',
+  resultCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[11px] leading-[1.6] text-[#2c2c2e]',
+  outputText: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-[inherit] text-[11px] leading-[1.6] text-[#334155]',
+  result: 'rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 text-[11px] leading-[1.6] text-[#1d1d1f]',
   resultError: 'border-[rgb(166_83_75_/_20%)] bg-[var(--tl-danger-soft)] text-[#8f4039]',
-  pending: 'text-[13px] italic text-[var(--color-muted)]',
+  pending: 'text-[11px] italic text-[var(--color-muted)]',
 }
 
 const thinkingTimelineClass = {
   body: 'px-3.5 py-3 text-sm leading-[1.65] text-[#1d1d1f]',
-  code: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-xs leading-[1.55] text-[#2c2c2e]',
+  code: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[11px] leading-[1.6] text-[#2c2c2e]',
 }
 
 const timelineMessageClass = {
-  rowUser: 'flex min-w-0 items-end justify-end gap-[9px]',
+  rowUser: 'group flex min-w-0 items-end justify-end gap-[9px]',
   userStack: 'grid max-w-[min(76%,720px)] justify-items-end gap-1 max-[720px]:max-w-full max-[560px]:max-w-[min(86%,720px)]',
-  userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[18px_18px_6px_18px] border border-[rgb(60_60_67_/_13%)] bg-[linear-gradient(180deg,#ffffff,var(--tl-user-soft))] px-3.5 py-2.5 text-sm leading-[1.6] text-[#1d1d1f] shadow-[var(--tl-shadow-soft)]',
-  timestamp: 'whitespace-nowrap text-[11px] leading-[1.3] text-[var(--tl-muted,var(--color-muted))]',
-  timestampUser: 'pr-1 text-right',
-  timestampAssistant: 'block -mt-[5px] px-1',
-  assistantFrame: 'w-full max-w-none justify-self-stretch rounded-[22px_22px_22px_7px] border border-[rgb(60_60_67_/_13%)] bg-[linear-gradient(180deg,rgb(255_255_255_/_96%),rgb(247_247_248_/_96%)),var(--tl-surface)] p-3 shadow-[var(--tl-shadow-soft)] [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
+  userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[14px] border border-[#cfe3fb] bg-[#e8f2ff] px-3.5 py-2.5 text-sm leading-[1.6] text-[#1d1d1f] shadow-[var(--tl-shadow-soft)]',
+  timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-xs leading-4 text-[#76767b] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
+  timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-visible:opacity-100',
+  timestampAssistant: 'block -mt-[5px] px-1 group-hover:opacity-100 focus-visible:opacity-100',
+  assistantFrame: 'group w-full max-w-none justify-self-stretch [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
   assistantFrameBody: 'grid min-w-0 gap-2.5',
 }
 
@@ -498,7 +581,7 @@ function TimelineBlockView({ block, timestamp }: { block: TimelineBlock; timesta
       <div className={timelineMessageClass.rowUser}>
         <div className={timelineMessageClass.userStack}>
           <div className={timelineMessageClass.userBubble}>{text ?? dataPreview(block.data)}</div>
-          <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampUser} />
+          <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampUser} copyText={text ?? dataPreview(block.data)} copyLabel="Copy user message" />
         </div>
       </div>
     )
@@ -531,15 +614,17 @@ function TimelineRenderItemView({ item, timestamp }: { item: TimelineRenderItem;
 }
 
 function AssistantResponseFrameView({ item, timestamp }: { item: AssistantResponseFrameItem; timestamp?: number }) {
+  const copyText = assistantResponseText(item.items)
+
   return (
-    <>
+    <div className="assistant-response group">
       <section className={timelineMessageClass.assistantFrame} aria-label="Turn response">
         <div className={timelineMessageClass.assistantFrameBody}>
           {item.items.map((child) => <TimelineRenderItemView item={child} key={timelineRenderItemKey(child)} />)}
         </div>
       </section>
-      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} />
-    </>
+      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" />
+    </div>
   )
 }
 

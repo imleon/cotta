@@ -3,9 +3,11 @@ import {
   projectResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  sessionLiveEventsResponseSchema,
   sessionRawMessagesResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  type PersistedLiveEvent,
   type ProjectSummary,
   type SessionSummary,
   type SessionTimelineState,
@@ -127,6 +129,7 @@ const messages: TimestampedSessionMessage[] = [
 function createTestApp(
   liveStates: Record<string, 'running' | 'requires_action'> = {},
   sessionMessages: TimestampedSessionMessage[] = messages,
+  liveEvents: PersistedLiveEvent[] = [],
 ) {
   return createApp({
     liveTurnManager: {
@@ -134,6 +137,12 @@ function createTestApp(
       startTurn: async () => { throw new Error('not implemented') },
       interrupt: async () => false,
       subscribe: () => () => {},
+    },
+    liveEventStore: {
+      append() {},
+      listSessionEvents(projectId, sessionId) {
+        return liveEvents.filter((event) => event.projectId === projectId && event.sessionId === sessionId)
+      },
     },
     claudeCodeApi: {
       async listProjects() {
@@ -340,6 +349,49 @@ describe('project routes', () => {
   it('returns 404 for timeline state of an unknown session', async () => {
     const response = await createTestApp().request(
       `/api/projects/${project.id}/sessions/missing/timeline/state`,
+    )
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
+  it('returns captured live events for a session', async () => {
+    const liveEvents: PersistedLiveEvent[] = [
+      {
+        id: 1,
+        projectId: project.id,
+        sessionId: 'session-newest',
+        turnId: 'turn_1',
+        eventType: 'live.raw',
+        source: 'sse',
+        recordedAtMs: 1,
+        payload: { type: 'live.raw', raw: { type: 'system', subtype: 'session_state_changed', state: 'running' } },
+      },
+      {
+        id: 2,
+        projectId: project.id,
+        sessionId: 'session-older',
+        turnId: 'turn_2',
+        eventType: 'live.turn.completed',
+        source: 'sse',
+        recordedAtMs: 2,
+        payload: { type: 'live.turn.completed' },
+      },
+    ]
+    const response = await createTestApp({}, messages, liveEvents).request(
+      `/api/projects/${project.id}/sessions/session-newest/live-events`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(sessionLiveEventsResponseSchema.parse(await response.json())).toEqual({
+      sessionId: 'session-newest',
+      events: [liveEvents[0]],
+    })
+  })
+
+  it('returns 404 for live events of an unknown session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/missing/live-events`,
     )
 
     expect(response.status).toBe(404)

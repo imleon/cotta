@@ -317,12 +317,14 @@ function StatusBadge({ value }: { value?: string }) {
 function SessionRow({
   session,
   selected,
+  pending,
   onSelect,
   itemRef,
   motionState,
 }: {
   session: SessionSummary
   selected: boolean
+  pending?: boolean
   onSelect: () => void
   itemRef?: (node: HTMLLIElement | null) => void
   motionState?: SidebarMotionState
@@ -337,7 +339,7 @@ function SessionRow({
           </div>
           <StatusBadge value={state} />
         </div>
-        <span className="session-age">{formatAge(session.lastActivityAt)}</span>
+        <span className="session-age">{pending ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : formatAge(session.lastActivityAt)}</span>
       </button>
     </li>
   )
@@ -347,6 +349,8 @@ function ProjectSessionBranch({
   project,
   selectedProjectId,
   selectedSessionId,
+  pendingProjectId,
+  pendingSessionId,
   expanded,
   onToggleExpanded,
   onSelectSession,
@@ -356,6 +360,8 @@ function ProjectSessionBranch({
   project: ProjectSummary
   selectedProjectId: string | null
   selectedSessionId: string | null
+  pendingProjectId?: string | null
+  pendingSessionId?: string | null
   expanded: boolean
   onToggleExpanded: () => void
   onSelectSession: (projectId: string, sessionId: string) => void
@@ -398,6 +404,7 @@ function ProjectSessionBranch({
                   motionState={motionState}
                   session={session}
                   selected={project.id === selectedProjectId && session.id === selectedSessionId}
+                  pending={project.id === pendingProjectId && session.id === pendingSessionId}
                   onSelect={() => onSelectSession(project.id, session.id)}
                 />
               ))}
@@ -418,12 +425,16 @@ export function ProjectSessionRail({
   projects,
   selectedProjectId,
   selectedSessionId,
+  pendingProjectId,
+  pendingSessionId,
   onSelectProject,
   onSelectSession,
 }: {
   projects: ProjectSummary[]
   selectedProjectId: string | null
   selectedSessionId: string | null
+  pendingProjectId?: string | null
+  pendingSessionId?: string | null
   onSelectProject: (projectId: string) => void
   onSelectSession: (projectId: string, sessionId: string) => void
 }) {
@@ -460,9 +471,6 @@ export function ProjectSessionRail({
   return (
     <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions">
       <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
-        <div className="section-heading">
-          <h3 id="projects-sidebar-section-heading">Projects</h3>
-        </div>
         <div className="project-tree">
           {projectMotion.items.map(({ key, item: project, motionState }) => (
             <ProjectSessionBranch
@@ -472,6 +480,8 @@ export function ProjectSessionRail({
               project={project}
               selectedProjectId={selectedProjectId}
               selectedSessionId={selectedSessionId}
+              pendingProjectId={pendingProjectId}
+              pendingSessionId={pendingSessionId}
               expanded={expandedProjectIds.has(project.id)}
               onToggleExpanded={() => toggleProject(project.id)}
               onSelectSession={selectSession}
@@ -491,14 +501,15 @@ export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit
   const items = projects.data?.projects ?? []
 
   useEffect(() => { if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id) }, [items, selectedProjectId])
-  useEffect(() => {
-    if (!selectedSessionId) setSelectedSessionId(projectSessions.data?.defaultSessionId ?? null)
-  }, [projectSessions.data, selectedSessionId])
 
   return {
     selectedProjectId,
     selectedSessionId,
     setSelectedSessionId,
+    startNewSession: (projectId: string) => {
+      setSelectedProjectId(projectId)
+      setSelectedSessionId(null)
+    },
     projects,
     projectSessions,
     items,

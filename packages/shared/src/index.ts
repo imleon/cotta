@@ -114,6 +114,26 @@ export const sessionRawMessagesResponseSchema = z.object({
 
 export type SessionRawMessagesResponse = z.infer<typeof sessionRawMessagesResponseSchema>
 
+export const persistedLiveEventSchema = z.object({
+  id: z.number(),
+  projectId: z.string(),
+  sessionId: z.string(),
+  turnId: z.string(),
+  eventType: z.string(),
+  source: z.string(),
+  recordedAtMs: z.number(),
+  payload: z.unknown(),
+})
+
+export type PersistedLiveEvent = z.infer<typeof persistedLiveEventSchema>
+
+export const sessionLiveEventsResponseSchema = z.object({
+  sessionId: z.string(),
+  events: z.array(persistedLiveEventSchema),
+})
+
+export type SessionLiveEventsResponse = z.infer<typeof sessionLiveEventsResponseSchema>
+
 export const createTurnRequestSchema = z.object({
   text: z.string().trim().min(1),
 })
@@ -135,13 +155,6 @@ export type SessionStreamEvent =
       sessionId: string
       turnId: string
       turn: TurnSummary
-    }
-  | {
-      type: 'live.timeline.block'
-      projectId: string
-      sessionId: string
-      turnId: string
-      block: TimelineBlock
     }
   | {
       type: 'live.raw'

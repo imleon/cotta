@@ -5,15 +5,18 @@ import {
   type ProjectResponse,
   type ProjectsResponse,
   type ProjectSessionsResponse,
+  type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
   type SessionTimelineResponse,
   type SessionTimelineStateResponse,
 } from '@cotta/shared'
 import type { ClaudeCodeApi } from '../claude-code-api.js'
+import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
 
 export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'interrupt' | 'sessionState' | 'startTurn' | 'subscribe'>
+export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
 
 function parseLimit(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
@@ -31,7 +34,7 @@ function encodeSse(data: unknown): string {
 
 export function registerProjectRoutes(
   app: Hono,
-  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager },
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; liveEventStore?: ProjectRoutesLiveEventStore },
 ): void {
   app.get('/api/projects', async (c) => {
     try {
@@ -199,6 +202,25 @@ export function registerProjectRoutes(
     } catch (error) {
       console.error('session:timeline failed', error)
       return c.json({ error: 'session_timeline_failed' }, 500)
+    }
+  })
+
+  app.get('/api/projects/:projectId/sessions/:sessionId/live-events', async (c) => {
+    try {
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
+      const state = await input.claudeCodeApi.getSessionTimelineState(projectId, sessionId)
+      if (!state) {
+        return c.json({ error: 'session_not_found' }, 404)
+      }
+      const response: SessionLiveEventsResponse = {
+        sessionId,
+        events: input.liveEventStore?.listSessionEvents(projectId, sessionId, parseLimit(c.req.query('limit'), 500)) ?? [],
+      }
+      return c.json(response)
+    } catch (error) {
+      console.error('session:live-events failed', error)
+      return c.json({ error: 'session_live_events_failed' }, 500)
     }
   })
 

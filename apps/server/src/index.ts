@@ -3,6 +3,7 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { createTokenAuthMiddleware } from './auth.js'
 import { createClaudeCodeApi, type ClaudeCodeApi } from './claude-code-api.js'
+import { createLiveEventStore, type LiveEventStore } from './live-event-store.js'
 import { LiveTurnManager } from './live-turn-manager.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerProjectRoutes, type ProjectRoutesLiveTurnManager } from './routes/projects.js'
@@ -10,14 +11,16 @@ import { registerProjectRoutes, type ProjectRoutesLiveTurnManager } from './rout
 export function createApp(input: {
   claudeCodeApi?: ClaudeCodeApi
   liveTurnManager?: ProjectRoutesLiveTurnManager
+  liveEventStore?: LiveEventStore
   authToken?: string
 } = {}): Hono {
   const app = new Hono()
   const claudeCodeApi = input.claudeCodeApi ?? createClaudeCodeApi()
-  const liveTurnManager = input.liveTurnManager ?? new LiveTurnManager()
+  const liveEventStore = input.liveEventStore ?? (process.env.NODE_ENV === 'test' ? undefined : createLiveEventStore())
+  const liveTurnManager = input.liveTurnManager ?? new LiveTurnManager(liveEventStore)
   app.use('*', createTokenAuthMiddleware(input.authToken ?? process.env.COTTA_AUTH_TOKEN))
   registerHealthRoute(app)
-  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager })
+  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, liveEventStore })
   return app
 }
 

@@ -1,20 +1,66 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { StrictMode, useEffect, useRef, useState } from 'react'
+import { StrictMode, type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
+  sessionLiveEventsResponseSchema,
   sessionRawMessagesResponseSchema,
   type CreateTurnResponse,
+  type PersistedLiveEvent,
   type ProjectSessionsResponse,
+  type TurnSummary,
+  type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
 } from '@cotta/shared'
-import { authToken, withToken } from './api'
+import { authToken, fetchSessionTimeline, withToken } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectSessionLists } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
 import './styles.css'
+
+const DASHBOARD_NAV_ITEMS = [
+  { key: 'chat', label: 'Chat' },
+  { key: 'debug', label: 'Debug' },
+  { key: 'automations', label: 'Automations' },
+  { key: 'agents', label: 'Agents' },
+  { key: 'skills', label: 'Skills' },
+  { key: 'mcp', label: 'MCP' },
+  { key: 'settings', label: 'Settings' },
+] as const
+
+function DashboardNavIcon({ itemKey }: { itemKey: (typeof DASHBOARD_NAV_ITEMS)[number]['key'] }) {
+  if (itemKey === 'chat') {
+    return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 5.5h11a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 3v-3H4.5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2Z" /></svg>
+  }
+  if (itemKey === 'debug') {
+    return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5a2 2 0 0 1 2 2v.8h1.5a1 1 0 0 1 1 1V9h1a1 1 0 1 1 0 2h-1v1.7a1 1 0 0 1-1 1H12v.8a2 2 0 1 1-4 0v-.8H6.5a1 1 0 0 1-1-1V11h-1a1 1 0 1 1 0-2h1V7.3a1 1 0 0 1 1-1H8v-.8a2 2 0 0 1 2-2Zm-2.5 4.8v3.4h5V8.3Z" /></svg>
+  }
+  if (itemKey === 'automations') {
+    return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v3M10 14.5v3M2.5 10h3M14.5 10h3M4.7 4.7l2.1 2.1M13.2 13.2l2.1 2.1M15.3 4.7l-2.1 2.1M6.8 13.2l-2.1 2.1M10 6.5 12.2 8v4L10 13.5 7.8 12V8Z" /></svg>
+  }
+  if (itemKey === 'agents') {
+    return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 15.5v-1.2a3.5 3.5 0 0 1 7 0v1.2M10 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM3.5 14.5v-.7a2.5 2.5 0 0 1 2.9-2.5M16.5 14.5v-.7a2.5 2.5 0 0 0-2.9-2.5" /></svg>
+  }
+  if (itemKey === 'skills') {
+    return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2.8 2 4.1 4.5.7-3.2 3.1.8 4.5-4.1-2.2-4.1 2.2.8-4.5-3.2-3.1 4.5-.7Z" /></svg>
+  }
+  if (itemKey === 'mcp') {
+    return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6.5h12M4 10h12M4 13.5h7M3 4.5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z" /></svg>
+  }
+  return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v2M10 14.5v2M4.7 5.3l1.4 1.4M13.9 14.3l1.4 1.4M3.5 10h2M14.5 10h2M4.7 14.7l1.4-1.4M13.9 5.7l1.4-1.4M10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /></svg>
+}
+
+const DASHBOARD_NAV_MIN_WIDTH = 46
+const DASHBOARD_NAV_MAX_WIDTH = 184
+const DASHBOARD_NAV_DEFAULT_WIDTH = 216
+const DASHBOARD_NAV_COLLAPSE_WIDTH = 96
+const DASHBOARD_NAV_WIDTH_STORAGE_KEY = 'cotta:dashboard-nav-width'
+
+function clampDashboardNavWidth(width: number): number {
+  return Math.min(DASHBOARD_NAV_MAX_WIDTH, Math.max(DASHBOARD_NAV_MIN_WIDTH, width))
+}
 
 async function fetchSessionRawMessages(projectId: string, sessionId: string): Promise<SessionRawMessagesResponse> {
   const response = await fetch(
@@ -22,6 +68,14 @@ async function fetchSessionRawMessages(projectId: string, sessionId: string): Pr
   )
   if (!response.ok) throw new Error(`Session raw messages request failed: ${response.status}`)
   return sessionRawMessagesResponseSchema.parse(await response.json())
+}
+
+async function fetchSessionLiveEvents(projectId: string, sessionId: string): Promise<SessionLiveEventsResponse> {
+  const response = await fetch(
+    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/live-events`),
+  )
+  if (!response.ok) throw new Error(`Session live events request failed: ${response.status}`)
+  return sessionLiveEventsResponseSchema.parse(await response.json())
 }
 
 async function createTurn(projectId: string, sessionId: string | null, text: string): Promise<CreateTurnResponse> {
@@ -272,6 +326,7 @@ function SessionDebugView({ rawMessages }: { rawMessages: unknown[] }) {
   return (
     <section className="debug-view" aria-label="Session debug">
       <section className="debug-table-section" aria-label="Raw messages">
+        <h4>Raw messages</h4>
         {rawMessages.length === 0 ? <p className="debug-empty">No raw messages loaded.</p> : (
           <div className="debug-table-wrap">
             <table className="debug-table">
@@ -306,6 +361,33 @@ function SessionDebugView({ rawMessages }: { rawMessages: unknown[] }) {
   )
 }
 
+function LiveEventsDebugView({ events }: { events: PersistedLiveEvent[] }) {
+  return (
+    <section className="debug-table-section" aria-label="Captured live events">
+      <h4>Captured live events</h4>
+      {events.length === 0 ? <p className="debug-empty">No captured live events yet.</p> : (
+        <div className="debug-table-wrap">
+          <table className="debug-table">
+            <thead><tr><th>ID</th><th>Recorded</th><th>Event</th><th>Turn</th><th>Preview</th><th>Payload</th></tr></thead>
+            <tbody>
+              {events.map((event) => (
+                <tr key={event.id}>
+                  <td className="debug-mono">{event.id}</td>
+                  <td className="debug-mono debug-timestamp-cell">{new Date(event.recordedAtMs).toISOString()}</td>
+                  <td className="debug-type-cell"><strong>{event.eventType}</strong></td>
+                  <td className="debug-mono debug-block-id-cell">{event.turnId}</td>
+                  <td className="debug-content-cell">{debugDataPreview(event.payload, 220)}</td>
+                  <td className="debug-content-cell debug-raw-message-cell"><DebugContentCellValue value={event.payload} json /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function useSessionRawMessages(projectId: string | null, sessionId: string | null) {
   return useQuery({
     queryKey: ['session-raw-messages', projectId, sessionId],
@@ -313,6 +395,38 @@ function useSessionRawMessages(projectId: string | null, sessionId: string | nul
     enabled: Boolean(projectId && sessionId),
     retry: false,
   })
+}
+
+function useSessionLiveEvents(projectId: string | null, sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session-live-events', projectId, sessionId],
+    queryFn: () => fetchSessionLiveEvents(projectId!, sessionId!),
+    enabled: Boolean(projectId && sessionId),
+    retry: false,
+    refetchInterval: 4000,
+    refetchIntervalInBackground: false,
+  })
+}
+
+let pendingTurnCounter = 0
+
+function pendingUserTurn(text: string, sessionId: string | null): TurnSummary {
+  const id = `pending:${Date.now()}:${pendingTurnCounter++}`
+  const startedAt = Date.now()
+  return {
+    id,
+    sessionId: sessionId ?? 'pending',
+    title: text.length > 80 ? `${text.slice(0, 77)}…` : text,
+    startedAt,
+    rawStatus: 'running',
+    displayStatus: 'running',
+    blocks: [{
+      id: `${id}:user`,
+      kind: 'user.message',
+      sourceEventIds: [id],
+      data: { text },
+    }],
+  }
 }
 
 function WorkspacePanel({
@@ -332,9 +446,11 @@ function WorkspacePanel({
   const [submitting, setSubmitting] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
   const [liveTurnId, setLiveTurnId] = useState<string | null>(null)
+  const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => { setLiveTurnId(null); setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
+  useEffect(() => { setPendingTurn(null) }, [projectId])
   useEffect(() => { if (!liveTurnId) setInterrupting(false) }, [liveTurnId])
   useEffect(() => {
     const input = inputRef.current
@@ -344,19 +460,22 @@ function WorkspacePanel({
   }, [inputText])
 
   if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
-  if (!detail) return <div className="panel muted">Loading project sessions…</div>
 
   async function submitTurn() {
     if (!projectId || !inputText.trim()) return
+    const text = inputText.trim()
     setSubmitting(true)
     setSubmitError(null)
     try {
-      const response = await createTurn(projectId, selectedSessionId, inputText)
-      setSelectedSessionId(response.sessionId)
-      setLiveTurnId(response.turnId)
+      setPendingTurn(pendingUserTurn(text, selectedSessionId))
       setInputText('')
+      const response = await createTurn(projectId, selectedSessionId, text)
+      setSelectedSessionId(response.sessionId)
+      setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
+      setLiveTurnId(response.turnId)
       refreshProjectSessionLists(queryClient, projectId)
     } catch (error) {
+      setPendingTurn(null)
       setSubmitError(error instanceof Error ? error.message : String(error))
     } finally {
       setSubmitting(false)
@@ -366,6 +485,10 @@ function WorkspacePanel({
   function refreshSessionListsForCurrentProject() {
     if (!projectId) return
     refreshProjectSessionLists(queryClient, projectId)
+  }
+
+  function handleLiveTurnChange(turnId: string | null) {
+    setLiveTurnId(turnId)
   }
 
   async function stopLiveTurn() {
@@ -381,82 +504,242 @@ function WorkspacePanel({
   }
 
   const actionMode = submitting || interrupting ? 'loading' : liveTurnId ? 'stop' : 'submit'
-  const selectedSession = detail.sessions.find((session) => session.id === selectedSessionId)
 
   return (
-    <section className="workspace-panel">
-      <section className="detail-panel workspace-main-panel">
-        <header className="detail-header">
-          <div className="project-title-block">
-            <div className="project-session-title">
-              <h2>{detail.project.name}</h2>
-              {selectedSession ? <span>{selectedSession.title}</span> : null}
+    <section className="detail-panel workspace-main-panel">
+      <div className="workspace-timeline">
+        {selectedSessionId || pendingTurn
+          ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} pendingTurn={pendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} />
+          : null}
+      </div>
+
+      <section className="composer-card composer-card-bottom">
+        <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn() }}>
+          <div className="turn-composer">
+            <textarea
+              ref={inputRef}
+              value={inputText}
+              onChange={(event) => setInputText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey || submitting || !inputText.trim()) return
+                event.preventDefault()
+                void submitTurn()
+              }}
+              placeholder="Chat with Cotta..."
+              rows={1}
+            />
+            <div className="turn-composer-footer">
+              <button
+                type={actionMode === 'submit' ? 'submit' : 'button'}
+                className="turn-action-button"
+                onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
+                disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
+                aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
+              >
+                {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
+              </button>
             </div>
           </div>
-          <div className="project-meta-lines">
-            {selectedSessionId ? <span className="project-meta-icon" data-tooltip={`Session ID: ${selectedSessionId}`} aria-label={`Session ID: ${selectedSessionId}`}>#</span> : null}
-            {detail.project.path ? <span className="project-meta-icon project-path-icon" data-tooltip={`Project directory: ${detail.project.path}`} aria-label={`Project directory: ${detail.project.path}`}>
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h5l1.5 2h6.5v5.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 1.5 12Z" /></svg>
-            </span> : null}
-          </div>
-        </header>
-
-        <div className="workspace-timeline">
-          {selectedSessionId ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} onLiveTurnChange={setLiveTurnId} onSessionListStale={refreshSessionListsForCurrentProject} /> : <div className="panel muted">Start a new session from the composer below.</div>}
-        </div>
-
-        <section className="composer-card composer-card-bottom">
-          <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn() }}>
-            <div className="turn-composer">
-              <textarea
-                ref={inputRef}
-                value={inputText}
-                onChange={(event) => setInputText(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' || event.shiftKey || submitting || !inputText.trim()) return
-                  event.preventDefault()
-                  void submitTurn()
-                }}
-                placeholder={selectedSessionId ? 'Continue the selected session…' : 'Start a new session in this project…'}
-                rows={1}
-              />
-              <div className="turn-composer-footer">
-                <button
-                  type={actionMode === 'submit' ? 'submit' : 'button'}
-                  className="turn-action-button"
-                  onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
-                  disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
-                  aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
-                >
-                  {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
-                </button>
-              </div>
-            </div>
-            {submitError ? <div className="panel error">{submitError}</div> : null}
-          </form>
-        </section>
+          {submitError ? <div className="panel error">{submitError}</div> : null}
+        </form>
       </section>
     </section>
   )
 }
 
+function DebugWorkspacePanel({ projectId, sessionId }: { projectId: string | null; sessionId: string | null }) {
+  const liveEvents = useSessionLiveEvents(projectId, sessionId)
+  const rawMessages = useSessionRawMessages(projectId, sessionId)
+
+  if (!projectId) return <div className="panel muted">Select a project to inspect captured live events.</div>
+
+  return (
+    <section className="detail-panel debug-page-panel debug-page-single" aria-label="Debug workspace">
+      <div className="debug-page-content debug-workspace-content">
+        {!sessionId ? <div className="panel muted">Select a session to inspect captured live events.</div> : null}
+        {sessionId && liveEvents.isLoading ? <div className="panel muted">Loading captured live events…</div> : null}
+        {sessionId && liveEvents.isError ? <div className="panel error">Failed to load captured live events: {liveEvents.error instanceof Error ? liveEvents.error.message : 'unknown error'}</div> : null}
+        {sessionId && liveEvents.data ? <LiveEventsDebugView events={liveEvents.data.events} /> : null}
+        {sessionId && rawMessages.isLoading ? <div className="panel muted">Loading raw messages…</div> : null}
+        {sessionId && rawMessages.isError ? <div className="panel error">Failed to load raw messages: {rawMessages.error instanceof Error ? rawMessages.error.message : 'unknown error'}</div> : null}
+        {sessionId && rawMessages.data ? <SessionDebugView rawMessages={rawMessages.data.messages} /> : null}
+      </div>
+    </section>
+  )
+}
+
 function ProjectsDashboard() {
+  const queryClient = useQueryClient()
   const selection = useProjectSessionSelection()
+  const [activeNav, setActiveNav] = useState<(typeof DASHBOARD_NAV_ITEMS)[number]['key']>('chat')
+  const [navWidth, setNavWidth] = useState(DASHBOARD_NAV_DEFAULT_WIDTH)
+  const [isResizing, setIsResizing] = useState(false)
+  const [pendingSessionTarget, setPendingSessionTarget] = useState<{ projectId: string; sessionId: string } | null>(null)
+  const navWidthRef = useRef(DASHBOARD_NAV_DEFAULT_WIDTH)
+  const pendingSessionRequestRef = useRef(0)
+
+  useEffect(() => {
+    navWidthRef.current = navWidth
+  }, [navWidth])
+
+  useEffect(() => {
+    try {
+      const storedWidth = window.localStorage.getItem(DASHBOARD_NAV_WIDTH_STORAGE_KEY)
+      if (!storedWidth) return
+      const parsedWidth = Number(storedWidth)
+      if (!Number.isFinite(parsedWidth)) return
+      const nextWidth = clampDashboardNavWidth(parsedWidth)
+      navWidthRef.current = nextWidth
+      setNavWidth(nextWidth)
+    } catch {
+      // ignore localStorage read errors
+    }
+  }, [])
+
+  function beginNavResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const handle = event.currentTarget
+    const pointerId = event.pointerId
+    const startX = event.clientX
+    const startWidth = navWidthRef.current
+    setIsResizing(true)
+    handle.setPointerCapture?.(pointerId)
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const nextWidth = clampDashboardNavWidth(startWidth + moveEvent.clientX - startX)
+      navWidthRef.current = nextWidth
+      setNavWidth(nextWidth)
+    }
+
+    function finishResize() {
+      setIsResizing(false)
+      try {
+        handle.releasePointerCapture?.(pointerId)
+      } catch {
+        // ignore pointer capture release errors
+      }
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerCancel)
+      try {
+        window.localStorage.setItem(DASHBOARD_NAV_WIDTH_STORAGE_KEY, String(navWidthRef.current))
+      } catch {
+        // ignore localStorage write errors
+      }
+    }
+
+    function handlePointerUp() {
+      finishResize()
+    }
+
+    function handlePointerCancel() {
+      finishResize()
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerCancel)
+  }
+
+  const navCollapsed = navWidth <= DASHBOARD_NAV_COLLAPSE_WIDTH
+  const detail = selection.projectSessions.data
+  const selectedSession = detail?.sessions.find((session) => session.id === selection.selectedSessionId)
+  const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : 'Project')
+  const railSelectedProjectId = pendingSessionTarget?.projectId ?? selection.selectedProjectId
+  const railSelectedSessionId = pendingSessionTarget?.sessionId ?? selection.selectedSessionId
+
+  async function handleSelectSession(projectId: string, sessionId: string) {
+    if (projectId === selection.selectedProjectId && sessionId === selection.selectedSessionId) {
+      setPendingSessionTarget(null)
+      return
+    }
+    const requestId = pendingSessionRequestRef.current + 1
+    pendingSessionRequestRef.current = requestId
+    setPendingSessionTarget({ projectId, sessionId })
+    try {
+      await queryClient.fetchQuery({
+        queryKey: ['session-timeline', projectId, sessionId],
+        queryFn: () => fetchSessionTimeline(projectId, sessionId),
+        retry: false,
+      })
+      if (pendingSessionRequestRef.current !== requestId) return
+      selection.selectSession(projectId, sessionId)
+      setPendingSessionTarget(null)
+    } catch {
+      if (pendingSessionRequestRef.current !== requestId) return
+      setPendingSessionTarget(null)
+    }
+  }
 
   if (selection.projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
   if (selection.projects.isError) return <div className="panel error">Failed to load projects: {selection.projects.error instanceof Error ? selection.projects.error.message : 'unknown error'}</div>
   if (selection.items.length === 0) return <div className="panel muted">No Claude Code projects were returned by the Agent SDK yet. Run Claude Code in a project first, then refresh this dashboard.</div>
 
   return (
-    <div className="dashboard-layout">
-      <ProjectSessionRail
-        projects={selection.items}
-        selectedProjectId={selection.selectedProjectId}
-        selectedSessionId={selection.selectedSessionId}
-        onSelectProject={selection.selectProject}
-        onSelectSession={selection.selectSession}
-      />
-      {selection.projectSessions.isError ? <div className="panel error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} setSelectedSessionId={selection.setSelectedSessionId} />}
+    <div
+      className="dashboard-layout"
+      data-nav-collapsed={navCollapsed ? 'true' : 'false'}
+      data-nav-resizing={isResizing ? 'true' : 'false'}
+      style={{ '--dashboard-nav-width': `${navWidth}px` } as CSSProperties}
+    >
+      <aside className="dashboard-nav-rail" aria-label="Dashboard navigation">
+        <nav className="dashboard-nav-links" aria-label="Workspace sections">
+          {DASHBOARD_NAV_ITEMS.map((item) => (
+            <button
+              key={item.key}
+              className={`dashboard-nav-link ${activeNav === item.key ? 'active' : ''}`}
+              type="button"
+              onClick={() => setActiveNav(item.key)}
+              aria-current={activeNav === item.key ? 'page' : undefined}
+              aria-label={item.label}
+            >
+              <span className="dashboard-nav-icon" aria-hidden="true"><DashboardNavIcon itemKey={item.key} /></span>
+              <span className="dashboard-nav-label">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </aside>
+      <section className="workspace-panel">
+        <div className="dashboard-nav-resize-handle" role="separator" aria-label="Resize navigation sidebar" aria-orientation="vertical" onPointerDown={beginNavResize} />
+        <header className="project-rail-header workspace-panel-header">
+          <button
+            className="project-rail-header-action"
+            type="button"
+            onClick={() => selection.selectedProjectId ? selection.startNewSession(selection.selectedProjectId) : undefined}
+            disabled={!selection.selectedProjectId}
+            aria-label="Create new session"
+            title="Create new session"
+          >
+            +
+          </button>
+        </header>
+        <ProjectSessionRail
+          projects={selection.items}
+          selectedProjectId={railSelectedProjectId}
+          selectedSessionId={railSelectedSessionId}
+          pendingProjectId={pendingSessionTarget?.projectId ?? null}
+          pendingSessionId={pendingSessionTarget?.sessionId ?? null}
+          onSelectProject={selection.selectProject}
+          onSelectSession={handleSelectSession}
+        />
+        <header className="workspace-main-header workspace-panel-header">
+          <div className="project-title-block">
+            <div className="project-session-title">
+              <h2>{workspaceTitle}</h2>
+              {selectedSession ? <span>{selectedSession.title}</span> : null}
+            </div>
+          </div>
+          <div className="project-meta-lines">
+            {selection.selectedSessionId ? <span className="project-meta-icon" data-tooltip={`Session ID: ${selection.selectedSessionId}`} aria-label={`Session ID: ${selection.selectedSessionId}`}>#</span> : null}
+            {detail?.project.path ? <span className="project-meta-icon project-path-icon" data-tooltip={`Project directory: ${detail.project.path}`} aria-label={`Project directory: ${detail.project.path}`}>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h5l1.5 2h6.5v5.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 1.5 12Z" /></svg>
+            </span> : null}
+          </div>
+        </header>
+        {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
+          ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
+          : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} setSelectedSessionId={selection.setSelectedSessionId} />}
+      </section>
     </div>
   )
 }
@@ -519,18 +802,10 @@ function AccessRequired() {
 
 function App() {
   const token = authToken()
-  const page = new URLSearchParams(window.location.search).get('page') === 'debug' ? 'debug' : 'home'
 
   return (
     <main className="shell">
-      <nav className="hero top-nav" aria-label="Main navigation">
-        <div className="top-nav-brand"><h1>Navigator</h1></div>
-        <div className="top-nav-links">
-          <a className={page === 'home' ? 'active' : ''} href={withToken('/')}>Home</a>
-          <a className={page === 'debug' ? 'active' : ''} href={withToken('/?page=debug')}>Debug</a>
-        </div>
-      </nav>
-      {token ? (page === 'debug' ? <DebugDashboard /> : <ProjectsDashboard />) : <AccessRequired />}
+      {token ? <ProjectsDashboard /> : <AccessRequired />}
     </main>
   )
 }

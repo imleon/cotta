@@ -55,15 +55,6 @@ function MarkdownValue({ value }: { value: string }) {
   )
 }
 
-function timelineDebugPayload(turns: TurnSummary[], rawLiveEvents: unknown[]) {
-  return {
-    loadedTurns: turns.length,
-    loadedBlocks: turns.reduce((count, turn) => count + turn.blocks.length, 0),
-    timeline: turns,
-    rawLiveEvents,
-  }
-}
-
 async function writeClipboard(value: string) {
   try {
     if (navigator.clipboard) {
@@ -628,12 +619,6 @@ function AssistantResponseFrameView({ item, timestamp }: { item: AssistantRespon
   )
 }
 
-function upsertBlock(blocks: TimelineBlock[], next: TimelineBlock): TimelineBlock[] {
-  const index = blocks.findIndex((block) => block.id === next.id)
-  if (index === -1) return [...blocks, next]
-  return blocks.map((block, currentIndex) => currentIndex === index ? next : block)
-}
-
 type TimelineTurnIndex = { turnIds: Set<string>; apiMessageIds: Set<string> }
 
 function turnApiMessageIds(turn: TurnSummary): Set<string> {
@@ -666,9 +651,13 @@ function turnOrderValue(turn: TurnSummary): number | null {
   return turn.startedAt ?? turn.completedAt ?? null
 }
 
+function isPendingTurn(turn: TurnSummary): boolean {
+  return turn.id.startsWith('pending:')
+}
+
 function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSummary[]): TurnSummary[] {
   const incomingIndex = timelineTurnIndex(incoming)
-  const unreconciled = current.filter((turn) => !turnIsRepresentedBy(turn, incomingIndex))
+  const unreconciled = current.filter((turn) => !isPendingTurn(turn) && !turnIsRepresentedBy(turn, incomingIndex))
   const firstIncomingOrder = incoming[0] ? turnOrderValue(incoming[0]) : null
   if (firstIncomingOrder === null) return [...incoming, ...unreconciled]
   const older: TurnSummary[] = []
@@ -686,29 +675,10 @@ function prependOlderTimelineTurns(current: TurnSummary[], older: TurnSummary[])
   return [...older.filter((turn) => !turnIsRepresentedBy(turn, currentIndex)), ...current]
 }
 
-function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent): TurnSummary[] {
-  if (event.type === 'live.turn.started') return [...turns.filter((turn) => turn.id !== event.turnId), event.turn]
-  if (event.type === 'live.timeline.block') {
-    return turns.map((turn) => turn.id === event.turnId
-      ? { ...turn, blocks: upsertBlock(turn.blocks, event.block) }
-      : turn)
-  }
-  if (event.type === 'live.turn.completed' || event.type === 'live.turn.interrupted') {
-    return turns.map((turn) => turn.id === event.turnId
-      ? { ...turn, rawStatus: event.type === 'live.turn.interrupted' ? 'interrupted' : 'completed', displayStatus: event.type === 'live.turn.interrupted' ? 'interrupted' : 'complete', completedAt: event.completedAt }
-      : turn)
-  }
-  if (event.type === 'live.turn.failed') {
-    return turns.map((turn) => turn.id === event.turnId
-      ? { ...turn, rawStatus: 'failed', displayStatus: 'failed', completedAt: event.completedAt, blocks: [...turn.blocks, { id: `${event.turnId}:error`, kind: 'error', sourceEventIds: [event.turnId], data: { error: event.error } }] }
-      : turn)
-  }
-  return turns
-}
-
 function useSessionTimelineData(
   projectId: string | null,
   sessionId: string | null,
+  pendingTurn?: TurnSummary | null,
   onLiveTurnChange?: (turnId: string | null) => void,
   onSessionListStale?: () => void,
   isTimelineAtBottom?: () => boolean,
@@ -718,11 +688,11 @@ function useSessionTimelineData(
   const [hasMore, setHasMore] = useState(false)
   const [olderError, setOlderError] = useState<string | null>(null)
   const [loadingOlder, setLoadingOlder] = useState(false)
-  const [debugEvents, setDebugEvents] = useState<unknown[]>([])
   const shouldScrollToBottomRef = useRef(false)
   const lastAppliedTimelineVersionRef = useRef<string | null>(null)
   const liveTurnIdsRef = useRef(new Set<string>())
   const pendingStateVersionRef = useRef<string | null>(null)
+  const effectiveSessionId = sessionId ?? pendingTurn?.sessionId ?? null
   const enabled = Boolean(projectId && sessionId)
 
   const timeline = useQuery({
@@ -746,11 +716,17 @@ function useSessionTimelineData(
     setNextCursor(null)
     setHasMore(false)
     setOlderError(null)
-    setDebugEvents([])
     lastAppliedTimelineVersionRef.current = null
     liveTurnIdsRef.current.clear()
     pendingStateVersionRef.current = null
-  }, [projectId, sessionId])
+  }, [projectId, effectiveSessionId])
+
+  useEffect(() => {
+    if (!pendingTurn) return
+    if (sessionId && pendingTurn.sessionId !== 'pending' && pendingTurn.sessionId !== sessionId) return
+    shouldScrollToBottomRef.current = true
+    setTurns((current) => current.some((turn) => turn.id === pendingTurn.id) ? current : [...current, pendingTurn])
+  }, [pendingTurn, sessionId])
 
   useEffect(() => {
     if (!timeline.data) return
@@ -761,7 +737,6 @@ function useSessionTimelineData(
     setNextCursor(timeline.data.nextCursor)
     setHasMore(timeline.data.hasMore)
     setOlderError(null)
-    setDebugEvents([])
     lastAppliedTimelineVersionRef.current = nextVersion
     pendingStateVersionRef.current = null
     if (previousVersion && previousVersion !== nextVersion) onSessionListStale?.()
@@ -786,7 +761,6 @@ function useSessionTimelineData(
     const events = new EventSource(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`))
     events.onmessage = (message) => {
       const event = JSON.parse(message.data) as SessionStreamEvent
-      if (event.type === 'live.raw') setDebugEvents((current) => [...current.slice(-49), event.raw])
       if ('turnId' in event) {
         if (event.type === 'live.turn.started') {
           liveTurnIdsRef.current.add(event.turnId)
@@ -801,7 +775,6 @@ function useSessionTimelineData(
         }
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottom?.() ?? true
-      setTurns((current) => applyLiveEvent(current, event))
     }
     events.onerror = () => events.close()
     return () => events.close()
@@ -828,17 +801,16 @@ function useSessionTimelineData(
     hasMore,
     olderError,
     loadingOlder,
-    debugEvents,
-    debugPayload: timelineDebugPayload(turns, debugEvents),
     timeline,
     loadOlder,
     shouldScrollToBottomRef,
   }
 }
 
-export function SessionTimeline({ projectId, sessionId, onLiveTurnChange, onSessionListStale }: {
+export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale }: {
   projectId: string
-  sessionId: string
+  sessionId: string | null
+  pendingTurn?: TurnSummary | null
   onLiveTurnChange?: (turnId: string | null) => void
   onSessionListStale?: () => void
 }) {
@@ -848,7 +820,7 @@ export function SessionTimeline({ projectId, sessionId, onLiveTurnChange, onSess
     if (!panel) return true
     return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
   }, [])
-  const { turns, hasMore, olderError, loadingOlder, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
+  const { turns, hasMore, olderError, loadingOlder, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
 
   useLayoutEffect(() => {
     if (!shouldScrollToBottomRef.current) return
@@ -857,8 +829,8 @@ export function SessionTimeline({ projectId, sessionId, onLiveTurnChange, onSess
     if (panel) panel.scrollTop = panel.scrollHeight
   }, [shouldScrollToBottomRef, turns])
 
-  if (timeline.isLoading) return <div className="panel muted">Loading session timeline…</div>
-  if (timeline.isError) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
+  if (timeline.isLoading && turns.length === 0) return <div className="panel muted">Loading session timeline…</div>
+  if (timeline.isError && turns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
 
   return (
     <section className="session-workspace-view" aria-label="Session workspace">

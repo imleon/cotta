@@ -164,6 +164,13 @@ export type SessionStreamEvent =
       raw: unknown
     }
   | {
+      type: 'live.timeline.block'
+      projectId: string
+      sessionId: string
+      turnId: string
+      block: TimelineBlock
+    }
+  | {
       type: 'live.turn.completed'
       projectId: string
       sessionId: string

@@ -14,7 +14,7 @@ import {
   type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
 } from '@cotta/shared'
-import { authToken, fetchSessionTimeline, withToken } from './api'
+import { authToken, ensureSessionRuntime, fetchSessionTimeline, withToken } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectSessionLists } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
@@ -471,7 +471,14 @@ function WorkspacePanel({
       setInputText('')
       const response = await createTurn(projectId, selectedSessionId, text)
       setSelectedSessionId(response.sessionId)
-      setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
+      setPendingTurn((turn) => turn ? {
+        ...turn,
+        id: response.turnId,
+        sessionId: response.sessionId,
+        blocks: turn.blocks.map((block) => block.kind === 'user.message'
+          ? { ...block, id: `${response.turnId}:user`, sourceEventIds: [response.turnId] }
+          : block),
+      } : turn)
       setLiveTurnId(response.turnId)
       refreshProjectSessionLists(queryClient, projectId)
     } catch (error) {
@@ -515,7 +522,13 @@ function WorkspacePanel({
 
       <section className="composer-card composer-card-bottom">
         <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn() }}>
-          <div className="turn-composer">
+          <div
+            className="turn-composer"
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest('button, textarea')) return
+              inputRef.current?.focus()
+            }}
+          >
             <textarea
               ref={inputRef}
               value={inputText}
@@ -664,6 +677,7 @@ function ProjectsDashboard() {
       })
       if (pendingSessionRequestRef.current !== requestId) return
       selection.selectSession(projectId, sessionId)
+      void ensureSessionRuntime(projectId, sessionId).catch(() => {})
       setPendingSessionTarget(null)
     } catch {
       if (pendingSessionRequestRef.current !== requestId) return

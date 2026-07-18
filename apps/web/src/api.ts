@@ -63,3 +63,11 @@ export async function fetchSessionTimelineState(
   if (!response.ok) throw new Error(`Session timeline state request failed: ${response.status}`)
   return sessionTimelineStateResponseSchema.parse(await response.json())
 }
+
+export async function ensureSessionRuntime(projectId: string, sessionId: string): Promise<void> {
+  const response = await fetch(
+    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/runtime`),
+    { method: 'POST' },
+  )
+  if (!response.ok) throw new Error(`Session runtime request failed: ${response.status}`)
+}

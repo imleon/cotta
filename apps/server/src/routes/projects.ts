@@ -15,7 +15,7 @@ import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
 
-export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'interrupt' | 'sessionState' | 'startTurn' | 'subscribe'>
+export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionState' | 'startTurn' | 'subscribe'>
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
 
 function parseLimit(value: string | undefined, fallback: number): number {
@@ -121,6 +121,22 @@ export function registerProjectRoutes(
     } catch (error) {
       console.error('turns:create failed', error)
       return c.json({ error: 'turn_create_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects/:projectId/sessions/:sessionId/runtime', async (c) => {
+    try {
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
+      const state = await input.claudeCodeApi.getSessionTimelineState(projectId, sessionId)
+      if (!state) {
+        return c.json({ error: 'session_not_found' }, 404)
+      }
+      input.liveTurnManager.ensureRuntime({ projectId, sessionId })
+      return c.json({ ok: true })
+    } catch (error) {
+      console.error('session:runtime failed', error)
+      return c.json({ error: 'session_runtime_failed' }, 500)
     }
   })
 

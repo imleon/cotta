@@ -82,11 +82,13 @@ function TimelineTimestamp({
   className = '',
   copyText,
   copyLabel,
+  source,
 }: {
   value?: number
   className?: string
   copyText?: string | null
   copyLabel?: string
+  source?: 'history' | 'live'
 }) {
   const [copyStatus, setCopyStatus] = useState<'Copied' | 'Copy failed' | null>(null)
   const clearStatusRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -108,6 +110,7 @@ function TimelineTimestamp({
     <>
       <svg viewBox="0 0 24 24" className="h-3 w-3 -scale-x-100" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
       <time dateTime={new Date(value).toISOString()}>{label}</time>
+      {source ? <span className="rounded-full bg-[rgb(60_60_67_/_8%)] px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.04em] text-[#636366]">{source}</span> : null}
       <span className="sr-only" aria-live="polite">{copyStatus}</span>
       {copyStatus ? <span aria-hidden="true">{copyStatus}</span> : null}
     </>
@@ -557,7 +560,7 @@ function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
   )
 }
 
-function TimelineBlockView({ block, timestamp }: { block: TimelineBlock; timestamp?: number }) {
+function TimelineBlockView({ block, timestamp, source }: { block: TimelineBlock; timestamp?: number; source?: 'history' | 'live' }) {
   const text = textFromData(block.data)
 
   if (block.kind === 'assistant.thinking') return <ThinkingBlockView block={block} />
@@ -572,7 +575,7 @@ function TimelineBlockView({ block, timestamp }: { block: TimelineBlock; timesta
       <div className={timelineMessageClass.rowUser}>
         <div className={timelineMessageClass.userStack}>
           <div className={timelineMessageClass.userBubble}>{text ?? dataPreview(block.data)}</div>
-          <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampUser} copyText={text ?? dataPreview(block.data)} copyLabel="Copy user message" />
+          <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampUser} copyText={text ?? dataPreview(block.data)} copyLabel="Copy user message" source={source} />
         </div>
       </div>
     )
@@ -599,12 +602,12 @@ function TimelineBlockView({ block, timestamp }: { block: TimelineBlock; timesta
   )
 }
 
-function TimelineRenderItemView({ item, timestamp }: { item: TimelineRenderItem; timestamp?: number }) {
-  if (item.type === 'block') return <TimelineBlockView block={item.block} timestamp={timestamp} />
+function TimelineRenderItemView({ item, timestamp, source }: { item: TimelineRenderItem; timestamp?: number; source?: 'history' | 'live' }) {
+  if (item.type === 'block') return <TimelineBlockView block={item.block} timestamp={timestamp} source={source} />
   return <ToolCallBlockView toolUse={item.toolUse} results={item.results} />
 }
 
-function AssistantResponseFrameView({ item, timestamp }: { item: AssistantResponseFrameItem; timestamp?: number }) {
+function AssistantResponseFrameView({ item, timestamp, source }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live' }) {
   const copyText = assistantResponseText(item.items)
 
   return (
@@ -614,7 +617,7 @@ function AssistantResponseFrameView({ item, timestamp }: { item: AssistantRespon
           {item.items.map((child) => <TimelineRenderItemView item={child} key={timelineRenderItemKey(child)} />)}
         </div>
       </section>
-      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" />
+      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" source={source} />
     </div>
   )
 }
@@ -651,13 +654,33 @@ function turnOrderValue(turn: TurnSummary): number | null {
   return turn.startedAt ?? turn.completedAt ?? null
 }
 
-function isPendingTurn(turn: TurnSummary): boolean {
-  return turn.id.startsWith('pending:')
+function isLiveTurn(turn: TurnSummary): boolean {
+  return turn.id.startsWith('pending:') || turn.rawStatus === 'running'
+}
+
+function upsertBlock(blocks: TimelineBlock[], block: TimelineBlock): TimelineBlock[] {
+  const index = blocks.findIndex((item) => item.id === block.id)
+  if (index === -1) return [...blocks, block]
+  const next = [...blocks]
+  next[index] = block
+  return next
+}
+
+function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent): TurnSummary[] {
+  if (event.type === 'live.turn.started') {
+    return [...turns.filter((turn) => turn.id !== event.turnId && !turn.id.startsWith('pending:')), event.turn]
+  }
+  if (event.type === 'live.timeline.block') {
+    return turns.map((turn) => turn.id === event.turnId
+      ? { ...turn, blocks: upsertBlock(turn.blocks, event.block) }
+      : turn)
+  }
+  return turns
 }
 
 function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSummary[]): TurnSummary[] {
   const incomingIndex = timelineTurnIndex(incoming)
-  const unreconciled = current.filter((turn) => !isPendingTurn(turn) && !turnIsRepresentedBy(turn, incomingIndex))
+  const unreconciled = current.filter((turn) => !turnIsRepresentedBy(turn, incomingIndex))
   const firstIncomingOrder = incoming[0] ? turnOrderValue(incoming[0]) : null
   if (firstIncomingOrder === null) return [...incoming, ...unreconciled]
   const older: TurnSummary[] = []
@@ -691,7 +714,6 @@ function useSessionTimelineData(
   const shouldScrollToBottomRef = useRef(false)
   const lastAppliedTimelineVersionRef = useRef<string | null>(null)
   const liveTurnIdsRef = useRef(new Set<string>())
-  const pendingStateVersionRef = useRef<string | null>(null)
   const effectiveSessionId = sessionId ?? pendingTurn?.sessionId ?? null
   const enabled = Boolean(projectId && sessionId)
 
@@ -718,14 +740,16 @@ function useSessionTimelineData(
     setOlderError(null)
     lastAppliedTimelineVersionRef.current = null
     liveTurnIdsRef.current.clear()
-    pendingStateVersionRef.current = null
   }, [projectId, effectiveSessionId])
 
   useEffect(() => {
     if (!pendingTurn) return
     if (sessionId && pendingTurn.sessionId !== 'pending' && pendingTurn.sessionId !== sessionId) return
     shouldScrollToBottomRef.current = true
-    setTurns((current) => current.some((turn) => turn.id === pendingTurn.id) ? current : [...current, pendingTurn])
+    setTurns((current) => {
+      if (current.some((turn) => turn.id === pendingTurn.id)) return current
+      return [...current.filter((turn) => !turn.id.startsWith('pending:')), pendingTurn]
+    })
   }, [pendingTurn, sessionId])
 
   useEffect(() => {
@@ -738,7 +762,6 @@ function useSessionTimelineData(
     setHasMore(timeline.data.hasMore)
     setOlderError(null)
     lastAppliedTimelineVersionRef.current = nextVersion
-    pendingStateVersionRef.current = null
     if (previousVersion && previousVersion !== nextVersion) onSessionListStale?.()
   }, [isTimelineAtBottom, onSessionListStale, timeline.data])
 
@@ -747,12 +770,7 @@ function useSessionTimelineData(
     if (!version) return
     if (!lastAppliedTimelineVersionRef.current) return
     if (version === lastAppliedTimelineVersionRef.current) return
-    if (liveTurnIdsRef.current.size > 0) {
-      pendingStateVersionRef.current = version
-      return
-    }
     if (timeline.isFetching) return
-    pendingStateVersionRef.current = version
     void refetchTimeline()
   }, [refetchTimeline, timeline.isFetching, timelineState.data?.state.version, timelineState.dataUpdatedAt])
 
@@ -761,6 +779,7 @@ function useSessionTimelineData(
     const events = new EventSource(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`))
     events.onmessage = (message) => {
       const event = JSON.parse(message.data) as SessionStreamEvent
+      setTurns((current) => applyLiveEvent(current, event))
       if ('turnId' in event) {
         if (event.type === 'live.turn.started') {
           liveTurnIdsRef.current.add(event.turnId)
@@ -776,7 +795,6 @@ function useSessionTimelineData(
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottom?.() ?? true
     }
-    events.onerror = () => events.close()
     return () => events.close()
   }, [isTimelineAtBottom, onLiveTurnChange, projectId, refetchTimeline, sessionId])
 
@@ -840,11 +858,12 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
         {turns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : turns.map((turn) => {
           const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
           const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
+          const source = isLiveTurn(turn) ? 'live' : 'history'
           return (
             <article className="turn-card" key={turn.id}>
               <div className="timeline-blocks">{displayItems.map((item) => item.type === 'assistant-response-frame'
-                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} key={item.id} />
-                : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.startedAt : undefined} key={timelineRenderItemKey(item.item)} />,
+                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} source={source} key={item.id} />
+                : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.startedAt : undefined} source={source} key={timelineRenderItemKey(item.item)} />,
               )}</div>
             </article>
           )

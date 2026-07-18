@@ -133,6 +133,7 @@ function createTestApp(
 ) {
   return createApp({
     liveTurnManager: {
+      ensureRuntime: () => {},
       sessionState: (sessionId) => liveStates[sessionId] ?? null,
       startTurn: async () => { throw new Error('not implemented') },
       interrupt: async () => false,
@@ -349,6 +350,26 @@ describe('project routes', () => {
   it('returns 404 for timeline state of an unknown session', async () => {
     const response = await createTestApp().request(
       `/api/projects/${project.id}/sessions/missing/timeline/state`,
+    )
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
+  it('ensures runtime for an existing session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/session-newest/runtime`,
+      { method: 'POST' },
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+  })
+
+  it('returns 404 when ensuring runtime for an unknown session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/missing/runtime`,
+      { method: 'POST' },
     )
 
     expect(response.status).toBe(404)

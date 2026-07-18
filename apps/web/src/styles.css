@@ -957,6 +957,7 @@ h2 {
   border-radius: 22px;
   background: var(--color-surface);
   padding: 12px;
+  cursor: text;
 }
 
 .turn-composer textarea {

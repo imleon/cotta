@@ -256,6 +256,60 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'project_not_found' })
   })
 
+  it('creates a session with userMessageUuid and no turnId', async () => {
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionState: () => null,
+        startTurn: async ({ userMessageUuid }) => ({ sessionId: 'session-new', userMessageUuid }),
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return [project] },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    }).request(`/api/projects/${project.id}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001' }),
+    })
+
+    expect(response.status).toBe(202)
+    expect(await response.json()).toEqual({
+      projectId: project.id,
+      sessionId: 'session-new',
+      userMessageUuid: '00000000-0000-4000-8000-000000000001',
+    })
+  })
+
+  it('interrupts a session without a turn id', async () => {
+    let interruptedSessionId: string | null = null
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async (sessionId) => { interruptedSessionId = sessionId; return true },
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return [project] },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/interrupt`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ interrupted: true })
+    expect(interruptedSessionId).toBe('session-newest')
+  })
+
   it('returns a turn-based timeline page for a session', async () => {
     const response = await createTestApp().request(
       `/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`,
@@ -382,21 +436,19 @@ describe('project routes', () => {
         id: 1,
         projectId: project.id,
         sessionId: 'session-newest',
-        turnId: 'turn_1',
-        eventType: 'live.raw',
-        source: 'sse',
+        eventType: 'system',
+        source: 'sdk',
         recordedAtMs: 1,
-        payload: { type: 'live.raw', raw: { type: 'system', subtype: 'session_state_changed', state: 'running' } },
+        payload: { type: 'system', subtype: 'session_state_changed', state: 'running' },
       },
       {
         id: 2,
         projectId: project.id,
         sessionId: 'session-older',
-        turnId: 'turn_2',
-        eventType: 'live.turn.completed',
-        source: 'sse',
+        eventType: 'result',
+        source: 'sdk',
         recordedAtMs: 2,
-        payload: { type: 'live.turn.completed' },
+        payload: { type: 'result', subtype: 'success' },
       },
     ]
     const response = await createTestApp({}, messages, liveEvents).request(
@@ -407,6 +459,27 @@ describe('project routes', () => {
     expect(sessionLiveEventsResponseSchema.parse(await response.json())).toEqual({
       sessionId: 'session-newest',
       events: [liveEvents[0]],
+    })
+  })
+
+  it('returns captured live events from the product route alias', async () => {
+    const liveEvents: PersistedLiveEvent[] = [{
+      id: 1,
+      projectId: project.id,
+      sessionId: 'session-newest',
+      eventType: 'system',
+      source: 'sdk',
+      recordedAtMs: 1,
+      payload: { type: 'system', subtype: 'session_state_changed', state: 'running' },
+    }]
+    const response = await createTestApp({}, messages, liveEvents).request(
+      `/api/projects/${project.id}/live-sessions/session-newest/events`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(sessionLiveEventsResponseSchema.parse(await response.json())).toEqual({
+      sessionId: 'session-newest',
+      events: liveEvents,
     })
   })
 

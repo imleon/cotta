@@ -4,11 +4,7 @@ import type { SessionStreamEvent, TimelineBlock, TurnSummary } from '@cotta/shar
 import { projectPathFromId } from './claude-code-api.js'
 import type { LiveEventStore } from './live-event-store.js'
 
-function randomId(prefix: string): string {
-  return `${prefix}_${randomUUID()}`
-}
-
-function sdkUserMessage(input: { uuid: ReturnType<typeof randomUUID>; text: string; sessionId: string; startedAt: number }): SDKUserMessage {
+function sdkUserMessage(input: { uuid: SDKUserMessage['uuid']; text: string; sessionId: string; startedAt: number }): SDKUserMessage {
   return {
     type: 'user',
     message: { role: 'user', content: input.text },
@@ -43,8 +39,21 @@ function isToolResultContent(content: unknown): boolean {
   return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
 }
 
-function sdkMessageUuid(message: SDKMessage): string {
-  return 'uuid' in message && typeof message.uuid === 'string' ? message.uuid : randomId('raw')
+function textFromContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((block) => isRecord(block) && typeof block.text === 'string' ? block.text : '')
+    .filter(Boolean)
+    .join('\n')
+}
+
+function sdkMessageUuid(message: SDKMessage): string | undefined {
+  return 'uuid' in message && typeof message.uuid === 'string' ? message.uuid : undefined
+}
+
+function warnProtocolAnomaly(message: string): void {
+  console.warn(`live-message protocol anomaly: ${message}`)
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -89,6 +98,7 @@ type LiveAssistantMessageDraft = {
   apiMessageId?: string
   blocks: Map<number, LiveAssistantBlockDraft>
   finalized?: boolean
+  invalid?: boolean
 }
 
 class LiveAssistantStreamAccumulator {
@@ -97,7 +107,7 @@ class LiveAssistantStreamAccumulator {
   private readonly byApiMessageId = new Map<string, LiveAssistantMessageDraft>()
   private readonly drafts: LiveAssistantMessageDraft[] = []
 
-  constructor(private readonly turnId: string) {}
+  constructor(private readonly userMessageUuid: string) {}
 
   processStreamEvent(message: SDKMessage): TimelineBlock[] {
     if (message.type !== 'stream_event' || !isRecord(message.event)) return []
@@ -107,6 +117,11 @@ class LiveAssistantStreamAccumulator {
 
     if (eventType === 'message_start') {
       const apiMessageId = isRecord(event.message) && typeof event.message.id === 'string' ? event.message.id : undefined
+      if (!apiMessageId) {
+        warnProtocolAnomaly('assistant stream message_start missing apiMessageId')
+        this.current = this.createDraft(undefined, true)
+        return []
+      }
       this.current = this.createDraft(apiMessageId)
       return []
     }
@@ -117,6 +132,8 @@ class LiveAssistantStreamAccumulator {
       const blockType = typeof contentBlock?.type === 'string' ? contentBlock.type : undefined
       if (blockType !== 'text' && blockType !== 'thinking') return []
       const draft = this.ensureCurrent()
+      if (draft.invalid) return []
+      if (!sourceEventId) return []
       const block = this.ensureBlock(draft, index, blockType === 'thinking' ? 'assistant.thinking' : 'assistant.text')
       this.addSourceEventId(block, sourceEventId)
       if (blockType === 'text' && typeof contentBlock?.text === 'string') block.text = contentBlock.text
@@ -130,6 +147,8 @@ class LiveAssistantStreamAccumulator {
       const deltaType = typeof delta?.type === 'string' ? delta.type : undefined
       if (deltaType !== 'text_delta' && deltaType !== 'thinking_delta') return []
       const draft = this.ensureCurrent()
+      if (draft.invalid) return []
+      if (!sourceEventId) return []
       const block = this.ensureBlock(draft, index, deltaType === 'thinking_delta' ? 'assistant.thinking' : 'assistant.text')
       this.addSourceEventId(block, sourceEventId)
       if (deltaType === 'text_delta' && typeof delta?.text === 'string') block.text += delta.text
@@ -151,6 +170,14 @@ class LiveAssistantStreamAccumulator {
   finalAssistantBlocks(message: SDKMessage): TimelineBlock[] {
     const uuid = sdkMessageUuid(message)
     const apiMessageId = 'message' in message && isRecord(message.message) && typeof message.message.id === 'string' ? message.message.id : undefined
+    if (!apiMessageId) {
+      warnProtocolAnomaly('assistant final missing apiMessageId')
+      return []
+    }
+    if (!uuid) {
+      warnProtocolAnomaly('assistant final missing sdk uuid')
+      return []
+    }
     const draft = this.findDraft(apiMessageId)
     draft.finalized = true
     if (this.current === draft) this.current = null
@@ -159,7 +186,7 @@ class LiveAssistantStreamAccumulator {
     const blockApiMessageId = draft.apiMessageId ?? apiMessageId
     if (!Array.isArray(content)) {
       return [{
-        id: `${this.turnId}:assistant:${draft.ordinal}:message`,
+        id: `${this.userMessageUuid}:assistant:${draft.ordinal}:message`,
         kind: 'assistant.message',
         sourceEventIds: [uuid],
         ...(blockApiMessageId ? { apiMessageId: blockApiMessageId } : {}),
@@ -168,7 +195,7 @@ class LiveAssistantStreamAccumulator {
     }
 
     return content.map((block, index) => ({
-      id: `${this.turnId}:assistant:${draft.ordinal}:${index}`,
+      id: `${this.userMessageUuid}:assistant:${draft.ordinal}:${index}`,
       kind: blockKindForContentBlock(block),
       sourceEventIds: [uuid],
       ...(blockApiMessageId ? { apiMessageId: blockApiMessageId } : {}),
@@ -177,11 +204,12 @@ class LiveAssistantStreamAccumulator {
     }))
   }
 
-  private createDraft(apiMessageId?: string): LiveAssistantMessageDraft {
+  private createDraft(apiMessageId?: string, invalid = false): LiveAssistantMessageDraft {
     const draft: LiveAssistantMessageDraft = {
       ordinal: this.nextAssistantOrdinal++,
       apiMessageId,
       blocks: new Map(),
+      ...(invalid ? { invalid } : {}),
     }
     this.drafts.push(draft)
     if (apiMessageId) this.byApiMessageId.set(apiMessageId, draft)
@@ -189,7 +217,7 @@ class LiveAssistantStreamAccumulator {
   }
 
   private ensureCurrent(): LiveAssistantMessageDraft {
-    if (!this.current) this.current = this.createDraft()
+    if (!this.current) this.current = this.createDraft(undefined, true)
     return this.current
   }
 
@@ -206,7 +234,7 @@ class LiveAssistantStreamAccumulator {
     const existing = draft.blocks.get(index)
     if (existing) return existing
     const block: LiveAssistantBlockDraft = {
-      id: `${this.turnId}:assistant:${draft.ordinal}:${index}`,
+      id: `${this.userMessageUuid}:assistant:${draft.ordinal}:${index}`,
       index,
       kind,
       text: '',
@@ -237,11 +265,15 @@ class LiveAssistantStreamAccumulator {
 }
 
 function timelineBlocksFromSdkMessage(message: SDKMessage, accumulator: LiveAssistantStreamAccumulator): TimelineBlock[] {
-  const uuid = sdkMessageUuid(message)
   if (message.type === 'stream_event') return accumulator.processStreamEvent(message)
   if (message.type === 'assistant') return accumulator.finalAssistantBlocks(message)
 
   if (message.type === 'user') {
+    const uuid = sdkMessageUuid(message)
+    if (!uuid) {
+      warnProtocolAnomaly('user message missing sdk uuid')
+      return []
+    }
     const content = sdkMessageContent(message)
     if (isToolResultContent(content) && Array.isArray(content)) {
       return content
@@ -257,6 +289,12 @@ function timelineBlocksFromSdkMessage(message: SDKMessage, accumulator: LiveAssi
         })
         .filter((block): block is TimelineBlock => block !== null)
     }
+    return [{
+      id: `${uuid}:user`,
+      kind: 'user.message',
+      sourceEventIds: [uuid],
+      data: { text: textFromContent(content), status: 'confirmed', raw: 'message' in message ? message.message : null },
+    }]
   }
 
   return []
@@ -267,7 +305,7 @@ type SessionRuntime = {
   sessionId: string
   query: Query
   input: AsyncQueue<SDKUserMessage>
-  currentTurnId: string | null
+  currentUserMessageUuid: string | null
   streamAccumulator: LiveAssistantStreamAccumulator | null
 }
 
@@ -277,18 +315,18 @@ function liveSessionStateFromSdkMessage(message: SDKMessage): LiveSessionState |
   return message.state === 'idle' || message.state === 'running' || message.state === 'requires_action' ? message.state : null
 }
 
-function turnSummary(input: { turnId: string; sessionId: string; text: string; startedAt: number }): TurnSummary {
+function turnSummary(input: { userMessageUuid: string; sessionId: string; text: string; startedAt: number }): TurnSummary {
   return {
-    id: input.turnId,
+    id: input.userMessageUuid,
     sessionId: input.sessionId,
     title: input.text.length > 80 ? `${input.text.slice(0, 77)}…` : input.text,
     startedAt: input.startedAt,
     rawStatus: 'running',
     displayStatus: 'running',
     blocks: [{
-      id: `${input.turnId}:user`,
+      id: `${input.userMessageUuid}:user`,
       kind: 'user.message',
-      sourceEventIds: [input.turnId],
+      sourceEventIds: [input.userMessageUuid],
       data: { text: input.text },
     }],
   }
@@ -321,44 +359,33 @@ export class LiveTurnManager {
     this.ensureRuntimeInternal({ ...input, resume: true })
   }
 
-  async startTurn(input: { projectId: string; sessionId?: string; text: string }): Promise<{ sessionId: string; turnId: string }> {
+  async startTurn(input: { projectId: string; sessionId?: string; text: string; userMessageUuid: string }): Promise<{ sessionId: string; userMessageUuid: string }> {
     const sessionId = input.sessionId ?? randomUUID()
     const runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: Boolean(input.sessionId) })
-    if (runtime.currentTurnId) throw new Error('Session already has a running turn')
+    if (runtime.currentUserMessageUuid) throw new Error('Session already has a running generation')
 
     const startedAt = Date.now()
-    const turnId = randomUUID()
-    const userMessage = sdkUserMessage({ uuid: turnId, text: input.text, sessionId, startedAt })
-    runtime.currentTurnId = turnId
-    runtime.streamAccumulator = new LiveAssistantStreamAccumulator(turnId)
+    const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
+    const userMessage = sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt })
+    runtime.currentUserMessageUuid = userMessageUuid
+    runtime.streamAccumulator = new LiveAssistantStreamAccumulator(userMessageUuid)
     this.liveStateBySession.set(sessionId, 'running')
     this.publish(sessionId, {
       type: 'live.turn.started',
       projectId: input.projectId,
       sessionId,
-      turnId,
-      turn: turnSummary({ turnId, sessionId, text: input.text, startedAt }),
+      userMessageUuid,
+      turn: turnSummary({ userMessageUuid, sessionId, text: input.text, startedAt }),
     })
     runtime.input.push(userMessage)
 
-    return { sessionId, turnId }
+    return { sessionId, userMessageUuid }
   }
 
   async interrupt(sessionId: string): Promise<boolean> {
     const runtime = this.runtimes.get(sessionId)
-    const turnId = runtime?.currentTurnId
-    if (!runtime || !turnId) return false
+    if (!runtime?.currentUserMessageUuid) return false
     await runtime.query.interrupt()
-    runtime.currentTurnId = null
-    runtime.streamAccumulator = null
-    this.liveStateBySession.delete(sessionId)
-    this.publish(sessionId, {
-      type: 'live.turn.interrupted',
-      projectId: runtime.projectId,
-      sessionId,
-      turnId,
-      completedAt: Date.now(),
-    })
     return true
   }
 
@@ -384,7 +411,7 @@ export class LiveTurnManager {
           includePartialMessages: true,
         },
       }),
-      currentTurnId: null,
+      currentUserMessageUuid: null,
       streamAccumulator: null,
     }
     this.runtimes.set(input.sessionId, runtime)
@@ -399,14 +426,14 @@ export class LiveTurnManager {
         if (liveState === 'idle') this.liveStateBySession.delete(runtime.sessionId)
         else if (liveState) this.liveStateBySession.set(runtime.sessionId, liveState)
 
-        const turnId = runtime.currentTurnId
-        if (!turnId) continue
+        const userMessageUuid = runtime.currentUserMessageUuid
+        if (!userMessageUuid) continue
 
         this.publish(runtime.sessionId, {
           type: 'live.raw',
           projectId: runtime.projectId,
           sessionId: runtime.sessionId,
-          turnId,
+          userMessageUuid,
           raw: message,
         })
 
@@ -416,7 +443,7 @@ export class LiveTurnManager {
               type: 'live.timeline.block',
               projectId: runtime.projectId,
               sessionId: runtime.sessionId,
-              turnId,
+              userMessageUuid,
               block,
             })
           }
@@ -424,7 +451,7 @@ export class LiveTurnManager {
 
         if (message.type === 'result') {
           this.liveStateBySession.delete(runtime.sessionId)
-          runtime.currentTurnId = null
+          runtime.currentUserMessageUuid = null
           runtime.streamAccumulator = null
           const completedAt = Date.now()
           if (message.is_error) {
@@ -432,7 +459,7 @@ export class LiveTurnManager {
               type: 'live.turn.failed',
               projectId: runtime.projectId,
               sessionId: runtime.sessionId,
-              turnId,
+              userMessageUuid,
               completedAt,
               error: message.subtype === 'success' ? 'Turn failed' : message.errors.join('\n') || 'Turn failed',
             })
@@ -441,7 +468,7 @@ export class LiveTurnManager {
               type: 'live.turn.completed',
               projectId: runtime.projectId,
               sessionId: runtime.sessionId,
-              turnId,
+              userMessageUuid,
               completedAt,
               raw: message,
             })
@@ -449,19 +476,19 @@ export class LiveTurnManager {
         }
       }
     } catch (error) {
-      const turnId = runtime.currentTurnId
-      if (turnId) {
+      const userMessageUuid = runtime.currentUserMessageUuid
+      if (userMessageUuid) {
         this.publish(runtime.sessionId, {
           type: 'live.turn.failed',
           projectId: runtime.projectId,
           sessionId: runtime.sessionId,
-          turnId,
+          userMessageUuid,
           completedAt: Date.now(),
           error: error instanceof Error ? error.message : String(error),
         })
       }
     } finally {
-      runtime.currentTurnId = null
+      runtime.currentUserMessageUuid = null
       runtime.streamAccumulator = null
       this.liveStateBySession.delete(runtime.sessionId)
       this.runtimes.delete(runtime.sessionId)

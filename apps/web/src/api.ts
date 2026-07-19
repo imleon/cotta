@@ -1,10 +1,12 @@
 import {
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  sessionLiveEventsResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
   type ProjectSessionsResponse,
   type ProjectsResponse,
+  type SessionLiveEventsResponse,
   type SessionTimelineResponse,
   type SessionTimelineStateResponse,
 } from '@cotta/shared'
@@ -51,6 +53,18 @@ export async function fetchSessionTimeline(
   )
   if (!response.ok) throw new Error(`Session timeline request failed: ${response.status}`)
   return sessionTimelineResponseSchema.parse(await response.json())
+}
+
+export async function fetchSessionLiveEvents(
+  projectId: string,
+  sessionId: string,
+  limit = 500,
+): Promise<SessionLiveEventsResponse> {
+  const response = await fetch(
+    withToken(`/api/projects/${encodeURIComponent(projectId)}/live-sessions/${encodeURIComponent(sessionId)}/events?limit=${limit}`),
+  )
+  if (!response.ok) throw new Error(`Session live events request failed: ${response.status}`)
+  return sessionLiveEventsResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionTimelineState(

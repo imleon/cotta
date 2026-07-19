@@ -24,6 +24,12 @@ function parseLimit(value: string | undefined, fallback: number): number {
   return Math.max(1, Math.min(100, Math.trunc(parsed)))
 }
 
+function parseLiveEventLimit(value: string | undefined, fallback: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(1, Math.min(1000, Math.trunc(parsed)))
+}
+
 function parseCursor(value: string | undefined): string | null {
   return value && value.trim() ? value.trim() : null
 }
@@ -91,11 +97,12 @@ export function registerProjectRoutes(
       const result = await input.liveTurnManager.startTurn({
         projectId: c.req.param('projectId'),
         text: body.text,
+        userMessageUuid: body.userMessageUuid,
       })
       const response: CreateTurnResponse = {
         projectId: c.req.param('projectId'),
         sessionId: result.sessionId,
-        turnId: result.turnId,
+        userMessageUuid: result.userMessageUuid,
       }
       return c.json(response, 202)
     } catch (error) {
@@ -111,11 +118,12 @@ export function registerProjectRoutes(
         projectId: c.req.param('projectId'),
         sessionId: c.req.param('sessionId'),
         text: body.text,
+        userMessageUuid: body.userMessageUuid,
       })
       const response: CreateTurnResponse = {
         projectId: c.req.param('projectId'),
         sessionId: result.sessionId,
-        turnId: result.turnId,
+        userMessageUuid: result.userMessageUuid,
       }
       return c.json(response, 202)
     } catch (error) {
@@ -140,10 +148,22 @@ export function registerProjectRoutes(
     }
   })
 
+  async function interruptSession(sessionId: string) {
+    return { interrupted: await input.liveTurnManager.interrupt(sessionId) }
+  }
+
+  app.post('/api/projects/:projectId/sessions/:sessionId/interrupt', async (c) => {
+    try {
+      return c.json(await interruptSession(c.req.param('sessionId')))
+    } catch (error) {
+      console.error('session:interrupt failed', error)
+      return c.json({ error: 'session_interrupt_failed' }, 500)
+    }
+  })
+
   app.post('/api/projects/:projectId/sessions/:sessionId/turns/:turnId/interrupt', async (c) => {
     try {
-      const interrupted = await input.liveTurnManager.interrupt(c.req.param('sessionId'))
-      return c.json({ interrupted })
+      return c.json(await interruptSession(c.req.param('sessionId')))
     } catch (error) {
       console.error('turns:interrupt failed', error)
       return c.json({ error: 'turn_interrupt_failed' }, 500)
@@ -231,7 +251,26 @@ export function registerProjectRoutes(
       }
       const response: SessionLiveEventsResponse = {
         sessionId,
-        events: input.liveEventStore?.listSessionEvents(projectId, sessionId, parseLimit(c.req.query('limit'), 500)) ?? [],
+        events: input.liveEventStore?.listSessionEvents(projectId, sessionId, parseLiveEventLimit(c.req.query('limit'), 500)) ?? [],
+      }
+      return c.json(response)
+    } catch (error) {
+      console.error('session:live-events failed', error)
+      return c.json({ error: 'session_live_events_failed' }, 500)
+    }
+  })
+
+  app.get('/api/projects/:projectId/live-sessions/:sessionId/events', async (c) => {
+    try {
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
+      const state = await input.claudeCodeApi.getSessionTimelineState(projectId, sessionId)
+      if (!state) {
+        return c.json({ error: 'session_not_found' }, 404)
+      }
+      const response: SessionLiveEventsResponse = {
+        sessionId,
+        events: input.liveEventStore?.listSessionEvents(projectId, sessionId, parseLiveEventLimit(c.req.query('limit'), 500)) ?? [],
       }
       return c.json(response)
     } catch (error) {

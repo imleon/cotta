@@ -5,16 +5,14 @@ import { StrictMode, type CSSProperties, type PointerEvent as ReactPointerEvent,
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
-  sessionLiveEventsResponseSchema,
   sessionRawMessagesResponseSchema,
   type CreateTurnResponse,
   type PersistedLiveEvent,
   type ProjectSessionsResponse,
   type TurnSummary,
-  type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
 } from '@cotta/shared'
-import { authToken, ensureSessionRuntime, fetchSessionTimeline, withToken } from './api'
+import { authToken, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, withToken } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectSessionLists } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
@@ -70,30 +68,37 @@ async function fetchSessionRawMessages(projectId: string, sessionId: string): Pr
   return sessionRawMessagesResponseSchema.parse(await response.json())
 }
 
-async function fetchSessionLiveEvents(projectId: string, sessionId: string): Promise<SessionLiveEventsResponse> {
-  const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/live-events`),
-  )
-  if (!response.ok) throw new Error(`Session live events request failed: ${response.status}`)
-  return sessionLiveEventsResponseSchema.parse(await response.json())
+class CreateTurnHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Create turn failed: ${status}`)
+  }
 }
 
-async function createTurn(projectId: string, sessionId: string | null, text: string): Promise<CreateTurnResponse> {
+function createUserMessageUuid(): string {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+async function createTurn(projectId: string, sessionId: string | null, text: string, userMessageUuid: string): Promise<CreateTurnResponse> {
   const path = sessionId
     ? `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns`
     : `/api/projects/${encodeURIComponent(projectId)}/sessions`
   const response = await fetch(withToken(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, userMessageUuid }),
   })
-  if (!response.ok) throw new Error(`Create turn failed: ${response.status}`)
+  if (!response.ok) throw new CreateTurnHttpError(response.status)
   return createTurnResponseSchema.parse(await response.json())
 }
 
-async function interruptTurn(projectId: string, sessionId: string, turnId: string): Promise<void> {
+async function interruptTurn(projectId: string, sessionId: string): Promise<void> {
   const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/interrupt`),
+    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/interrupt`),
     { method: 'POST' },
   )
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
@@ -368,14 +373,13 @@ function LiveEventsDebugView({ events }: { events: PersistedLiveEvent[] }) {
       {events.length === 0 ? <p className="debug-empty">No captured live events yet.</p> : (
         <div className="debug-table-wrap">
           <table className="debug-table">
-            <thead><tr><th>ID</th><th>Recorded</th><th>Event</th><th>Turn</th><th>Preview</th><th>Payload</th></tr></thead>
+            <thead><tr><th>ID</th><th>Recorded</th><th>Event</th><th>Preview</th><th>Payload</th></tr></thead>
             <tbody>
               {events.map((event) => (
                 <tr key={event.id}>
                   <td className="debug-mono">{event.id}</td>
                   <td className="debug-mono debug-timestamp-cell">{new Date(event.recordedAtMs).toISOString()}</td>
                   <td className="debug-type-cell"><strong>{event.eventType}</strong></td>
-                  <td className="debug-mono debug-block-id-cell">{event.turnId}</td>
                   <td className="debug-content-cell">{debugDataPreview(event.payload, 220)}</td>
                   <td className="debug-content-cell debug-raw-message-cell"><DebugContentCellValue value={event.payload} json /></td>
                 </tr>
@@ -408,23 +412,20 @@ function useSessionLiveEvents(projectId: string | null, sessionId: string | null
   })
 }
 
-let pendingTurnCounter = 0
-
-function pendingUserTurn(text: string, sessionId: string | null): TurnSummary {
-  const id = `pending:${Date.now()}:${pendingTurnCounter++}`
+function pendingUserTurn(text: string, sessionId: string | null, userMessageUuid: string): TurnSummary {
   const startedAt = Date.now()
   return {
-    id,
+    id: userMessageUuid,
     sessionId: sessionId ?? 'pending',
     title: text.length > 80 ? `${text.slice(0, 77)}…` : text,
     startedAt,
     rawStatus: 'running',
     displayStatus: 'running',
     blocks: [{
-      id: `${id}:user`,
+      id: `${userMessageUuid}:user`,
       kind: 'user.message',
-      sourceEventIds: [id],
-      data: { text },
+      sourceEventIds: [userMessageUuid],
+      data: { text, status: 'pending' },
     }],
   }
 }
@@ -445,13 +446,13 @@ function WorkspacePanel({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
-  const [liveTurnId, setLiveTurnId] = useState<string | null>(null)
+  const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
 
-  useEffect(() => { setLiveTurnId(null); setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
+  useEffect(() => { setLiveUserMessageUuid(null); setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
   useEffect(() => { setPendingTurn(null) }, [projectId])
-  useEffect(() => { if (!liveTurnId) setInterrupting(false) }, [liveTurnId])
+  useEffect(() => { if (!liveUserMessageUuid) setInterrupting(false) }, [liveUserMessageUuid])
   useEffect(() => {
     const input = inputRef.current
     if (!input) return
@@ -462,28 +463,28 @@ function WorkspacePanel({
   if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
 
   async function submitTurn() {
-    if (!projectId || !inputText.trim()) return
+    if (!projectId || submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
     const text = inputText.trim()
+    const userMessageUuid = createUserMessageUuid()
     setSubmitting(true)
     setSubmitError(null)
     try {
-      setPendingTurn(pendingUserTurn(text, selectedSessionId))
+      setPendingTurn(pendingUserTurn(text, selectedSessionId, userMessageUuid))
       setInputText('')
-      const response = await createTurn(projectId, selectedSessionId, text)
+      const response = await createTurn(projectId, selectedSessionId, text, userMessageUuid)
       setSelectedSessionId(response.sessionId)
-      setPendingTurn((turn) => turn ? {
-        ...turn,
-        id: response.turnId,
-        sessionId: response.sessionId,
-        blocks: turn.blocks.map((block) => block.kind === 'user.message'
-          ? { ...block, id: `${response.turnId}:user`, sourceEventIds: [response.turnId] }
-          : block),
-      } : turn)
-      setLiveTurnId(response.turnId)
+      setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
+      setLiveUserMessageUuid(response.userMessageUuid)
       refreshProjectSessionLists(queryClient, projectId)
     } catch (error) {
-      setPendingTurn(null)
-      setSubmitError(error instanceof Error ? error.message : String(error))
+      if (error instanceof CreateTurnHttpError) {
+        setPendingTurn(null)
+        setInputText(text)
+        setSubmitError(error.message)
+      } else {
+        setSubmitError(`Submission status unknown. Check the timeline or session list before retrying. ${error instanceof Error ? error.message : String(error)}`)
+        refreshProjectSessionLists(queryClient, projectId)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -494,23 +495,23 @@ function WorkspacePanel({
     refreshProjectSessionLists(queryClient, projectId)
   }
 
-  function handleLiveTurnChange(turnId: string | null) {
-    setLiveTurnId(turnId)
+  function handleLiveTurnChange(userMessageUuid: string | null) {
+    setLiveUserMessageUuid(userMessageUuid)
   }
 
   async function stopLiveTurn() {
-    if (!projectId || !selectedSessionId || !liveTurnId || interrupting) return
+    if (!projectId || !selectedSessionId || !liveUserMessageUuid || interrupting) return
     setInterrupting(true)
     setSubmitError(null)
     try {
-      await interruptTurn(projectId, selectedSessionId, liveTurnId)
+      await interruptTurn(projectId, selectedSessionId)
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
       setInterrupting(false)
     }
   }
 
-  const actionMode = submitting || interrupting ? 'loading' : liveTurnId ? 'stop' : 'submit'
+  const actionMode = submitting || interrupting ? 'loading' : liveUserMessageUuid ? 'stop' : 'submit'
 
   return (
     <section className="detail-panel workspace-main-panel">
@@ -534,7 +535,7 @@ function WorkspacePanel({
               value={inputText}
               onChange={(event) => setInputText(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key !== 'Enter' || event.shiftKey || submitting || !inputText.trim()) return
+                if (event.key !== 'Enter' || event.shiftKey || submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
                 event.preventDefault()
                 void submitTurn()
               }}

@@ -79,7 +79,11 @@ function isTaskNotificationMessage(message: SessionMessage): boolean {
 }
 
 function isPrimaryUserMessage(message: SessionMessage): boolean {
-  return message.type === 'user' && !isToolResultMessage(message) && !isTaskNotificationMessage(message)
+  return message.type === 'user'
+    && !isToolResultMessage(message)
+    && !isTaskNotificationMessage(message)
+    && !isInternalUserMessage(message)
+    && hasDisplayableUserContent(message)
 }
 
 function textFromUnknownContent(content: unknown): string {
@@ -98,6 +102,18 @@ function textFromUnknownContent(content: unknown): string {
 
 function userText(message: SessionMessage): string {
   return textFromUnknownContent(messageContent(message))
+}
+
+function hasDisplayableUserContent(message: SessionMessage): boolean {
+  const content = messageContent(message)
+  if (userText(message).trim()) return true
+  return Array.isArray(content) && content.some((block) => isRecord(block) && (block.type === 'image' || block.type === 'file' || block.type === 'document'))
+}
+
+function isInternalUserMessage(message: SessionMessage): boolean {
+  if (!isRecord(message.message)) return false
+  if (message.message.shouldQuery === false || message.message.isSynthetic === true) return true
+  return message.message.origin === 'internal'
 }
 
 function blockKindForContentBlock(block: unknown): string {

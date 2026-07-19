@@ -118,7 +118,6 @@ export const persistedLiveEventSchema = z.object({
   id: z.number(),
   projectId: z.string(),
   sessionId: z.string(),
-  turnId: z.string(),
   eventType: z.string(),
   source: z.string(),
   recordedAtMs: z.number(),
@@ -136,6 +135,7 @@ export type SessionLiveEventsResponse = z.infer<typeof sessionLiveEventsResponse
 
 export const createTurnRequestSchema = z.object({
   text: z.string().trim().min(1),
+  userMessageUuid: z.string().uuid(),
 })
 
 export type CreateTurnRequest = z.infer<typeof createTurnRequestSchema>
@@ -143,7 +143,7 @@ export type CreateTurnRequest = z.infer<typeof createTurnRequestSchema>
 export const createTurnResponseSchema = z.object({
   projectId: z.string(),
   sessionId: z.string(),
-  turnId: z.string(),
+  userMessageUuid: z.string(),
 })
 
 export type CreateTurnResponse = z.infer<typeof createTurnResponseSchema>
@@ -153,28 +153,28 @@ export type SessionStreamEvent =
       type: 'live.turn.started'
       projectId: string
       sessionId: string
-      turnId: string
+      userMessageUuid: string
       turn: TurnSummary
     }
   | {
       type: 'live.raw'
       projectId: string
       sessionId: string
-      turnId: string
+      userMessageUuid: string
       raw: unknown
     }
   | {
       type: 'live.timeline.block'
       projectId: string
       sessionId: string
-      turnId: string
+      userMessageUuid: string
       block: TimelineBlock
     }
   | {
       type: 'live.turn.completed'
       projectId: string
       sessionId: string
-      turnId: string
+      userMessageUuid: string
       completedAt: number
       raw: unknown
     }
@@ -182,7 +182,7 @@ export type SessionStreamEvent =
       type: 'live.turn.failed'
       projectId: string
       sessionId: string
-      turnId: string
+      userMessageUuid: string
       completedAt: number
       error: string
     }
@@ -190,7 +190,7 @@ export type SessionStreamEvent =
       type: 'live.turn.interrupted'
       projectId: string
       sessionId: string
-      turnId: string
+      userMessageUuid: string
       completedAt: number
     }
 

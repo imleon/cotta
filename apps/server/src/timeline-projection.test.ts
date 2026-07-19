@@ -113,4 +113,22 @@ describe('projectSessionTimeline', () => {
       }),
     ]))
   })
+
+  it('does not start a new turn for non-query user messages', () => {
+    const timeline = projectSessionTimeline('session-1', [
+      messages[0]!,
+      {
+        type: 'user',
+        uuid: 'internal-user',
+        session_id: 'session-1',
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+        timestamp: '2026-07-14T08:00:05.000Z',
+        message: { role: 'user', content: 'Internal note', shouldQuery: false },
+      } as TimestampedSessionMessage,
+    ], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
+    expect(timeline.turns[0]?.blocks.map((block) => block.id)).toEqual(['user-1:user', 'internal-user:user'])
+  })
 })

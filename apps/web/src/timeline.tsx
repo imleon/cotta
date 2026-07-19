@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { SessionStreamEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { fetchSessionTimeline, fetchSessionTimelineState, withToken } from './api'
+import type { PersistedLiveEvent, SessionStreamEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
+import { fetchSessionLiveEvents, fetchSessionTimeline, fetchSessionTimelineState, withToken } from './api'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -140,7 +140,9 @@ function TimelineTimestamp({
 
 function blockTitle(kind: string): string {
   if (kind === 'user.message') return 'User'
-  if (kind === 'assistant.text') return 'Assistant'
+  if (kind === 'user.image') return 'Image'
+  if (kind === 'user.file') return 'File'
+  if (kind === 'assistant.text' || kind === 'assistant.message') return 'Assistant'
   if (kind === 'assistant.task_notification') return 'Task notification'
   if (kind === 'assistant.tool_use') return 'Tool use'
   if (kind === 'tool.result') return 'Tool result'
@@ -152,7 +154,7 @@ function blockTitle(kind: string): string {
 }
 
 function blockTone(kind: string): string {
-  if (kind === 'user.message') return 'user'
+  if (kind === 'user.message' || kind === 'user.image' || kind === 'user.file') return 'user'
   if (kind === 'assistant.text' || kind === 'assistant.message' || kind === 'assistant.task_notification') return 'assistant'
   if (kind === 'assistant.tool_use' || kind === 'tool.result') return 'tool'
   if (kind === 'error') return 'danger'
@@ -397,6 +399,17 @@ function thinkingSummary(value: unknown): string | null {
   return shortText(dataPreview(value, 0), 88)
 }
 
+function toolIcon(toolName: string): string {
+  const normalized = toolName.toLowerCase()
+  if (/bash|shell|terminal/.test(normalized)) return '$'
+  if (/read|write|edit|file|fs/.test(normalized)) return '▣'
+  if (/search|grep|glob|find/.test(normalized)) return '⌕'
+  if (/web|fetch|browser|http/.test(normalized)) return '◎'
+  if (/task|agent|subagent/.test(normalized)) return '⚙'
+  if (/git|github|gh/.test(normalized)) return '⑂'
+  return '⌘'
+}
+
 function ToolResultTextValue({ value }: { value: string }) {
   return <pre className={toolTimelineClass.outputText}>{value}</pre>
 }
@@ -415,7 +428,7 @@ function ToolCallBlockView({ toolUse, results }: { toolUse: TimelineBlock | null
     <details className={disclosureCardClass.root} aria-label={`Tool call ${toolName}`}>
       <summary className={disclosureCardClass.header}>
         <div className={disclosureCardClass.heading}>
-          <span className={disclosureCardClass.icon} aria-hidden="true">⌘</span>
+          <span className={disclosureCardClass.icon} aria-hidden="true">{toolIcon(toolName)}</span>
           <div className={disclosureCardClass.title}>
             <strong className={disclosureCardClass.name}>{toolName}</strong>
             {summary ? (
@@ -497,6 +510,26 @@ function taskNotificationField(block: TimelineBlock, key: string): string | null
   return typeof value === 'string' && value ? value : null
 }
 
+function AttachmentBlockView({ block }: { block: TimelineBlock }) {
+  const title = isRecord(block.data) && typeof block.data.name === 'string'
+    ? block.data.name
+    : isRecord(block.data) && typeof block.data.filename === 'string'
+      ? block.data.filename
+      : blockTitle(block.kind)
+  const meta = isRecord(block.data)
+    ? [block.data.media_type, block.data.mime_type, block.data.file_id].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' · ')
+    : null
+  return (
+    <div className="timeline-block timeline-block-user">
+      <div className="timeline-block-header">
+        <span className="timeline-kind">{block.kind === 'user.image' ? 'Image' : 'File'}</span>
+        <span className="timeline-kind-raw">{title}</span>
+      </div>
+      {meta ? <div className="timeline-text">{meta}</div> : null}
+    </div>
+  )
+}
+
 function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
   const summary = taskNotificationField(block, 'summary')
   const status = taskNotificationField(block, 'status')
@@ -565,8 +598,9 @@ function TimelineBlockView({ block, timestamp, source }: { block: TimelineBlock;
 
   if (block.kind === 'assistant.thinking') return <ThinkingBlockView block={block} />
   if (block.kind === 'assistant.task_notification') return <TaskNotificationBlockView block={block} />
+  if (block.kind === 'user.image' || block.kind === 'user.file') return <AttachmentBlockView block={block} />
 
-  if (block.kind === 'assistant.text') {
+  if (block.kind === 'assistant.text' || block.kind === 'assistant.message') {
     return <div className="timeline-assistant-text"><MarkdownValue value={text ?? dataPreview(block.data)} /></div>
   }
 
@@ -622,7 +656,64 @@ function AssistantResponseFrameView({ item, timestamp, source }: { item: Assista
   )
 }
 
-type TimelineTurnIndex = { turnIds: Set<string>; apiMessageIds: Set<string> }
+function persistedPayloadContent(payload: unknown): unknown {
+  return isRecord(payload) && isRecord(payload.message) ? payload.message.content : undefined
+}
+
+function protocolAnomalyBlock(event: PersistedLiveEvent, reason: string): TimelineBlock {
+  return { id: `live-event:${event.id}:protocol_anomaly`, kind: 'raw.protocol_anomaly', sourceEventIds: [`live-event:${event.id}`], data: { reason, raw: event.payload } }
+}
+
+function sdkMessageToTimelineBlocks(event: PersistedLiveEvent): TimelineBlock[] {
+  const payload = event.payload
+  const uuid = isRecord(payload) && typeof payload.uuid === 'string' ? payload.uuid : null
+  const content = persistedPayloadContent(payload)
+  if (!isRecord(payload) || payload.type === 'result') return []
+
+  if (payload.type === 'assistant') {
+    const apiMessageId = isRecord(payload.message) && typeof payload.message.id === 'string' ? payload.message.id : undefined
+    if (!uuid) return [protocolAnomalyBlock(event, 'assistant message missing sdk uuid')]
+    if (!apiMessageId) return [protocolAnomalyBlock(event, 'assistant message missing apiMessageId')]
+    if (!Array.isArray(content)) return [{ id: `${uuid}:assistant`, kind: 'assistant.message', sourceEventIds: [uuid], apiMessageId, data: payload.message ?? payload }]
+    return content.map((block, index): TimelineBlock => {
+      const blockType = isRecord(block) && typeof block.type === 'string' ? block.type : 'unknown_block'
+      const toolUseId = isRecord(block) && block.type === 'tool_use' && typeof block.id === 'string' ? block.id : undefined
+      return {
+        id: `${uuid}:assistant:${index}`,
+        kind: `assistant.${blockType}`,
+        sourceEventIds: [uuid],
+        ...(apiMessageId ? { apiMessageId } : {}),
+        ...(toolUseId ? { contentBlockId: toolUseId, toolUseId } : {}),
+        data: block,
+      }
+    })
+  }
+
+  if (payload.type === 'user') {
+    if (!uuid) return [protocolAnomalyBlock(event, 'user message missing sdk uuid')]
+    if (Array.isArray(content)) {
+      return content.flatMap((block, index): TimelineBlock[] => {
+        if (!isRecord(block)) return []
+        if (block.type === 'tool_result') return [{ id: `${uuid}:tool_result:${index}`, kind: 'tool.result', sourceEventIds: [uuid], ...(typeof block.tool_use_id === 'string' ? { toolUseId: block.tool_use_id } : {}), data: block }]
+        if (block.type === 'text' && typeof block.text === 'string') return [{ id: `${uuid}:user:${index}`, kind: 'user.message', sourceEventIds: [uuid], data: { text: block.text, status: 'confirmed', raw: block } }]
+        if (block.type === 'image') return [{ id: `${uuid}:image:${index}`, kind: 'user.image', sourceEventIds: [uuid], data: block }]
+        if (block.type === 'file' || block.type === 'document') return [{ id: `${uuid}:file:${index}`, kind: 'user.file', sourceEventIds: [uuid], data: block }]
+        return []
+      })
+    }
+    const text = textFromData({ content })
+    return text ? [{ id: `${uuid}:user`, kind: 'user.message', sourceEventIds: [uuid], data: { text, status: 'confirmed', raw: isRecord(payload.message) ? payload.message : null } }] : []
+  }
+
+  return uuid ? [{ id: `${uuid}:raw`, kind: `raw.${String(payload.type)}`, sourceEventIds: [uuid], data: payload }] : [protocolAnomalyBlock(event, 'sdk message missing uuid')]
+}
+
+function liveEventsToTurns(sessionId: string, events: PersistedLiveEvent[]): TurnSummary[] {
+  const blocks = events.flatMap(sdkMessageToTimelineBlocks)
+  return blocks.length === 0 ? [] : [{ id: `live-events:${sessionId}`, sessionId, title: 'SDK events', startedAt: events[0]?.recordedAtMs, completedAt: events.at(-1)?.recordedAtMs, rawStatus: 'complete', displayStatus: 'complete', blocks }]
+}
+
+type TimelineTurnIndex = { userMessageUuids: Set<string>; apiMessageIds: Set<string>; sourceEventIds: Set<string> }
 
 function turnApiMessageIds(turn: TurnSummary): Set<string> {
   const ids = new Set<string>()
@@ -632,20 +723,34 @@ function turnApiMessageIds(turn: TurnSummary): Set<string> {
   return ids
 }
 
+function turnSourceEventIds(turn: TurnSummary): Set<string> {
+  return new Set(turn.blocks.flatMap((block) => block.sourceEventIds))
+}
+
 function timelineTurnIndex(turns: TurnSummary[]): TimelineTurnIndex {
-  const turnIds = new Set<string>()
+  const userMessageUuids = new Set<string>()
   const apiMessageIds = new Set<string>()
+  const sourceEventIds = new Set<string>()
   for (const turn of turns) {
-    turnIds.add(turn.id)
+    userMessageUuids.add(turn.id)
     for (const apiMessageId of turnApiMessageIds(turn)) apiMessageIds.add(apiMessageId)
+    for (const sourceEventId of turnSourceEventIds(turn)) sourceEventIds.add(sourceEventId)
   }
-  return { turnIds, apiMessageIds }
+  return { userMessageUuids, apiMessageIds, sourceEventIds }
+}
+
+function blockIsRepresentedBy(block: TimelineBlock, index: TimelineTurnIndex): boolean {
+  if (block.apiMessageId && index.apiMessageIds.has(block.apiMessageId)) return true
+  return block.sourceEventIds.some((sourceEventId) => index.sourceEventIds.has(sourceEventId))
 }
 
 function turnIsRepresentedBy(turn: TurnSummary, index: TimelineTurnIndex): boolean {
-  if (index.turnIds.has(turn.id)) return true
+  if (index.userMessageUuids.has(turn.id)) return true
   for (const apiMessageId of turnApiMessageIds(turn)) {
     if (index.apiMessageIds.has(apiMessageId)) return true
+  }
+  for (const sourceEventId of turnSourceEventIds(turn)) {
+    if (index.sourceEventIds.has(sourceEventId)) return true
   }
   return false
 }
@@ -659,19 +764,21 @@ function isLiveTurn(turn: TurnSummary): boolean {
 }
 
 function upsertBlock(blocks: TimelineBlock[], block: TimelineBlock): TimelineBlock[] {
-  const index = blocks.findIndex((item) => item.id === block.id)
+  const index = blocks.findIndex((item) => item.id === block.id || item.sourceEventIds.some((sourceEventId) => block.sourceEventIds.includes(sourceEventId)))
   if (index === -1) return [...blocks, block]
   const next = [...blocks]
   next[index] = block
   return next
 }
 
-function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent): TurnSummary[] {
+function applyLiveEvent(turns: TurnSummary[], event: SessionStreamEvent, historyIndex: TimelineTurnIndex): TurnSummary[] {
   if (event.type === 'live.turn.started') {
-    return [...turns.filter((turn) => turn.id !== event.turnId && !turn.id.startsWith('pending:')), event.turn]
+    if (turnIsRepresentedBy(event.turn, historyIndex)) return turns
+    return [...turns.filter((turn) => turn.id !== event.userMessageUuid && !turnIsRepresentedBy(turn, historyIndex)), event.turn]
   }
   if (event.type === 'live.timeline.block') {
-    return turns.map((turn) => turn.id === event.turnId
+    if (blockIsRepresentedBy(event.block, historyIndex)) return turns
+    return turns.map((turn) => turn.id === event.userMessageUuid
       ? { ...turn, blocks: upsertBlock(turn.blocks, event.block) }
       : turn)
   }
@@ -702,7 +809,7 @@ function useSessionTimelineData(
   projectId: string | null,
   sessionId: string | null,
   pendingTurn?: TurnSummary | null,
-  onLiveTurnChange?: (turnId: string | null) => void,
+  onLiveTurnChange?: (userMessageUuid: string | null) => void,
   onSessionListStale?: () => void,
   isTimelineAtBottom?: () => boolean,
 ) {
@@ -713,7 +820,8 @@ function useSessionTimelineData(
   const [loadingOlder, setLoadingOlder] = useState(false)
   const shouldScrollToBottomRef = useRef(false)
   const lastAppliedTimelineVersionRef = useRef<string | null>(null)
-  const liveTurnIdsRef = useRef(new Set<string>())
+  const historyIndexRef = useRef<TimelineTurnIndex>(timelineTurnIndex([]))
+  const liveUserMessageUuidsRef = useRef(new Set<string>())
   const effectiveSessionId = sessionId ?? pendingTurn?.sessionId ?? null
   const enabled = Boolean(projectId && sessionId)
 
@@ -732,6 +840,13 @@ function useSessionTimelineData(
     refetchInterval: 8000,
     refetchIntervalInBackground: false,
   })
+  const liveEvents = useQuery({
+    queryKey: ['session-live-events', projectId, sessionId],
+    queryFn: () => fetchSessionLiveEvents(projectId!, sessionId!),
+    enabled,
+    retry: false,
+  })
+  const refetchLiveEvents = liveEvents.refetch
 
   useEffect(() => {
     setTurns([])
@@ -739,7 +854,8 @@ function useSessionTimelineData(
     setHasMore(false)
     setOlderError(null)
     lastAppliedTimelineVersionRef.current = null
-    liveTurnIdsRef.current.clear()
+    historyIndexRef.current = timelineTurnIndex([])
+    liveUserMessageUuidsRef.current.clear()
   }, [projectId, effectiveSessionId])
 
   useEffect(() => {
@@ -757,6 +873,7 @@ function useSessionTimelineData(
     const previousVersion = lastAppliedTimelineVersionRef.current
     const nextVersion = timeline.data.state.version
     shouldScrollToBottomRef.current ||= isTimelineAtBottom?.() ?? true
+    historyIndexRef.current = timelineTurnIndex(timeline.data.turns)
     setTurns((current) => reconcileTimelineTurns(current, timeline.data.turns))
     setNextCursor(timeline.data.nextCursor)
     setHasMore(timeline.data.hasMore)
@@ -779,24 +896,25 @@ function useSessionTimelineData(
     const events = new EventSource(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`))
     events.onmessage = (message) => {
       const event = JSON.parse(message.data) as SessionStreamEvent
-      setTurns((current) => applyLiveEvent(current, event))
-      if ('turnId' in event) {
+      setTurns((current) => applyLiveEvent(current, event, historyIndexRef.current))
+      if ('userMessageUuid' in event) {
         if (event.type === 'live.turn.started') {
-          liveTurnIdsRef.current.add(event.turnId)
-          onLiveTurnChange?.(event.turnId)
+          liveUserMessageUuidsRef.current.add(event.userMessageUuid)
+          onLiveTurnChange?.(event.userMessageUuid)
         }
         if (event.type === 'live.turn.completed' || event.type === 'live.turn.failed' || event.type === 'live.turn.interrupted') {
-          liveTurnIdsRef.current.delete(event.turnId)
-          if (liveTurnIdsRef.current.size === 0) {
+          liveUserMessageUuidsRef.current.delete(event.userMessageUuid)
+          if (liveUserMessageUuidsRef.current.size === 0) {
             onLiveTurnChange?.(null)
             void refetchTimeline()
+            void refetchLiveEvents()
           }
         }
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottom?.() ?? true
     }
     return () => events.close()
-  }, [isTimelineAtBottom, onLiveTurnChange, projectId, refetchTimeline, sessionId])
+  }, [isTimelineAtBottom, onLiveTurnChange, projectId, refetchLiveEvents, refetchTimeline, sessionId])
 
   async function loadOlder() {
     if (!projectId || !sessionId || !nextCursor || loadingOlder) return
@@ -820,6 +938,7 @@ function useSessionTimelineData(
     olderError,
     loadingOlder,
     timeline,
+    eventTurns: sessionId && turns.length === 0 && liveEvents.data ? liveEventsToTurns(sessionId, liveEvents.data.events) : [],
     loadOlder,
     shouldScrollToBottomRef,
   }
@@ -829,7 +948,7 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
   projectId: string
   sessionId: string | null
   pendingTurn?: TurnSummary | null
-  onLiveTurnChange?: (turnId: string | null) => void
+  onLiveTurnChange?: (userMessageUuid: string | null) => void
   onSessionListStale?: () => void
 }) {
   const timelinePanelRef = useRef<HTMLElement | null>(null)
@@ -838,24 +957,25 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
     if (!panel) return true
     return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
   }, [])
-  const { turns, hasMore, olderError, loadingOlder, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
+  const { turns, eventTurns, hasMore, olderError, loadingOlder, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
+  const visibleTurns = turns.length > 0 ? turns : eventTurns
 
   useLayoutEffect(() => {
     if (!shouldScrollToBottomRef.current) return
     shouldScrollToBottomRef.current = false
     const panel = timelinePanelRef.current
     if (panel) panel.scrollTop = panel.scrollHeight
-  }, [shouldScrollToBottomRef, turns])
+  }, [shouldScrollToBottomRef, visibleTurns])
 
-  if (timeline.isLoading && turns.length === 0) return <div className="panel muted">Loading session timeline…</div>
-  if (timeline.isError && turns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
+  if (timeline.isLoading && visibleTurns.length === 0) return <div className="panel muted">Loading session timeline…</div>
+  if (timeline.isError && visibleTurns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
 
   return (
     <section className="session-workspace-view" aria-label="Session workspace">
       <section className="timeline-panel" aria-label="Session timeline" ref={timelinePanelRef}>
         {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older'}</button></div> : null}
         {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
-        {turns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : turns.map((turn) => {
+        {visibleTurns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : visibleTurns.map((turn) => {
           const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
           const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
           const source = isLiveTurn(turn) ? 'live' : 'history'

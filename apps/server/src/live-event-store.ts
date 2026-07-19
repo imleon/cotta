@@ -7,7 +7,6 @@ export type PersistedLiveEventRecord = {
   id: number
   projectId: string
   sessionId: string
-  turnId: string
   eventType: string
   source: string
   recordedAtMs: number
@@ -21,7 +20,7 @@ export interface LiveEventStore {
   listSessionEvents(projectId: string, sessionId: string, limit: number): PersistedLiveEventRecord[]
 }
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -31,23 +30,24 @@ function liveEventsDbPath(): string {
   return resolve(process.cwd(), process.env.COTTA_LIVE_EVENTS_DB_PATH ?? 'data/cotta-live-events.sqlite')
 }
 
-function shouldPersistLiveEvent(event: SessionStreamEvent): boolean {
-  if (event.type !== 'live.raw') return true
-  if (!isRecord(event.raw) || event.raw.type !== 'stream_event' || !isRecord(event.raw.event)) return true
-  if (event.raw.event.type !== 'content_block_delta' || !isRecord(event.raw.event.delta)) return true
-  return event.raw.event.delta.type !== 'text_delta' && event.raw.event.delta.type !== 'thinking_delta'
+function sdkMessageType(message: unknown): string {
+  return isRecord(message) && typeof message.type === 'string' ? message.type : 'unknown'
+}
+
+function shouldPersistSdkMessage(message: unknown): boolean {
+  if (!isRecord(message) || message.type !== 'stream_event' || !isRecord(message.event)) return true
+  return message.event.type !== 'content_block_delta'
 }
 
 function toPersistedLiveEvent(event: SessionStreamEvent): PersistedLiveEventInsert | null {
-  if (!shouldPersistLiveEvent(event)) return null
+  if (event.type !== 'live.raw' || !shouldPersistSdkMessage(event.raw)) return null
   return {
     projectId: event.projectId,
     sessionId: event.sessionId,
-    turnId: event.turnId,
-    eventType: event.type,
-    source: 'sse',
+    eventType: sdkMessageType(event.raw),
+    source: 'sdk',
     recordedAtMs: Date.now(),
-    payload: event,
+    payload: event.raw,
   }
 }
 
@@ -68,19 +68,17 @@ export class SqliteLiveEventStore implements LiveEventStore {
       INSERT INTO live_session_events (
         project_id,
         session_id,
-        turn_id,
         event_type,
         source,
         recorded_at_ms,
         payload_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?)
     `)
     this.listBySessionStatement = this.db.prepare(`
       SELECT
         id,
         project_id,
         session_id,
-        turn_id,
         event_type,
         source,
         recorded_at_ms,
@@ -98,7 +96,6 @@ export class SqliteLiveEventStore implements LiveEventStore {
     this.insertStatement.run(
       record.projectId,
       record.sessionId,
-      record.turnId,
       record.eventType,
       record.source,
       record.recordedAtMs,
@@ -111,7 +108,6 @@ export class SqliteLiveEventStore implements LiveEventStore {
       id: number
       project_id: string
       session_id: string
-      turn_id: string
       event_type: string
       source: string
       recorded_at_ms: number
@@ -121,7 +117,6 @@ export class SqliteLiveEventStore implements LiveEventStore {
       id: row.id,
       projectId: row.project_id,
       sessionId: row.session_id,
-      turnId: row.turn_id,
       eventType: row.event_type,
       source: row.source,
       recordedAtMs: row.recorded_at_ms,
@@ -133,19 +128,18 @@ export class SqliteLiveEventStore implements LiveEventStore {
     const version = Number((this.db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
     if (version >= SCHEMA_VERSION) return
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS live_session_events (
+      DROP TABLE IF EXISTS live_session_events;
+      CREATE TABLE live_session_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL,
         event_type TEXT NOT NULL,
         source TEXT NOT NULL,
         recorded_at_ms INTEGER NOT NULL,
         payload_json TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS live_session_events_by_session ON live_session_events(project_id, session_id, id);
-      CREATE INDEX IF NOT EXISTS live_session_events_by_event_type ON live_session_events(event_type, id);
-      CREATE INDEX IF NOT EXISTS live_session_events_by_turn ON live_session_events(turn_id, id);
+      CREATE INDEX live_session_events_by_session ON live_session_events(project_id, session_id, id);
+      CREATE INDEX live_session_events_by_event_type ON live_session_events(event_type, id);
       PRAGMA user_version = ${SCHEMA_VERSION};
     `)
   }

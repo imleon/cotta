@@ -29,9 +29,25 @@ function titleFromSession(session: SDKSessionInfo): string {
   return session.customTitle || session.summary || session.firstPrompt || session.sessionId
 }
 
-function sortSessions(sessions: SDKSessionInfo[]): SDKSessionInfo[] {
+type SessionActivityCacheEntry = { fileSize?: number; lastActivityAt: number }
+
+const sessionActivityCache = new Map<string, SessionActivityCacheEntry>()
+
+function visibleLastActivityAt(projectPath: string, session: SDKSessionInfo): number {
+  const key = `${projectPath}:${session.sessionId}`
+  const cached = sessionActivityCache.get(key)
+  if (cached && cached.fileSize !== undefined && session.fileSize !== undefined && cached.fileSize === session.fileSize) {
+    return cached.lastActivityAt
+  }
+
+  const lastActivityAt = session.lastModified
+  sessionActivityCache.set(key, { fileSize: session.fileSize, lastActivityAt })
+  return lastActivityAt
+}
+
+function sortSessions(projectPath: string, sessions: SDKSessionInfo[]): SDKSessionInfo[] {
   return [...sessions].sort((a, b) => {
-    const byTime = b.lastModified - a.lastModified
+    const byTime = visibleLastActivityAt(projectPath, b) - visibleLastActivityAt(projectPath, a)
     return byTime !== 0 ? byTime : a.sessionId.localeCompare(b.sessionId)
   })
 }
@@ -41,7 +57,7 @@ function toProjectSummary(path: string, sessions: SDKSessionInfo[]): ProjectSumm
     id: projectIdFromPath(path),
     name: projectNameFromPath(path),
     path,
-    lastActivityAt: Math.max(...sessions.map((session) => session.lastModified)),
+    lastActivityAt: Math.max(...sessions.map((session) => visibleLastActivityAt(path, session))),
     sessionCount: sessions.length,
   }
 }
@@ -59,12 +75,12 @@ function toProjectSummaries(sessions: SDKSessionInfo[]): ProjectSummary[] {
     .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
 }
 
-function toSessionSummary(projectId: string, session: SDKSessionInfo): SessionSummary {
+function toSessionSummary(projectPath: string, projectId: string, session: SDKSessionInfo): SessionSummary {
   return {
     id: session.sessionId,
     title: titleFromSession(session),
     projectId,
-    lastActivityAt: session.lastModified,
+    lastActivityAt: visibleLastActivityAt(projectPath, session),
   }
 }
 
@@ -76,13 +92,13 @@ export function sessionTimelineVersion(session: SDKSessionInfo): string {
   return `timeline-state-v1:${sessionTimelineSignature(session)}`
 }
 
-function toSessionTimelineState(projectId: string, session: SDKSessionInfo): SessionTimelineState {
+function toSessionTimelineState(projectPath: string, projectId: string, session: SDKSessionInfo): SessionTimelineState {
   return {
     projectId,
     sessionId: session.sessionId,
     version: sessionTimelineVersion(session),
     signature: sessionTimelineSignature(session),
-    lastActivityAt: session.lastModified,
+    lastActivityAt: visibleLastActivityAt(projectPath, session),
     fileSize: session.fileSize,
     generatedAt: Date.now(),
   }
@@ -127,7 +143,7 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
     async listProjectSessions(projectId, options = {}) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
-      const sessions = sortSessions(await listSessions({ dir: projectPath }))
+      const sessions = sortSessions(projectPath, await listSessions({ dir: projectPath }))
       if (sessions.length === 0) return null
       const project = toProjectSummary(projectPath, sessions)
       const limit = Math.max(1, Math.min(100, Math.trunc(options.limit ?? 10)))
@@ -137,7 +153,7 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
       const hasMore = start + limit < sessions.length
       return {
         project,
-        sessions: page.map((session) => toSessionSummary(project.id, session)),
+        sessions: page.map((session) => toSessionSummary(projectPath, project.id, session)),
         defaultSessionId: sessions[0]?.sessionId ?? null,
         hasMore,
         nextCursor: hasMore ? page.at(-1)?.sessionId ?? null : null,
@@ -150,7 +166,7 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
       const sessions = await listSessions({ dir: projectPath })
       const session = sessions.find((candidate) => candidate.sessionId === sessionId)
       if (!session) return null
-      return toSessionTimelineState(projectId, session)
+      return toSessionTimelineState(projectPath, projectId, session)
     },
 
     async getSessionMessages(projectId, sessionId) {

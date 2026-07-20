@@ -1,7 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { SessionStreamEvent } from '@cotta/shared'
 
 export type PersistedLiveEventRecord = {
   id: number
@@ -16,7 +15,7 @@ export type PersistedLiveEventRecord = {
 type PersistedLiveEventInsert = Omit<PersistedLiveEventRecord, 'id'>
 
 export interface LiveEventStore {
-  append(event: SessionStreamEvent): void
+  append(projectId: string, sessionId: string, message: unknown): void
   listSessionEvents(projectId: string, sessionId: string, limit: number): PersistedLiveEventRecord[]
 }
 
@@ -39,15 +38,15 @@ function shouldPersistSdkMessage(message: unknown): boolean {
   return message.event.type !== 'content_block_delta'
 }
 
-function toPersistedLiveEvent(event: SessionStreamEvent): PersistedLiveEventInsert | null {
-  if (event.type !== 'live.raw' || !shouldPersistSdkMessage(event.raw)) return null
+function toPersistedLiveEvent(projectId: string, sessionId: string, message: unknown): PersistedLiveEventInsert | null {
+  if (!shouldPersistSdkMessage(message)) return null
   return {
-    projectId: event.projectId,
-    sessionId: event.sessionId,
-    eventType: sdkMessageType(event.raw),
+    projectId,
+    sessionId,
+    eventType: sdkMessageType(message),
     source: 'sdk',
     recordedAtMs: Date.now(),
-    payload: event.raw,
+    payload: message,
   }
 }
 
@@ -90,8 +89,8 @@ export class SqliteLiveEventStore implements LiveEventStore {
     `)
   }
 
-  append(event: SessionStreamEvent): void {
-    const record = toPersistedLiveEvent(event)
+  append(projectId: string, sessionId: string, message: unknown): void {
+    const record = toPersistedLiveEvent(projectId, sessionId, message)
     if (!record) return
     this.insertStatement.run(
       record.projectId,

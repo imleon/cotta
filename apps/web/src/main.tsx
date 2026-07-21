@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { StrictMode, type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
+import { StrictMode, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
@@ -430,28 +430,28 @@ function pendingUserTurn(text: string, sessionId: string | null, userMessageUuid
   }
 }
 
-function WorkspacePanel({
+function TurnComposer({
   projectId,
-  detail,
   selectedSessionId,
+  liveUserMessageUuid,
   setSelectedSessionId,
+  setPendingTurn,
+  refreshSessionLists,
 }: {
-  projectId: string | null
-  detail: ProjectSessionsResponse | undefined
+  projectId: string
   selectedSessionId: string | null
+  liveUserMessageUuid: string | null
   setSelectedSessionId: (sessionId: string | null) => void
+  setPendingTurn: Dispatch<SetStateAction<TurnSummary | null>>
+  refreshSessionLists: () => void
 }) {
-  const queryClient = useQueryClient()
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
-  const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
-  const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
 
-  useEffect(() => { setLiveUserMessageUuid(null); setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
-  useEffect(() => { setPendingTurn(null) }, [projectId])
+  useEffect(() => { setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
   useEffect(() => { if (!liveUserMessageUuid) setInterrupting(false) }, [liveUserMessageUuid])
   useEffect(() => {
     const input = inputRef.current
@@ -460,10 +460,8 @@ function WorkspacePanel({
     input.style.height = `${Math.min(input.scrollHeight, 112)}px`
   }, [inputText])
 
-  if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
-
   async function submitTurn() {
-    if (!projectId || submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
+    if (submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
     const text = inputText.trim()
     const userMessageUuid = createUserMessageUuid()
     setSubmitting(true)
@@ -474,8 +472,7 @@ function WorkspacePanel({
       const response = await createTurn(projectId, selectedSessionId, text, userMessageUuid)
       setSelectedSessionId(response.sessionId)
       setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
-      setLiveUserMessageUuid(response.userMessageUuid)
-      refreshProjectSessionLists(queryClient, projectId)
+      refreshSessionLists()
     } catch (error) {
       if (error instanceof CreateTurnHttpError) {
         setPendingTurn(null)
@@ -483,24 +480,15 @@ function WorkspacePanel({
         setSubmitError(error.message)
       } else {
         setSubmitError(`Submission status unknown. Check the timeline or session list before retrying. ${error instanceof Error ? error.message : String(error)}`)
-        refreshProjectSessionLists(queryClient, projectId)
+        refreshSessionLists()
       }
     } finally {
       setSubmitting(false)
     }
   }
 
-  function refreshSessionListsForCurrentProject() {
-    if (!projectId) return
-    refreshProjectSessionLists(queryClient, projectId)
-  }
-
-  function handleLiveTurnChange(userMessageUuid: string | null) {
-    setLiveUserMessageUuid(userMessageUuid)
-  }
-
   async function stopLiveTurn() {
-    if (!projectId || !selectedSessionId || !liveUserMessageUuid || interrupting) return
+    if (!selectedSessionId || !liveUserMessageUuid || interrupting) return
     setInterrupting(true)
     setSubmitError(null)
     try {
@@ -514,6 +502,75 @@ function WorkspacePanel({
   const actionMode = submitting || interrupting ? 'loading' : liveUserMessageUuid ? 'stop' : 'submit'
 
   return (
+    <section className="composer-card composer-card-bottom">
+      <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn() }}>
+        <div
+          className="turn-composer"
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest('button, textarea')) return
+            inputRef.current?.focus()
+          }}
+        >
+          <textarea
+            ref={inputRef}
+            value={inputText}
+            onChange={(event) => setInputText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey || submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
+              event.preventDefault()
+              void submitTurn()
+            }}
+            placeholder="Chat with Cotta..."
+            rows={1}
+          />
+          <div className="turn-composer-footer">
+            <button
+              type={actionMode === 'submit' ? 'submit' : 'button'}
+              className="turn-action-button"
+              onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
+              disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
+              aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
+            >
+              {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
+            </button>
+          </div>
+        </div>
+        {submitError ? <div className="panel error">{submitError}</div> : null}
+      </form>
+    </section>
+  )
+}
+
+function WorkspacePanel({
+  projectId,
+  detail,
+  selectedSessionId,
+  setSelectedSessionId,
+}: {
+  projectId: string | null
+  detail: ProjectSessionsResponse | undefined
+  selectedSessionId: string | null
+  setSelectedSessionId: (sessionId: string | null) => void
+}) {
+  const queryClient = useQueryClient()
+  const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
+  const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
+
+  useEffect(() => { setLiveUserMessageUuid(null) }, [projectId, selectedSessionId])
+  useEffect(() => { setPendingTurn(null) }, [projectId])
+
+  if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
+
+  function refreshSessionListsForCurrentProject() {
+    if (!projectId) return
+    refreshProjectSessionLists(queryClient, projectId)
+  }
+
+  function handleLiveTurnChange(userMessageUuid: string | null) {
+    setLiveUserMessageUuid(userMessageUuid)
+  }
+
+  return (
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
         {selectedSessionId || pendingTurn
@@ -521,42 +578,14 @@ function WorkspacePanel({
           : null}
       </div>
 
-      <section className="composer-card composer-card-bottom">
-        <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn() }}>
-          <div
-            className="turn-composer"
-            onClick={(event) => {
-              if ((event.target as HTMLElement).closest('button, textarea')) return
-              inputRef.current?.focus()
-            }}
-          >
-            <textarea
-              ref={inputRef}
-              value={inputText}
-              onChange={(event) => setInputText(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' || event.shiftKey || submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
-                event.preventDefault()
-                void submitTurn()
-              }}
-              placeholder="Chat with Cotta..."
-              rows={1}
-            />
-            <div className="turn-composer-footer">
-              <button
-                type={actionMode === 'submit' ? 'submit' : 'button'}
-                className="turn-action-button"
-                onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
-                disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
-                aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
-              >
-                {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
-              </button>
-            </div>
-          </div>
-          {submitError ? <div className="panel error">{submitError}</div> : null}
-        </form>
-      </section>
+      <TurnComposer
+        projectId={projectId}
+        selectedSessionId={selectedSessionId}
+        liveUserMessageUuid={liveUserMessageUuid}
+        setSelectedSessionId={setSelectedSessionId}
+        setPendingTurn={setPendingTurn}
+        refreshSessionLists={refreshSessionListsForCurrentProject}
+      />
     </section>
   )
 }

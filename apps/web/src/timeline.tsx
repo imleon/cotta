@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -38,22 +38,17 @@ function formatTimestamp(value?: number): string | null {
   if (!value) return null
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
-  return new Intl.DateTimeFormat(undefined, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date)
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-function MarkdownValue({ value }: { value: string }) {
+const MarkdownValue = memo(function MarkdownValue({ value }: { value: string }) {
   return (
     <div className="debug-markdown">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
     </div>
   )
-}
+})
 
 async function writeClipboard(value: string) {
   try {
@@ -110,35 +105,26 @@ function TimelineTimestamp({
     ? <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
     : <svg viewBox="0 0 24 24" className="h-3 w-3 -scale-x-100" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
 
+  async function handleCopy() {
+    if (!copyText) return
+    try {
+      await writeClipboard(copyText)
+      showStatus('Copied')
+    } catch {
+      showStatus('Copy failed')
+    }
+  }
+
   const contents = (
     <>
-      {copyText ? <span className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center hover:bg-[rgb(60_60_67_/_12%)]" style={{ borderRadius: 5 }}>{copyIcon}</span> : null}
+      {copyText ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[rgb(60_60_67_/_12%)]" style={{ borderRadius: 5 }} type="button" aria-label={copyLabel} onClick={handleCopy}>{copyIcon}</button> : null}
       <time dateTime={new Date(value).toISOString()}>{label}</time>
       {source ? <span className="rounded-full bg-[rgb(60_60_67_/_8%)] px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.04em] text-[#636366]">{source}</span> : null}
       <span className="sr-only" aria-live="polite">{copyStatus}</span>
     </>
   )
 
-  if (!copyText) return <span className={[timelineMessageClass.timestamp, className].filter(Boolean).join(' ')}>{contents}</span>
-
-  return (
-    <button
-      type="button"
-      className={[timelineMessageClass.timestamp, className].filter(Boolean).join(' ')}
-      style={{ fontSize: '0.75rem' }}
-      aria-label={copyLabel}
-      onClick={async () => {
-        try {
-          await writeClipboard(copyText)
-          showStatus('Copied')
-        } catch {
-          showStatus('Copy failed')
-        }
-      }}
-    >
-      {contents}
-    </button>
-  )
+  return <span className={[timelineMessageClass.timestamp, className].filter(Boolean).join(' ')}>{contents}</span>
 }
 
 function blockTitle(kind: string): string {
@@ -639,12 +625,12 @@ function TimelineBlockView({ block, timestamp, source }: { block: TimelineBlock;
   )
 }
 
-function TimelineRenderItemView({ item, timestamp, source }: { item: TimelineRenderItem; timestamp?: number; source?: 'history' | 'live' }) {
+const TimelineRenderItemView = memo(function TimelineRenderItemView({ item, timestamp, source }: { item: TimelineRenderItem; timestamp?: number; source?: 'history' | 'live' }) {
   if (item.type === 'block') return <TimelineBlockView block={item.block} timestamp={timestamp} source={source} />
   return <ToolCallBlockView toolUse={item.toolUse} results={item.results} />
-}
+})
 
-function AssistantResponseFrameView({ item, timestamp, source }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live' }) {
+const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, source }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live' }) {
   const copyText = assistantResponseText(item.items)
 
   return (
@@ -657,7 +643,7 @@ function AssistantResponseFrameView({ item, timestamp, source }: { item: Assista
       <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" source={source} />
     </div>
   )
-}
+})
 
 function persistedPayloadContent(payload: unknown): unknown {
   return isRecord(payload) && isRecord(payload.message) ? payload.message.content : undefined
@@ -1173,8 +1159,8 @@ function useSessionTimelineData(
     return () => events.close()
   }, [projectId, sessionId])
 
-  async function loadOlder() {
-    if (!projectId || !sessionId || !nextCursor || loadingOlder) return
+  const loadOlder = useCallback(async (): Promise<boolean> => {
+    if (!projectId || !sessionId || !nextCursor || loadingOlder) return false
     setLoadingOlder(true)
     setOlderError(null)
     try {
@@ -1182,12 +1168,14 @@ function useSessionTimelineData(
       setTurns((current) => prependOlderTimelineTurns(current, page.turns))
       setNextCursor(page.nextCursor)
       setHasMore(page.hasMore)
+      return true
     } catch (error) {
       setOlderError(error instanceof Error ? error.message : String(error))
+      return false
     } finally {
       setLoadingOlder(false)
     }
-  }
+  }, [loadingOlder, nextCursor, projectId, sessionId])
 
   return {
     turns,
@@ -1210,6 +1198,9 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
   onSessionListStale?: () => void
 }) {
   const timelinePanelRef = useRef<HTMLElement | null>(null)
+  const olderScrollAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  const loadingOlderFromScrollRef = useRef(false)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const isTimelineAtBottom = useCallback(() => {
     const panel = timelinePanelRef.current
     if (!panel) return true
@@ -1217,6 +1208,41 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
   }, [])
   const { turns, eventTurns, hasMore, olderError, loadingOlder, liveConnectionError, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
   const visibleTurns = turns.length > 0 ? turns : eventTurns
+  const loadOlderKeepingAnchor = useCallback(async () => {
+    const panel = timelinePanelRef.current
+    if (!panel || !hasMore || loadingOlder || loadingOlderFromScrollRef.current) return
+    loadingOlderFromScrollRef.current = true
+    olderScrollAnchorRef.current = { scrollTop: panel.scrollTop, scrollHeight: panel.scrollHeight }
+    const loaded = await loadOlder()
+    if (!loaded) olderScrollAnchorRef.current = null
+    loadingOlderFromScrollRef.current = false
+  }, [hasMore, loadOlder, loadingOlder])
+  const handleTimelineScroll = useCallback(() => {
+    const panel = timelinePanelRef.current
+    setShowScrollToBottom(!isTimelineAtBottom())
+    if (panel && panel.scrollTop <= 24) void loadOlderKeepingAnchor()
+  }, [isTimelineAtBottom, loadOlderKeepingAnchor])
+  const scrollToTimelineBottom = useCallback(() => {
+    const panel = timelinePanelRef.current
+    if (!panel) return
+    panel.scrollTop = panel.scrollHeight
+    setShowScrollToBottom(false)
+  }, [])
+
+  useEffect(() => {
+    olderScrollAnchorRef.current = null
+    loadingOlderFromScrollRef.current = false
+    shouldScrollToBottomRef.current = true
+    setShowScrollToBottom(false)
+  }, [projectId, sessionId, shouldScrollToBottomRef])
+
+  useLayoutEffect(() => {
+    const anchor = olderScrollAnchorRef.current
+    if (!anchor) return
+    olderScrollAnchorRef.current = null
+    const panel = timelinePanelRef.current
+    if (panel) panel.scrollTop = anchor.scrollTop + panel.scrollHeight - anchor.scrollHeight
+  }, [visibleTurns])
 
   useLayoutEffect(() => {
     if (!shouldScrollToBottomRef.current) return
@@ -1225,13 +1251,17 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
     if (panel) panel.scrollTop = panel.scrollHeight
   }, [shouldScrollToBottomRef, visibleTurns])
 
+  useLayoutEffect(() => {
+    setShowScrollToBottom(!isTimelineAtBottom())
+  }, [isTimelineAtBottom, visibleTurns])
+
   if (timeline.isLoading && visibleTurns.length === 0) return <div className="panel muted">Loading session timeline…</div>
   if (timeline.isError && visibleTurns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
 
   return (
     <section className="session-workspace-view" aria-label="Session workspace">
-      <section className="timeline-panel" aria-label="Session timeline" ref={timelinePanelRef}>
-        {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older'}</button></div> : null}
+      <section className="timeline-panel" aria-label="Session timeline" ref={timelinePanelRef} onScroll={handleTimelineScroll}>
+        {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlderKeepingAnchor} disabled={loadingOlder} aria-label={loadingOlder ? 'Loading older turns' : undefined}>{loadingOlder ? <span className="loading-dots" aria-hidden="true"><span /><span /><span /></span> : 'Load older'}</button></div> : null}
         {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
         {liveConnectionError ? <div className="panel muted">{liveConnectionError}</div> : null}
         {visibleTurns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : visibleTurns.map((turn) => {
@@ -1248,6 +1278,7 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
           )
         })}
       </section>
+      {showScrollToBottom ? <button className="timeline-scroll-bottom" type="button" onClick={scrollToTimelineBottom} aria-label="Scroll to latest message"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v12m0 0 5-5m-5 5-5-5" /></svg></button> : null}
     </section>
   )
 }

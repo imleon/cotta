@@ -229,7 +229,7 @@ export function registerProjectRoutes(
       }
       const response: SessionTimelineResponse = {
         ...projectSessionTimeline(c.req.param('sessionId'), messages, {
-          limitTurns: parseLimit(c.req.query('limitTurns'), 20),
+          limitTurns: parseLimit(c.req.query('limitTurns'), 10),
           cursor: parseCursor(c.req.query('cursor')),
         }),
         state,

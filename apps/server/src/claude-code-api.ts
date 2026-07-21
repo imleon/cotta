@@ -29,6 +29,19 @@ function titleFromSession(session: SDKSessionInfo): string {
   return session.customTitle || session.summary || session.firstPrompt || session.sessionId
 }
 
+function normalizeProjectPath(path: string): string {
+  return path.replace(/\/+$/, '') || '/'
+}
+
+function isExactProjectPath(projectPath: string, sessionPath: string | undefined): boolean {
+  return !!sessionPath && normalizeProjectPath(sessionPath) === normalizeProjectPath(projectPath)
+}
+
+async function listExactProjectSessions(projectPath: string): Promise<SDKSessionInfo[]> {
+  const sessions = await listSessions({ dir: projectPath })
+  return sessions.filter((session) => isExactProjectPath(projectPath, session.cwd))
+}
+
 type SessionActivityCacheEntry = { fileSize?: number; lastActivityAt: number }
 
 const sessionActivityCache = new Map<string, SessionActivityCacheEntry>()
@@ -135,7 +148,7 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
     async getProject(projectId) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
-      const sessions = await listSessions({ dir: projectPath })
+      const sessions = await listExactProjectSessions(projectPath)
       if (sessions.length === 0) return null
       return toProjectSummary(projectPath, sessions)
     },
@@ -143,7 +156,7 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
     async listProjectSessions(projectId, options = {}) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
-      const sessions = sortSessions(projectPath, await listSessions({ dir: projectPath }))
+      const sessions = sortSessions(projectPath, await listExactProjectSessions(projectPath))
       if (sessions.length === 0) return null
       const project = toProjectSummary(projectPath, sessions)
       const limit = Math.max(1, Math.min(100, Math.trunc(options.limit ?? 10)))
@@ -163,7 +176,7 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
     async getSessionTimelineState(projectId, sessionId) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
-      const sessions = await listSessions({ dir: projectPath })
+      const sessions = await listExactProjectSessions(projectPath)
       const session = sessions.find((candidate) => candidate.sessionId === sessionId)
       if (!session) return null
       return toSessionTimelineState(projectPath, projectId, session)
@@ -172,6 +185,8 @@ export function createClaudeCodeApi(): ClaudeCodeApi {
     async getSessionMessages(projectId, sessionId) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
+      const sessions = await listExactProjectSessions(projectPath)
+      if (!sessions.some((session) => session.sessionId === sessionId)) return null
       return getSessionMessages(sessionId, {
         dir: projectPath,
         limit: 10_000,

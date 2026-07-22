@@ -1019,6 +1019,7 @@ function useSessionTimelineData(
   const historyIndexRef = useRef<TimelineTurnIndex>(timelineTurnIndex([]))
   const liveUserMessageUuidRef = useRef<string | null>(null)
   const liveAccumulatorRef = useRef<LiveAssistantStreamAccumulator | null>(null)
+  const loadOlderRequestRef = useRef(0)
   const onLiveTurnChangeRef = useRef(onLiveTurnChange)
   const onSessionListStaleRef = useRef(onSessionListStale)
   const isTimelineAtBottomRef = useRef(isTimelineAtBottom)
@@ -1059,10 +1060,12 @@ function useSessionTimelineData(
   })
 
   useEffect(() => {
+    loadOlderRequestRef.current += 1
     setTurns([])
     setNextCursor(null)
     setHasMore(false)
     setOlderError(null)
+    setLoadingOlder(false)
     setLiveConnectionError(null)
     lastAppliedTimelineVersionRef.current = null
     historyIndexRef.current = timelineTurnIndex([])
@@ -1161,19 +1164,23 @@ function useSessionTimelineData(
 
   const loadOlder = useCallback(async (): Promise<boolean> => {
     if (!projectId || !sessionId || !nextCursor || loadingOlder) return false
+    const requestId = loadOlderRequestRef.current + 1
+    loadOlderRequestRef.current = requestId
     setLoadingOlder(true)
     setOlderError(null)
     try {
       const page = await fetchSessionTimeline(projectId, sessionId, nextCursor)
+      if (loadOlderRequestRef.current !== requestId) return false
       setTurns((current) => prependOlderTimelineTurns(current, page.turns))
       setNextCursor(page.nextCursor)
       setHasMore(page.hasMore)
       return true
     } catch (error) {
+      if (loadOlderRequestRef.current !== requestId) return false
       setOlderError(error instanceof Error ? error.message : String(error))
       return false
     } finally {
-      setLoadingOlder(false)
+      if (loadOlderRequestRef.current === requestId) setLoadingOlder(false)
     }
   }, [loadingOlder, nextCursor, projectId, sessionId])
 

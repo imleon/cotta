@@ -1,0 +1,314 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
+
+const { listSessionsMock } = vi.hoisted(() => ({
+  listSessionsMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').listSessions>(),
+}))
+
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  listSessions: listSessionsMock,
+}))
+
+import { SessionSummaryCache } from './session-summary-cache.js'
+
+function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sessionId' | 'cwd'>): SDKSessionInfo {
+  return {
+    customTitle: undefined,
+    summary: '',
+    firstPrompt: undefined,
+    lastModified: 0,
+    fileSize: 0,
+    ...overrides,
+  }
+}
+
+function projectId(path: string): string {
+  return Buffer.from(path, 'utf8').toString('base64url')
+}
+
+describe('SessionSummaryCache', () => {
+  beforeEach(() => {
+    listSessionsMock.mockReset()
+  })
+
+  it('includes live status in cached session windows', async () => {
+    const cache = new SessionSummaryCache(10)
+    cache.setSessionStateReader((sessionId) => sessionId === 's1' ? 'running' : null)
+    listSessionsMock.mockResolvedValueOnce([
+      session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 }),
+    ])
+
+    await cache.scheduleRefresh()
+
+    expect(await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })).toEqual({
+      sessionsByProject: {
+        [projectId('/repo/a')]: {
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5, rawStatus: 'running', displayStatus: 'running' }],
+          hasMore: false,
+          nextCursor: null,
+        },
+      },
+    })
+  })
+
+  it('moves a session between projects and emits versions for both projects', async () => {
+    const cache = new SessionSummaryCache(10)
+    const events: Array<{ projectsVersion: number; projectVersions: Array<{ projectId: string; version: number }> }> = []
+    cache.subscribe((event) => events.push(event))
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/b', lastModified: 6 })])
+
+    await cache.scheduleRefresh()
+    await cache.scheduleRefresh()
+
+    expect(await cache.queryProjectSessions({ projects: [
+      { projectId: projectId('/repo/a'), limit: 10 },
+      { projectId: projectId('/repo/b'), limit: 10 },
+    ] })).toEqual({
+      sessionsByProject: {
+        [projectId('/repo/b')]: {
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/b'), lastActivityAt: 6 }],
+          hasMore: false,
+          nextCursor: null,
+        },
+      },
+    })
+    expect(events.at(-1)?.projectVersions.map((project) => project.projectId).sort()).toEqual([projectId('/repo/a'), projectId('/repo/b')].sort())
+  })
+
+  it('short-circuits load more after project is fully loaded', async () => {
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
+      .mockResolvedValueOnce([])
+
+    await cache.scheduleRefresh()
+    await cache.scheduleRefresh()
+
+    const beforeCalls = listSessionsMock.mock.calls.length
+    await cache.listProjectSessions(projectId('/repo/a'), { limit: 10, cursor: 's1' })
+
+    expect(listSessionsMock.mock.calls.length).toBe(beforeCalls)
+  })
+
+  it('does not bump versions on no-op refresh', async () => {
+    const cache = new SessionSummaryCache(10)
+    const events: Array<{ projectsVersion: number; projectVersions: Array<{ projectId: string; version: number }> }> = []
+    cache.subscribe((event) => events.push(event))
+    listSessionsMock.mockResolvedValue([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
+
+    await cache.scheduleRefresh()
+    const versionsAfterFirst = { projectsVersion: cache.projectsVersion, projectVersion: cache.getProjectVersion(projectId('/repo/a')) }
+    await cache.scheduleRefresh()
+
+    expect(cache.projectsVersion).toBe(versionsAfterFirst.projectsVersion)
+    expect(cache.getProjectVersion(projectId('/repo/a'))).toBe(versionsAfterFirst.projectVersion)
+    expect(events).toHaveLength(1)
+  })
+
+  it('removes sessions that disappear from a fully covered refresh window', async () => {
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 's1', cwd: '/repo/a', lastModified: 6 }),
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 5 }),
+      ])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 5 })])
+
+    await cache.scheduleRefresh()
+    await cache.scheduleRefresh()
+
+    const refreshed = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })
+    expect(refreshed.sessionsByProject[projectId('/repo/a')]?.sessions).toEqual([
+      { id: 's2', title: 's2', projectId: projectId('/repo/a'), lastActivityAt: 5 },
+    ])
+  })
+
+  it('does not mutate cache when a multi-page refresh fails before completion', async () => {
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 6 })])
+      .mockRejectedValueOnce(new Error('boom'))
+
+    await cache.scheduleRefresh()
+    await expect(cache.scheduleRefresh()).rejects.toThrow('boom')
+
+    const unchanged = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })
+    expect(unchanged.sessionsByProject[projectId('/repo/a')]?.sessions).toEqual([
+      { id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5 },
+    ])
+  })
+
+  it('returns session windows larger than 100', async () => {
+    const cache = new SessionSummaryCache(200)
+    listSessionsMock.mockResolvedValueOnce(Array.from({ length: 101 }, (_, index) => session({
+      sessionId: `s${index}`,
+      cwd: '/repo/a',
+      lastModified: 200 - index,
+    })))
+
+    await cache.scheduleRefresh()
+
+    const window = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 101 }] })
+    expect(window.sessionsByProject[projectId('/repo/a')]?.sessions).toHaveLength(101)
+  })
+
+  it('exposes a process epoch with its version snapshot', () => {
+    const cache = new SessionSummaryCache(10)
+
+    expect(cache.versionSnapshot).toEqual({
+      epoch: expect.any(String),
+      projectsVersion: 0,
+      projectVersions: [],
+    })
+  })
+
+  it('discovers a cold valid project before serving a batch session window', async () => {
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 'a1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 'b1', cwd: '/repo/b', lastModified: 2 })])
+      .mockResolvedValueOnce([session({ sessionId: 'a1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 'b1', cwd: '/repo/b', lastModified: 2 })])
+      .mockResolvedValueOnce([session({ sessionId: 'c1', cwd: '/repo/c', lastModified: 1 })])
+      .mockResolvedValueOnce([])
+
+    await cache.scheduleRefresh()
+    const response = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/c'), limit: 10 }] })
+
+    expect(response.sessionsByProject[projectId('/repo/c')]?.sessions).toEqual([
+      { id: 'c1', title: 'c1', projectId: projectId('/repo/c'), lastActivityAt: 1 },
+    ])
+  })
+
+  it('runs a pending deep refresh after the active shallow refresh fails', async () => {
+    let rejectFirst: ((error: Error) => void) | undefined
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockImplementationOnce(() => new Promise<SDKSessionInfo[]>((_, reject) => { rejectFirst = reject }))
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 2 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 1 })])
+      .mockResolvedValueOnce([])
+
+    const shallow = cache.scheduleRefresh()
+    const deep = cache.listProjects({ limit: 2 })
+    rejectFirst?.(new Error('boom'))
+
+    await expect(shallow).rejects.toThrow('boom')
+    await expect(deep).rejects.toThrow('boom')
+    const recovered = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })
+    expect(recovered.sessionsByProject[projectId('/repo/a')]?.sessions.map((session) => session.id)).toEqual(['s1', 's2'])
+  })
+
+  it('passes includeProgrammatic true when scanning sessions', async () => {
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock.mockResolvedValueOnce([])
+
+    await cache.scheduleRefresh()
+
+    expect(listSessionsMock).toHaveBeenCalledWith(expect.objectContaining({ includeProgrammatic: true }))
+  })
+
+  it('removes a project when its last session disappears from a covered refresh', async () => {
+    const cache = new SessionSummaryCache(10)
+    const events: Array<{ projectsVersion: number; projectVersions: Array<{ projectId: string; version: number }> }> = []
+    cache.subscribe((event) => events.push(event))
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
+      .mockResolvedValueOnce([])
+
+    await cache.scheduleRefresh()
+    await cache.scheduleRefresh()
+
+    await expect(cache.listProjects({ limit: 10 })).resolves.toEqual({ projects: [], hasMore: false, nextCursor: null })
+    expect(events.at(-1)?.projectVersions.map((project) => project.projectId)).toContain(projectId('/repo/a'))
+  })
+
+  it('rescans from the head for deep project-window extension so inserted sessions are not skipped', async () => {
+    const cache = new SessionSummaryCache(2)
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 'a1', cwd: '/repo/a', lastModified: 10 }),
+        session({ sessionId: 'a2', cwd: '/repo/a', lastModified: 9 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'a3', cwd: '/repo/a', lastModified: 8 }),
+        session({ sessionId: 'a4', cwd: '/repo/a', lastModified: 7 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'n1', cwd: '/repo/n', lastModified: 13 }),
+        session({ sessionId: 'n2', cwd: '/repo/n', lastModified: 12 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'n3', cwd: '/repo/n', lastModified: 11 }),
+        session({ sessionId: 'a1', cwd: '/repo/a', lastModified: 10 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'a2', cwd: '/repo/a', lastModified: 9 }),
+        session({ sessionId: 'a3', cwd: '/repo/a', lastModified: 8 }),
+      ])
+      .mockResolvedValueOnce([session({ sessionId: 'a4', cwd: '/repo/a', lastModified: 7 })])
+
+    await cache.scheduleRefresh()
+    await cache.listProjects({ limit: 5 })
+
+    const inserted = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/n'), limit: 10 }] })
+    expect(inserted.sessionsByProject[projectId('/repo/n')]?.sessions.map((session) => session.id)).toEqual(['n1', 'n2', 'n3'])
+    expect(listSessionsMock.mock.calls[2]?.[0]).toEqual(expect.objectContaining({ offset: 0 }))
+  })
+
+  it('runs pending deep refresh instead of downgrading it to shallow refresh', async () => {
+    let releaseFirstScan: ((sessions: SDKSessionInfo[]) => void) | undefined
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockImplementationOnce(() => new Promise<SDKSessionInfo[]>((resolve) => { releaseFirstScan = resolve }))
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 2 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 1 })])
+      .mockResolvedValueOnce([])
+
+    const shallow = cache.scheduleRefresh()
+    const deep = cache.listProjects({ limit: 2 })
+    releaseFirstScan?.([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 2 })])
+
+    await shallow
+    await expect(deep).resolves.toEqual({
+      projects: [{ id: projectId('/repo/a'), name: 'a', path: '/repo/a', lastActivityAt: 2 }],
+      hasMore: false,
+      nextCursor: null,
+    })
+    const deepWindow = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })
+    expect(deepWindow.sessionsByProject[projectId('/repo/a')]?.sessions.map((session) => session.id)).toEqual(['s1', 's2'])
+  })
+
+  it('bumps only project session version for status-only changes', async () => {
+    let state: string | null = null
+    const cache = new SessionSummaryCache(10)
+    const events: Array<{ projectsVersion: number; projectVersions: Array<{ projectId: string; version: number }> }> = []
+    cache.setSessionStateReader(() => state)
+    cache.subscribe((event) => events.push(event))
+    listSessionsMock.mockResolvedValue([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
+
+    await cache.scheduleRefresh()
+    state = 'running'
+    await cache.scheduleRefresh()
+
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      epoch: expect.any(String),
+      projectsVersion: 1,
+      projectVersions: [{ projectId: projectId('/repo/a'), version: 2 }],
+    }))
+    const statusWindow = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })
+    expect(statusWindow.sessionsByProject[projectId('/repo/a')]?.sessions[0]).toEqual({
+      id: 's1',
+      title: 's1',
+      projectId: projectId('/repo/a'),
+      lastActivityAt: 5,
+      rawStatus: 'running',
+      displayStatus: 'running',
+    })
+  })
+})

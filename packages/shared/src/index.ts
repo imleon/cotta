@@ -12,16 +12,28 @@ export const projectSummarySchema = z.object({
   name: z.string(),
   path: z.string().optional(),
   lastActivityAt: z.number().optional(),
-  sessionCount: z.number().optional(),
 })
 
 export type ProjectSummary = z.infer<typeof projectSummarySchema>
 
 export const projectsResponseSchema = z.object({
   projects: z.array(projectSummarySchema),
+  hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
 })
 
 export type ProjectsResponse = z.infer<typeof projectsResponseSchema>
+
+export const listVersionsEventSchema = z.object({
+  epoch: z.string().uuid(),
+  projectsVersion: z.number().int().nonnegative(),
+  projectVersions: z.array(z.object({
+    projectId: z.string(),
+    version: z.number().int().nonnegative(),
+  })),
+})
+
+export type ListVersionsEvent = z.infer<typeof listVersionsEventSchema>
 
 export const sessionSummarySchema = z.object({
   id: z.string(),
@@ -49,6 +61,29 @@ export const projectSessionsResponseSchema = z.object({
 })
 
 export type ProjectSessionsResponse = z.infer<typeof projectSessionsResponseSchema>
+
+export const projectSessionsQuerySchema = z.object({
+  projects: z.array(z.object({
+    projectId: z.string(),
+    limit: z.number().int().positive().max(10_000),
+  })),
+})
+
+export type ProjectSessionsQuery = z.infer<typeof projectSessionsQuerySchema>
+
+export const projectSessionsWindowSchema = z.object({
+  sessions: z.array(sessionSummarySchema),
+  hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
+})
+
+export type ProjectSessionsWindow = z.infer<typeof projectSessionsWindowSchema>
+
+export const projectSessionsQueryResponseSchema = z.object({
+  sessionsByProject: z.record(z.string(), projectSessionsWindowSchema),
+})
+
+export type ProjectSessionsQueryResponse = z.infer<typeof projectSessionsQueryResponseSchema>
 
 export const timelineBlockSchema = z.object({
   id: z.string(),

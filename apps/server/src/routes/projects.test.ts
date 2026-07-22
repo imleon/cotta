@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   projectResponseSchema,
+  projectSessionsQueryResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
   sessionLiveEventsResponseSchema,
@@ -20,7 +21,6 @@ const project: ProjectSummary = {
   name: 'cotta-v2',
   path: '/tmp/cotta-v2',
   lastActivityAt: 123,
-  sessionCount: 2,
 }
 
 const sessions: SessionSummary[] = [
@@ -147,7 +147,7 @@ function createTestApp(
     },
     claudeCodeApi: {
       async listProjects() {
-        return [project]
+        return { projects: [project], hasMore: false, nextCursor: null }
       },
       async getProject(projectId) {
         return projectId === project.id ? project : null
@@ -160,7 +160,7 @@ function createTestApp(
         const page = sessions.slice(start, start + limit)
         const hasMore = start + limit < sessions.length
         return {
-          project,
+          project: { ...project },
           sessions: page,
           defaultSessionId: sessions[0]?.id ?? null,
           hasMore,
@@ -184,7 +184,30 @@ describe('project routes', () => {
     const response = await createTestApp().request('/api/projects')
 
     expect(response.status).toBe(200)
-    expect(projectsResponseSchema.parse(await response.json())).toEqual({ projects: [project] })
+    expect(projectsResponseSchema.parse(await response.json())).toEqual({ projects: [project], hasMore: false, nextCursor: null })
+  })
+
+  it('allows project windows larger than 100', async () => {
+    let receivedLimit: number | undefined
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects(options) { receivedLimit = options?.limit; return { projects: [], hasMore: false, nextCursor: null } },
+        async getProject() { return null },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    }).request('/api/projects?limit=101')
+
+    expect(response.status).toBe(200)
+    expect(receivedLimit).toBe(101)
   })
 
   it('gets a project by id', async () => {
@@ -199,7 +222,7 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
-      project,
+      project: { ...project },
       sessions,
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -212,7 +235,7 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
-      project,
+      project: { ...project },
       sessions: [
         { ...sessions[0], rawStatus: 'running', displayStatus: 'running' },
         { ...sessions[1], rawStatus: 'requires_action', displayStatus: 'requires_action' },
@@ -228,7 +251,7 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
-      project,
+      project: { ...project },
       sessions: [sessions[0]],
       defaultSessionId: 'session-newest',
       hasMore: true,
@@ -241,7 +264,7 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
-      project,
+      project: { ...project },
       sessions: [sessions[1]],
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -256,6 +279,88 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'project_not_found' })
   })
 
+  it('returns batch project sessions for requested projects only', async () => {
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionState: (sessionId) => sessionId === 'session-newest' ? 'running' : null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+      sessionSummaryCache: {
+        subscribe: () => () => {},
+        scheduleRefresh: async () => {},
+        ensureReady: async () => {},
+        setSessionStateReader: () => {},
+        queryProjectSessions: () => ({
+          sessionsByProject: {
+            [project.id]: {
+              sessions: [{ ...sessions[0], rawStatus: 'running', displayStatus: 'running' }, sessions[1]],
+              hasMore: false,
+              nextCursor: null,
+            },
+          },
+        }),
+      } as never,
+    }).request('/api/project-sessions/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: [{ projectId: project.id, limit: 2 }, { projectId: 'missing', limit: 1 }] }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({
+      sessionsByProject: {
+        [project.id]: {
+          sessions: [{ ...sessions[0], rawStatus: 'running', displayStatus: 'running' }, sessions[1]],
+          hasMore: false,
+          nextCursor: null,
+        },
+      },
+    })
+  })
+
+  it('returns empty batch sessions for an empty visible set', async () => {
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+      sessionSummaryCache: {
+        ensureReady: async () => {},
+        setSessionStateReader: () => {},
+        subscribe: () => () => {},
+        scheduleRefresh: async () => {},
+        queryProjectSessions: () => ({ sessionsByProject: {} }),
+      } as never,
+    }).request('/api/project-sessions/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: [] }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({ sessionsByProject: {} })
+  })
+
   it('creates a session with userMessageUuid and no turnId', async () => {
     const response = await createApp({
       liveTurnManager: {
@@ -266,7 +371,7 @@ describe('project routes', () => {
         subscribe: () => () => {},
       },
       claudeCodeApi: {
-        async listProjects() { return [project] },
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionTimelineState() { return null },
@@ -297,7 +402,7 @@ describe('project routes', () => {
         subscribe: () => () => {},
       },
       claudeCodeApi: {
-        async listProjects() { return [project] },
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionTimelineState() { return null },

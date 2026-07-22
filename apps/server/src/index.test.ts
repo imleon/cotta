@@ -27,7 +27,7 @@ describe('server routes', () => {
     const response = await createApp({
       authToken: 'secret',
       claudeCodeApi: {
-        async listProjects() { return [] },
+        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
         async getProject() { return null },
         async listProjectSessions() { return null },
         async getSessionTimelineState() { return null },
@@ -41,7 +41,7 @@ describe('server routes', () => {
     const response = await createApp({
       authToken: 'secret',
       claudeCodeApi: {
-        async listProjects() { return [] },
+        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
         async getProject() { return null },
         async listProjectSessions() { return null },
         async getSessionTimelineState() { return null },
@@ -66,7 +66,7 @@ describe('server routes', () => {
   it('leaves protected API requests open when auth is not configured', async () => {
     const response = await createApp({
       claudeCodeApi: {
-        async listProjects() { return [] },
+        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
         async getProject() { return null },
         async listProjectSessions() { return null },
         async getSessionTimelineState() { return null },

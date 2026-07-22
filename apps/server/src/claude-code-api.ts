@@ -5,6 +5,7 @@ import {
   type SessionMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { ProjectSummary, SessionSummary, SessionTimelineState } from '@cotta/shared'
+import type { SessionSummaryCache } from './session-summary-cache.js'
 
 function projectIdFromPath(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
@@ -38,7 +39,7 @@ function isExactProjectPath(projectPath: string, sessionPath: string | undefined
 }
 
 async function listExactProjectSessions(projectPath: string): Promise<SDKSessionInfo[]> {
-  const sessions = await listSessions({ dir: projectPath })
+  const sessions = await listSessions({ dir: projectPath, includeWorktrees: true, includeProgrammatic: true })
   return sessions.filter((session) => isExactProjectPath(projectPath, session.cwd))
 }
 
@@ -71,7 +72,6 @@ function toProjectSummary(path: string, sessions: SDKSessionInfo[]): ProjectSumm
     name: projectNameFromPath(path),
     path,
     lastActivityAt: Math.max(...sessions.map((session) => visibleLastActivityAt(path, session))),
-    sessionCount: sessions.length,
   }
 }
 
@@ -131,35 +131,49 @@ export type ProjectSessions = {
 }
 
 export type ClaudeCodeApi = {
-  listProjects(): Promise<ProjectSummary[]>
+  listProjects(options?: ProjectSessionsOptions): Promise<{ projects: ProjectSummary[]; hasMore: boolean; nextCursor: string | null }>
   getProject(projectId: string): Promise<ProjectSummary | null>
   listProjectSessions(projectId: string, options?: ProjectSessionsOptions): Promise<ProjectSessions | null>
   getSessionTimelineState(projectId: string, sessionId: string): Promise<SessionTimelineState | null>
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
 
-export function createClaudeCodeApi(): ClaudeCodeApi {
+export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi {
   return {
-    async listProjects() {
-      const sessions = await listSessions()
-      return toProjectSummaries(sessions)
+    async listProjects(options = {}) {
+      if (cache) return cache.listProjects(options)
+      const sessions = await listSessions({ includeWorktrees: true, includeProgrammatic: true })
+      const projects = toProjectSummaries(sessions)
+      const limit = Math.max(1, Math.min(10_000, Math.trunc(options.limit ?? 20)))
+      const cursorIndex = options.cursor ? projects.findIndex((project) => project.id === options.cursor) : -1
+      const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+      const page = projects.slice(start, start + limit)
+      const hasMore = start + limit < projects.length
+      return {
+        projects: page,
+        hasMore,
+        nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+      }
     },
 
     async getProject(projectId) {
+      if (cache) return cache.getProject(projectId)
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
       const sessions = await listExactProjectSessions(projectPath)
       if (sessions.length === 0) return null
-      return toProjectSummary(projectPath, sessions)
+      const project = toProjectSummary(projectPath, sessions)
+      return project
     },
 
     async listProjectSessions(projectId, options = {}) {
+      if (cache) return cache.listProjectSessions(projectId, options)
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
       const sessions = sortSessions(projectPath, await listExactProjectSessions(projectPath))
       if (sessions.length === 0) return null
       const project = toProjectSummary(projectPath, sessions)
-      const limit = Math.max(1, Math.min(100, Math.trunc(options.limit ?? 10)))
+      const limit = Math.max(1, Math.min(10_000, Math.trunc(options.limit ?? 10)))
       const cursorIndex = options.cursor ? sessions.findIndex((session) => session.sessionId === options.cursor) : -1
       const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
       const page = sessions.slice(start, start + limit)

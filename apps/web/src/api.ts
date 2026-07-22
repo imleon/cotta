@@ -1,9 +1,13 @@
 import {
+  listVersionsEventSchema,
+  projectSessionsQueryResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
   sessionLiveEventsResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  type ListVersionsEvent,
+  type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
   type ProjectsResponse,
   type SessionLiveEventsResponse,
@@ -23,8 +27,10 @@ export function withToken(path: string): string {
   return `${url.pathname}${url.search}`
 }
 
-export async function fetchProjects(): Promise<ProjectsResponse> {
-  const response = await fetch(withToken('/api/projects'))
+export async function fetchProjects(cursor: string | null = null, limit = 20): Promise<ProjectsResponse> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (cursor) params.set('cursor', cursor)
+  const response = await fetch(withToken(`/api/projects?${params}`))
   if (!response.ok) throw new Error(`Projects request failed: ${response.status}`)
   return projectsResponseSchema.parse(await response.json())
 }
@@ -39,6 +45,16 @@ export async function fetchProjectSessions(
   const response = await fetch(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`))
   if (!response.ok) throw new Error(`Project sessions request failed: ${response.status}`)
   return projectSessionsResponseSchema.parse(await response.json())
+}
+
+export async function queryProjectSessions(projects: Array<{ projectId: string; limit: number }>): Promise<ProjectSessionsQueryResponse> {
+  const response = await fetch(withToken('/api/project-sessions/query'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects }),
+  })
+  if (!response.ok) throw new Error(`Project sessions query failed: ${response.status}`)
+  return projectSessionsQueryResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionTimeline(
@@ -76,6 +92,19 @@ export async function fetchSessionTimelineState(
   )
   if (!response.ok) throw new Error(`Session timeline state request failed: ${response.status}`)
   return sessionTimelineStateResponseSchema.parse(await response.json())
+}
+
+export async function refreshProjects(_projectId: string | null = null): Promise<void> {
+  const response = await fetch(withToken('/api/projects/refresh'), { method: 'POST' })
+  if (!response.ok) throw new Error(`Projects refresh request failed: ${response.status}`)
+}
+
+export function connectListVersions(onEvent: (event: ListVersionsEvent) => void): EventSource {
+  const events = new EventSource(withToken('/api/list-versions/events'))
+  events.onmessage = (message) => {
+    onEvent(listVersionsEventSchema.parse(JSON.parse(message.data)))
+  }
+  return events
 }
 
 export async function ensureSessionRuntime(projectId: string, sessionId: string): Promise<void> {

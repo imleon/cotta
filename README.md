@@ -1,71 +1,33 @@
 # Cotta v2
 
-Cotta v2 is a Web-first Claude Code Project Dashboard.
+Cotta v2 是一个 Web-first 的 Claude Code Project Dashboard。
 
-The MVP goal is to let Claude Code project/session work continue outside the terminal: discover Claude Code projects and sessions through official APIs, render historical and live session timelines, continue existing sessions, create new sessions inside existing projects, and interrupt a running turn.
+它的目标不是替代终端，而是把 Claude Code 的 project / session 工作流延伸到 Web：
 
-See:
+- 让历史 session 更容易发现、浏览和继续
+- 让 live turn 的状态和时间线更清晰
+- 让长任务可以脱离终端窗口继续观察和操作
+- 用官方 Agent SDK 作为事实源，避免解析私有实现细节
 
-- `docs/product-goal-v2.md` — product goal and MVP boundaries
-- `docs/development-plan-v2-mvp.md` — phased development plan
-- `docs/agent-sdk-capability-spike.md` — Agent SDK capability findings
+核心理念：
 
-## MVP architecture
+1. **Web 是延伸层，不是第二套 Claude Code**
+   - 终端仍然是 Claude Code 的核心入口。
+   - Web 负责可视化、继续会话、查看历史和处理运行中的状态。
 
-```text
-apps/server      Hono + Claude Agent SDK + HTTP/SSE
-apps/web         React + Vite + TanStack Query
-packages/shared  Shared API, event, and timeline types
-```
+2. **事实源只来自官方 API / SDK**
+   - 不依赖私有 JSONL 格式作为产品契约。
+   - 不维护一套和 Claude Code 分叉的项目/session 真相。
 
-## Current skeleton
+3. **Timeline 是主要产品体验**
+   - 用户关心的是一次 session 发生了什么、现在卡在哪里、下一步能做什么。
+   - 原始事件可以复杂，但界面应该把它们整理成可读的工作流。
 
-```bash
-npm install
-npm run build
-npm test
-```
+4. **列表侧用 cache + version + pull**
+   - 后端维护统一 summary cache。
+   - SSE 只推 version，不推完整数据。
+   - 前端按当前已加载窗口拉取最新列表。
 
-Run the server:
-
-```bash
-npm run dev
-```
-
-The API server listens on `127.0.0.1:3000` by default. This is intentional for remote development: the Vite web dev server is the remote-facing entrypoint and proxies `/api` to the local API server. Override only when you intentionally want to expose the API server directly:
-
-```bash
-HOST=0.0.0.0 PORT=3001 npm run dev
-```
-
-Optional token protection:
-
-```bash
-COTTA_AUTH_TOKEN=dev-secret npm run dev
-```
-
-`COTTA_AUTH_TOKEN` must be present in the server process environment. When it is set, API and SSE requests must include either `?token=dev-secret` or `Authorization: Bearer dev-secret`. `/api/health` remains unauthenticated for health checks.
-
-Verify the server is protected before exposing the Web UI remotely:
-
-```bash
-curl -i http://127.0.0.1:3000/api/projects
-# expected: 401 when COTTA_AUTH_TOKEN is set
-
-curl -i "http://127.0.0.1:3000/api/projects?token=dev-secret"
-# expected: 200
-```
-
-Run the web app:
-
-```bash
-npm run dev:web
-```
-
-`npm run dev:web` listens on `0.0.0.0:5173`, so for remote development open the Web UI from your local browser with the remote development machine's IP and the same token when auth is enabled:
-
-```text
-http://<remote-host>:5173/?token=dev-secret
-```
-
-Opening `http://<remote-host>:5173/` without a token shows an access-required page and does not load project/session data.
+5. **少做平台，先做好一个清晰工作台**
+   - 不急着做复杂配置系统、权限模型或多入口编排。
+   - 先把 Claude Code project/session 的发现、查看、继续、打断做好。

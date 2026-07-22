@@ -19,10 +19,8 @@ function projectId(path: string): string {
 
 function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sessionId' | 'cwd'>): SDKSessionInfo {
   return {
-    sessionId: overrides.sessionId,
-    cwd: overrides.cwd,
     customTitle: undefined,
-    summary: undefined,
+    summary: '',
     firstPrompt: undefined,
     lastModified: 0,
     fileSize: 0,
@@ -50,9 +48,8 @@ describe('createClaudeCodeApi', () => {
       name: 'cotta',
       path: '/repo/cotta',
       lastActivityAt: 2,
-      sessionCount: 1,
     })
-    expect(listSessionsMock).toHaveBeenCalledWith({ dir: '/repo/cotta' })
+    expect(listSessionsMock).toHaveBeenCalledWith({ dir: '/repo/cotta', includeWorktrees: true, includeProgrammatic: true })
   })
 
   it('lists only exact-path sessions for a project', async () => {
@@ -71,8 +68,7 @@ describe('createClaudeCodeApi', () => {
         name: 'cotta',
         path: '/repo/cotta',
         lastActivityAt: 5,
-        sessionCount: 2,
-      },
+        },
       sessions: [
         { id: 'cotta-newer', title: 'cotta-newer', projectId: projectId('/repo/cotta'), lastActivityAt: 5 },
         { id: 'cotta-older', title: 'cotta-older', projectId: projectId('/repo/cotta'), lastActivityAt: 1 },
@@ -118,7 +114,6 @@ describe('createClaudeCodeApi', () => {
       name: 'cotta',
       path: '/repo/cotta',
       lastActivityAt: 7,
-      sessionCount: 1,
     })
     await expect(api.getSessionMessages(projectId('/repo/cotta'), 'slashy')).resolves.toEqual([])
     expect(getSessionMessagesMock).toHaveBeenCalledWith('slashy', {

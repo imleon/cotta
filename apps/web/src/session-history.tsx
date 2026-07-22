@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import type { ProjectSummary, SessionSummary } from '@cotta/shared'
-import { fetchProjectSessions, fetchProjects } from './api'
+import type { ProjectSessionsResponse, ProjectSummary, SessionSummary } from '@cotta/shared'
+import { fetchProjectSessions, fetchProjects, queryProjectSessions } from './api'
 import { sessionQueryKeys } from './session-query-refresh'
 
 function formatAge(value?: number): string {
@@ -46,6 +46,7 @@ function projectSessionsRegionId(projectId: string): string {
 }
 
 const SIDEBAR_LIST_MOTION_MS = 140
+const LOAD_MORE_SCROLL_THRESHOLD_PX = 24
 
 type SidebarMotionState = 'present' | 'entering' | 'exiting'
 
@@ -345,6 +346,10 @@ function SessionRow({
   )
 }
 
+function isNearScrollEnd(element: HTMLElement): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= LOAD_MORE_SCROLL_THRESHOLD_PX
+}
+
 function ProjectSessionBranch({
   project,
   selectedProjectId,
@@ -352,6 +357,8 @@ function ProjectSessionBranch({
   pendingProjectId,
   pendingSessionId,
   expanded,
+  visibleSessionsLoading,
+  visibleSessionsError,
   onToggleExpanded,
   onSelectSession,
   itemRef,
@@ -363,6 +370,8 @@ function ProjectSessionBranch({
   pendingProjectId?: string | null
   pendingSessionId?: string | null
   expanded: boolean
+  visibleSessionsLoading?: boolean
+  visibleSessionsError?: boolean
   onToggleExpanded: () => void
   onSelectSession: (projectId: string, sessionId: string) => void
   itemRef?: (node: HTMLDivElement | null) => void
@@ -374,7 +383,9 @@ function ProjectSessionBranch({
     queryFn: ({ pageParam }) => fetchProjectSessions(project.id, pageParam, 10),
     getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
     retry: false,
-    enabled: expanded,
+    enabled: false,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
   })
   const sessions = sessionsQuery.data?.pages.flatMap((page) => page.sessions) ?? []
   const sessionMotion = useSidebarListMotion(sessions, (session) => session.id)
@@ -392,9 +403,9 @@ function ProjectSessionBranch({
       />
       {expanded ? (
         <div className="project-sessions" id={sessionsRegionId} role="group" aria-label={`${project.name} sessions`}>
-          {sessionsQuery.isLoading ? <div className="rail-empty">Loading sessions…</div> : null}
-          {sessionsQuery.isError ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
-          {!sessionsQuery.isLoading && sessions.length === 0 && sessionMotion.items.length === 0 ? <div className="rail-empty">No sessions</div> : null}
+          {sessionsQuery.isLoading || (!sessionsQuery.data && visibleSessionsLoading) ? <div className="rail-empty">Loading sessions…</div> : null}
+          {sessionsQuery.isError || (!sessionsQuery.data && visibleSessionsError) ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
+          {!sessionsQuery.isLoading && !visibleSessionsLoading && !sessionsQuery.isError && !visibleSessionsError && sessions.length === 0 && sessionMotion.items.length === 0 ? <div className="rail-empty">No sessions</div> : null}
           {sessionMotion.items.length > 0 ? (
             <ol className="session-list rail-session-list">
               {sessionMotion.items.map(({ key, item: session, motionState }) => (
@@ -427,7 +438,12 @@ export function ProjectSessionRail({
   selectedSessionId,
   pendingProjectId,
   pendingSessionId,
-  onSelectProject,
+  projectsHasMore,
+  projectsLoadingMore,
+  onLoadMoreProjects,
+  visibleSessionsLoading,
+  visibleSessionsError,
+  onVisibleProjectIdsChange,
   onSelectSession,
 }: {
   projects: ProjectSummary[]
@@ -435,7 +451,12 @@ export function ProjectSessionRail({
   selectedSessionId: string | null
   pendingProjectId?: string | null
   pendingSessionId?: string | null
-  onSelectProject: (projectId: string) => void
+  projectsHasMore?: boolean
+  projectsLoadingMore?: boolean
+  onLoadMoreProjects?: () => void
+  visibleSessionsLoading?: boolean
+  visibleSessionsError?: boolean
+  onVisibleProjectIdsChange?: (projectIds: string[]) => void
   onSelectSession: (projectId: string, sessionId: string) => void
 }) {
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set())
@@ -463,13 +484,27 @@ export function ProjectSessionRail({
     if (selectedProjectId) expandProject(selectedProjectId)
   }, [selectedProjectId])
 
+  const visibleProjectIds = useMemo(
+    () => [...new Set([selectedProjectId, ...expandedProjectIds].filter((projectId): projectId is string => Boolean(projectId)))].sort(),
+    [expandedProjectIds, selectedProjectId],
+  )
+
+  useEffect(() => {
+    onVisibleProjectIdsChange?.(visibleProjectIds)
+  }, [onVisibleProjectIdsChange, visibleProjectIds])
+
   function selectSession(projectId: string, sessionId: string) {
     expandProject(projectId)
     onSelectSession(projectId, sessionId)
   }
 
+  function handleProjectRailScroll(event: ReactUIEvent<HTMLElement>) {
+    if (!projectsHasMore || projectsLoadingMore || !isNearScrollEnd(event.currentTarget)) return
+    onLoadMoreProjects?.()
+  }
+
   return (
-    <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions">
+    <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions" onScroll={handleProjectRailScroll}>
       <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
         <div className="project-tree">
           {projectMotion.items.map(({ key, item: project, motionState }) => (
@@ -483,10 +518,17 @@ export function ProjectSessionRail({
               pendingProjectId={pendingProjectId}
               pendingSessionId={pendingSessionId}
               expanded={expandedProjectIds.has(project.id)}
+              visibleSessionsLoading={visibleSessionsLoading}
+              visibleSessionsError={visibleSessionsError}
               onToggleExpanded={() => toggleProject(project.id)}
               onSelectSession={selectSession}
             />
           ))}
+          {projectsHasMore ? (
+            <button className="load-more-sessions" type="button" onClick={onLoadMoreProjects} disabled={projectsLoadingMore}>
+              {projectsLoadingMore ? 'Loading…' : 'Load more projects'}
+            </button>
+          ) : null}
         </div>
       </section>
     </aside>
@@ -496,9 +538,36 @@ export function ProjectSessionRail({
 export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit?: number } = {}) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
-  const projects = useQuery({ queryKey: sessionQueryKeys.projects, queryFn: fetchProjects, retry: false, refetchInterval: 60_000, refetchIntervalInBackground: false })
-  const projectSessions = useQuery({ queryKey: sessionQueryKeys.projectSessionsDetail(selectedProjectId, sessionLimit), queryFn: () => fetchProjectSessions(selectedProjectId!, null, sessionLimit), enabled: Boolean(selectedProjectId), retry: false, refetchInterval: 60_000, refetchIntervalInBackground: false })
-  const items = projects.data?.projects ?? []
+  const projects = useInfiniteQuery({
+    queryKey: sessionQueryKeys.projects,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => fetchProjects(pageParam, 20),
+    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+    retry: false,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+  })
+  const projectSessions = useQuery({
+    queryKey: sessionQueryKeys.projectSessionsDetail(selectedProjectId, sessionLimit),
+    queryFn: async (): Promise<ProjectSessionsResponse> => {
+      const response = await queryProjectSessions([{ projectId: selectedProjectId!, limit: sessionLimit }])
+      const window = response.sessionsByProject[selectedProjectId!]
+      return {
+        project: items.find((project) => project.id === selectedProjectId) ?? { id: selectedProjectId!, name: selectedProjectId! },
+        sessions: window?.sessions ?? [],
+        defaultSessionId: window?.sessions[0]?.id ?? null,
+        hasMore: window?.hasMore ?? false,
+        nextCursor: window?.nextCursor ?? null,
+      }
+    },
+    enabled: Boolean(selectedProjectId),
+    retry: false,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+  })
+  const items = projects.data?.pages.flatMap((page) => page.projects) ?? []
 
   useEffect(() => { if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id) }, [items, selectedProjectId])
 
@@ -506,6 +575,7 @@ export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit
     selectedProjectId,
     selectedSessionId,
     setSelectedSessionId,
+    setSelectedProjectId,
     startNewSession: (projectId: string) => {
       setSelectedProjectId(projectId)
       setSelectedSessionId(null)

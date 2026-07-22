@@ -1,9 +1,13 @@
 import type { Hono } from 'hono'
 import {
   createTurnRequestSchema,
+  projectSessionsQuerySchema,
+  projectSessionsQueryResponseSchema,
   type CreateTurnResponse,
+  type ListVersionsEvent,
   type ProjectResponse,
   type ProjectsResponse,
+  type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
   type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
@@ -11,6 +15,7 @@ import {
   type SessionTimelineStateResponse,
 } from '@cotta/shared'
 import type { ClaudeCodeApi } from '../claude-code-api.js'
+import type { SessionSummaryCache } from '../session-summary-cache.js'
 import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
@@ -18,10 +23,10 @@ import { projectSessionTimeline } from '../timeline-projection.js'
 export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionState' | 'startTurn' | 'subscribe'>
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
 
-function parseLimit(value: string | undefined, fallback: number): number {
+function parseLimit(value: string | undefined, fallback: number, max = 10_000): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
-  return Math.max(1, Math.min(100, Math.trunc(parsed)))
+  return Math.max(1, Math.min(max, Math.trunc(parsed)))
 }
 
 function parseLiveEventLimit(value: string | undefined, fallback: number): number {
@@ -38,15 +43,29 @@ function encodeSse(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`
 }
 
+function overlayLiveSessionStatus<T extends { sessions: Array<{ id: string }> }>(
+  liveTurnManager: ProjectRoutesLiveTurnManager,
+  response: T,
+): T {
+  return {
+    ...response,
+    sessions: response.sessions.map((session) => {
+      const liveState = liveTurnManager.sessionState(session.id)
+      return liveState ? { ...session, rawStatus: liveState, displayStatus: liveState } : session
+    }),
+  }
+}
+
 export function registerProjectRoutes(
   app: Hono,
-  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; liveEventStore?: ProjectRoutesLiveEventStore },
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache },
 ): void {
   app.get('/api/projects', async (c) => {
     try {
-      const response: ProjectsResponse = {
-        projects: await input.claudeCodeApi.listProjects(),
-      }
+      const response: ProjectsResponse = await input.claudeCodeApi.listProjects({
+        limit: parseLimit(c.req.query('limit'), 20),
+        cursor: parseCursor(c.req.query('cursor')),
+      })
       return c.json(response)
     } catch (error) {
       console.error('projects:list failed', error)
@@ -77,17 +96,74 @@ export function registerProjectRoutes(
       if (!result) {
         return c.json({ error: 'project_not_found' }, 404)
       }
-      const response: ProjectSessionsResponse = {
-        ...result,
-        sessions: result.sessions.map((session) => {
-          const liveState = input.liveTurnManager.sessionState(session.id)
-          return liveState ? { ...session, rawStatus: liveState, displayStatus: liveState } : session
-        }),
-      }
+      const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionStatus(input.liveTurnManager, result)
       return c.json(response)
     } catch (error) {
       console.error('projects:sessions failed', error)
       return c.json({ error: 'project_sessions_failed' }, 500)
+    }
+  })
+
+  app.post('/api/project-sessions/query', async (c) => {
+    try {
+      if (!input.sessionSummaryCache) return c.json({ error: 'project_sessions_query_unavailable' }, 503)
+      const body = projectSessionsQuerySchema.parse(await c.req.json())
+      const sessionsByProject = (await input.sessionSummaryCache.queryProjectSessions(body)).sessionsByProject
+      const response: ProjectSessionsQueryResponse = projectSessionsQueryResponseSchema.parse({
+        sessionsByProject,
+      })
+      return c.json(response)
+    } catch (error) {
+      console.error('project-sessions:query failed', error)
+      return c.json({ error: 'project_sessions_query_failed' }, 500)
+    }
+  })
+
+  app.get('/api/list-versions/events', (c) => {
+    const cache = input.sessionSummaryCache
+    if (!cache) return c.json({ error: 'list_versions_unavailable' }, 503)
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder()
+        controller.enqueue(encoder.encode(': connected\n\n'))
+        controller.enqueue(encoder.encode(encodeSse(cache.versionSnapshot)))
+        const unsubscribe = cache.subscribe((event: ListVersionsEvent) => {
+          controller.enqueue(encoder.encode(encodeSse(event)))
+        })
+        c.req.raw.signal.addEventListener('abort', () => {
+          unsubscribe()
+          controller.close()
+        }, { once: true })
+      },
+    })
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    })
+  })
+
+  app.post('/api/projects/refresh', async (c) => {
+    try {
+      if (!input.sessionSummaryCache) return c.json({ error: 'projects_refresh_unavailable' }, 503)
+      await input.sessionSummaryCache.scheduleRefresh({ reason: 'manual' })
+      return c.json({ ok: true })
+    } catch (error) {
+      console.error('projects:refresh failed', error)
+      return c.json({ error: 'projects_refresh_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects/:projectId/refresh', async (c) => {
+    try {
+      if (!input.sessionSummaryCache) return c.json({ error: 'projects_refresh_unavailable' }, 503)
+      await input.sessionSummaryCache.scheduleRefresh({ reason: 'manual' })
+      return c.json({ ok: true })
+    } catch (error) {
+      console.error('project:refresh failed', error)
+      return c.json({ error: 'project_refresh_failed' }, 500)
     }
   })
 
@@ -229,7 +305,7 @@ export function registerProjectRoutes(
       }
       const response: SessionTimelineResponse = {
         ...projectSessionTimeline(c.req.param('sessionId'), messages, {
-          limitTurns: parseLimit(c.req.query('limitTurns'), 10),
+          limitTurns: parseLimit(c.req.query('limitTurns'), 10, 100),
           cursor: parseCursor(c.req.query('cursor')),
         }),
         state,

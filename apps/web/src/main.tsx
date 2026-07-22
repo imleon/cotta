@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { StrictMode, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction, useEffect, useRef, useState } from 'react'
+import { StrictMode, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
+  type ListVersionsEvent,
   sessionRawMessagesResponseSchema,
   type CreateTurnResponse,
   type PersistedLiveEvent,
@@ -12,9 +13,9 @@ import {
   type TurnSummary,
   type SessionRawMessagesResponse,
 } from '@cotta/shared'
-import { authToken, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, withToken } from './api'
+import { authToken, connectListVersions, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, refreshProjects, withToken } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
-import { refreshProjectSessionLists } from './session-query-refresh'
+import { refreshProjectSessionLists, refreshProjectsWindow, refreshVisibleProjectSessions } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
 import './styles.css'
 
@@ -472,7 +473,7 @@ function TurnComposer({
       const response = await createTurn(projectId, selectedSessionId, text, userMessageUuid)
       setSelectedSessionId(response.sessionId)
       setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
-      refreshSessionLists()
+      await refreshProjects(projectId)
     } catch (error) {
       if (error instanceof CreateTurnHttpError) {
         setPendingTurn(null)
@@ -545,11 +546,13 @@ function WorkspacePanel({
   projectId,
   detail,
   selectedSessionId,
+  visibleProjectIds,
   setSelectedSessionId,
 }: {
   projectId: string | null
   detail: ProjectSessionsResponse | undefined
   selectedSessionId: string | null
+  visibleProjectIds: string[]
   setSelectedSessionId: (sessionId: string | null) => void
 }) {
   const queryClient = useQueryClient()
@@ -563,7 +566,7 @@ function WorkspacePanel({
 
   function refreshSessionListsForCurrentProject() {
     if (!projectId) return
-    refreshProjectSessionLists(queryClient, projectId)
+    void refreshVisibleProjectSessions(queryClient, { selectedProjectId: projectId, visibleProjectIds })
   }
 
   function handleLiveTurnChange(userMessageUuid: string | null) {
@@ -618,6 +621,10 @@ function ProjectsDashboard() {
   const [navWidth, setNavWidth] = useState(DASHBOARD_NAV_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [pendingSessionTarget, setPendingSessionTarget] = useState<{ projectId: string; sessionId: string } | null>(null)
+  const [refreshingLists, setRefreshingLists] = useState(false)
+  const [visibleSessionsLoading, setVisibleSessionsLoading] = useState(false)
+  const [visibleSessionsError, setVisibleSessionsError] = useState(false)
+  const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
   const navWidthRef = useRef(DASHBOARD_NAV_DEFAULT_WIDTH)
   const pendingSessionRequestRef = useRef(0)
 
@@ -691,6 +698,27 @@ function ProjectsDashboard() {
   const railSelectedProjectId = pendingSessionTarget?.projectId ?? selection.selectedProjectId
   const railSelectedSessionId = pendingSessionTarget?.sessionId ?? selection.selectedSessionId
 
+  const refreshVisibleWindows = useCallback(async (projectIds = visibleProjectIds) => {
+    if (projectIds.length === 0) return
+    setVisibleSessionsLoading(true)
+    try {
+      await refreshVisibleProjectSessions(queryClient, {
+        selectedProjectId: selection.selectedProjectId,
+        visibleProjectIds: projectIds,
+      })
+      setVisibleSessionsError(false)
+    } catch (error) {
+      console.error('visible-sessions:refresh failed', error)
+      setVisibleSessionsError(true)
+    } finally {
+      setVisibleSessionsLoading(false)
+    }
+  }, [queryClient, selection.selectedProjectId, visibleProjectIds])
+
+  const refreshProjectsOnly = useCallback(async () => {
+    await refreshProjectsWindow(queryClient)
+  }, [queryClient])
+
   async function handleSelectSession(projectId: string, sessionId: string) {
     if (projectId === selection.selectedProjectId && sessionId === selection.selectedSessionId) {
       setPendingSessionTarget(null)
@@ -712,6 +740,67 @@ function ProjectsDashboard() {
     } catch {
       if (pendingSessionRequestRef.current !== requestId) return
       setPendingSessionTarget(null)
+    }
+  }
+
+  const listVersionEpochRef = useRef<string | null>(null)
+  const projectsVersionRef = useRef(0)
+  const visibleProjectVersionsRef = useRef(new Map<string, number>())
+
+  useEffect(() => {
+    const events = connectListVersions((event: ListVersionsEvent) => {
+      if (listVersionEpochRef.current !== event.epoch) {
+        listVersionEpochRef.current = event.epoch
+        projectsVersionRef.current = 0
+        visibleProjectVersionsRef.current.clear()
+      }
+      const changedVisibleProjectIds = visibleProjectIds.filter((projectId) => {
+        const nextVersion = event.projectVersions.find((project) => project.projectId === projectId)?.version
+        if (nextVersion === undefined) return false
+        const previousVersion = visibleProjectVersionsRef.current.get(projectId) ?? 0
+        if (nextVersion <= previousVersion) return false
+        visibleProjectVersionsRef.current.set(projectId, nextVersion)
+        return true
+      })
+      if (event.projectsVersion > projectsVersionRef.current) {
+        projectsVersionRef.current = event.projectsVersion
+        void refreshProjectsOnly()
+      }
+      if (changedVisibleProjectIds.length > 0) {
+        void refreshVisibleWindows(changedVisibleProjectIds)
+      }
+    })
+    return () => events.close()
+  }, [refreshProjectsOnly, refreshVisibleWindows, visibleProjectIds])
+
+  useEffect(() => {
+    if (visibleProjectIds.length === 0) return
+    void refreshVisibleWindows()
+  }, [refreshVisibleWindows, visibleProjectIds])
+
+  useEffect(() => {
+    if (visibleProjectIds.length === 0) return
+    function refreshIfVisible() {
+      if (document.visibilityState === 'hidden') return
+      void refreshVisibleWindows()
+    }
+    const timer = window.setInterval(refreshIfVisible, 60_000)
+    window.addEventListener('focus', refreshIfVisible)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshIfVisible)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
+    }
+  }, [refreshVisibleWindows, visibleProjectIds])
+
+  async function handleRefreshLists() {
+    if (refreshingLists) return
+    setRefreshingLists(true)
+    try {
+      await refreshProjects(selection.selectedProjectId)
+    } finally {
+      setRefreshingLists(false)
     }
   }
 
@@ -749,8 +838,18 @@ function ProjectsDashboard() {
           <button
             className="project-rail-header-action"
             type="button"
+            onClick={handleRefreshLists}
+            disabled={!selection.selectedProjectId || refreshingLists}
+            aria-label="Refresh project and session lists"
+            title="Refresh project and session lists"
+          >
+            {refreshingLists ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : '↻'}
+          </button>
+          <button
+            className="project-rail-header-action"
+            type="button"
             onClick={() => selection.selectedProjectId ? selection.startNewSession(selection.selectedProjectId) : undefined}
-            disabled={!selection.selectedProjectId}
+            disabled={!selection.selectedProjectId || refreshingLists}
             aria-label="Create new session"
             title="Create new session"
           >
@@ -763,7 +862,12 @@ function ProjectsDashboard() {
           selectedSessionId={railSelectedSessionId}
           pendingProjectId={pendingSessionTarget?.projectId ?? null}
           pendingSessionId={pendingSessionTarget?.sessionId ?? null}
-          onSelectProject={selection.selectProject}
+          projectsHasMore={selection.projects.hasNextPage}
+          projectsLoadingMore={selection.projects.isFetchingNextPage}
+          onLoadMoreProjects={() => { void selection.projects.fetchNextPage() }}
+          visibleSessionsLoading={visibleSessionsLoading}
+          visibleSessionsError={visibleSessionsError}
+          onVisibleProjectIdsChange={setVisibleProjectIds}
           onSelectSession={handleSelectSession}
         />
         <header className="workspace-main-header workspace-panel-header">
@@ -782,7 +886,7 @@ function ProjectsDashboard() {
         </header>
         {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
           ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
-          : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} setSelectedSessionId={selection.setSelectedSessionId} />}
+          : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} visibleProjectIds={visibleProjectIds} setSelectedSessionId={selection.setSelectedSessionId} />}
       </section>
     </div>
   )

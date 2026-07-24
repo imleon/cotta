@@ -35,6 +35,12 @@ export const listVersionsEventSchema = z.object({
 
 export type ListVersionsEvent = z.infer<typeof listVersionsEventSchema>
 
+export type LiveTurnFailureEvent = {
+  type: 'live.turn.failed'
+  userMessageUuid: string
+  error: string
+}
+
 export const sessionSummarySchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -66,6 +72,7 @@ export const projectSessionsQuerySchema = z.object({
   projects: z.array(z.object({
     projectId: z.string(),
     limit: z.number().int().positive().max(10_000),
+    selectedSessionId: z.string().optional(),
   })),
 })
 
@@ -75,6 +82,7 @@ export const projectSessionsWindowSchema = z.object({
   sessions: z.array(sessionSummarySchema),
   hasMore: z.boolean(),
   nextCursor: z.string().nullable(),
+  selectedSessionExists: z.boolean().optional(),
 })
 
 export type ProjectSessionsWindow = z.infer<typeof projectSessionsWindowSchema>

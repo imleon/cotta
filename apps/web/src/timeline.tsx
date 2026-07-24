@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
+import type { LiveTurnFailureEvent, PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
 import { fetchSessionLiveEvents, fetchSessionTimeline, fetchSessionTimelineState, withToken } from './api'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -706,7 +706,6 @@ export type TimelineTurnIndex = { userMessageUuids: Set<string>; apiMessageIds: 
 
 type LiveAssistantBlockDraft = {
   id: string
-  index: number
   kind: 'assistant.text' | 'assistant.thinking'
   text: string
   thinking: string
@@ -734,8 +733,6 @@ export class LiveAssistantStreamAccumulator {
     const event = message.event
     const eventType = typeof event.type === 'string' ? event.type : 'unknown'
     const sourceEventId = sdkMessageUuid(message)
-    const debugDelta = isRecord(event.delta) ? event.delta : null
-    const debugContentBlock = isRecord(event.content_block) ? event.content_block : null
     if (eventType === 'message_start') {
       const apiMessageId = isRecord(event.message) && typeof event.message.id === 'string' ? event.message.id : undefined
       this.current = apiMessageId && this.byApiMessageId.get(apiMessageId) ? this.byApiMessageId.get(apiMessageId)! : this.createDraft(apiMessageId, !apiMessageId)
@@ -803,7 +800,7 @@ export class LiveAssistantStreamAccumulator {
   private ensureBlock(draft: LiveAssistantMessageDraft, index: number, kind: LiveAssistantBlockDraft['kind']): LiveAssistantBlockDraft {
     const existing = draft.blocks.get(index)
     if (existing) return existing
-    const block = { id: `${this.userMessageUuid}:assistant:${draft.ordinal}:${index}`, index, kind, text: '', thinking: '', sourceEventIds: [] }
+    const block = { id: `${this.userMessageUuid}:assistant:${draft.ordinal}:${index}`, kind, text: '', thinking: '', sourceEventIds: [] }
     draft.blocks.set(index, block)
     return block
   }
@@ -870,6 +867,16 @@ function userBlocksFromMessage(message: Record<string, unknown>, uuid: string): 
   }
   const text = textFromData({ content })
   return text ? [{ id: `${uuid}:user`, kind: 'user.message', sourceEventIds: [uuid], data: { text, status: 'confirmed', raw: isRecord(message.message) ? message.message : null } }] : []
+}
+
+export function isPrimaryUserMessage(message: Record<string, unknown>): boolean {
+  const content = sdkMessageContent(message)
+  if (Array.isArray(content)) return content.some((block) => isRecord(block) && (block.type === 'text' || block.type === 'image' || block.type === 'file' || block.type === 'document'))
+  return Boolean(textFromData({ content }))
+}
+
+function isLiveTurnFailure(value: unknown): value is LiveTurnFailureEvent {
+  return isRecord(value) && value.type === 'live.turn.failed' && typeof value.userMessageUuid === 'string' && typeof value.error === 'string'
 }
 
 function turnApiMessageIds(turn: TurnSummary): Set<string> {
@@ -1079,6 +1086,7 @@ function useSessionTimelineData(
     shouldScrollToBottomRef.current = true
     liveUserMessageUuidRef.current = pendingTurn.id
     liveAccumulatorRef.current ??= new LiveAssistantStreamAccumulator(pendingTurn.id)
+    onLiveTurnChangeRef.current?.(pendingTurn.id)
     setTurns((current) => {
       if (current.some((turn) => turn.id === pendingTurn.id)) return current
       return [...current.filter((turn) => !turn.id.startsWith('pending:')), pendingTurn]
@@ -1122,8 +1130,12 @@ function useSessionTimelineData(
         void refetchLiveEventsRef.current()
         return
       }
-      setLiveConnectionError(null)
-      if (isRecord(raw) && raw.type === 'user') {
+      if (isLiveTurnFailure(raw)) {
+        setLiveConnectionError(`Turn failed: ${raw.error}`)
+      } else {
+        setLiveConnectionError(null)
+      }
+      if (isRecord(raw) && raw.type === 'user' && isPrimaryUserMessage(raw)) {
         const userMessageUuid = sdkMessageUuid(raw)
         if (userMessageUuid && userMessageUuid !== liveUserMessageUuidRef.current) {
           liveUserMessageUuidRef.current = userMessageUuid
@@ -1131,7 +1143,7 @@ function useSessionTimelineData(
           onLiveTurnChangeRef.current?.(userMessageUuid)
         }
       }
-      const terminal = isRecord(raw) && raw.type === 'result'
+      const terminal = isLiveTurnFailure(raw) || (isRecord(raw) && raw.type === 'result')
       if (isRecord(raw) && raw.type === 'stream_event' && liveUserMessageUuidRef.current && liveAccumulatorRef.current) {
         const userMessageUuid = liveUserMessageUuidRef.current
         const blocks = liveAccumulatorRef.current.processStreamEvent(raw)

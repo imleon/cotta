@@ -15,6 +15,7 @@ import {
 } from '@cotta/shared'
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createApp } from '../index.js'
+import { ListCursorError } from '../list-cursor.js'
 
 const project: ProjectSummary = {
   id: 'project-one',
@@ -208,6 +209,29 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(receivedLimit).toBe(101)
+  })
+
+  it('returns a stale cursor error from project sessions', async () => {
+    const app = createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { throw new ListCursorError('stale') },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    })
+    const response = await app.request(`/api/projects/${project.id}/sessions?cursor=stale`)
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'pagination_cursor_stale' })
   })
 
   it('gets a project by id', async () => {

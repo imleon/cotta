@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 
 const { listSessionsMock } = vi.hoisted(() => ({
@@ -29,6 +29,23 @@ function projectId(path: string): string {
 describe('SessionSummaryCache', () => {
   beforeEach(() => {
     listSessionsMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('starts background refresh after initial warm-up fails', async () => {
+    vi.useFakeTimers()
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock
+      .mockRejectedValueOnce(new Error('startup unavailable'))
+      .mockResolvedValueOnce([])
+
+    await expect(cache.ensureReady()).rejects.toThrow('startup unavailable')
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(listSessionsMock).toHaveBeenCalledTimes(2)
   })
 
   it('includes live status in cached session windows', async () => {
@@ -86,10 +103,167 @@ describe('SessionSummaryCache', () => {
     await cache.scheduleRefresh()
     await cache.scheduleRefresh()
 
+    const firstPage = await cache.listProjectSessions(projectId('/repo/a'), { limit: 1 })
     const beforeCalls = listSessionsMock.mock.calls.length
-    await cache.listProjectSessions(projectId('/repo/a'), { limit: 10, cursor: 's1' })
+    await cache.listProjectSessions(projectId('/repo/a'), { limit: 10, cursor: firstPage?.nextCursor })
 
     expect(listSessionsMock.mock.calls.length).toBe(beforeCalls)
+  })
+
+  it('prunes sessions absent from an authoritative project backfill', async () => {
+    const cache = new SessionSummaryCache(2)
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 }),
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 }),
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 }),
+      ])
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+
+    await cache.scheduleRefresh()
+    const firstPage = await cache.listProjectSessions(projectId('/repo/a'), { limit: 1 })
+    const nextPage = await cache.listProjectSessions(projectId('/repo/a'), { limit: 2, cursor: firstPage?.nextCursor })
+
+    expect(nextPage?.sessions.map((session) => session.id)).toEqual([])
+    expect(nextPage?.hasMore).toBe(false)
+  })
+
+  it('publishes a version after an authoritative project backfill', async () => {
+    const cache = new SessionSummaryCache(1)
+    const events: Array<{ projectVersions: Array<{ projectId: string }> }> = []
+    cache.subscribe((event) => events.push(event))
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 })])
+      .mockResolvedValueOnce([
+        session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 }),
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 }),
+        session({ sessionId: 's3', cwd: '/repo/a', lastModified: 1 }),
+      ])
+
+    await cache.scheduleRefresh()
+    const firstPage = await cache.listProjectSessions(projectId('/repo/a'), { limit: 1 })
+    const eventCount = events.length
+    const secondPage = await cache.listProjectSessions(projectId('/repo/a'), { limit: 10, cursor: firstPage?.nextCursor })
+
+    expect(secondPage?.sessions.map((session) => session.id)).toEqual(['s2', 's3'])
+    expect(events).toHaveLength(eventCount + 1)
+    expect(events.at(-1)?.projectVersions.map((project) => project.projectId)).toContain(projectId('/repo/a'))
+  })
+
+  it('serializes concurrent project backfills', async () => {
+    let resolveBackfill: ((sessions: SDKSessionInfo[]) => void) | undefined
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 })])
+      .mockImplementationOnce(() => new Promise<SDKSessionInfo[]>((resolve) => { resolveBackfill = resolve }))
+
+    await cache.scheduleRefresh()
+    const firstPage = await cache.listProjectSessions(projectId('/repo/a'), { limit: 1 })
+    const firstBackfill = cache.listProjectSessions(projectId('/repo/a'), { limit: 10, cursor: firstPage?.nextCursor })
+    await vi.waitFor(() => expect(resolveBackfill).toBeTypeOf('function'))
+    const secondBackfill = cache.listProjectSessions(projectId('/repo/a'), { limit: 10, cursor: firstPage?.nextCursor })
+    resolveBackfill?.([
+      session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 }),
+      session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 }),
+      session({ sessionId: 's3', cwd: '/repo/a', lastModified: 1 }),
+    ])
+
+    await expect(Promise.all([firstBackfill, secondBackfill])).resolves.toHaveLength(2)
+    expect(listSessionsMock.mock.calls.filter(([options]) => options?.dir === '/repo/a')).toHaveLength(1)
+  })
+
+  it('does not report a selected session missing from a partial cache', async () => {
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 })])
+
+    await cache.scheduleRefresh()
+
+    await expect(cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 1, selectedSessionId: 'missing' }] })).resolves.toEqual({
+      sessionsByProject: {
+        [projectId('/repo/a')]: {
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 3 }],
+          hasMore: true,
+          nextCursor: expect.any(String),
+        },
+      },
+    })
+  })
+
+  it('reports a selected session missing only after the project cache is complete', async () => {
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([])
+
+    await cache.scheduleRefresh()
+
+    await expect(cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 1, selectedSessionId: 'missing' }] })).resolves.toMatchObject({
+      sessionsByProject: {
+        [projectId('/repo/a')]: {
+          hasMore: false,
+          selectedSessionExists: false,
+        },
+      },
+    })
+  })
+
+  it('keeps same-timestamp sessions outside a partial scan boundary', async () => {
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 10 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 9 })])
+      .mockResolvedValueOnce([session({ sessionId: 's3', cwd: '/repo/a', lastModified: 9 })])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 10 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 9 })])
+
+    await cache.ensureReady()
+    await cache.scheduleRefresh()
+
+    expect((await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })).sessionsByProject[projectId('/repo/a')]?.sessions.map((session) => session.id)).toEqual(['s1', 's2', 's3'])
+  })
+
+  it('marks project sessions incomplete after a shallow refresh stops before the end', async () => {
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 })])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 })])
+
+    await cache.ensureReady()
+    await cache.scheduleRefresh()
+
+    await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 2 })).resolves.toMatchObject({ hasMore: true })
+  })
+
+  it('rejects a session cursor after its sorted prefix changes', async () => {
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 }),
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 2 }),
+        session({ sessionId: 's3', cwd: '/repo/a', lastModified: 1 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 4 }),
+        session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 }),
+        session({ sessionId: 's3', cwd: '/repo/a', lastModified: 1 }),
+      ])
+
+    await cache.scheduleRefresh()
+    const firstPage = await cache.listProjectSessions(projectId('/repo/a'), { limit: 2 })
+    await cache.scheduleRefresh()
+
+    await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 2, cursor: firstPage?.nextCursor })).rejects.toMatchObject({ code: 'stale' })
   })
 
   it('does not bump versions on no-op refresh', async () => {

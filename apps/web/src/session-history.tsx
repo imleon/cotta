@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import type { ProjectSessionsResponse, ProjectSummary, SessionSummary } from '@cotta/shared'
-import { fetchProjectSessions, fetchProjects, queryProjectSessions } from './api'
+import { fetchProjectSessions, fetchProjects, PaginationCursorStaleError, queryProjectSessions } from './api'
 import { sessionQueryKeys } from './session-query-refresh'
 
 function formatAge(value?: number): string {
@@ -124,17 +124,8 @@ function sameMotionItems<T>(left: SidebarMotionItem<T>[], right: SidebarMotionIt
 
 function useSidebarListMotion<T>(items: T[], getKey: (item: T) => string) {
   const [renderedItems, setRenderedItems] = useState<SidebarMotionItem<T>[]>(() => toPresentMotionItems(items, getKey))
-  const nodeMapRef = useRef(new Map<string, HTMLElement>())
-  const lastRectsRef = useRef(new Map<string, DOMRect>())
   const exitTimersRef = useRef(new Map<string, number>())
   const enterTimersRef = useRef(new Map<string, number>())
-  const styleTimersRef = useRef(new Map<string, number>())
-  const animationFrameRef = useRef<number | null>(null)
-
-  const setItemNode = useCallback((key: string, node: HTMLElement | null) => {
-    if (node) nodeMapRef.current.set(key, node)
-    else nodeMapRef.current.delete(key)
-  }, [])
 
   useEffect(() => {
     if (prefersReducedSidebarMotion()) {
@@ -189,83 +180,12 @@ function useSidebarListMotion<T>(items: T[], getKey: (item: T) => string) {
     }
   }, [renderedItems])
 
-  useLayoutEffect(() => {
-    const nodes = nodeMapRef.current
-    const nextRects = new Map<string, DOMRect>()
-    const reducedMotion = prefersReducedSidebarMotion()
-    const movedNodes: HTMLElement[] = []
-
-    if (animationFrameRef.current !== null) {
-      window.cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
-
-    for (const timer of styleTimersRef.current.values()) window.clearTimeout(timer)
-    styleTimersRef.current.clear()
-    for (const node of nodes.values()) {
-      node.style.transition = ''
-      node.style.transform = ''
-    }
-
-    for (const [key, node] of nodes) {
-      const nextRect = node.getBoundingClientRect()
-      nextRects.set(key, nextRect)
-
-      if (reducedMotion) {
-        node.style.transition = ''
-        node.style.transform = ''
-        continue
-      }
-
-      const previousRect = lastRectsRef.current.get(key)
-      if (!previousRect) continue
-
-      const deltaX = previousRect.left - nextRect.left
-      const deltaY = previousRect.top - nextRect.top
-      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) continue
-
-      const styleTimer = styleTimersRef.current.get(key)
-      if (styleTimer !== undefined) {
-        window.clearTimeout(styleTimer)
-        styleTimersRef.current.delete(key)
-      }
-
-      node.style.transition = 'none'
-      node.style.transform = `translate(${deltaX}px, ${deltaY}px)`
-      movedNodes.push(node)
-    }
-
-    if (movedNodes.length > 0) {
-      void movedNodes[0]!.offsetHeight
-      animationFrameRef.current = window.requestAnimationFrame(() => {
-        for (const node of movedNodes) {
-          node.style.transition = `transform ${SIDEBAR_LIST_MOTION_MS}ms ease`
-          node.style.transform = 'translate(0, 0)'
-        }
-
-        for (const [key, node] of nodes) {
-          if (!movedNodes.includes(node)) continue
-          const styleTimer = window.setTimeout(() => {
-            node.style.transition = ''
-            node.style.transform = ''
-            styleTimersRef.current.delete(key)
-          }, SIDEBAR_LIST_MOTION_MS)
-          styleTimersRef.current.set(key, styleTimer)
-        }
-      })
-    }
-
-    lastRectsRef.current = nextRects
-  }, [renderedItems])
-
   useEffect(() => () => {
-    if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current)
     for (const timer of exitTimersRef.current.values()) window.clearTimeout(timer)
     for (const timer of enterTimersRef.current.values()) window.clearTimeout(timer)
-    for (const timer of styleTimersRef.current.values()) window.clearTimeout(timer)
   }, [])
 
-  return { items: renderedItems, setItemNode }
+  return renderedItems
 }
 
 function ProjectCard({
@@ -274,18 +194,23 @@ function ProjectCard({
   expanded,
   sessionsRegionId,
   onToggleExpanded,
+  onSelectProject,
 }: {
   project: ProjectSummary
   selected: boolean
   expanded: boolean
   sessionsRegionId: string
   onToggleExpanded: () => void
+  onSelectProject: () => void
 }) {
   return (
     <button
       className={`project-card ${selected ? 'selected' : ''}`}
       type="button"
-      onClick={onToggleExpanded}
+      onClick={() => {
+        if (!selected && !expanded) onSelectProject()
+        onToggleExpanded()
+      }}
       aria-current={selected ? 'true' : undefined}
       aria-expanded={expanded}
       aria-controls={sessionsRegionId}
@@ -298,7 +223,7 @@ function ProjectCard({
             <path d="M43.5 18.8826H4.5V37.0165a2.1762 2.1762 0 0 0 2.1735 2.1789H41.3194A2.1762 2.1762 0 0 0 43.5 37.0237V18.8826Z" />
           </svg>
         </span>
-        <h2>{project.name}</h2>
+        <span className="project-card-name">{project.name}</span>
       </div>
       <span className="project-card-chevron" aria-hidden="true">
         <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false">
@@ -320,19 +245,17 @@ function SessionRow({
   selected,
   pending,
   onSelect,
-  itemRef,
   motionState,
 }: {
   session: SessionSummary
   selected: boolean
   pending?: boolean
   onSelect: () => void
-  itemRef?: (node: HTMLLIElement | null) => void
   motionState?: SidebarMotionState
 }) {
   const state = statusValue(session.displayStatus, session.rawStatus)
   return (
-    <li ref={itemRef} className={`sidebar-motion-item${motionStateClass(motionState)}`}>
+    <li className={`sidebar-motion-item${motionStateClass(motionState)}`}>
       <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
         <div className="session-content">
           <div className="session-main">
@@ -357,11 +280,11 @@ function ProjectSessionBranch({
   pendingProjectId,
   pendingSessionId,
   expanded,
-  visibleSessionsLoading,
-  visibleSessionsError,
+  visibleSessionState,
   onToggleExpanded,
+  onSelectProject,
   onSelectSession,
-  itemRef,
+  onCursorStale,
   motionState,
 }: {
   project: ProjectSummary
@@ -370,11 +293,11 @@ function ProjectSessionBranch({
   pendingProjectId?: string | null
   pendingSessionId?: string | null
   expanded: boolean
-  visibleSessionsLoading?: boolean
-  visibleSessionsError?: boolean
+  visibleSessionState?: { loading: boolean; error: boolean }
   onToggleExpanded: () => void
+  onSelectProject: () => void
   onSelectSession: (projectId: string, sessionId: string) => void
-  itemRef?: (node: HTMLDivElement | null) => void
+  onCursorStale: (projectId: string) => void
   motionState?: SidebarMotionState
 }) {
   const sessionsQuery = useInfiniteQuery({
@@ -388,30 +311,30 @@ function ProjectSessionBranch({
     refetchOnWindowFocus: false,
   })
   const sessions = sessionsQuery.data?.pages.flatMap((page) => page.sessions) ?? []
-  const sessionMotion = useSidebarListMotion(sessions, (session) => session.id)
+  const renderedSessions = useSidebarListMotion(sessions, (session) => session.id)
   const selected = project.id === selectedProjectId
   const sessionsRegionId = projectSessionsRegionId(project.id)
 
   return (
-    <div ref={itemRef} className={`project-tree-item sidebar-motion-item${motionStateClass(motionState)}`}>
+    <div className={`project-tree-item sidebar-motion-item${motionStateClass(motionState)}`}>
       <ProjectCard
         project={project}
         selected={selected}
         expanded={expanded}
         sessionsRegionId={sessionsRegionId}
         onToggleExpanded={onToggleExpanded}
+        onSelectProject={onSelectProject}
       />
       {expanded ? (
         <div className="project-sessions" id={sessionsRegionId} role="group" aria-label={`${project.name} sessions`}>
-          {sessionsQuery.isLoading || (!sessionsQuery.data && visibleSessionsLoading) ? <div className="rail-empty">Loading sessions…</div> : null}
-          {sessionsQuery.isError || (!sessionsQuery.data && visibleSessionsError) ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
-          {!sessionsQuery.isLoading && !visibleSessionsLoading && !sessionsQuery.isError && !visibleSessionsError && sessions.length === 0 && sessionMotion.items.length === 0 ? <div className="rail-empty">No sessions</div> : null}
-          {sessionMotion.items.length > 0 ? (
+          {sessionsQuery.isLoading || (!sessionsQuery.data && visibleSessionState?.loading) ? <div className="rail-empty">Loading sessions…</div> : null}
+          {sessionsQuery.isError || (!sessionsQuery.data && visibleSessionState?.error) ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
+          {!sessionsQuery.isLoading && !visibleSessionState?.loading && !sessionsQuery.isError && !visibleSessionState?.error && sessions.length === 0 && renderedSessions.length === 0 ? <div className="rail-empty">No sessions</div> : null}
+          {renderedSessions.length > 0 ? (
             <ol className="session-list rail-session-list">
-              {sessionMotion.items.map(({ key, item: session, motionState }) => (
+              {renderedSessions.map(({ key, item: session, motionState }) => (
                 <SessionRow
                   key={key}
-                  itemRef={(node) => sessionMotion.setItemNode(key, node)}
                   motionState={motionState}
                   session={session}
                   selected={project.id === selectedProjectId && session.id === selectedSessionId}
@@ -422,8 +345,19 @@ function ProjectSessionBranch({
             </ol>
           ) : null}
           {sessionsQuery.hasNextPage ? (
-            <button className="load-more-sessions" type="button" onClick={() => sessionsQuery.fetchNextPage()} disabled={sessionsQuery.isFetchingNextPage}>
-              {sessionsQuery.isFetchingNextPage ? 'Loading…' : 'Load more sessions'}
+            <button
+              className="load-more-sessions session-load-more"
+              type="button"
+              onClick={() => {
+                void sessionsQuery.fetchNextPage({ throwOnError: true }).catch((error) => {
+                  if (error instanceof PaginationCursorStaleError) onCursorStale(project.id)
+                })
+              }}
+              disabled={sessionsQuery.isFetchingNextPage}
+              aria-label={sessionsQuery.isFetchingNextPage ? `Loading more sessions for ${project.name}` : `Show more sessions for ${project.name}`}
+              aria-controls={sessionsRegionId}
+            >
+              {sessionsQuery.isFetchingNextPage ? 'Loading…' : 'Show more ↓'}
             </button>
           ) : null}
         </div>
@@ -441,10 +375,11 @@ export function ProjectSessionRail({
   projectsHasMore,
   projectsLoadingMore,
   onLoadMoreProjects,
-  visibleSessionsLoading,
-  visibleSessionsError,
+  visibleSessionStates,
   onVisibleProjectIdsChange,
+  onSelectProject,
   onSelectSession,
+  onSessionCursorStale,
 }: {
   projects: ProjectSummary[]
   selectedProjectId: string | null
@@ -454,13 +389,14 @@ export function ProjectSessionRail({
   projectsHasMore?: boolean
   projectsLoadingMore?: boolean
   onLoadMoreProjects?: () => void
-  visibleSessionsLoading?: boolean
-  visibleSessionsError?: boolean
+  visibleSessionStates: Record<string, { loading: boolean; error: boolean }>
   onVisibleProjectIdsChange?: (projectIds: string[]) => void
+  onSelectProject: (projectId: string) => void
   onSelectSession: (projectId: string, sessionId: string) => void
+  onSessionCursorStale: (projectId: string) => void
 }) {
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set())
-  const projectMotion = useSidebarListMotion(projects, (project) => project.id)
+  const renderedProjects = useSidebarListMotion(projects, (project) => project.id)
 
   function expandProject(projectId: string) {
     setExpandedProjectIds((current) => {
@@ -484,9 +420,17 @@ export function ProjectSessionRail({
     if (selectedProjectId) expandProject(selectedProjectId)
   }, [selectedProjectId])
 
+  useEffect(() => {
+    const projectIds = new Set(projects.map((project) => project.id))
+    setExpandedProjectIds((current) => {
+      const next = new Set([...current].filter((projectId) => projectIds.has(projectId)))
+      return next.size === current.size ? current : next
+    })
+  }, [projects])
+
   const visibleProjectIds = useMemo(
-    () => [...new Set([selectedProjectId, ...expandedProjectIds].filter((projectId): projectId is string => Boolean(projectId)))].sort(),
-    [expandedProjectIds, selectedProjectId],
+    () => [...new Set([selectedProjectId, ...expandedProjectIds].filter((projectId): projectId is string => Boolean(projectId) && projects.some((project) => project.id === projectId)))].sort(),
+    [expandedProjectIds, projects, selectedProjectId],
   )
 
   useEffect(() => {
@@ -507,10 +451,9 @@ export function ProjectSessionRail({
     <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions" onScroll={handleProjectRailScroll}>
       <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
         <div className="project-tree">
-          {projectMotion.items.map(({ key, item: project, motionState }) => (
+          {renderedProjects.map(({ key, item: project, motionState }) => (
             <ProjectSessionBranch
               key={key}
-              itemRef={(node) => projectMotion.setItemNode(key, node)}
               motionState={motionState}
               project={project}
               selectedProjectId={selectedProjectId}
@@ -518,10 +461,11 @@ export function ProjectSessionRail({
               pendingProjectId={pendingProjectId}
               pendingSessionId={pendingSessionId}
               expanded={expandedProjectIds.has(project.id)}
-              visibleSessionsLoading={visibleSessionsLoading}
-              visibleSessionsError={visibleSessionsError}
+              visibleSessionState={visibleSessionStates[project.id]}
               onToggleExpanded={() => toggleProject(project.id)}
+              onSelectProject={() => onSelectProject(project.id)}
               onSelectSession={selectSession}
+              onCursorStale={onSessionCursorStale}
             />
           ))}
           {projectsHasMore ? (
@@ -544,9 +488,8 @@ export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit
     queryFn: ({ pageParam }) => fetchProjects(pageParam, 20),
     getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
     retry: false,
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
   })
   const projectSessions = useQuery({
     queryKey: sessionQueryKeys.projectSessionsDetail(selectedProjectId, sessionLimit),
@@ -567,23 +510,29 @@ export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
   })
-  const items = projects.data?.pages.flatMap((page) => page.projects) ?? []
+  const items = useMemo(() => projects.data?.pages.flatMap((page) => page.projects) ?? [], [projects.data])
 
   useEffect(() => { if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id) }, [items, selectedProjectId])
+
+  const clearSelection = useCallback(() => { setSelectedProjectId(null); setSelectedSessionId(null) }, [])
+  const startNewSession = useCallback((projectId: string) => {
+    setSelectedProjectId(projectId)
+    setSelectedSessionId(null)
+  }, [])
+  const selectProject = useCallback((projectId: string) => { setSelectedProjectId(projectId); setSelectedSessionId(null) }, [])
+  const selectSession = useCallback((projectId: string, sessionId: string) => { setSelectedProjectId(projectId); setSelectedSessionId(sessionId) }, [])
 
   return {
     selectedProjectId,
     selectedSessionId,
     setSelectedSessionId,
     setSelectedProjectId,
-    startNewSession: (projectId: string) => {
-      setSelectedProjectId(projectId)
-      setSelectedSessionId(null)
-    },
+    clearSelection,
+    startNewSession,
     projects,
     projectSessions,
     items,
-    selectProject: (projectId: string) => { setSelectedProjectId(projectId); setSelectedSessionId(null) },
-    selectSession: (projectId: string, sessionId: string) => { setSelectedProjectId(projectId); setSelectedSessionId(sessionId) },
+    selectProject,
+    selectSession,
   }
 }

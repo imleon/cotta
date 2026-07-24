@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TimelineBlock, TurnSummary } from '@cotta/shared'
-import { applySdkMessage, LiveAssistantStreamAccumulator, reconcileTimelineTurns, timelineTurnIndex } from './timeline'
+import { applySdkMessage, isPrimaryUserMessage, LiveAssistantStreamAccumulator, reconcileTimelineTurns, timelineTurnIndex } from './timeline'
 
 function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
   return {
@@ -83,6 +83,31 @@ describe('timeline reconciliation', () => {
 
     expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.text')).toHaveLength(1)
     expect(turns[0]!.blocks.find((block) => block.kind === 'assistant.text')?.id).toBe('user-1:assistant:0:0')
+  })
+
+  it('keeps tool results and subsequent assistant output on the active user turn', () => {
+    const toolResult = {
+      type: 'user',
+      uuid: 'tool-result-1',
+      session_id: 'session-1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }] },
+    }
+    const assistant = {
+      type: 'assistant',
+      uuid: 'assistant-1',
+      session_id: 'session-1',
+      message: { id: 'message-1', content: [{ type: 'text', text: 'answer' }] },
+    }
+    const turns = applySdkMessage([userTurn('user-1')], toolResult, timelineTurnIndex([]), 'user-1', new LiveAssistantStreamAccumulator('user-1')).turns
+    const result = applySdkMessage(turns, assistant, timelineTurnIndex([]), 'user-1', new LiveAssistantStreamAccumulator('user-1'))
+
+    expect(isPrimaryUserMessage(toolResult)).toBe(false)
+    expect(result.turns[0]?.blocks.map((block) => block.kind)).toEqual(['user.message', 'tool.result', 'assistant.text'])
+  })
+
+  it('identifies SDK user echoes as primary messages', () => {
+    expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: 'hello' } })).toBe(true)
+    expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: [{ type: 'image' }] } })).toBe(true)
   })
 
   it('treats raw SDK result as terminal without adding timeline content', () => {

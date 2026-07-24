@@ -15,6 +15,7 @@ import {
   type SessionTimelineStateResponse,
 } from '@cotta/shared'
 import type { ClaudeCodeApi } from '../claude-code-api.js'
+import { ListCursorError } from '../list-cursor.js'
 import type { SessionSummaryCache } from '../session-summary-cache.js'
 import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
@@ -43,6 +44,13 @@ function encodeSse(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`
 }
 
+function listCursorErrorResponse(error: unknown) {
+  if (!(error instanceof ListCursorError)) return null
+  return error.code === 'stale'
+    ? { status: 409 as const, body: { error: 'pagination_cursor_stale' } }
+    : { status: 400 as const, body: { error: 'invalid_cursor' } }
+}
+
 function overlayLiveSessionStatus<T extends { sessions: Array<{ id: string }> }>(
   liveTurnManager: ProjectRoutesLiveTurnManager,
   response: T,
@@ -68,6 +76,8 @@ export function registerProjectRoutes(
       })
       return c.json(response)
     } catch (error) {
+      const cursorError = listCursorErrorResponse(error)
+      if (cursorError) return c.json(cursorError.body, cursorError.status)
       console.error('projects:list failed', error)
       return c.json({ error: 'projects_list_failed' }, 500)
     }
@@ -99,6 +109,8 @@ export function registerProjectRoutes(
       const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionStatus(input.liveTurnManager, result)
       return c.json(response)
     } catch (error) {
+      const cursorError = listCursorErrorResponse(error)
+      if (cursorError) return c.json(cursorError.body, cursorError.status)
       console.error('projects:sessions failed', error)
       return c.json({ error: 'project_sessions_failed' }, 500)
     }

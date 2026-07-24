@@ -116,28 +116,18 @@ describe('refresh helpers', () => {
     })
 
     expect(queryClient.getQueryData(sessionQueryKeys.projectSessionsRail('p1'))).toEqual({
-      pages: [
-        {
-          project: { id: 'p1', name: 'P1' },
-          sessions: [
-            { id: 's9', title: 'S9', projectId: 'p1' },
-            { id: 's8', title: 'S8', projectId: 'p1' },
-          ],
-          defaultSessionId: 's1',
-          hasMore: true,
-          nextCursor: 's8',
-        },
-        {
-          project: { id: 'p1', name: 'P1' },
-          sessions: [
-            { id: 's7', title: 'S7', projectId: 'p1' },
-          ],
-          defaultSessionId: 's1',
-          hasMore: false,
-          nextCursor: null,
-        },
-      ],
-      pageParams: [null, 's8'],
+      pages: [{
+        project: { id: 'p1', name: 'P1' },
+        sessions: [
+          { id: 's9', title: 'S9', projectId: 'p1' },
+          { id: 's8', title: 'S8', projectId: 'p1' },
+          { id: 's7', title: 'S7', projectId: 'p1' },
+        ],
+        defaultSessionId: 's1',
+        hasMore: false,
+        nextCursor: null,
+      }],
+      pageParams: [null],
     })
   })
 
@@ -237,6 +227,54 @@ describe('refresh helpers', () => {
     expect(queryProjectSessionsMock).toHaveBeenCalledWith([{ projectId: 'p1', limit: 10 }])
   })
 
+  it('returns selected-session absence from a refreshed window', async () => {
+    queryClient.setQueryData(sessionQueryKeys.projectSessionsDetail('p1', 1), {
+      project: { id: 'p1', name: 'P1' },
+      sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+      defaultSessionId: 's1',
+      hasMore: false,
+      nextCursor: null,
+    } satisfies ProjectSessionsResponse)
+    queryProjectSessionsMock.mockResolvedValue({
+      sessionsByProject: {
+        p1: {
+          sessions: [],
+          hasMore: false,
+          nextCursor: null,
+          selectedSessionExists: false,
+        },
+      },
+    })
+
+    await expect(refreshVisibleProjectSessions(queryClient, {
+      selectedProjectId: 'p1',
+      selectedSessionId: 's1',
+      visibleProjectIds: ['p1'],
+    })).resolves.toEqual(new Map([['p1', { outcome: 'applied', selectedSessionExists: false }]]))
+  })
+
+  it('collapses refreshed project pages into one latest cursor window', async () => {
+    queryClient.setQueryData(sessionQueryKeys.projects, {
+      pages: [
+        { projects: [{ id: 'p1', name: 'P1' }], hasMore: true, nextCursor: 'opaque-old' },
+        { projects: [{ id: 'p2', name: 'P2' }], hasMore: false, nextCursor: null },
+      ],
+      pageParams: [null, 'opaque-old'],
+    } satisfies InfiniteData<ProjectsResponse, string | null>)
+    fetchProjectsMock.mockResolvedValue({
+      projects: [{ id: 'p9', name: 'P9' }, { id: 'p8', name: 'P8' }],
+      hasMore: true,
+      nextCursor: 'opaque-new',
+    })
+
+    await refreshProjectsWindow(queryClient)
+
+    expect(queryClient.getQueryData(sessionQueryKeys.projects)).toEqual({
+      pages: [{ projects: [{ id: 'p9', name: 'P9' }, { id: 'p8', name: 'P8' }], hasMore: true, nextCursor: 'opaque-new' }],
+      pageParams: [null],
+    })
+  })
+
   it('does not overwrite projects loaded while refresh is in flight', async () => {
     queryClient.setQueryData(sessionQueryKeys.projects, {
       pages: [{ projects: [{ id: 'p1', name: 'P1' }], hasMore: true, nextCursor: 'p1' }],
@@ -329,6 +367,22 @@ describe('refresh helpers', () => {
       ],
       pageParams: [null, 's1'],
     })
+  })
+
+  it('lets disjoint project refreshes both patch their own windows', async () => {
+    let resolveP1: (value: unknown) => void
+    const p1 = new Promise((resolve) => { resolveP1 = resolve })
+    queryProjectSessionsMock.mockImplementationOnce(() => p1 as never).mockResolvedValueOnce({
+      sessionsByProject: { p2: { sessions: [{ id: 's2', title: 'S2', projectId: 'p2' }], hasMore: false, nextCursor: null } },
+    })
+
+    const first = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
+    const second = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p2', visibleProjectIds: ['p2'] })
+    resolveP1!({ sessionsByProject: { p1: { sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }], hasMore: false, nextCursor: null } } })
+
+    const [firstOutcomes, secondOutcomes] = await Promise.all([first, second])
+    expect(firstOutcomes.get('p1')).toEqual({ outcome: 'applied' })
+    expect(secondOutcomes.get('p2')).toEqual({ outcome: 'applied' })
   })
 
   it('refreshes only visible sessions when asked', async () => {

@@ -13,9 +13,9 @@ import {
   type TurnSummary,
   type SessionRawMessagesResponse,
 } from '@cotta/shared'
-import { authToken, connectListVersions, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, refreshProjects, withToken } from './api'
+import { authToken, connectListVersions, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, PaginationCursorStaleError, refreshProjects, withToken } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
-import { refreshProjectSessionLists, refreshProjectsWindow, refreshVisibleProjectSessions } from './session-query-refresh'
+import { refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
 import './styles.css'
 
@@ -546,16 +546,15 @@ function WorkspacePanel({
   projectId,
   detail,
   selectedSessionId,
-  visibleProjectIds,
   setSelectedSessionId,
+  refreshSessionLists,
 }: {
   projectId: string | null
   detail: ProjectSessionsResponse | undefined
   selectedSessionId: string | null
-  visibleProjectIds: string[]
   setSelectedSessionId: (sessionId: string | null) => void
+  refreshSessionLists: (projectIds: string[]) => void
 }) {
-  const queryClient = useQueryClient()
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
 
@@ -565,8 +564,7 @@ function WorkspacePanel({
   if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
 
   function refreshSessionListsForCurrentProject() {
-    if (!projectId) return
-    void refreshVisibleProjectSessions(queryClient, { selectedProjectId: projectId, visibleProjectIds })
+    if (projectId) refreshSessionLists([projectId])
   }
 
   function handleLiveTurnChange(userMessageUuid: string | null) {
@@ -617,16 +615,36 @@ function DebugWorkspacePanel({ projectId, sessionId }: { projectId: string | nul
 function ProjectsDashboard() {
   const queryClient = useQueryClient()
   const selection = useProjectSessionSelection()
+  const {
+    selectedProjectId,
+    selectedSessionId,
+    clearSelection,
+    selectProject,
+    setSelectedSessionId,
+  } = selection
   const [activeNav, setActiveNav] = useState<(typeof DASHBOARD_NAV_ITEMS)[number]['key']>('chat')
   const [navWidth, setNavWidth] = useState(DASHBOARD_NAV_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [pendingSessionTarget, setPendingSessionTarget] = useState<{ projectId: string; sessionId: string } | null>(null)
   const [refreshingLists, setRefreshingLists] = useState(false)
-  const [visibleSessionsLoading, setVisibleSessionsLoading] = useState(false)
-  const [visibleSessionsError, setVisibleSessionsError] = useState(false)
+  const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
   const navWidthRef = useRef(DASHBOARD_NAV_DEFAULT_WIDTH)
   const pendingSessionRequestRef = useRef(0)
+  const listVersionEpochRef = useRef<string | null>(null)
+  const desiredProjectsVersionRef = useRef(0)
+  const acknowledgedProjectsVersionRef = useRef(-1)
+  const desiredProjectVersionsRef = useRef(new Map<string, number>())
+  const acknowledgedProjectVersionsRef = useRef(new Map<string, number>())
+  const visibleSessionGenerationsRef = useRef(new Map<string, number>())
+  const projectLoadMoreInFlightRef = useRef(false)
+
+  function beginSelectionIntent(): number {
+    const requestId = pendingSessionRequestRef.current + 1
+    pendingSessionRequestRef.current = requestId
+    setPendingSessionTarget(null)
+    return requestId
+  }
 
   useEffect(() => {
     navWidthRef.current = navWidth
@@ -693,39 +711,86 @@ function ProjectsDashboard() {
 
   const navCollapsed = navWidth <= DASHBOARD_NAV_COLLAPSE_WIDTH
   const detail = selection.projectSessions.data
-  const selectedSession = detail?.sessions.find((session) => session.id === selection.selectedSessionId)
+  const selectedSession = detail?.sessions.find((session) => session.id === selectedSessionId)
+    ?? queryClient.getQueryData<{ pages: Array<{ sessions: ProjectSessionsResponse['sessions'] }> }>(sessionQueryKeys.projectSessionsRail(selectedProjectId ?? ''))?.pages
+      .flatMap((page) => page.sessions)
+      .find((session) => session.id === selectedSessionId)
   const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : 'Project')
-  const railSelectedProjectId = pendingSessionTarget?.projectId ?? selection.selectedProjectId
-  const railSelectedSessionId = pendingSessionTarget?.sessionId ?? selection.selectedSessionId
+  const railSelectedProjectId = pendingSessionTarget?.projectId ?? selectedProjectId
+  const railSelectedSessionId = pendingSessionTarget?.sessionId ?? selectedSessionId
+
+  const reconcileSelection = useCallback((selectionSnapshot: { intentId: number; projectId: string | null; sessionId: string | null }, outcomes: Map<string, { outcome: string; selectedSessionExists?: boolean }>) => {
+    if (pendingSessionRequestRef.current !== selectionSnapshot.intentId || selectedProjectId !== selectionSnapshot.projectId || selectedSessionId !== selectionSnapshot.sessionId) return
+    if (!selectionSnapshot.projectId) return
+    const selectedProjectOutcome = outcomes.get(selectionSnapshot.projectId)
+    if (selectedProjectOutcome?.outcome === 'missing') {
+      const projects = queryClient.getQueryData<{ pages: Array<{ projects: Array<{ id: string }> }> }>(sessionQueryKeys.projects)
+      const nextProjectId = projects?.pages.flatMap((page) => page.projects).find((project) => project.id !== selectionSnapshot.projectId)?.id
+      if (nextProjectId) selectProject(nextProjectId)
+      else clearSelection()
+      return
+    }
+    if (selectedSessionId && selectedProjectOutcome?.selectedSessionExists === false) setSelectedSessionId(null)
+  }, [clearSelection, queryClient, selectProject, selectedProjectId, selectedSessionId, setSelectedSessionId])
 
   const refreshVisibleWindows = useCallback(async (projectIds = visibleProjectIds) => {
-    if (projectIds.length === 0) return
-    setVisibleSessionsLoading(true)
+    const targetProjectIds = [...new Set(projectIds)]
+    if (targetProjectIds.length === 0) return new Map<string, { outcome: string; selectedSessionExists?: boolean }>()
+    const selectionSnapshot = {
+      intentId: pendingSessionRequestRef.current,
+      projectId: selectedProjectId,
+      sessionId: selectedSessionId,
+    }
+    const generations = new Map(targetProjectIds.map((projectId) => {
+      const generation = (visibleSessionGenerationsRef.current.get(projectId) ?? 0) + 1
+      visibleSessionGenerationsRef.current.set(projectId, generation)
+      return [projectId, generation]
+    }))
+    setVisibleSessionStates((current) => ({
+      ...current,
+      ...Object.fromEntries(targetProjectIds.map((projectId) => [projectId, { generation: generations.get(projectId)!, loading: true, error: false }])),
+    }))
     try {
-      await refreshVisibleProjectSessions(queryClient, {
-        selectedProjectId: selection.selectedProjectId,
-        visibleProjectIds: projectIds,
+      const outcomes = await refreshVisibleProjectSessions(queryClient, {
+        selectedProjectId: selectionSnapshot.projectId,
+        selectedSessionId: selectionSnapshot.sessionId,
+        visibleProjectIds: targetProjectIds,
       })
-      setVisibleSessionsError(false)
+      reconcileSelection(selectionSnapshot, outcomes)
+      setVisibleSessionStates((current) => {
+        const next = { ...current }
+        for (const projectId of targetProjectIds) {
+          if (next[projectId]?.generation !== generations.get(projectId)) continue
+          next[projectId] = { generation: generations.get(projectId)!, loading: false, error: false }
+        }
+        return next
+      })
+      return outcomes
     } catch (error) {
       console.error('visible-sessions:refresh failed', error)
-      setVisibleSessionsError(true)
-    } finally {
-      setVisibleSessionsLoading(false)
+      setVisibleSessionStates((current) => {
+        const next = { ...current }
+        for (const projectId of targetProjectIds) {
+          if (next[projectId]?.generation !== generations.get(projectId)) continue
+          next[projectId] = { generation: generations.get(projectId)!, loading: false, error: true }
+        }
+        return next
+      })
+      return new Map<string, { outcome: string; selectedSessionExists?: boolean }>()
     }
-  }, [queryClient, selection.selectedProjectId, visibleProjectIds])
+  }, [queryClient, reconcileSelection, selectedProjectId, selectedSessionId, visibleProjectIds])
 
   const refreshProjectsOnly = useCallback(async () => {
-    await refreshProjectsWindow(queryClient)
+    const desiredVersion = desiredProjectsVersionRef.current
+    const epoch = listVersionEpochRef.current
+    const outcome = await refreshProjectsWindow(queryClient)
+    if (outcome === 'applied' && listVersionEpochRef.current === epoch) acknowledgedProjectsVersionRef.current = desiredVersion
+    return outcome
   }, [queryClient])
 
   async function handleSelectSession(projectId: string, sessionId: string) {
-    if (projectId === selection.selectedProjectId && sessionId === selection.selectedSessionId) {
-      setPendingSessionTarget(null)
-      return
-    }
-    const requestId = pendingSessionRequestRef.current + 1
-    pendingSessionRequestRef.current = requestId
+    const requestId = beginSelectionIntent()
+    if (projectId === selectedProjectId && sessionId === selectedSessionId) return
     setPendingSessionTarget({ projectId, sessionId })
     try {
       await queryClient.fetchQuery({
@@ -743,32 +808,30 @@ function ProjectsDashboard() {
     }
   }
 
-  const listVersionEpochRef = useRef<string | null>(null)
-  const projectsVersionRef = useRef(0)
-  const visibleProjectVersionsRef = useRef(new Map<string, number>())
-
   useEffect(() => {
     const events = connectListVersions((event: ListVersionsEvent) => {
-      if (listVersionEpochRef.current !== event.epoch) {
+      const epochChanged = listVersionEpochRef.current !== event.epoch
+      if (epochChanged) {
         listVersionEpochRef.current = event.epoch
-        projectsVersionRef.current = 0
-        visibleProjectVersionsRef.current.clear()
+        desiredProjectsVersionRef.current = 0
+        acknowledgedProjectsVersionRef.current = -1
+        desiredProjectVersionsRef.current.clear()
+        acknowledgedProjectVersionsRef.current.clear()
       }
-      const changedVisibleProjectIds = visibleProjectIds.filter((projectId) => {
-        const nextVersion = event.projectVersions.find((project) => project.projectId === projectId)?.version
-        if (nextVersion === undefined) return false
-        const previousVersion = visibleProjectVersionsRef.current.get(projectId) ?? 0
-        if (nextVersion <= previousVersion) return false
-        visibleProjectVersionsRef.current.set(projectId, nextVersion)
-        return true
+      desiredProjectsVersionRef.current = Math.max(desiredProjectsVersionRef.current, event.projectsVersion)
+      for (const { projectId, version } of event.projectVersions) {
+        desiredProjectVersionsRef.current.set(projectId, Math.max(desiredProjectVersionsRef.current.get(projectId) ?? 0, version))
+      }
+      if (epochChanged || desiredProjectsVersionRef.current > acknowledgedProjectsVersionRef.current) void refreshProjectsOnly()
+      const projectIds = visibleProjectIds.filter((projectId) => epochChanged || (desiredProjectVersionsRef.current.get(projectId) ?? 0) > (acknowledgedProjectVersionsRef.current.get(projectId) ?? -1))
+      if (projectIds.length === 0) return
+      void refreshVisibleWindows(projectIds).then((outcomes) => {
+        for (const projectId of projectIds) {
+          if (outcomes.get(projectId)?.outcome !== 'applied') continue
+          const desired = desiredProjectVersionsRef.current.get(projectId)
+          if (desired !== undefined) acknowledgedProjectVersionsRef.current.set(projectId, desired)
+        }
       })
-      if (event.projectsVersion > projectsVersionRef.current) {
-        projectsVersionRef.current = event.projectsVersion
-        void refreshProjectsOnly()
-      }
-      if (changedVisibleProjectIds.length > 0) {
-        void refreshVisibleWindows(changedVisibleProjectIds)
-      }
     })
     return () => events.close()
   }, [refreshProjectsOnly, refreshVisibleWindows, visibleProjectIds])
@@ -779,10 +842,10 @@ function ProjectsDashboard() {
   }, [refreshVisibleWindows, visibleProjectIds])
 
   useEffect(() => {
-    if (visibleProjectIds.length === 0) return
     function refreshIfVisible() {
       if (document.visibilityState === 'hidden') return
-      void refreshVisibleWindows()
+      void refreshProjectsOnly()
+      if (visibleProjectIds.length > 0) void refreshVisibleWindows()
     }
     const timer = window.setInterval(refreshIfVisible, 60_000)
     window.addEventListener('focus', refreshIfVisible)
@@ -792,13 +855,22 @@ function ProjectsDashboard() {
       window.removeEventListener('focus', refreshIfVisible)
       document.removeEventListener('visibilitychange', refreshIfVisible)
     }
-  }, [refreshVisibleWindows, visibleProjectIds])
+  }, [refreshProjectsOnly, refreshVisibleWindows, visibleProjectIds])
 
   async function handleRefreshLists() {
     if (refreshingLists) return
     setRefreshingLists(true)
+    const epoch = listVersionEpochRef.current
+    const desiredVersions = new Map(visibleProjectIds.map((projectId) => [projectId, desiredProjectVersionsRef.current.get(projectId)]))
     try {
       await refreshProjects(selection.selectedProjectId)
+      await refreshProjectsOnly()
+      const outcomes = await refreshVisibleWindows()
+      if (listVersionEpochRef.current !== epoch) return
+      for (const [projectId, desiredVersion] of desiredVersions) {
+        if (desiredVersion === undefined || outcomes.get(projectId)?.outcome !== 'applied') continue
+        acknowledgedProjectVersionsRef.current.set(projectId, Math.max(acknowledgedProjectVersionsRef.current.get(projectId) ?? -1, desiredVersion))
+      }
     } finally {
       setRefreshingLists(false)
     }
@@ -835,11 +907,12 @@ function ProjectsDashboard() {
       <section className="workspace-panel">
         <div className="dashboard-nav-resize-handle" role="separator" aria-label="Resize navigation sidebar" aria-orientation="vertical" onPointerDown={beginNavResize} />
         <header className="project-rail-header workspace-panel-header">
+          <h2 className="project-rail-title" id="projects-sidebar-section-heading">Projects</h2>
           <button
             className="project-rail-header-action"
             type="button"
             onClick={handleRefreshLists}
-            disabled={!selection.selectedProjectId || refreshingLists}
+            disabled={refreshingLists}
             aria-label="Refresh project and session lists"
             title="Refresh project and session lists"
           >
@@ -848,7 +921,11 @@ function ProjectsDashboard() {
           <button
             className="project-rail-header-action"
             type="button"
-            onClick={() => selection.selectedProjectId ? selection.startNewSession(selection.selectedProjectId) : undefined}
+            onClick={() => {
+              if (!selection.selectedProjectId) return
+              beginSelectionIntent()
+              selection.startNewSession(selection.selectedProjectId)
+            }}
             disabled={!selection.selectedProjectId || refreshingLists}
             aria-label="Create new session"
             title="Create new session"
@@ -864,11 +941,23 @@ function ProjectsDashboard() {
           pendingSessionId={pendingSessionTarget?.sessionId ?? null}
           projectsHasMore={selection.projects.hasNextPage}
           projectsLoadingMore={selection.projects.isFetchingNextPage}
-          onLoadMoreProjects={() => { void selection.projects.fetchNextPage() }}
-          visibleSessionsLoading={visibleSessionsLoading}
-          visibleSessionsError={visibleSessionsError}
+          onLoadMoreProjects={() => {
+            if (projectLoadMoreInFlightRef.current || !selection.projects.hasNextPage || selection.projects.isFetchingNextPage) return
+            projectLoadMoreInFlightRef.current = true
+            void selection.projects.fetchNextPage({ throwOnError: true }).catch((error) => {
+              if (error instanceof PaginationCursorStaleError) return refreshProjectsWindow(queryClient)
+            }).finally(() => {
+              projectLoadMoreInFlightRef.current = false
+            })
+          }}
+          visibleSessionStates={visibleSessionStates}
           onVisibleProjectIdsChange={setVisibleProjectIds}
+          onSelectProject={(projectId) => {
+            beginSelectionIntent()
+            selection.selectProject(projectId)
+          }}
           onSelectSession={handleSelectSession}
+          onSessionCursorStale={(projectId) => { void refreshVisibleWindows([projectId]) }}
         />
         <header className="workspace-main-header workspace-panel-header">
           <div className="project-title-block">
@@ -886,7 +975,7 @@ function ProjectsDashboard() {
         </header>
         {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
           ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
-          : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} visibleProjectIds={visibleProjectIds} setSelectedSessionId={selection.setSelectedSessionId} />}
+          : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} setSelectedSessionId={selection.setSelectedSessionId} refreshSessionLists={refreshVisibleWindows} />}
       </section>
     </div>
   )

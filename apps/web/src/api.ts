@@ -27,11 +27,20 @@ export function withToken(path: string): string {
   return `${url.pathname}${url.search}`
 }
 
+export class PaginationCursorStaleError extends Error {}
+
+async function throwRequestError(response: Response, label: string): Promise<never> {
+  if (response.status === 409 && (await response.json() as { error?: string }).error === 'pagination_cursor_stale') {
+    throw new PaginationCursorStaleError(`${label} cursor is stale`)
+  }
+  throw new Error(`${label} request failed: ${response.status}`)
+}
+
 export async function fetchProjects(cursor: string | null = null, limit = 20): Promise<ProjectsResponse> {
   const params = new URLSearchParams({ limit: String(limit) })
   if (cursor) params.set('cursor', cursor)
   const response = await fetch(withToken(`/api/projects?${params}`))
-  if (!response.ok) throw new Error(`Projects request failed: ${response.status}`)
+  if (!response.ok) await throwRequestError(response, 'Projects')
   return projectsResponseSchema.parse(await response.json())
 }
 
@@ -43,11 +52,11 @@ export async function fetchProjectSessions(
   const params = new URLSearchParams({ limit: String(limit) })
   if (cursor) params.set('cursor', cursor)
   const response = await fetch(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`))
-  if (!response.ok) throw new Error(`Project sessions request failed: ${response.status}`)
+  if (!response.ok) await throwRequestError(response, 'Project sessions')
   return projectSessionsResponseSchema.parse(await response.json())
 }
 
-export async function queryProjectSessions(projects: Array<{ projectId: string; limit: number }>): Promise<ProjectSessionsQueryResponse> {
+export async function queryProjectSessions(projects: Array<{ projectId: string; limit: number; selectedSessionId?: string }>): Promise<ProjectSessionsQueryResponse> {
   const response = await fetch(withToken('/api/project-sessions/query'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

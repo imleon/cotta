@@ -9,7 +9,14 @@ export const sessionQueryKeys = {
 }
 
 const projectRefreshGenerations = new WeakMap<QueryClient, number>()
-const sessionRefreshGenerations = new WeakMap<QueryClient, number>()
+const sessionRefreshGenerations = new WeakMap<QueryClient, Map<string, number>>()
+
+export type RefreshOutcome = 'applied' | 'skipped' | 'missing'
+
+export type ProjectRefreshResult = {
+  outcome: RefreshOutcome
+  selectedSessionExists?: boolean
+}
 
 function nextRefreshGeneration(store: WeakMap<QueryClient, number>, queryClient: QueryClient): number {
   const next = (store.get(queryClient) ?? 0) + 1
@@ -17,51 +24,34 @@ function nextRefreshGeneration(store: WeakMap<QueryClient, number>, queryClient:
   return next
 }
 
+function nextProjectRefreshGenerations(queryClient: QueryClient, projectIds: string[]): Map<string, number> {
+  const generations = sessionRefreshGenerations.get(queryClient) ?? new Map<string, number>()
+  sessionRefreshGenerations.set(queryClient, generations)
+  return new Map(projectIds.map((projectId) => {
+    const next = (generations.get(projectId) ?? 0) + 1
+    generations.set(projectId, next)
+    return [projectId, next]
+  }))
+}
+
 function stableProjectIds(projectIds: Iterable<string | null | undefined>): string[] {
   return [...new Set([...projectIds].filter((projectId): projectId is string => Boolean(projectId)))].sort()
 }
 
-function repageSessions(sessions: SessionSummary[], templatePages: number[], fallbackPageSize: number): SessionSummary[][] {
-  if (templatePages.length === 0) return [sessions.slice(0, fallbackPageSize)]
-  const pages: SessionSummary[][] = []
-  let offset = 0
-  for (const size of templatePages) {
-    const next = sessions.slice(offset, offset + size)
-    if (next.length === 0) break
-    pages.push(next)
-    offset += size
-  }
-  if (pages.length === 0) pages.push(sessions.slice(0, fallbackPageSize))
-  return pages
-}
-
-export async function refreshProjectsWindow(queryClient: QueryClient): Promise<void> {
+export async function refreshProjectsWindow(queryClient: QueryClient): Promise<RefreshOutcome> {
   const generation = nextRefreshGeneration(projectRefreshGenerations, queryClient)
   const current = queryClient.getQueryData<InfiniteData<ProjectsResponse, string | null>>(sessionQueryKeys.projects)
   const loadedCount = current?.pages.reduce((sum, page) => sum + page.projects.length, 0) ?? 20
-  const pageSizes = current?.pages.map((page) => page.projects.length).filter((size) => size > 0) ?? [20]
   const latest = await fetchProjects(null, Math.max(1, loadedCount))
-  if (projectRefreshGenerations.get(queryClient) !== generation) return
+  if (projectRefreshGenerations.get(queryClient) !== generation) return 'skipped'
   const nextCurrent = queryClient.getQueryData<InfiniteData<ProjectsResponse, string | null>>(sessionQueryKeys.projects)
   const nextLoadedCount = nextCurrent?.pages.reduce((sum, page) => sum + page.projects.length, 0) ?? loadedCount
-  if (nextLoadedCount > loadedCount) return
-  const pages = [] as ProjectsResponse[]
-  let offset = 0
-  for (const size of pageSizes) {
-    const projects = latest.projects.slice(offset, offset + size)
-    if (projects.length === 0) break
-    pages.push({
-      projects,
-      hasMore: offset + size < latest.projects.length ? true : latest.hasMore,
-      nextCursor: offset + size < latest.projects.length ? projects.at(-1)?.id ?? null : latest.nextCursor,
-    })
-    offset += size
-  }
-  if (pages.length === 0) pages.push(latest)
+  if (nextLoadedCount > loadedCount) return 'skipped'
   queryClient.setQueryData<InfiniteData<ProjectsResponse, string | null>>(sessionQueryKeys.projects, {
-    pages,
-    pageParams: pages.map((_, index) => index === 0 ? null : pages[index - 1]?.nextCursor ?? null),
+    pages: [latest],
+    pageParams: [null],
   })
+  return 'applied'
 }
 
 function visibleProjectLoadedCount(queryClient: QueryClient, projectId: string): number {
@@ -72,10 +62,14 @@ function visibleProjectLoadedCount(queryClient: QueryClient, projectId: string):
   return Math.max(detailLoaded, railLoaded)
 }
 
-function collectVisibleProjectRequests(queryClient: QueryClient, visibleProjectIds: string[]): Array<{ projectId: string; limit: number }> {
+function collectVisibleProjectRequests(queryClient: QueryClient, visibleProjectIds: string[], selectedProjectId: string | null, selectedSessionId: string | null): Array<{ projectId: string; limit: number; selectedSessionId?: string }> {
   return visibleProjectIds.map((projectId) => {
     const limit = visibleProjectLoadedCount(queryClient, projectId)
-    return { projectId, limit: limit > 0 ? limit : 10 }
+    return {
+      projectId,
+      limit: limit > 0 ? limit : 10,
+      ...(projectId === selectedProjectId && selectedSessionId ? { selectedSessionId } : {}),
+    }
   }).filter((entry) => entry.limit > 0)
 }
 
@@ -108,45 +102,58 @@ function patchProjectRailQuery(queryClient: QueryClient, response: ProjectSessio
   const current = queryClient.getQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(queryKey)
   const latest = projectWindow(response, projectId)
   if (!latest) return
-  const pageSizes = current?.pages.map((page) => page.sessions.length).filter((size) => size > 0) ?? [Math.min(10, latest.sessions.length || 10)]
-  const repaged = repageSessions(latest.sessions, pageSizes, 10)
   const project = current?.pages[0]?.project ?? projectForRail(queryClient, projectId)
   const defaultSessionId = current?.pages[0]?.defaultSessionId ?? latest.sessions[0]?.id ?? null
-  const pages = repaged.map((sessions, index) => ({
-    project: current?.pages[index]?.project ?? project,
-    sessions,
-    defaultSessionId: current?.pages[index]?.defaultSessionId ?? defaultSessionId,
-    hasMore: index < repaged.length - 1 ? true : latest.hasMore,
-    nextCursor: index < repaged.length - 1 ? sessions.at(-1)?.id ?? null : latest.nextCursor,
-  }))
   queryClient.setQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(queryKey, {
-    pages,
-    pageParams: pages.map((_, index) => index === 0 ? null : pages[index - 1]?.nextCursor ?? null),
+    pages: [{
+      project,
+      sessions: latest.sessions,
+      defaultSessionId,
+      hasMore: latest.hasMore,
+      nextCursor: latest.nextCursor,
+    }],
+    pageParams: [null],
   })
 }
 
 export async function refreshVisibleProjectSessions(
   queryClient: QueryClient,
-  input: { selectedProjectId: string | null; visibleProjectIds?: string[] },
-): Promise<void> {
-  const generation = nextRefreshGeneration(sessionRefreshGenerations, queryClient)
+  input: { selectedProjectId: string | null; selectedSessionId?: string | null; visibleProjectIds?: string[] },
+): Promise<Map<string, ProjectRefreshResult>> {
   const visibleProjectIds = stableProjectIds(input.visibleProjectIds ?? [input.selectedProjectId])
-  if (visibleProjectIds.length === 0) return
-  const requests = collectVisibleProjectRequests(queryClient, visibleProjectIds)
-  if (requests.length === 0) return
+  if (visibleProjectIds.length === 0) return new Map()
+  const requests = collectVisibleProjectRequests(queryClient, visibleProjectIds, input.selectedProjectId, input.selectedSessionId ?? null)
+  if (requests.length === 0) return new Map()
+  const generations = nextProjectRefreshGenerations(queryClient, requests.map(({ projectId }) => projectId))
   const response = await queryProjectSessions(requests)
-  if (sessionRefreshGenerations.get(queryClient) !== generation) return
+  const currentGenerations = sessionRefreshGenerations.get(queryClient)
+  const outcomes = new Map<string, ProjectRefreshResult>()
   for (const { projectId, limit } of requests) {
-    if (visibleProjectLoadedCount(queryClient, projectId) > limit) continue
+    if (currentGenerations?.get(projectId) !== generations.get(projectId)) {
+      outcomes.set(projectId, { outcome: 'skipped' })
+      continue
+    }
+    const latest = projectWindow(response, projectId)
+    if (!latest) {
+      outcomes.set(projectId, { outcome: 'missing' })
+      continue
+    }
+    if (visibleProjectLoadedCount(queryClient, projectId) > limit) {
+      outcomes.set(projectId, { outcome: 'skipped' })
+      continue
+    }
     patchProjectDetailQueries(queryClient, response, projectId)
     patchProjectRailQuery(queryClient, response, projectId)
+    outcomes.set(projectId, { outcome: 'applied', selectedSessionExists: latest.selectedSessionExists })
   }
+  return outcomes
 }
 
 export async function refreshProjectSessionLists(
   queryClient: QueryClient,
-  input: { selectedProjectId: string | null; visibleProjectIds?: string[] },
-): Promise<void> {
-  await refreshProjectsWindow(queryClient)
-  await refreshVisibleProjectSessions(queryClient, input)
+  input: { selectedProjectId: string | null; selectedSessionId?: string | null; visibleProjectIds?: string[] },
+): Promise<{ projects: RefreshOutcome; sessions: Map<string, ProjectRefreshResult> }> {
+  const projects = await refreshProjectsWindow(queryClient)
+  const sessions = await refreshVisibleProjectSessions(queryClient, input)
+  return { projects, sessions }
 }

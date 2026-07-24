@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { LiveTurnFailureEvent } from '@cotta/shared'
 import { projectPathFromId } from './claude-code-api.js'
 import type { LiveEventStore } from './live-event-store.js'
 import type { SessionSummaryCache } from './session-summary-cache.js'
@@ -52,7 +53,8 @@ function liveSessionStateFromSdkMessage(message: SDKMessage): LiveSessionState |
   return message.state === 'idle' || message.state === 'running' || message.state === 'requires_action' ? message.state : null
 }
 
-export type LiveTurnSubscriber = (message: SDKMessage) => void
+export type LiveTurnEvent = SDKMessage | LiveTurnFailureEvent
+export type LiveTurnSubscriber = (event: LiveTurnEvent) => void
 
 export class LiveTurnManager {
   private readonly subscribers = new Map<string, Set<LiveTurnSubscriber>>()
@@ -160,6 +162,13 @@ export class LiveTurnManager {
       }
     } catch (error) {
       console.error('live-runtime:drain failed', error)
+      if (runtime.currentUserMessageUuid) {
+        this.publish(runtime, {
+          type: 'live.turn.failed',
+          userMessageUuid: runtime.currentUserMessageUuid,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     } finally {
       runtime.currentUserMessageUuid = null
       const hadVisibleState = this.liveStateBySession.delete(runtime.sessionId)
@@ -168,14 +177,14 @@ export class LiveTurnManager {
     }
   }
 
-  private publish(runtime: SessionRuntime, message: SDKMessage): void {
+  private publish(runtime: SessionRuntime, event: LiveTurnEvent): void {
     if (this.liveEventStore) {
       try {
-        this.liveEventStore.append(runtime.projectId, runtime.sessionId, message)
+        this.liveEventStore.append(runtime.projectId, runtime.sessionId, event)
       } catch (error) {
         console.error('live-events:append failed', error)
       }
     }
-    for (const subscriber of this.subscribers.get(runtime.sessionId) ?? []) subscriber(message)
+    for (const subscriber of this.subscribers.get(runtime.sessionId) ?? []) subscriber(event)
   }
 }

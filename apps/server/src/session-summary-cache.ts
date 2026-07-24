@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { listSessions, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 import type { ProjectSummary, SessionSummary } from '@cotta/shared'
+import { createListCursor, resolveListCursor } from './list-cursor.js'
 
 type SummaryCacheProject = {
   id: string
@@ -25,6 +26,7 @@ type ProjectSessionsWindow = {
   sessions: SessionSummary[]
   hasMore: boolean
   nextCursor: string | null
+  selectedSessionExists?: boolean
 }
 
 type CacheSnapshot = {
@@ -71,7 +73,7 @@ function normalizeProjectPath(path: string): string {
 function compareProjects(left: SummaryCacheProject, right: SummaryCacheProject): number {
   const byTime = right.lastActivityAt - left.lastActivityAt
   if (byTime !== 0) return byTime
-  return left.path.localeCompare(right.path)
+  return left.id.localeCompare(right.id)
 }
 
 function compareSessions(left: SDKSessionInfo, right: SDKSessionInfo): number {
@@ -110,17 +112,23 @@ function buildProjectSessionsWindow(
   sessions: SDKSessionInfo[],
   projectSessionsFullyLoaded: boolean,
   input: { limit?: number; cursor?: string | null },
-  sessionStatusesById?: Map<string, string | null>,
+  sessionStatusesById: Map<string, string | null> | undefined,
+  paginationEpoch: string,
 ): ProjectSessionsWindow {
   const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
-  const cursorIndex = input.cursor ? sessions.findIndex((session) => session.sessionId === input.cursor) : -1
-  const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+  const ids = sessions.map((session) => session.sessionId)
+  const start = input.cursor
+    ? resolveListCursor({ cursor: input.cursor, kind: 'project-sessions', epoch: paginationEpoch, ids, projectId })
+    : 0
   const page = sessions.slice(start, start + limit)
   const hasMore = start + limit < sessions.length || !projectSessionsFullyLoaded
+  const offset = start + page.length
   return {
     sessions: page.map((session) => toSessionSummary(projectId, session, sessionStatusesById)),
     hasMore,
-    nextCursor: hasMore && page.length > 0 ? page.at(-1)?.sessionId ?? null : null,
+    nextCursor: hasMore && page.length > 0
+      ? createListCursor({ kind: 'project-sessions', epoch: paginationEpoch, ids, offset, projectId })
+      : null,
   }
 }
 
@@ -157,6 +165,7 @@ export class SessionSummaryCache {
   private readonly projectVersionsById = new Map<string, number>()
   private readonly sessionStatusesById = new Map<string, string | null>()
   private readonly projectIdBySessionId = new Map<string, string>()
+  private mutationQueue: Promise<void> | null = null
   private refreshPromise: Promise<void> | null = null
   private pendingRefreshKind: RefreshKind | null = null
   private scannedOffset = 0
@@ -164,6 +173,7 @@ export class SessionSummaryCache {
   private backgroundRefreshStarted = false
   private projectsVersionValue = 0
   private readonly epoch = randomUUID()
+  private readonly paginationEpoch = randomUUID()
   private readonly listeners = new Set<(event: SummaryVersionEvent) => void>()
   private sessionStateReader?: (sessionId: string) => string | null
 
@@ -200,10 +210,13 @@ export class SessionSummaryCache {
       await (this.refreshPromise ?? Promise.resolve())
       return
     }
-    while (this.projectsById.size < 20 && !this.projectsFullyScanned) {
-      await this.runRefreshTask('deep')
+    try {
+      while (this.projectsById.size < 20 && !this.projectsFullyScanned) {
+        await this.runRefreshTask('deep')
+      }
+    } finally {
+      this.startBackgroundRefreshLoop()
     }
-    this.startBackgroundRefreshLoop()
   }
 
   async scheduleRefresh(_input: RefreshInput = {}): Promise<void> {
@@ -214,22 +227,29 @@ export class SessionSummaryCache {
     const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 20)))
     await this.ensureProjectWindow(input, limit)
     const ordered = [...this.projectsById.values()].sort(compareProjects)
-    const cursorIndex = input.cursor ? ordered.findIndex((project) => project.id === input.cursor) : -1
-    const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+    const ids = ordered.map((project) => project.id)
+    const start = input.cursor
+      ? resolveListCursor({ cursor: input.cursor, kind: 'projects', epoch: this.paginationEpoch, ids })
+      : 0
     const page = ordered.slice(start, start + limit)
     const hasMore = start + limit < ordered.length || !this.projectsFullyScanned
+    const offset = start + page.length
     return {
       projects: page.map(({ id, name, path, lastActivityAt }) => ({ id, name, path, lastActivityAt })),
       hasMore,
-      nextCursor: hasMore && page.length > 0 ? page.at(-1)?.id ?? null : null,
+      nextCursor: hasMore && page.length > 0
+        ? createListCursor({ kind: 'projects', epoch: this.paginationEpoch, ids, offset })
+        : null,
     }
   }
 
   private async ensureProjectWindow(input: { cursor?: string | null }, limit: number): Promise<void> {
     while (!this.projectsFullyScanned) {
       const ordered = [...this.projectsById.values()].sort(compareProjects)
-      const cursorIndex = input.cursor ? ordered.findIndex((project) => project.id === input.cursor) : -1
-      const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+      const ids = ordered.map((project) => project.id)
+      const start = input.cursor
+        ? resolveListCursor({ cursor: input.cursor, kind: 'projects', epoch: this.paginationEpoch, ids })
+        : 0
       if (start + limit <= ordered.length) return
       const beforeOffset = this.scannedOffset
       await this.runRefreshTask('deep')
@@ -254,19 +274,26 @@ export class SessionSummaryCache {
     await this.runRefreshTask('rebuild')
   }
 
-  async queryProjectSessions(input: { projects: Array<{ projectId: string; limit?: number }> }): Promise<{ sessionsByProject: Record<string, ProjectSessionsWindow> }> {
+  async queryProjectSessions(input: { projects: Array<{ projectId: string; limit?: number; selectedSessionId?: string }> }): Promise<{ sessionsByProject: Record<string, ProjectSessionsWindow> }> {
     await this.discoverProjects(input.projects.map((project) => project.projectId))
     const sessionsByProject: Record<string, ProjectSessionsWindow> = {}
-    for (const { projectId, limit } of input.projects) {
+    for (const { projectId, limit, selectedSessionId } of input.projects) {
       if (!this.projectsById.has(projectId)) continue
       const sessions = this.sessionInfosByProjectId.get(projectId) ?? []
-      sessionsByProject[projectId] = buildProjectSessionsWindow(
+      const fullyLoaded = this.projectSessionsFullyLoadedById.get(projectId) ?? this.projectsFullyScanned
+      const window = buildProjectSessionsWindow(
         projectId,
         sessions,
-        this.projectSessionsFullyLoadedById.get(projectId) ?? this.projectsFullyScanned,
+        fullyLoaded,
         { limit, cursor: null },
         this.sessionStatusesById,
+        this.paginationEpoch,
       )
+      if (selectedSessionId) {
+        const selectedSessionExists = sessions.some((session) => session.sessionId === selectedSessionId)
+        if (selectedSessionExists || fullyLoaded) window.selectedSessionExists = selectedSessionExists
+      }
+      sessionsByProject[projectId] = window
     }
     return { sessionsByProject }
   }
@@ -282,6 +309,8 @@ export class SessionSummaryCache {
     const project = this.projectsById.get(projectId)
     if (!project) return null
     await this.maybeBackfillProjectSessions(project, input)
+    const refreshedProject = this.projectsById.get(projectId)
+    if (!refreshedProject) return null
     const sessions = this.sessionInfosByProjectId.get(projectId) ?? []
     const window = buildProjectSessionsWindow(
       projectId,
@@ -289,13 +318,14 @@ export class SessionSummaryCache {
       this.projectSessionsFullyLoadedById.get(projectId) ?? this.projectsFullyScanned,
       input,
       this.sessionStatusesById,
+      this.paginationEpoch,
     )
     return {
       project: {
-        id: project.id,
-        name: project.name,
-        path: project.path,
-        lastActivityAt: project.lastActivityAt,
+        id: refreshedProject.id,
+        name: refreshedProject.name,
+        path: refreshedProject.path,
+        lastActivityAt: refreshedProject.lastActivityAt,
       },
       sessions: window.sessions,
       defaultSessionId: sessions[0]?.sessionId ?? null,
@@ -305,30 +335,51 @@ export class SessionSummaryCache {
   }
 
   private async maybeBackfillProjectSessions(project: SummaryCacheProject, input: { limit?: number; cursor?: string | null }): Promise<void> {
-    const sessions = this.sessionInfosByProjectId.get(project.id) ?? []
-    const cursorIndex = input.cursor ? sessions.findIndex((session) => session.sessionId === input.cursor) : -1
-    const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
-    const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
-    const needsMoreFromCache = start + limit > sessions.length
-    const isLoadMore = start > 0 || Boolean(input.cursor)
-    if (!isLoadMore || !needsMoreFromCache || (this.projectSessionsFullyLoadedById.get(project.id) ?? this.projectsFullyScanned)) return
+    await this.enqueueMutation(async () => {
+      const currentProject = this.projectsById.get(project.id)
+      if (!currentProject) return
+      const sessions = this.sessionInfosByProjectId.get(currentProject.id) ?? []
+      const ids = sessions.map((session) => session.sessionId)
+      const start = input.cursor
+        ? resolveListCursor({ cursor: input.cursor, kind: 'project-sessions', epoch: this.paginationEpoch, ids, projectId: currentProject.id })
+        : 0
+      const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
+      const needsMoreFromCache = start + limit > sessions.length
+      const isLoadMore = start > 0 || Boolean(input.cursor)
+      if (!isLoadMore || !needsMoreFromCache || (this.projectSessionsFullyLoadedById.get(currentProject.id) ?? this.projectsFullyScanned)) return
 
-    const loaded = exactProjectSessions(project.path, await listSessions({
-      dir: project.path,
-      includeWorktrees: true,
-      includeProgrammatic: true,
-    }))
-    const mergedById = new Map((this.sessionInfosByProjectId.get(project.id) ?? []).map((session) => [session.sessionId, session]))
-    for (const session of loaded) {
-      this.removeSessionFromPreviousProject(session.sessionId, project.id, { projectIds: new Set(), projectsChanged: false })
-      this.projectIdBySessionId.set(session.sessionId, project.id)
-      mergedById.set(session.sessionId, session)
-    }
-    const merged = [...mergedById.values()].sort(compareSessions)
-    this.sessionInfosByProjectId.set(project.id, merged)
-    this.projectSessionsFullyLoadedById.set(project.id, true)
-    this.refreshSessionStatuses([project.id])
-    this.updateProjectFromSessions(project.path, merged)
+      const loaded = exactProjectSessions(currentProject.path, await listSessions({
+        dir: currentProject.path,
+        includeWorktrees: true,
+        includeProgrammatic: true,
+      }))
+      const versionChanges: VersionChanges = { projectIds: new Set<string>(), projectsChanged: false }
+      const previousSessions = this.sessionInfosByProjectId.get(project.id) ?? []
+      const loadedIds = new Set(loaded.map((session) => session.sessionId))
+      for (const session of previousSessions) {
+        if (loadedIds.has(session.sessionId)) continue
+        this.sessionStatusesById.delete(session.sessionId)
+        this.projectIdBySessionId.delete(session.sessionId)
+        versionChanges.projectIds.add(project.id)
+      }
+      for (const session of loaded) {
+        this.removeSessionFromPreviousProject(session.sessionId, project.id, versionChanges)
+        this.projectIdBySessionId.set(session.sessionId, project.id)
+      }
+      if (!sameSessionList(previousSessions, loaded)) versionChanges.projectIds.add(project.id)
+      this.sessionInfosByProjectId.set(project.id, loaded)
+      if (setBooleanIfChanged(this.projectSessionsFullyLoadedById, project.id, true)) versionChanges.projectIds.add(project.id)
+      for (const projectId of this.refreshSessionStatuses([project.id])) versionChanges.projectIds.add(projectId)
+      if (loaded.length === 0) {
+        this.projectsById.delete(project.id)
+        this.sessionInfosByProjectId.delete(project.id)
+        this.projectSessionsFullyLoadedById.delete(project.id)
+        versionChanges.projectsChanged = true
+      } else if (this.updateProjectFromSessions(project.path, loaded)) {
+        versionChanges.projectsChanged = true
+      }
+      this.publishVersionChanges(versionChanges)
+    })
   }
 
   private refreshSessionStatuses(projectIds?: Iterable<string>): Set<string> {
@@ -358,6 +409,21 @@ export class SessionSummaryCache {
     }, 30 * 60_000)
   }
 
+  private enqueueMutation<T>(task: () => Promise<T>): Promise<T> {
+    let next: Promise<T>
+    try {
+      next = this.mutationQueue ? this.mutationQueue.then(task, task) : task()
+    } catch (error) {
+      next = Promise.reject(error)
+    }
+    const settled = next.then(() => undefined, () => undefined)
+    this.mutationQueue = settled
+    void settled.finally(() => {
+      if (this.mutationQueue === settled) this.mutationQueue = null
+    })
+    return next
+  }
+
   private async runRefreshTask(kind: RefreshKind): Promise<void> {
     if (this.refreshPromise) {
       this.pendingRefreshKind = strongerRefresh(this.pendingRefreshKind, kind)
@@ -369,7 +435,7 @@ export class SessionSummaryCache {
       let firstError: unknown
       while (current) {
         try {
-          await this.executeRefresh(current)
+          await this.enqueueMutation(() => this.executeRefresh(current!))
         } catch (error) {
           firstError ??= error
         }
@@ -389,10 +455,10 @@ export class SessionSummaryCache {
     if (kind === 'rebuild') return this.rebuildFromScratch()
     const coveredPages = Math.max(1, Math.ceil(this.scannedOffset / this.pageSize))
     const maxPages = kind === 'shallow' ? 2 : Math.max(coveredPages + 4, 4)
-    return this.runRefreshWindow(0, maxPages, kind === 'deep')
+    return this.runRefreshWindow(0, maxPages)
   }
 
-  private async runRefreshWindow(startOffset: number, maxPages: number, markIncompleteOnFullWindow = false): Promise<void> {
+  private async runRefreshWindow(startOffset: number, maxPages: number): Promise<void> {
     let offset = startOffset
     let reachedEnd = false
     const pages: SDKSessionInfo[][] = []
@@ -415,14 +481,10 @@ export class SessionSummaryCache {
     const versionChanges: VersionChanges = { projectIds: new Set<string>(), projectsChanged: false }
     for (const page of pages) this.applySessionsPage(page, versionChanges)
     this.reconcileCoveredSessions(scannedSessions, reachedEnd, versionChanges)
-    if (reachedEnd) this.projectsFullyScanned = true
-    else if (markIncompleteOnFullWindow) this.projectsFullyScanned = false
-
-    if (this.projectsFullyScanned) {
-      for (const projectId of this.projectsById.keys()) {
-        if (setBooleanIfChanged(this.projectSessionsFullyLoadedById, projectId, true)) {
-          versionChanges.projectIds.add(projectId)
-        }
+    this.projectsFullyScanned = reachedEnd
+    for (const projectId of this.projectsById.keys()) {
+      if (setBooleanIfChanged(this.projectSessionsFullyLoadedById, projectId, reachedEnd)) {
+        versionChanges.projectIds.add(projectId)
       }
     }
     for (const projectId of this.refreshSessionStatuses()) versionChanges.projectIds.add(projectId)
@@ -531,7 +593,7 @@ export class SessionSummaryCache {
     const scannedIds = new Set(scannedSessions.map((session) => session.sessionId))
     const cutoff = scannedSessions.length > 0 ? Math.min(...scannedSessions.map((session) => session.lastModified)) : Number.POSITIVE_INFINITY
     for (const [projectId, sessions] of [...this.sessionInfosByProjectId]) {
-      const nextSessions = sessions.filter((session) => scannedIds.has(session.sessionId) || (!reachedEnd && session.lastModified < cutoff))
+      const nextSessions = sessions.filter((session) => scannedIds.has(session.sessionId) || (!reachedEnd && session.lastModified <= cutoff))
       if (nextSessions.length === sessions.length) continue
       this.sessionInfosByProjectId.set(projectId, nextSessions)
       for (const session of sessions) {

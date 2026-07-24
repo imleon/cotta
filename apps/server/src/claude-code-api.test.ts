@@ -79,6 +79,25 @@ describe('createClaudeCodeApi', () => {
     })
   })
 
+  it('rejects a direct-adapter cursor after its sorted prefix changes', async () => {
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 's1', cwd: '/repo/cotta', lastModified: 3 }),
+        session({ sessionId: 's2', cwd: '/repo/cotta', lastModified: 2 }),
+        session({ sessionId: 's3', cwd: '/repo/cotta', lastModified: 1 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 's2', cwd: '/repo/cotta', lastModified: 4, fileSize: 1 }),
+        session({ sessionId: 's1', cwd: '/repo/cotta', lastModified: 3 }),
+        session({ sessionId: 's3', cwd: '/repo/cotta', lastModified: 1 }),
+      ])
+
+    const api = createClaudeCodeApi()
+    const firstPage = await api.listProjectSessions(projectId('/repo/cotta'), { limit: 2 })
+
+    await expect(api.listProjectSessions(projectId('/repo/cotta'), { limit: 2, cursor: firstPage?.nextCursor })).rejects.toMatchObject({ code: 'stale' })
+  })
+
   it('returns null timeline state for a session that belongs to a sibling worktree path', async () => {
     listSessionsMock.mockResolvedValue([
       session({ sessionId: 'other', cwd: '/repo/cotta-v2', lastModified: 10, fileSize: 99 }),

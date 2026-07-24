@@ -331,6 +331,15 @@ h2 {
   border-right: 1px solid var(--color-border);
 }
 
+.project-rail-title {
+  margin: 0 auto 0 0;
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .project-rail-header-action {
   display: inline-grid;
   width: 28px;
@@ -434,11 +443,6 @@ h2 {
   gap: 6px;
 }
 
-.sidebar-motion-item {
-  transform-origin: center;
-  will-change: transform;
-}
-
 .sidebar-motion-entering .project-card,
 .sidebar-motion-entering .session-row {
   animation: sidebar-item-enter 140ms ease-out both;
@@ -469,7 +473,9 @@ h2 {
   margin-left: 10px;
   overflow-x: hidden;
   overflow-y: auto;
-  padding-left: 8px;
+  border-radius: 10px;
+  background: rgb(148 163 184 / 7%);
+  padding: 6px;
   scrollbar-gutter: stable;
 }
 
@@ -484,7 +490,6 @@ h2 {
   background-color: rgb(60 60 67 / 22%);
 }
 
-.project-sessions-heading,
 .rail-empty {
   margin: 6px 0;
   color: rgb(100 116 139 / 72%);
@@ -571,7 +576,7 @@ h2 {
   transform: rotate(90deg);
 }
 
-.project-card h2,
+.project-card-name,
 .detail-header h2,
 .workspace-main-header h2 {
   margin: 0;
@@ -579,7 +584,7 @@ h2 {
   letter-spacing: -0.04em;
 }
 
-.project-card h2 {
+.project-card-name {
   overflow: hidden;
   font-size: 14px;
   font-weight: 400;
@@ -891,14 +896,14 @@ h2 {
   cursor: pointer;
 }
 
-.session-row:hover {
-  color: #111827;
-  background: rgb(148 163 184 / 8%);
+.session-row:hover,
+.session-row.selected {
+  color: var(--color-text);
+  background: var(--color-accent-soft);
 }
 
-.session-row.selected {
-  color: #111827;
-  background: rgb(100 116 139 / 12%);
+.session-row.selected .session-main strong {
+  font-weight: 650;
 }
 
 .session-content {
@@ -1228,6 +1233,22 @@ h2 {
   border-color: rgb(100 116 139 / 24%);
   background: rgb(148 163 184 / 10%);
   color: rgb(71 85 105);
+}
+
+.session-load-more {
+  display: flex;
+  width: calc(100% + 12px);
+  min-width: 0;
+  margin: 6px -6px -6px;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  padding: 8px 12px;
+}
+
+.session-load-more:hover {
+  background: rgb(148 163 184 / 8%);
 }
 
 .turn-card {
@@ -1879,11 +1900,6 @@ h2 {
     animation-iteration-count: 1 !important;
   }
 
-  .sidebar-motion-item {
-    transform: none !important;
-    will-change: auto;
-  }
-
   .sidebar-motion-entering .project-card,
   .sidebar-motion-entering .session-row,
   .sidebar-motion-exiting .project-card,
@@ -1907,6 +1923,10 @@ h2 {
   .detail-header,
   .workspace-panel {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-panel {
+    grid-template-rows: auto auto auto minmax(0, 1fr);
   }
 
   .dashboard-layout {
@@ -1948,6 +1968,12 @@ h2 {
   .workspace-panel > .workspace-panel-error {
     grid-column: 1;
   }
+
+  .workspace-panel > .project-rail-header { grid-row: 1; }
+  .workspace-panel > .project-rail { grid-row: 2; }
+  .workspace-panel > .workspace-main-header { grid-row: 3; }
+  .workspace-panel > .workspace-main-panel,
+  .workspace-panel > .workspace-panel-error { grid-row: 4; }
 
   .workspace-panel > .project-rail-header,
   .workspace-panel > .project-rail {

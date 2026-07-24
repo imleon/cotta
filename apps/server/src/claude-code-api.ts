@@ -4,7 +4,9 @@ import {
   type SDKSessionInfo,
   type SessionMessage,
 } from '@anthropic-ai/claude-agent-sdk'
+import { randomUUID } from 'node:crypto'
 import type { ProjectSummary, SessionSummary, SessionTimelineState } from '@cotta/shared'
+import { createListCursor, resolveListCursor } from './list-cursor.js'
 import type { SessionSummaryCache } from './session-summary-cache.js'
 
 function projectIdFromPath(path: string): string {
@@ -85,7 +87,10 @@ function toProjectSummaries(sessions: SDKSessionInfo[]): ProjectSummary[] {
   }
   return [...sessionsByPath.entries()]
     .map(([path, projectSessions]) => toProjectSummary(path, projectSessions))
-    .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+    .sort((a, b) => {
+      const byTime = (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0)
+      return byTime !== 0 ? byTime : a.id.localeCompare(b.id)
+    })
 }
 
 function toSessionSummary(projectPath: string, projectId: string, session: SDKSessionInfo): SessionSummary {
@@ -139,20 +144,27 @@ export type ClaudeCodeApi = {
 }
 
 export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi {
+  const paginationEpoch = randomUUID()
+
   return {
     async listProjects(options = {}) {
       if (cache) return cache.listProjects(options)
       const sessions = await listSessions({ includeWorktrees: true, includeProgrammatic: true })
       const projects = toProjectSummaries(sessions)
       const limit = Math.max(1, Math.min(10_000, Math.trunc(options.limit ?? 20)))
-      const cursorIndex = options.cursor ? projects.findIndex((project) => project.id === options.cursor) : -1
-      const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+      const ids = projects.map((project) => project.id)
+      const start = options.cursor
+        ? resolveListCursor({ cursor: options.cursor, kind: 'projects', epoch: paginationEpoch, ids })
+        : 0
       const page = projects.slice(start, start + limit)
       const hasMore = start + limit < projects.length
+      const offset = start + page.length
       return {
         projects: page,
         hasMore,
-        nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+        nextCursor: hasMore && page.length > 0
+          ? createListCursor({ kind: 'projects', epoch: paginationEpoch, ids, offset })
+          : null,
       }
     },
 
@@ -174,16 +186,21 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
       if (sessions.length === 0) return null
       const project = toProjectSummary(projectPath, sessions)
       const limit = Math.max(1, Math.min(10_000, Math.trunc(options.limit ?? 10)))
-      const cursorIndex = options.cursor ? sessions.findIndex((session) => session.sessionId === options.cursor) : -1
-      const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+      const ids = sessions.map((session) => session.sessionId)
+      const start = options.cursor
+        ? resolveListCursor({ cursor: options.cursor, kind: 'project-sessions', epoch: paginationEpoch, ids, projectId })
+        : 0
       const page = sessions.slice(start, start + limit)
       const hasMore = start + limit < sessions.length
+      const offset = start + page.length
       return {
         project,
         sessions: page.map((session) => toSessionSummary(projectPath, project.id, session)),
         defaultSessionId: sessions[0]?.sessionId ?? null,
         hasMore,
-        nextCursor: hasMore ? page.at(-1)?.sessionId ?? null : null,
+        nextCursor: hasMore && page.length > 0
+          ? createListCursor({ kind: 'project-sessions', epoch: paginationEpoch, ids, offset, projectId })
+          : null,
       }
     },
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { listSessions, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 import type { ProjectSummary, SessionSummary } from '@cotta/shared'
 import { createListCursor, resolveListCursor } from './list-cursor.js'
+import { SessionActivityTracker } from './session-activity.js'
 
 type SummaryCacheProject = {
   id: string
@@ -76,8 +77,8 @@ function compareProjects(left: SummaryCacheProject, right: SummaryCacheProject):
   return left.id.localeCompare(right.id)
 }
 
-function compareSessions(left: SDKSessionInfo, right: SDKSessionInfo): number {
-  const byTime = right.lastModified - left.lastModified
+function compareSessions(activity: SessionActivityTracker, left: SDKSessionInfo, right: SDKSessionInfo): number {
+  const byTime = activity.get(right) - activity.get(left)
   if (byTime !== 0) return byTime
   return left.sessionId.localeCompare(right.sessionId)
 }
@@ -89,25 +90,26 @@ function sameProject(left: SummaryCacheProject, right: SummaryCacheProject): boo
     && left.lastActivityAt === right.lastActivityAt
 }
 
-function toSessionSummary(projectId: string, session: SDKSessionInfo, sessionStatusesById?: Map<string, string | null>): SessionSummary {
+function toSessionSummary(activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo, sessionStatusesById?: Map<string, string | null>): SessionSummary {
   const liveState = sessionStatusesById?.get(session.sessionId) ?? null
   return {
     id: session.sessionId,
     title: titleFromSession(session),
     projectId,
-    lastActivityAt: session.lastModified,
+    lastActivityAt: activity.get(session),
     ...(liveState ? { rawStatus: liveState, displayStatus: liveState } : {}),
   }
 }
 
-function exactProjectSessions(projectPath: string, sessions: SDKSessionInfo[]): SDKSessionInfo[] {
+function exactProjectSessions(activity: SessionActivityTracker, projectPath: string, sessions: SDKSessionInfo[]): SDKSessionInfo[] {
   const normalized = normalizeProjectPath(projectPath)
   return sessions
     .filter((session) => normalizeProjectPath(session.cwd ?? '') === normalized)
-    .sort(compareSessions)
+    .sort((left, right) => compareSessions(activity, left, right))
 }
 
 function buildProjectSessionsWindow(
+  activity: SessionActivityTracker,
   projectId: string,
   sessions: SDKSessionInfo[],
   projectSessionsFullyLoaded: boolean,
@@ -124,7 +126,7 @@ function buildProjectSessionsWindow(
   const hasMore = start + limit < sessions.length || !projectSessionsFullyLoaded
   const offset = start + page.length
   return {
-    sessions: page.map((session) => toSessionSummary(projectId, session, sessionStatusesById)),
+    sessions: page.map((session) => toSessionSummary(activity, projectId, session, sessionStatusesById)),
     hasMore,
     nextCursor: hasMore && page.length > 0
       ? createListCursor({ kind: 'project-sessions', epoch: paginationEpoch, ids, offset, projectId })
@@ -165,6 +167,7 @@ export class SessionSummaryCache {
   private readonly projectVersionsById = new Map<string, number>()
   private readonly sessionStatusesById = new Map<string, string | null>()
   private readonly projectIdBySessionId = new Map<string, string>()
+  readonly activity = new SessionActivityTracker()
   private mutationQueue: Promise<void> | null = null
   private refreshPromise: Promise<void> | null = null
   private pendingRefreshKind: RefreshKind | null = null
@@ -278,10 +281,14 @@ export class SessionSummaryCache {
     await this.discoverProjects(input.projects.map((project) => project.projectId))
     const sessionsByProject: Record<string, ProjectSessionsWindow> = {}
     for (const { projectId, limit, selectedSessionId } of input.projects) {
+      const project = this.projectsById.get(projectId)
+      if (!project) continue
+      await this.maybeBackfillProjectSessions(project, { limit, cursor: null })
       if (!this.projectsById.has(projectId)) continue
       const sessions = this.sessionInfosByProjectId.get(projectId) ?? []
       const fullyLoaded = this.projectSessionsFullyLoadedById.get(projectId) ?? this.projectsFullyScanned
       const window = buildProjectSessionsWindow(
+        this.activity,
         projectId,
         sessions,
         fullyLoaded,
@@ -313,6 +320,7 @@ export class SessionSummaryCache {
     if (!refreshedProject) return null
     const sessions = this.sessionInfosByProjectId.get(projectId) ?? []
     const window = buildProjectSessionsWindow(
+      this.activity,
       projectId,
       sessions,
       this.projectSessionsFullyLoadedById.get(projectId) ?? this.projectsFullyScanned,
@@ -345,10 +353,9 @@ export class SessionSummaryCache {
         : 0
       const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
       const needsMoreFromCache = start + limit > sessions.length
-      const isLoadMore = start > 0 || Boolean(input.cursor)
-      if (!isLoadMore || !needsMoreFromCache || (this.projectSessionsFullyLoadedById.get(currentProject.id) ?? this.projectsFullyScanned)) return
+      if (!needsMoreFromCache || (this.projectSessionsFullyLoadedById.get(currentProject.id) ?? this.projectsFullyScanned)) return
 
-      const loaded = exactProjectSessions(currentProject.path, await listSessions({
+      const loaded = exactProjectSessions(this.activity, currentProject.path, await listSessions({
         dir: currentProject.path,
         includeWorktrees: true,
         includeProgrammatic: true,
@@ -518,16 +525,17 @@ export class SessionSummaryCache {
         currentSessions.push(session)
         sessionInfosByProjectId.set(projectId, currentSessions)
         const currentProject = projectsById.get(projectId)
+        const lastActivityAt = this.activity.get(session)
         const nextProject: SummaryCacheProject = currentProject
-          ? { ...currentProject, lastActivityAt: Math.max(currentProject.lastActivityAt, session.lastModified) }
-          : { id: projectId, name: projectNameFromPath(path), path, lastActivityAt: session.lastModified }
+          ? { ...currentProject, lastActivityAt: Math.max(currentProject.lastActivityAt, lastActivityAt) }
+          : { id: projectId, name: projectNameFromPath(path), path, lastActivityAt }
         projectsById.set(projectId, nextProject)
       }
       offset += page.length
       if (page.length < this.pageSize) break
     }
     for (const [projectId, sessions] of sessionInfosByProjectId) {
-      sessions.sort(compareSessions)
+      sessions.sort((left, right) => compareSessions(this.activity, left, right))
       sessionInfosByProjectId.set(projectId, sessions)
     }
     const projectSessionsFullyLoadedById = new Map<string, boolean>()
@@ -644,12 +652,12 @@ export class SessionSummaryCache {
         if (!sameSession(existing, session)) {
           const nextSessions = [...currentSessions]
           nextSessions[existingIndex] = session
-          nextSessions.sort(compareSessions)
+          nextSessions.sort((left, right) => compareSessions(this.activity, left, right))
           this.sessionInfosByProjectId.set(projectId, nextSessions)
           versionChanges.projectIds.add(projectId)
         }
       } else {
-        const nextSessions = [...currentSessions, session].sort(compareSessions)
+        const nextSessions = [...currentSessions, session].sort((left, right) => compareSessions(this.activity, left, right))
         this.sessionInfosByProjectId.set(projectId, nextSessions)
         versionChanges.projectIds.add(projectId)
       }
@@ -667,7 +675,7 @@ export class SessionSummaryCache {
       id: projectId,
       name: projectNameFromPath(projectPath),
       path: normalizeProjectPath(projectPath),
-      lastActivityAt: Math.max(...sessions.map((session) => session.lastModified)),
+      lastActivityAt: Math.max(...sessions.map((session) => this.activity.get(session))),
     }
     return setIfChanged(this.projectsById, projectId, nextProject, sameProject)
   }

@@ -3,25 +3,33 @@
 @import "tailwindcss/utilities.css" layer(utilities);
 
 :root {
-  --color-bg: rgb(251 251 251);
+  --spacing: 4px;
+  --font-ui: OpenAISans, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --ease-standard: cubic-bezier(.2, .75, .2, 1);
+  --color-bg: #fafafa;
   --color-surface: #ffffff;
-  --color-surface-muted: #f1f5f9;
-  --color-border: #d9e2ec;
-  --color-border-strong: rgb(156 163 175);
-  --color-text: rgb(29 29 31);
-  --color-muted: #64748b;
-  --color-accent: rgb(71 85 105);
-  --color-accent-soft: rgb(148 163 184 / 12%);
+  --color-surface-muted: #f4f4f4;
+  --color-border: #00000012;
+  --color-border-strong: #00000020;
+  --color-text: #202020;
+  --color-muted: #686868;
+  --color-accent: #242424;
+  --color-accent-soft: #ebebeb;
   --color-danger: #dc2626;
   --color-success: #15803d;
   --color-warning: #b45309;
-  --shadow-card: 0 10px 24px rgb(15 23 42 / 6%);
-  --radius-lg: 20px;
+  --shadow-card: 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+  --radius-lg: 18px;
   --radius-md: 12px;
-  --focus-ring: 0 0 0 3px rgb(100 116 139 / 18%);
+  --focus-ring: 0 0 0 3px rgb(96 151 248 / 22%);
   color: var(--color-text);
   background: var(--color-bg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  font-family: var(--font-ui);
 }
 
 * { box-sizing: border-box; }
@@ -47,7 +55,7 @@ summary:focus-visible {
 
 button,
 summary {
-  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  transition: border-color 140ms var(--ease-standard), background-color 140ms var(--ease-standard), color 140ms var(--ease-standard), box-shadow 140ms var(--ease-standard);
 }
 
 .shell {
@@ -689,7 +697,7 @@ h2 {
   border: 1px solid rgb(100 116 139 / 30%);
   border-radius: 999px;
   color: rgb(100 116 139 / 76%);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1;
   cursor: help;
@@ -707,7 +715,7 @@ h2 {
   background: #1e293b;
   color: #fff;
   content: attr(data-tooltip);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.4;
   opacity: 0;
@@ -746,7 +754,7 @@ h2 {
   margin: 0;
   overflow-wrap: anywhere;
   color: #64748b;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 400;
   line-height: 1.4;
@@ -867,7 +875,7 @@ h2 {
   margin: 6px 0 0;
   overflow-wrap: anywhere;
   color: #334155;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -1241,14 +1249,15 @@ h2 {
   min-width: 0;
   margin: 6px -6px -6px;
   border: 0;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid rgb(148 163 184 / 12%);
   border-radius: 0 0 10px 10px;
-  background: transparent;
+  background: rgb(148 163 184 / 5%);
   padding: 8px 12px;
 }
 
 .session-load-more:hover {
-  background: rgb(148 163 184 / 8%);
+  border-top-color: rgb(148 163 184 / 6%);
+  background: rgb(148 163 184 / 10%);
 }
 
 .turn-card {
@@ -1304,7 +1313,7 @@ h2 {
 
 .timeline-kind-raw {
   color: #94a3b8;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 
@@ -1361,7 +1370,7 @@ h2 {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: #334155;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -1374,27 +1383,28 @@ h2 {
 }
 
 .session-workspace-view .timeline-panel {
-  --tl-paper: #f5f5f7;
-  --tl-surface: #ffffff;
-  --tl-surface-soft: #f7f7f8;
-  --tl-ink: #1d1d1f;
-  --tl-muted: #1d1d1f;
-  --tl-border: #d2d2d7;
-  --tl-border-soft: rgb(60 60 67 / 14%);
-  --tl-shadow: 0 10px 26px rgb(0 0 0 / 5%);
-  --tl-shadow-soft: 0 4px 14px rgb(0 0 0 / 4%);
-  --tl-user: #3a3a3c;
-  --tl-user-soft: #f2f2f3;
+  --tl-paper: var(--color-bg);
+  --tl-surface: var(--color-surface);
+  --tl-surface-soft: var(--color-surface-muted);
+  --tl-ink: var(--color-text);
+  --tl-muted: var(--color-muted);
+  --tl-border: var(--color-border);
+  --tl-border-soft: var(--color-border);
+  --tl-shadow: var(--shadow-card);
+  --tl-shadow-soft: 0 3px 7.5px #0000000a;
+  --tl-user: #2563eb;
+  --tl-user-soft: #e8f2ff;
+  --tl-user-border: #cfe3fb;
   --tl-assistant: #515154;
-  --tl-assistant-soft: #f5f5f7;
-  --tl-tool: #636366;
-  --tl-tool-soft: #f7f7f8;
-  --tl-thinking: #6e6e73;
-  --tl-thinking-soft: #f7f7f8;
+  --tl-assistant-soft: var(--color-bg);
+  --tl-tool: var(--color-muted);
+  --tl-tool-soft: var(--color-surface-muted);
+  --tl-thinking: var(--color-muted);
+  --tl-thinking-soft: var(--color-surface-muted);
   --tl-danger: #b42318;
   --tl-danger-soft: #fff1f0;
-  --tl-code-bg: #f5f6f7;
-  font-size: 14px;
+  --tl-code-bg: #f5f5f5;
+  font-size: var(--text-base);
   gap: 18px;
   margin-right: -24px;
   padding: 4px 70px 18px 56px;
@@ -1595,7 +1605,7 @@ h2 {
 
 .debug-mono {
   overflow-wrap: anywhere;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .debug-muted {
@@ -1643,7 +1653,7 @@ h2 {
 .debug-content-separator {
   margin: 2px 0;
   color: var(--color-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1;
 }
@@ -1701,7 +1711,7 @@ h2 {
   background-color: #f5f6f7;
   padding: .2em .4em;
   white-space: break-spaces;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 85%;
 }
 
@@ -1782,7 +1792,7 @@ h2 {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: #334155;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.45;
 }
@@ -1828,7 +1838,7 @@ h2 {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: #334155;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.45;
 }
@@ -1845,7 +1855,7 @@ h2 {
   white-space: nowrap;
   overflow-wrap: normal;
   color: #334155;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.35;
 }

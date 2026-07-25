@@ -12,6 +12,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }))
 
 import { createClaudeCodeApi } from './claude-code-api.js'
+import { SessionSummaryCache } from './session-summary-cache.js'
 
 function projectId(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
@@ -96,6 +97,26 @@ describe('createClaudeCodeApi', () => {
     const firstPage = await api.listProjectSessions(projectId('/repo/cotta'), { limit: 2 })
 
     await expect(api.listProjectSessions(projectId('/repo/cotta'), { limit: 2, cursor: firstPage?.nextCursor })).rejects.toMatchObject({ code: 'stale' })
+  })
+
+  it('shares visible activity with the summary cache without hiding timeline changes', async () => {
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 100, fileSize: 10 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 200, fileSize: 10 }),
+      ])
+
+    await cache.scheduleRefresh()
+    const api = createClaudeCodeApi(cache)
+
+    await expect(api.getSessionTimelineState(projectId('/repo/cotta'), 'old')).resolves.toMatchObject({
+      lastActivityAt: 100,
+      signature: 'mtime=200;size=10',
+      version: 'timeline-state-v1:mtime=200;size=10',
+    })
   })
 
   it('returns null timeline state for a session that belongs to a sibling worktree path', async () => {

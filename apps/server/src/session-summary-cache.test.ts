@@ -68,6 +68,60 @@ describe('SessionSummaryCache', () => {
     })
   })
 
+  it('keeps age and ordering stable when only the session mtime changes', async () => {
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 'newer', cwd: '/repo/a', lastModified: 200, fileSize: 20 }),
+        session({ sessionId: 'older', cwd: '/repo/a', lastModified: 100, fileSize: 10 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'older', cwd: '/repo/a', lastModified: 300, fileSize: 10 }),
+        session({ sessionId: 'newer', cwd: '/repo/a', lastModified: 200, fileSize: 20 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'older', cwd: '/repo/a', lastModified: 400, fileSize: 11 }),
+        session({ sessionId: 'newer', cwd: '/repo/a', lastModified: 200, fileSize: 20 }),
+      ])
+
+    await cache.scheduleRefresh()
+    await cache.scheduleRefresh()
+
+    expect(await cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).toMatchObject({
+      project: { lastActivityAt: 200 },
+      sessions: [
+        { id: 'newer', lastActivityAt: 200 },
+        { id: 'older', lastActivityAt: 100 },
+      ],
+    })
+
+    await cache.scheduleRefresh()
+
+    expect(await cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).toMatchObject({
+      project: { lastActivityAt: 400 },
+      sessions: [
+        { id: 'older', lastActivityAt: 400 },
+        { id: 'newer', lastActivityAt: 200 },
+      ],
+    })
+  })
+
+  it('keeps visible activity across a full rebuild', async () => {
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock
+      .mockResolvedValueOnce([
+        session({ sessionId: 'old', cwd: '/repo/a', lastModified: 100, fileSize: 10 }),
+      ])
+      .mockResolvedValueOnce([
+        session({ sessionId: 'old', cwd: '/repo/a', lastModified: 200, fileSize: 10 }),
+      ])
+
+    await cache.scheduleRefresh()
+    await cache.getProject(projectId('/missing'))
+
+    await expect(cache.getProject(projectId('/repo/a'))).resolves.toMatchObject({ lastActivityAt: 100 })
+  })
+
   it('moves a session between projects and emits versions for both projects', async () => {
     const cache = new SessionSummaryCache(10)
     const events: Array<{ projectsVersion: number; projectVersions: Array<{ projectId: string; version: number }> }> = []
@@ -85,7 +139,7 @@ describe('SessionSummaryCache', () => {
     ] })).toEqual({
       sessionsByProject: {
         [projectId('/repo/b')]: {
-          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/b'), lastActivityAt: 6 }],
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/b'), lastActivityAt: 5 }],
           hasMore: false,
           nextCursor: null,
         },
@@ -177,6 +231,27 @@ describe('SessionSummaryCache', () => {
     expect(listSessionsMock.mock.calls.filter(([options]) => options?.dir === '/repo/a')).toHaveLength(1)
   })
 
+  it('backfills an undersized project window before reporting hasMore', async () => {
+    const cache = new SessionSummaryCache(1)
+    listSessionsMock
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+      .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/b', lastModified: 2 })])
+      .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 })])
+
+    await cache.scheduleRefresh()
+
+    await expect(cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })).resolves.toEqual({
+      sessionsByProject: {
+        [projectId('/repo/a')]: {
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 3 }],
+          hasMore: false,
+          nextCursor: null,
+        },
+      },
+    })
+    expect(listSessionsMock.mock.calls.filter(([options]) => options?.dir === '/repo/a')).toHaveLength(1)
+  })
+
   it('does not report a selected session missing from a partial cache', async () => {
     const cache = new SessionSummaryCache(1)
     listSessionsMock
@@ -223,6 +298,11 @@ describe('SessionSummaryCache', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 10 })])
       .mockResolvedValueOnce([session({ sessionId: 's2', cwd: '/repo/a', lastModified: 9 })])
+      .mockResolvedValueOnce([
+        session({ sessionId: 's1', cwd: '/repo/a', lastModified: 10 }),
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 9 }),
+        session({ sessionId: 's3', cwd: '/repo/a', lastModified: 9 }),
+      ])
 
     await cache.ensureReady()
     await cache.scheduleRefresh()
@@ -254,7 +334,7 @@ describe('SessionSummaryCache', () => {
         session({ sessionId: 's3', cwd: '/repo/a', lastModified: 1 }),
       ])
       .mockResolvedValueOnce([
-        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 4 }),
+        session({ sessionId: 's2', cwd: '/repo/a', lastModified: 4, fileSize: 1 }),
         session({ sessionId: 's1', cwd: '/repo/a', lastModified: 3 }),
         session({ sessionId: 's3', cwd: '/repo/a', lastModified: 1 }),
       ])

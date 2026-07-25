@@ -117,9 +117,9 @@ function TimelineTimestamp({
 
   const contents = (
     <>
-      {copyText ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[rgb(60_60_67_/_12%)]" style={{ borderRadius: 5 }} type="button" aria-label={copyLabel} onClick={handleCopy}>{copyIcon}</button> : null}
+      {copyText ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={copyLabel} onClick={handleCopy}>{copyIcon}</button> : null}
       <time dateTime={new Date(value).toISOString()}>{label}</time>
-      {source ? <span className="rounded-full bg-[rgb(60_60_67_/_8%)] px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.04em] text-[#636366]">{source}</span> : null}
+      {source ? <span className="rounded-full bg-[var(--tl-surface-soft)] px-1.5 py-px text-[var(--text-xs)] font-bold uppercase tracking-[0.04em] text-[var(--tl-muted)]">{source}</span> : null}
       <span className="sr-only" aria-live="polite">{copyStatus}</span>
     </>
   )
@@ -178,42 +178,42 @@ function assistantResponseText(items: TimelineRenderItem[]): string | null {
 }
 
 const disclosureCardClass = {
-  root: 'group overflow-hidden rounded-[14px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-surface)]',
-  header: 'flex cursor-pointer list-none items-center justify-between gap-[9px] border-b border-transparent bg-[#f8f9fa] px-3 py-1.5 [&::-webkit-details-marker]:hidden group-open:border-[rgb(60_60_67_/_10%)]',
+  root: 'group overflow-hidden rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-surface)]',
+  header: 'flex cursor-pointer list-none items-center justify-between gap-[9px] border-b border-transparent bg-[var(--tl-surface-soft)] px-3 py-1.5 [&::-webkit-details-marker]:hidden group-open:border-[var(--tl-border-soft)]',
   heading: 'flex min-w-0 flex-1 items-center gap-2',
-  icon: 'inline-grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[rgb(60_60_67_/_8%)] text-[11px] font-black leading-none text-[#636366]',
+  icon: 'inline-grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[var(--tl-surface)] text-[var(--text-xs)] font-black leading-none text-[var(--tl-muted)]',
   title: 'flex min-w-0 flex-1 flex-nowrap items-center gap-[5px] overflow-hidden',
-  name: 'min-w-0 truncate text-xs font-medium leading-[1.2] text-[#1d1d1f]',
-  summary: 'min-w-0 max-w-[min(46vw,520px)] flex-[1_1_0] truncate text-[11px] font-normal leading-[1.2] text-[var(--tl-muted,var(--color-muted))]',
-  summaryDot: 'mr-[7px] text-[rgb(60_60_67_/_55%)]',
-  expand: 'inline-grid h-6 w-6 shrink-0 place-items-center rounded-full leading-none text-[rgb(60_60_67_/_78%)]',
+  name: 'min-w-0 truncate text-xs font-medium leading-[1.2] text-[var(--tl-ink)]',
+  summary: 'min-w-0 max-w-[min(46vw,520px)] flex-[1_1_0] truncate text-[var(--text-xs)] font-normal leading-[1.2] text-[var(--tl-muted)]',
+  summaryDot: 'mr-[7px] text-[var(--tl-muted)]',
+  expand: 'inline-grid h-6 w-6 shrink-0 place-items-center rounded-full leading-none text-[var(--tl-muted)]',
   chevron: 'h-[13px] w-[13px] overflow-visible fill-none stroke-current stroke-[1.8] transition-transform duration-[140ms] [stroke-linecap:round] [stroke-linejoin:round] group-open:rotate-90',
-  body: 'grid gap-0 bg-[#fbfbfd]',
+  body: 'grid gap-0 bg-[var(--tl-surface-soft)]',
 }
 
 const toolTimelineClass = {
-  state: 'shrink-0 rounded-full bg-[rgb(60_60_67_/_8%)] px-1.5 py-px text-[9px] font-extrabold uppercase tracking-[0.04em] text-[#636366]',
+  state: 'shrink-0 rounded-full bg-[var(--tl-surface-soft)] px-1.5 py-px text-[var(--text-xs)] font-extrabold uppercase tracking-[0.04em] text-[var(--tl-muted)]',
   stateError: 'bg-[var(--tl-danger-soft)] text-[var(--tl-danger)]',
   section: 'grid gap-2 px-3.5 py-3 [&+&]:pt-0',
-  sectionLabel: 'text-[11px] font-extrabold uppercase tracking-[0.08em] text-[var(--tl-muted)]',
-  inputCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[11px] leading-[1.6] text-[#2c2c2e]',
-  resultCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[11px] leading-[1.6] text-[#2c2c2e]',
-  outputText: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-[inherit] text-[11px] leading-[1.6] text-[#334155]',
-  result: 'rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 text-[11px] leading-[1.6] text-[#1d1d1f]',
-  resultError: 'border-[rgb(166_83_75_/_20%)] bg-[var(--tl-danger-soft)] text-[#8f4039]',
-  pending: 'text-[11px] italic text-[var(--color-muted)]',
+  sectionLabel: 'text-[var(--text-xs)] font-extrabold uppercase tracking-[0.08em] text-[var(--tl-muted)]',
+  inputCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[var(--text-sm)] leading-[1.6] text-[var(--tl-ink)]',
+  resultCode: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[var(--text-sm)] leading-[1.6] text-[var(--tl-ink)]',
+  outputText: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-[inherit] text-[var(--text-sm)] leading-[1.6] text-[var(--tl-ink)]',
+  result: 'rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 text-[var(--text-sm)] leading-[1.6] text-[var(--tl-ink)]',
+  resultError: 'border-[rgb(166_83_75_/_20%)] bg-[var(--tl-danger-soft)] text-[var(--tl-danger)]',
+  pending: 'text-[var(--text-xs)] italic text-[var(--color-muted)]',
 }
 
 const thinkingTimelineClass = {
-  body: 'px-3.5 py-3 text-sm leading-[1.65] text-[#1d1d1f]',
-  code: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[10px] border border-[rgb(60_60_67_/_13%)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[11px] leading-[1.6] text-[#2c2c2e]',
+  body: 'px-3.5 py-3 text-[15px] leading-[1.65] text-[var(--tl-ink)]',
+  code: 'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-code-bg)] px-[11px] py-2.5 font-mono text-[var(--text-sm)] leading-[1.6] text-[var(--tl-ink)]',
 }
 
 const timelineMessageClass = {
   rowUser: 'group flex min-w-0 items-end justify-end gap-[9px]',
   userStack: 'grid max-w-[min(76%,720px)] justify-items-end gap-1 max-[720px]:max-w-full max-[560px]:max-w-[min(86%,720px)]',
-  userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[14px] border border-[#cfe3fb] bg-[#e8f2ff] px-3.5 py-2.5 text-sm leading-[1.6] text-[#1d1d1f] shadow-[var(--tl-shadow-soft)]',
-  timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-xs leading-4 text-[#76767b] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
+  userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[var(--radius-md)] border border-[var(--tl-user-border)] bg-[var(--tl-user-soft)] px-3.5 py-2.5 text-[15px] leading-[1.6] text-[var(--tl-ink)] shadow-[var(--tl-shadow-soft)]',
+  timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-xs leading-4 text-[var(--tl-muted)] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
   timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-visible:opacity-100',
   timestampAssistant: 'block -mt-[5px] px-1 group-hover:opacity-100 focus-visible:opacity-100',
   assistantFrame: 'group w-full max-w-none justify-self-stretch [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
@@ -557,11 +557,11 @@ function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
       </summary>
       <div className={disclosureCardClass.body}>
         {fields.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5 px-3.5 pt-3 text-[11px] leading-[1.35] text-[#334155]">
+          <div className="flex flex-wrap gap-1.5 px-3.5 pt-3 text-[var(--text-xs)] leading-[1.35] text-[var(--tl-ink)]">
             {fields.map(([label, value]) => (
-              <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-[rgb(60_60_67_/_10%)] bg-[rgb(60_60_67_/_5%)] px-2 py-1" key={label}>
+              <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-[var(--tl-border-soft)] bg-[var(--tl-surface)] px-2 py-1" key={label}>
                 <span className="shrink-0 font-semibold text-[var(--tl-muted)]">{label}</span>
-                <span className="min-w-0 truncate font-mono text-[10px] text-[#2c2c2e]" title={value}>{value}</span>
+                <span className="min-w-0 truncate font-mono text-[10px] text-[var(--tl-ink)]" title={value}>{value}</span>
               </span>
             ))}
           </div>

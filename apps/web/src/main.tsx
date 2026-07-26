@@ -13,7 +13,7 @@ import {
   type TurnSummary,
   type SessionRawMessagesResponse,
 } from '@cotta/shared'
-import { authToken, connectListVersions, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, PaginationCursorStaleError, refreshProjects, withToken } from './api'
+import { authToken, connectListVersions, createProject, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, PaginationCursorStaleError, refreshProjects, withToken } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
@@ -438,19 +438,29 @@ function TurnComposer({
   setSelectedSessionId,
   setPendingTurn,
   refreshSessionLists,
+  onProjectRequired,
+  pendingProjectId,
+  pendingProjectRequest,
+  onSessionCreated,
 }: {
-  projectId: string
+  projectId: string | null
   selectedSessionId: string | null
   liveUserMessageUuid: string | null
   setSelectedSessionId: (sessionId: string | null) => void
   setPendingTurn: Dispatch<SetStateAction<TurnSummary | null>>
-  refreshSessionLists: () => void
+  refreshSessionLists: (projectId?: string) => void
+  onProjectRequired: (text: string) => void
+  pendingProjectId: string | null
+  pendingProjectRequest: number
+  onSessionCreated: (projectId: string, sessionId: string) => void
 }) {
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const handledProjectRequestRef = useRef(0)
+  const [retryProjectId, setRetryProjectId] = useState<string | null>(null)
 
   useEffect(() => { setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
   useEffect(() => { if (!liveUserMessageUuid) setInterrupting(false) }, [liveUserMessageUuid])
@@ -461,35 +471,49 @@ function TurnComposer({
     input.style.height = `${Math.min(input.scrollHeight, 112)}px`
   }, [inputText])
 
-  async function submitTurn() {
+  async function submitTurn(targetProjectId = projectId) {
     if (submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
     const text = inputText.trim()
+    if (!targetProjectId) {
+      onProjectRequired(text)
+      return
+    }
     const userMessageUuid = createUserMessageUuid()
     setSubmitting(true)
     setSubmitError(null)
     try {
-      setPendingTurn(pendingUserTurn(text, selectedSessionId, userMessageUuid))
+      const targetSessionId = targetProjectId === projectId ? selectedSessionId : null
+      setPendingTurn(pendingUserTurn(text, targetSessionId, userMessageUuid))
       setInputText('')
-      const response = await createTurn(projectId, selectedSessionId, text, userMessageUuid)
-      setSelectedSessionId(response.sessionId)
+      const response = await createTurn(targetProjectId, targetSessionId, text, userMessageUuid)
+      if (targetProjectId !== projectId) onSessionCreated(response.projectId, response.sessionId)
+      else setSelectedSessionId(response.sessionId)
       setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
-      await refreshProjects(projectId)
+      await refreshProjects(response.projectId)
+      refreshSessionLists(response.projectId)
     } catch (error) {
       if (error instanceof CreateTurnHttpError) {
         setPendingTurn(null)
         setInputText(text)
+        if (targetProjectId !== projectId) setRetryProjectId(targetProjectId)
         setSubmitError(error.message)
       } else {
         setSubmitError(`Submission status unknown. Check the timeline or session list before retrying. ${error instanceof Error ? error.message : String(error)}`)
-        refreshSessionLists()
+        refreshSessionLists(targetProjectId)
       }
     } finally {
       setSubmitting(false)
     }
   }
 
+  useEffect(() => {
+    if (!pendingProjectId || pendingProjectRequest === handledProjectRequestRef.current || !inputText.trim()) return
+    handledProjectRequestRef.current = pendingProjectRequest
+    void submitTurn(pendingProjectId)
+  }, [pendingProjectId, pendingProjectRequest, inputText])
+
   async function stopLiveTurn() {
-    if (!selectedSessionId || !liveUserMessageUuid || interrupting) return
+    if (!projectId || !selectedSessionId || !liveUserMessageUuid || interrupting) return
     setInterrupting(true)
     setSubmitError(null)
     try {
@@ -504,7 +528,7 @@ function TurnComposer({
 
   return (
     <section className="composer-card composer-card-bottom">
-      <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn() }}>
+      <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn(retryProjectId ?? projectId) }}>
         <div
           className="turn-composer"
           onClick={(event) => {
@@ -519,7 +543,7 @@ function TurnComposer({
             onKeyDown={(event) => {
               if (event.key !== 'Enter' || event.shiftKey || submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
               event.preventDefault()
-              void submitTurn()
+              void submitTurn(retryProjectId ?? projectId)
             }}
             placeholder="Chat with Cotta..."
             rows={1}
@@ -548,12 +572,20 @@ function WorkspacePanel({
   selectedSessionId,
   setSelectedSessionId,
   refreshSessionLists,
+  onProjectRequired,
+  pendingProjectId,
+  pendingProjectRequest,
+  onSessionCreated,
 }: {
   projectId: string | null
   detail: ProjectSessionsResponse | undefined
   selectedSessionId: string | null
   setSelectedSessionId: (sessionId: string | null) => void
   refreshSessionLists: (projectIds: string[]) => void
+  onProjectRequired: (text: string) => void
+  pendingProjectId: string | null
+  pendingProjectRequest: number
+  onSessionCreated: (projectId: string, sessionId: string) => void
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
@@ -561,10 +593,8 @@ function WorkspacePanel({
   useEffect(() => { setLiveUserMessageUuid(null) }, [projectId, selectedSessionId])
   useEffect(() => { setPendingTurn(null) }, [projectId])
 
-  if (!projectId) return <div className="panel muted">Select a project to view its timeline.</div>
-
-  function refreshSessionListsForCurrentProject() {
-    if (projectId) refreshSessionLists([projectId])
+  function refreshSessionListsForCurrentProject(targetProjectId = projectId) {
+    if (targetProjectId) refreshSessionLists([targetProjectId])
   }
 
   function handleLiveTurnChange(userMessageUuid: string | null) {
@@ -574,7 +604,7 @@ function WorkspacePanel({
   return (
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
-        {selectedSessionId || pendingTurn
+        {projectId && (selectedSessionId || pendingTurn)
           ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} pendingTurn={pendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} />
           : null}
       </div>
@@ -586,6 +616,10 @@ function WorkspacePanel({
         setSelectedSessionId={setSelectedSessionId}
         setPendingTurn={setPendingTurn}
         refreshSessionLists={refreshSessionListsForCurrentProject}
+        onProjectRequired={onProjectRequired}
+        pendingProjectId={pendingProjectId}
+        pendingProjectRequest={pendingProjectRequest}
+        onSessionCreated={onSessionCreated}
       />
     </section>
   )
@@ -614,7 +648,7 @@ function DebugWorkspacePanel({ projectId, sessionId }: { projectId: string | nul
 
 function ProjectsDashboard() {
   const queryClient = useQueryClient()
-  const selection = useProjectSessionSelection()
+  const selection = useProjectSessionSelection({ selectInitialProject: false })
   const {
     selectedProjectId,
     selectedSessionId,
@@ -626,6 +660,10 @@ function ProjectsDashboard() {
   const [navWidth, setNavWidth] = useState(DASHBOARD_NAV_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [pendingSessionTarget, setPendingSessionTarget] = useState<{ projectId: string; sessionId: string } | null>(null)
+  const [projectChoice, setProjectChoice] = useState<{ text: string; mode: 'choose' | 'create'; error: string | null } | null>(null)
+  const [newProjectPath, setNewProjectPath] = useState('')
+  const [pendingProjectId, setPendingProjectId] = useState<string | null>(null)
+  const [pendingProjectRequest, setPendingProjectRequest] = useState(0)
   const [refreshingLists, setRefreshingLists] = useState(false)
   const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
@@ -644,6 +682,34 @@ function ProjectsDashboard() {
     pendingSessionRequestRef.current = requestId
     setPendingSessionTarget(null)
     return requestId
+  }
+
+  function beginNewConversation() {
+    beginSelectionIntent()
+    setPendingProjectId(null)
+    selection.clearSelection()
+  }
+
+  function startPendingProject(projectId: string) {
+    const requestId = beginSelectionIntent()
+    setProjectChoice(null)
+    setPendingProjectId(projectId)
+    setPendingProjectRequest(requestId)
+  }
+
+  function handleSessionCreated(projectId: string, sessionId: string) {
+    selection.selectSession(projectId, sessionId)
+    setPendingProjectId(null)
+  }
+
+  async function createProjectForPendingTurn(directoryPath: string) {
+    if (!projectChoice || projectChoice.mode !== 'create') return
+    try {
+      const { project } = await createProject(directoryPath)
+      startPendingProject(project.id)
+    } catch (error) {
+      setProjectChoice((current) => current ? { ...current, error: error instanceof Error ? error.message : String(error) } : current)
+    }
   }
 
   useEffect(() => {
@@ -715,7 +781,7 @@ function ProjectsDashboard() {
     ?? queryClient.getQueryData<{ pages: Array<{ sessions: ProjectSessionsResponse['sessions'] }> }>(sessionQueryKeys.projectSessionsRail(selectedProjectId ?? ''))?.pages
       .flatMap((page) => page.sessions)
       .find((session) => session.id === selectedSessionId)
-  const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : 'Project')
+  const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : 'New conversation')
   const railSelectedProjectId = pendingSessionTarget?.projectId ?? selectedProjectId
   const railSelectedSessionId = pendingSessionTarget?.sessionId ?? selectedSessionId
 
@@ -878,7 +944,6 @@ function ProjectsDashboard() {
 
   if (selection.projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
   if (selection.projects.isError) return <div className="panel error">Failed to load projects: {selection.projects.error instanceof Error ? selection.projects.error.message : 'unknown error'}</div>
-  if (selection.items.length === 0) return <div className="panel muted">No Claude Code projects were returned by the Agent SDK yet. Run Claude Code in a project first, then refresh this dashboard.</div>
 
   return (
     <div
@@ -894,7 +959,10 @@ function ProjectsDashboard() {
               key={item.key}
               className={`dashboard-nav-link ${activeNav === item.key ? 'active' : ''}`}
               type="button"
-              onClick={() => setActiveNav(item.key)}
+              onClick={() => {
+                if (item.key === 'chat') beginNewConversation()
+                setActiveNav(item.key)
+              }}
               aria-current={activeNav === item.key ? 'page' : undefined}
               aria-label={item.label}
             >
@@ -921,14 +989,10 @@ function ProjectsDashboard() {
           <button
             className="project-rail-header-action"
             type="button"
-            onClick={() => {
-              if (!selection.selectedProjectId) return
-              beginSelectionIntent()
-              selection.startNewSession(selection.selectedProjectId)
-            }}
-            disabled={!selection.selectedProjectId || refreshingLists}
-            aria-label="Create new session"
-            title="Create new session"
+            onClick={beginNewConversation}
+            disabled={refreshingLists}
+            aria-label="Start new conversation"
+            title="Start new conversation"
           >
             +
           </button>
@@ -975,8 +1039,49 @@ function ProjectsDashboard() {
         </header>
         {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
           ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
-          : <WorkspacePanel projectId={selection.selectedProjectId} detail={selection.projectSessions.data} selectedSessionId={selection.selectedSessionId} setSelectedSessionId={selection.setSelectedSessionId} refreshSessionLists={refreshVisibleWindows} />}
+          : <WorkspacePanel
+            projectId={selection.selectedProjectId}
+            detail={selection.projectSessions.data}
+            selectedSessionId={selection.selectedSessionId}
+            setSelectedSessionId={selection.setSelectedSessionId}
+            refreshSessionLists={refreshVisibleWindows}
+            onProjectRequired={(text) => { setNewProjectPath(''); setProjectChoice({ text, mode: 'choose', error: null }) }}
+            pendingProjectId={pendingProjectId}
+            pendingProjectRequest={pendingProjectRequest}
+            onSessionCreated={handleSessionCreated}
+          />}
       </section>
+      {projectChoice ? (
+        <dialog className="project-choice-dialog" open aria-labelledby="project-choice-title">
+          <form className="project-choice-form" onSubmit={(event) => {
+            event.preventDefault()
+            if (projectChoice.mode === 'create') void createProjectForPendingTurn(newProjectPath)
+          }}>
+            <h2 id="project-choice-title">Choose a project</h2>
+            <p>Your first message will start a new session in the selected project.</p>
+            {projectChoice.mode === 'choose' ? (
+              <>
+                {selection.items.length > 0 ? (
+                  <div className="project-choice-list">
+                    {selection.items.map((project) => <button key={project.id} type="button" onClick={() => startPendingProject(project.id)}>{project.name}</button>)}
+                  </div>
+                ) : <p className="panel muted">No existing projects found.</p>}
+                <button type="button" className="project-choice-link" onClick={() => setProjectChoice((current) => current ? { ...current, mode: 'create', error: null } : current)}>Create new project directory</button>
+              </>
+            ) : (
+              <label className="project-choice-path">
+                <span>Project path</span>
+                <input value={newProjectPath} onChange={(event) => setNewProjectPath(event.target.value)} placeholder="experiments/demo-project" autoFocus />
+              </label>
+            )}
+            {projectChoice.error ? <div className="panel error">{projectChoice.error}</div> : null}
+            <div className="project-choice-actions">
+              <button type="button" onClick={() => setProjectChoice(null)}>Cancel</button>
+              {projectChoice.mode === 'create' ? <button type="submit" disabled={!newProjectPath.trim()}>Create and start</button> : null}
+            </div>
+          </form>
+        </dialog>
+      ) : null}
     </div>
   )
 }

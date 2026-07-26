@@ -9,6 +9,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   listSessions: listSessionsMock,
 }))
 
+import type { SessionRunState } from '@cotta/shared'
 import { SessionSummaryCache } from './session-summary-cache.js'
 
 function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sessionId' | 'cwd'>): SDKSessionInfo {
@@ -25,6 +26,8 @@ function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sess
 function projectId(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
 }
+
+const idleRunState = { phase: 'idle' as const, activeTurnId: null }
 
 describe('SessionSummaryCache', () => {
   beforeEach(() => {
@@ -48,9 +51,9 @@ describe('SessionSummaryCache', () => {
     expect(listSessionsMock).toHaveBeenCalledTimes(2)
   })
 
-  it('includes live status in cached session windows', async () => {
+  it('includes live runState in cached session windows', async () => {
     const cache = new SessionSummaryCache(10)
-    cache.setSessionStateReader((sessionId) => sessionId === 's1' ? 'running' : null)
+    cache.setSessionRunStateReader((sessionId) => sessionId === 's1' ? { phase: 'running', activeTurnId: 'user-1', lastTurn: null } : null)
     listSessionsMock.mockResolvedValueOnce([
       session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 }),
     ])
@@ -60,7 +63,7 @@ describe('SessionSummaryCache', () => {
     expect(await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })).toEqual({
       sessionsByProject: {
         [projectId('/repo/a')]: {
-          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5, rawStatus: 'running', displayStatus: 'running' }],
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5, runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }],
           hasMore: false,
           nextCursor: null,
         },
@@ -139,7 +142,7 @@ describe('SessionSummaryCache', () => {
     ] })).toEqual({
       sessionsByProject: {
         [projectId('/repo/b')]: {
-          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/b'), lastActivityAt: 5 }],
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/b'), lastActivityAt: 5, runState: idleRunState }],
           hasMore: false,
           nextCursor: null,
         },
@@ -243,7 +246,7 @@ describe('SessionSummaryCache', () => {
     await expect(cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })).resolves.toEqual({
       sessionsByProject: {
         [projectId('/repo/a')]: {
-          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 3 }],
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 3, runState: idleRunState }],
           hasMore: false,
           nextCursor: null,
         },
@@ -263,7 +266,7 @@ describe('SessionSummaryCache', () => {
     await expect(cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 1, selectedSessionId: 'missing' }] })).resolves.toEqual({
       sessionsByProject: {
         [projectId('/repo/a')]: {
-          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 3 }],
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 3, runState: idleRunState }],
           hasMore: true,
           nextCursor: expect.any(String),
         },
@@ -375,7 +378,7 @@ describe('SessionSummaryCache', () => {
 
     const refreshed = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })
     expect(refreshed.sessionsByProject[projectId('/repo/a')]?.sessions).toEqual([
-      { id: 's2', title: 's2', projectId: projectId('/repo/a'), lastActivityAt: 5 },
+      { id: 's2', title: 's2', projectId: projectId('/repo/a'), lastActivityAt: 5, runState: idleRunState },
     ])
   })
 
@@ -392,7 +395,7 @@ describe('SessionSummaryCache', () => {
 
     const unchanged = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })
     expect(unchanged.sessionsByProject[projectId('/repo/a')]?.sessions).toEqual([
-      { id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5 },
+      { id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5, runState: idleRunState },
     ])
   })
 
@@ -434,7 +437,7 @@ describe('SessionSummaryCache', () => {
     const response = await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/c'), limit: 10 }] })
 
     expect(response.sessionsByProject[projectId('/repo/c')]?.sessions).toEqual([
-      { id: 'c1', title: 'c1', projectId: projectId('/repo/c'), lastActivityAt: 1 },
+      { id: 'c1', title: 'c1', projectId: projectId('/repo/c'), lastActivityAt: 1, runState: idleRunState },
     ])
   })
 
@@ -538,16 +541,16 @@ describe('SessionSummaryCache', () => {
     expect(deepWindow.sessionsByProject[projectId('/repo/a')]?.sessions.map((session) => session.id)).toEqual(['s1', 's2'])
   })
 
-  it('bumps only project session version for status-only changes', async () => {
-    let state: string | null = null
+  it('bumps only project session version for runState-only changes', async () => {
+    let state: SessionRunState | null = null
     const cache = new SessionSummaryCache(10)
     const events: Array<{ projectsVersion: number; projectVersions: Array<{ projectId: string; version: number }> }> = []
-    cache.setSessionStateReader(() => state)
+    cache.setSessionRunStateReader(() => state)
     cache.subscribe((event) => events.push(event))
     listSessionsMock.mockResolvedValue([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
 
     await cache.scheduleRefresh()
-    state = 'running'
+    state = { phase: 'running', activeTurnId: 'user-1', lastTurn: null }
     await cache.scheduleRefresh()
 
     expect(events.at(-1)).toEqual(expect.objectContaining({
@@ -561,8 +564,7 @@ describe('SessionSummaryCache', () => {
       title: 's1',
       projectId: projectId('/repo/a'),
       lastActivityAt: 5,
-      rawStatus: 'running',
-      displayStatus: 'running',
+      runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null },
     })
   })
 })

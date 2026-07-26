@@ -21,7 +21,7 @@ export function createApp(input: {
   const sessionSummaryCache = input.sessionSummaryCache ?? (input.claudeCodeApi || input.liveTurnManager ? undefined : new SessionSummaryCache())
   const claudeCodeApi = input.claudeCodeApi ?? createClaudeCodeApi(sessionSummaryCache)
   const liveTurnManager = input.liveTurnManager ?? new LiveTurnManager(liveEventStore, sessionSummaryCache)
-  sessionSummaryCache?.setSessionStateReader((sessionId) => liveTurnManager.sessionState(sessionId))
+  sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId))
   void sessionSummaryCache?.ensureReady().catch((error) => console.error('session-summary-cache:ensure-ready failed', error))
   app.use('*', createTokenAuthMiddleware(input.authToken ?? process.env.COTTA_AUTH_TOKEN))
   registerHealthRoute(app)

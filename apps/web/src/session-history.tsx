@@ -19,26 +19,26 @@ function formatAge(value?: number): string {
   return `${Math.floor(elapsedMonths / 12)}Y`
 }
 
-function statusValue(displayStatus?: string, rawStatus?: string, fallback = 'idle'): string {
-  return displayStatus ?? rawStatus ?? fallback
-}
-
-function statusTone(value?: string): string {
-  const normalized = value?.toLowerCase() ?? ''
-  if (normalized.includes('running') || normalized.includes('live')) return 'running'
-  if (normalized.includes('fail') || normalized.includes('error')) return 'danger'
-  if (normalized.includes('interrupt') || normalized.includes('blocked') || normalized.includes('requires')) return 'warning'
-  if (normalized.includes('complete') || normalized.includes('success')) return 'success'
+function statusTone(runState: SessionSummary['runState']): string {
+  if (runState.phase === 'running') return 'running'
+  if (runState.phase === 'requires_action') return 'warning'
+  if (runState.lastTurn?.outcome === 'error') return 'danger'
   return 'neutral'
 }
 
-function statusLabel(value?: string): string {
-  if (!value) return 'Idle'
-  const normalized = value.toLowerCase()
-  if (normalized === 'complete' || normalized === 'completed') return 'Complete'
-  if (normalized.includes('requires')) return 'Action'
-  if (normalized.includes('interrupt')) return 'Stopped'
-  return value.replaceAll('_', ' ')
+function statusLabel(runState: SessionSummary['runState']): string {
+  if (runState.phase === 'running') return 'Thinking'
+  if (runState.phase === 'requires_action') return 'Waiting'
+  if (runState.lastTurn?.outcome === 'error') return 'Error'
+  return 'Idle'
+}
+
+function statusIcon(runState: SessionSummary['runState']) {
+  const tone = statusTone(runState)
+  if (tone === 'running') return <svg className="status-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 9.5a6 6 0 0 1 12 0c0 3.1-2.7 5.5-6 5.5H8l-2.5 2v-3.1A5.2 5.2 0 0 1 4 9.5Z" /><circle cx="7.7" cy="9.5" r=".7" fill="currentColor" stroke="none" /><circle cx="10" cy="9.5" r=".7" fill="currentColor" stroke="none" /><circle cx="12.3" cy="9.5" r=".7" fill="currentColor" stroke="none" /></svg>
+  if (tone === 'warning') return <svg className="status-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 6.5v4l2.5 1.5" /></svg>
+  if (tone === 'danger') return <svg className="status-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 6.5v4" /><path d="M10 14h.01" /></svg>
+  return null
 }
 
 function projectSessionsRegionId(projectId: string): string {
@@ -234,10 +234,10 @@ function ProjectCard({
   )
 }
 
-function StatusBadge({ value }: { value?: string }) {
-  const tone = statusTone(value)
+function StatusBadge({ runState }: { runState: SessionSummary['runState'] }) {
+  const tone = statusTone(runState)
   if (tone === 'neutral') return null
-  return <span className={`status-badge status-${tone}`}>{statusLabel(value)}</span>
+  return <span className={`status-badge status-${tone}`} title={statusLabel(runState)}>{statusIcon(runState)}</span>
 }
 
 function SessionRow({
@@ -253,7 +253,6 @@ function SessionRow({
   onSelect: () => void
   motionState?: SidebarMotionState
 }) {
-  const state = statusValue(session.displayStatus, session.rawStatus)
   return (
     <li className={`sidebar-motion-item${motionStateClass(motionState)}`}>
       <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
@@ -261,7 +260,7 @@ function SessionRow({
           <div className="session-main">
             <strong>{session.title}</strong>
           </div>
-          <StatusBadge value={state} />
+          <StatusBadge runState={session.runState} />
         </div>
         <span className="session-age">{pending ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : formatAge(session.lastActivityAt)}</span>
       </button>
@@ -479,9 +478,10 @@ export function ProjectSessionRail({
   )
 }
 
-export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit?: number } = {}) {
+export function useProjectSessionSelection({ sessionLimit = 10, selectInitialProject = true }: { sessionLimit?: number; selectInitialProject?: boolean } = {}) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [shouldSelectInitialProject, setShouldSelectInitialProject] = useState(selectInitialProject)
   const projects = useInfiniteQuery({
     queryKey: sessionQueryKeys.projects,
     initialPageParam: null as string | null,
@@ -512,15 +512,13 @@ export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit
   })
   const items = useMemo(() => projects.data?.pages.flatMap((page) => page.projects) ?? [], [projects.data])
 
-  useEffect(() => { if (!selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id) }, [items, selectedProjectId])
+  useEffect(() => {
+    if (shouldSelectInitialProject && !selectedProjectId && items.length > 0) setSelectedProjectId(items[0]!.id)
+  }, [items, selectedProjectId, shouldSelectInitialProject])
 
-  const clearSelection = useCallback(() => { setSelectedProjectId(null); setSelectedSessionId(null) }, [])
-  const startNewSession = useCallback((projectId: string) => {
-    setSelectedProjectId(projectId)
-    setSelectedSessionId(null)
-  }, [])
-  const selectProject = useCallback((projectId: string) => { setSelectedProjectId(projectId); setSelectedSessionId(null) }, [])
-  const selectSession = useCallback((projectId: string, sessionId: string) => { setSelectedProjectId(projectId); setSelectedSessionId(sessionId) }, [])
+  const clearSelection = useCallback(() => { setShouldSelectInitialProject(false); setSelectedProjectId(null); setSelectedSessionId(null) }, [])
+  const selectProject = useCallback((projectId: string) => { setShouldSelectInitialProject(false); setSelectedProjectId(projectId); setSelectedSessionId(null) }, [])
+  const selectSession = useCallback((projectId: string, sessionId: string) => { setShouldSelectInitialProject(false); setSelectedProjectId(projectId); setSelectedSessionId(sessionId) }, [])
 
   return {
     selectedProjectId,
@@ -528,7 +526,6 @@ export function useProjectSessionSelection({ sessionLimit = 10 }: { sessionLimit
     setSelectedSessionId,
     setSelectedProjectId,
     clearSelection,
-    startNewSession,
     projects,
     projectSessions,
     items,

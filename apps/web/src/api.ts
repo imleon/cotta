@@ -1,4 +1,5 @@
 import {
+  createProjectResponseSchema,
   listVersionsEventSchema,
   projectSessionsQueryResponseSchema,
   projectSessionsResponseSchema,
@@ -6,6 +7,7 @@ import {
   sessionLiveEventsResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  type CreateProjectResponse,
   type ListVersionsEvent,
   type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
@@ -34,6 +36,25 @@ async function throwRequestError(response: Response, label: string): Promise<nev
     throw new PaginationCursorStaleError(`${label} cursor is stale`)
   }
   throw new Error(`${label} request failed: ${response.status}`)
+}
+
+export class CreateProjectHttpError extends Error {
+  constructor(readonly status: number, readonly code: string | null) {
+    super(`Create project failed: ${code ?? status}`)
+  }
+}
+
+export async function createProject(directoryPath: string): Promise<CreateProjectResponse> {
+  const response = await fetch(withToken('/api/projects'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ directoryPath }),
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null
+    throw new CreateProjectHttpError(response.status, body?.error ?? null)
+  }
+  return createProjectResponseSchema.parse(await response.json())
 }
 
 export async function fetchProjects(cursor: string | null = null, limit = 20): Promise<ProjectsResponse> {

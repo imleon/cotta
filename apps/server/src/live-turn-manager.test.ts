@@ -43,6 +43,6 @@ describe('LiveTurnManager', () => {
 
     expect(events[0]).toMatchObject({ type: 'user', uuid: 'user-1' })
     expect(events[1]).toEqual({ type: 'live.turn.failed', userMessageUuid: 'user-1', error: 'SDK stream failed' })
-    expect(manager.sessionState('session-1')).toBeNull()
+    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'error' } })
   })
 })

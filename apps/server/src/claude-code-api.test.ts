@@ -18,6 +18,8 @@ function projectId(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
 }
 
+const idleRunState = { phase: 'idle' as const, activeTurnId: null }
+
 function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sessionId' | 'cwd'>): SDKSessionInfo {
   return {
     customTitle: undefined,
@@ -71,8 +73,8 @@ describe('createClaudeCodeApi', () => {
         lastActivityAt: 5,
         },
       sessions: [
-        { id: 'cotta-newer', title: 'cotta-newer', projectId: projectId('/repo/cotta'), lastActivityAt: 5 },
-        { id: 'cotta-older', title: 'cotta-older', projectId: projectId('/repo/cotta'), lastActivityAt: 1 },
+        { id: 'cotta-newer', title: 'cotta-newer', projectId: projectId('/repo/cotta'), lastActivityAt: 5, runState: idleRunState },
+        { id: 'cotta-older', title: 'cotta-older', projectId: projectId('/repo/cotta'), lastActivityAt: 1, runState: idleRunState },
       ],
       defaultSessionId: 'cotta-newer',
       hasMore: false,

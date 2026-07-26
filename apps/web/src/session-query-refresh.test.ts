@@ -15,6 +15,8 @@ vi.mock('./api', () => ({
 
 import { refreshProjectSessionLists, refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
 
+const idleRunState = { phase: 'idle' as const, activeTurnId: null }
+
 describe('refresh helpers', () => {
   let queryClient: QueryClient
 
@@ -37,8 +39,8 @@ describe('refresh helpers', () => {
     const detail: ProjectSessionsResponse = {
       project: { id: 'p1', name: 'P1' },
       sessions: [
-        { id: 's1', title: 'S1', projectId: 'p1' },
-        { id: 's2', title: 'S2', projectId: 'p1' },
+        { id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState },
+        { id: 's2', title: 'S2', projectId: 'p1', runState: idleRunState },
       ],
       defaultSessionId: 's1',
       hasMore: true,
@@ -51,8 +53,8 @@ describe('refresh helpers', () => {
         {
           project: { id: 'p1', name: 'P1' },
           sessions: [
-            { id: 's1', title: 'S1', projectId: 'p1' },
-            { id: 's2', title: 'S2', projectId: 'p1' },
+            { id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState },
+            { id: 's2', title: 'S2', projectId: 'p1', runState: idleRunState },
           ],
           defaultSessionId: 's1',
           hasMore: true,
@@ -61,7 +63,7 @@ describe('refresh helpers', () => {
         {
           project: { id: 'p1', name: 'P1' },
           sessions: [
-            { id: 's3', title: 'S3', projectId: 'p1' },
+            { id: 's3', title: 'S3', projectId: 'p1', runState: idleRunState },
           ],
           defaultSessionId: 's1',
           hasMore: false,
@@ -85,9 +87,9 @@ describe('refresh helpers', () => {
       sessionsByProject: {
         p1: {
           sessions: [
-            { id: 's9', title: 'S9', projectId: 'p1' },
-            { id: 's8', title: 'S8', projectId: 'p1' },
-            { id: 's7', title: 'S7', projectId: 'p1' },
+            { id: 's9', title: 'S9', projectId: 'p1', runState: idleRunState },
+            { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
+            { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
           ],
           hasMore: false,
           nextCursor: null,
@@ -106,9 +108,9 @@ describe('refresh helpers', () => {
     expect(queryClient.getQueryData(sessionQueryKeys.projectSessionsDetail('p1', 2))).toEqual({
       project: { id: 'p1', name: 'P1' },
       sessions: [
-        { id: 's9', title: 'S9', projectId: 'p1' },
-        { id: 's8', title: 'S8', projectId: 'p1' },
-        { id: 's7', title: 'S7', projectId: 'p1' },
+        { id: 's9', title: 'S9', projectId: 'p1', runState: idleRunState },
+        { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
+        { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
       ],
       defaultSessionId: 's1',
       hasMore: false,
@@ -119,9 +121,9 @@ describe('refresh helpers', () => {
       pages: [{
         project: { id: 'p1', name: 'P1' },
         sessions: [
-          { id: 's9', title: 'S9', projectId: 'p1' },
-          { id: 's8', title: 'S8', projectId: 'p1' },
-          { id: 's7', title: 'S7', projectId: 'p1' },
+          { id: 's9', title: 'S9', projectId: 'p1', runState: idleRunState },
+          { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
+          { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
         ],
         defaultSessionId: 's1',
         hasMore: false,
@@ -156,7 +158,7 @@ describe('refresh helpers', () => {
     queryProjectSessionsMock.mockResolvedValue({
       sessionsByProject: {
         p1: {
-          sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+          sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
           hasMore: false,
           nextCursor: null,
         },
@@ -168,7 +170,7 @@ describe('refresh helpers', () => {
     expect(queryClient.getQueryData(sessionQueryKeys.projectSessionsRail('p1'))).toEqual({
       pages: [{
         project: { id: 'p1', name: 'P1' },
-        sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+        sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
         defaultSessionId: 's1',
         hasMore: false,
         nextCursor: null,
@@ -181,7 +183,7 @@ describe('refresh helpers', () => {
     queryClient.setQueryData(sessionQueryKeys.projectSessionsRail('p1'), {
       pages: [{
         project: { id: 'p1', name: 'P1' },
-        sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+        sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
         defaultSessionId: 's1',
         hasMore: true,
         nextCursor: 's1',
@@ -195,7 +197,7 @@ describe('refresh helpers', () => {
     expect(queryClient.getQueryData(sessionQueryKeys.projectSessionsRail('p1'))).toEqual({
       pages: [{
         project: { id: 'p1', name: 'P1' },
-        sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+        sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
         defaultSessionId: 's1',
         hasMore: true,
         nextCursor: 's1',
@@ -207,7 +209,7 @@ describe('refresh helpers', () => {
   it('uses configured detail limit when the current detail window is partial', async () => {
     queryClient.setQueryData(sessionQueryKeys.projectSessionsDetail('p1', 10), {
       project: { id: 'p1', name: 'P1' },
-      sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+      sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
       defaultSessionId: 's1',
       hasMore: true,
       nextCursor: 's1',
@@ -215,7 +217,7 @@ describe('refresh helpers', () => {
     queryProjectSessionsMock.mockResolvedValue({
       sessionsByProject: {
         p1: {
-          sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+          sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
           hasMore: true,
           nextCursor: 's1',
         },
@@ -230,7 +232,7 @@ describe('refresh helpers', () => {
   it('returns selected-session absence from a refreshed window', async () => {
     queryClient.setQueryData(sessionQueryKeys.projectSessionsDetail('p1', 1), {
       project: { id: 'p1', name: 'P1' },
-      sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+      sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
       defaultSessionId: 's1',
       hasMore: false,
       nextCursor: null,
@@ -309,7 +311,7 @@ describe('refresh helpers', () => {
     queryClient.setQueryData(sessionQueryKeys.projectSessionsRail('p1'), {
       pages: [{
         project: { id: 'p1', name: 'P1' },
-        sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+        sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
         defaultSessionId: 's1',
         hasMore: true,
         nextCursor: 's1',
@@ -319,7 +321,7 @@ describe('refresh helpers', () => {
     queryProjectSessionsMock.mockResolvedValue({
       sessionsByProject: {
         p1: {
-          sessions: [{ id: 's9', title: 'S9', projectId: 'p1' }],
+          sessions: [{ id: 's9', title: 'S9', projectId: 'p1', runState: idleRunState }],
           hasMore: true,
           nextCursor: 's9',
         },
@@ -331,14 +333,14 @@ describe('refresh helpers', () => {
       pages: [
         {
           project: { id: 'p1', name: 'P1' },
-          sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+          sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
           defaultSessionId: 's1',
           hasMore: true,
           nextCursor: 's1',
         },
         {
           project: { id: 'p1', name: 'P1' },
-          sessions: [{ id: 's2', title: 'S2', projectId: 'p1' }],
+          sessions: [{ id: 's2', title: 'S2', projectId: 'p1', runState: idleRunState }],
           defaultSessionId: 's1',
           hasMore: false,
           nextCursor: null,
@@ -352,14 +354,14 @@ describe('refresh helpers', () => {
       pages: [
         {
           project: { id: 'p1', name: 'P1' },
-          sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }],
+          sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }],
           defaultSessionId: 's1',
           hasMore: true,
           nextCursor: 's1',
         },
         {
           project: { id: 'p1', name: 'P1' },
-          sessions: [{ id: 's2', title: 'S2', projectId: 'p1' }],
+          sessions: [{ id: 's2', title: 'S2', projectId: 'p1', runState: idleRunState }],
           defaultSessionId: 's1',
           hasMore: false,
           nextCursor: null,
@@ -373,12 +375,12 @@ describe('refresh helpers', () => {
     let resolveP1: (value: unknown) => void
     const p1 = new Promise((resolve) => { resolveP1 = resolve })
     queryProjectSessionsMock.mockImplementationOnce(() => p1 as never).mockResolvedValueOnce({
-      sessionsByProject: { p2: { sessions: [{ id: 's2', title: 'S2', projectId: 'p2' }], hasMore: false, nextCursor: null } },
+      sessionsByProject: { p2: { sessions: [{ id: 's2', title: 'S2', projectId: 'p2', runState: idleRunState }], hasMore: false, nextCursor: null } },
     })
 
     const first = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
     const second = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p2', visibleProjectIds: ['p2'] })
-    resolveP1!({ sessionsByProject: { p1: { sessions: [{ id: 's1', title: 'S1', projectId: 'p1' }], hasMore: false, nextCursor: null } } })
+    resolveP1!({ sessionsByProject: { p1: { sessions: [{ id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState }], hasMore: false, nextCursor: null } } })
 
     const [firstOutcomes, secondOutcomes] = await Promise.all([first, second])
     expect(firstOutcomes.get('p1')).toEqual({ outcome: 'applied' })
@@ -389,8 +391,8 @@ describe('refresh helpers', () => {
     queryClient.setQueryData(sessionQueryKeys.projectSessionsDetail('p1', 2), {
       project: { id: 'p1', name: 'P1' },
       sessions: [
-        { id: 's1', title: 'S1', projectId: 'p1' },
-        { id: 's2', title: 'S2', projectId: 'p1' },
+        { id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState },
+        { id: 's2', title: 'S2', projectId: 'p1', runState: idleRunState },
       ],
       defaultSessionId: 's1',
       hasMore: true,
@@ -399,7 +401,7 @@ describe('refresh helpers', () => {
     queryProjectSessionsMock.mockResolvedValue({
       sessionsByProject: {
         p1: {
-          sessions: [{ id: 's9', title: 'S9', projectId: 'p1' }],
+          sessions: [{ id: 's9', title: 'S9', projectId: 'p1', runState: idleRunState }],
           hasMore: false,
           nextCursor: null,
         },

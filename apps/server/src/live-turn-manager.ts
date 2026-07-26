@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { LiveTurnFailureEvent } from '@cotta/shared'
+import type { LiveTurnFailureEvent, SessionRunState } from '@cotta/shared'
 import { projectPathFromId } from './claude-code-api.js'
 import type { LiveEventStore } from './live-event-store.js'
 import type { SessionSummaryCache } from './session-summary-cache.js'
@@ -37,7 +37,6 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 }
 
 type LiveSessionState = 'idle' | 'running' | 'requires_action'
-type VisibleLiveSessionState = Exclude<LiveSessionState, 'idle'>
 
 type SessionRuntime = {
   projectId: string
@@ -59,15 +58,15 @@ export type LiveTurnSubscriber = (event: LiveTurnEvent) => void
 export class LiveTurnManager {
   private readonly subscribers = new Map<string, Set<LiveTurnSubscriber>>()
   private readonly runtimes = new Map<string, SessionRuntime>()
-  private readonly liveStateBySession = new Map<string, VisibleLiveSessionState>()
+  private readonly runStateBySession = new Map<string, SessionRunState>()
 
   constructor(
     private readonly liveEventStore?: LiveEventStore,
     private readonly sessionSummaryCache?: SessionSummaryCache,
   ) {}
 
-  sessionState(sessionId: string): VisibleLiveSessionState | null {
-    return this.liveStateBySession.get(sessionId) ?? null
+  sessionRunState(sessionId: string): SessionRunState | null {
+    return this.runStateBySession.get(sessionId) ?? null
   }
 
   subscribe(sessionId: string, subscriber: LiveTurnSubscriber): () => void {
@@ -84,6 +83,19 @@ export class LiveTurnManager {
     void this.sessionSummaryCache?.scheduleRefresh({ reason }).catch((error) => console.error('session-summary-cache:live-refresh failed', error))
   }
 
+  private setRunState(sessionId: string, state: SessionRunState, reason: 'session-created' | 'session-stale'): void {
+    this.runStateBySession.set(sessionId, state)
+    this.scheduleSummaryRefresh(reason)
+  }
+
+  private finishTurn(sessionId: string, userMessageUuid: string, outcome: 'success' | 'error'): void {
+    this.setRunState(sessionId, {
+      phase: 'idle',
+      activeTurnId: null,
+      lastTurn: { id: userMessageUuid, outcome },
+    }, 'session-stale')
+  }
+
   ensureRuntime(input: { projectId: string; sessionId: string }): void {
     this.ensureRuntimeInternal({ ...input, resume: true })
   }
@@ -95,8 +107,7 @@ export class LiveTurnManager {
 
     const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
     runtime.currentUserMessageUuid = userMessageUuid
-    this.liveStateBySession.set(sessionId, 'running')
-    this.scheduleSummaryRefresh('session-created')
+    this.setRunState(sessionId, { phase: 'running', activeTurnId: userMessageUuid, lastTurn: null }, 'session-created')
     runtime.input.push(sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() }))
 
     return { sessionId, userMessageUuid }
@@ -129,6 +140,8 @@ export class LiveTurnManager {
           cwd: projectPath,
           ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
           includePartialMessages: true,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
         },
       }),
       currentUserMessageUuid: null,
@@ -142,37 +155,31 @@ export class LiveTurnManager {
     try {
       for await (const message of runtime.query) {
         const liveState = liveSessionStateFromSdkMessage(message)
-        if (liveState === 'idle') {
-          this.liveStateBySession.delete(runtime.sessionId)
-          this.scheduleSummaryRefresh('session-stale')
-        } else if (liveState) {
-          const previousState = this.liveStateBySession.get(runtime.sessionId)
-          this.liveStateBySession.set(runtime.sessionId, liveState)
-          if (previousState !== liveState) this.scheduleSummaryRefresh('session-stale')
+        if (liveState && liveState !== 'idle' && runtime.currentUserMessageUuid) {
+          this.setRunState(runtime.sessionId, { phase: liveState, activeTurnId: runtime.currentUserMessageUuid, lastTurn: null }, 'session-stale')
         }
 
         if (!runtime.currentUserMessageUuid) continue
         this.publish(runtime, message)
 
         if (message.type === 'result') {
-          this.liveStateBySession.delete(runtime.sessionId)
+          this.finishTurn(runtime.sessionId, runtime.currentUserMessageUuid, message.subtype === 'success' ? 'success' : 'error')
           runtime.currentUserMessageUuid = null
-          this.scheduleSummaryRefresh('session-stale')
         }
       }
     } catch (error) {
       console.error('live-runtime:drain failed', error)
       if (runtime.currentUserMessageUuid) {
+        const userMessageUuid = runtime.currentUserMessageUuid
         this.publish(runtime, {
           type: 'live.turn.failed',
-          userMessageUuid: runtime.currentUserMessageUuid,
+          userMessageUuid,
           error: error instanceof Error ? error.message : String(error),
         })
+        this.finishTurn(runtime.sessionId, userMessageUuid, 'error')
       }
     } finally {
       runtime.currentUserMessageUuid = null
-      const hadVisibleState = this.liveStateBySession.delete(runtime.sessionId)
-      if (hadVisibleState) this.scheduleSummaryRefresh('session-stale')
       this.runtimes.delete(runtime.sessionId)
     }
   }

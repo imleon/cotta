@@ -41,13 +41,35 @@ export type LiveTurnFailureEvent = {
   error: string
 }
 
+export const sessionRunStateSchema = z.discriminatedUnion('phase', [
+  z.object({
+    phase: z.literal('idle'),
+    activeTurnId: z.null(),
+    lastTurn: z.object({
+      id: z.string(),
+      outcome: z.enum(['success', 'error']),
+    }).optional(),
+  }),
+  z.object({
+    phase: z.literal('running'),
+    activeTurnId: z.string(),
+    lastTurn: z.null().optional(),
+  }),
+  z.object({
+    phase: z.literal('requires_action'),
+    activeTurnId: z.string(),
+    lastTurn: z.null().optional(),
+  }),
+])
+
+export type SessionRunState = z.infer<typeof sessionRunStateSchema>
+
 export const sessionSummarySchema = z.object({
   id: z.string(),
   title: z.string(),
   projectId: z.string(),
   lastActivityAt: z.number().optional(),
-  rawStatus: z.string().optional(),
-  displayStatus: z.string().optional(),
+  runState: sessionRunStateSchema,
 })
 
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
@@ -57,6 +79,21 @@ export const projectResponseSchema = z.object({
 })
 
 export type ProjectResponse = z.infer<typeof projectResponseSchema>
+
+export const createProjectRequestSchema = z.object({
+  directoryPath: z.string().trim().min(1).refine((value) => {
+    if (value.includes('\0') || value.startsWith('/') || value.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(value)) return false
+    return value.split(/[\\/]+/).every((segment) => segment && segment !== '.' && segment !== '..')
+  }, 'directoryPath must be a relative path inside the projects root'),
+})
+
+export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>
+
+export const createProjectResponseSchema = z.object({
+  project: projectSummarySchema,
+})
+
+export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>
 
 export const projectSessionsResponseSchema = z.object({
   project: projectSummarySchema,

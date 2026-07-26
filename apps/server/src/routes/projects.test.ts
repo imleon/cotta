@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  listVersionsEventSchema,
   projectResponseSchema,
   projectSessionsQueryResponseSchema,
   projectSessionsResponseSchema,
@@ -8,14 +12,32 @@ import {
   sessionRawMessagesResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  type ListVersionsEvent,
   type PersistedLiveEvent,
   type ProjectSummary,
+  type SessionRunState,
   type SessionSummary,
   type SessionTimelineState,
 } from '@cotta/shared'
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createApp } from '../index.js'
 import { ListCursorError } from '../list-cursor.js'
+
+const createdRoots: string[] = []
+const originalProjectsRoot = process.env.COTTA_PROJECTS_ROOT
+
+afterEach(async () => {
+  if (originalProjectsRoot === undefined) delete process.env.COTTA_PROJECTS_ROOT
+  else process.env.COTTA_PROJECTS_ROOT = originalProjectsRoot
+  await Promise.all(createdRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
+
+async function createProjectsRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'cotta-projects-'))
+  createdRoots.push(root)
+  process.env.COTTA_PROJECTS_ROOT = root
+  return root
+}
 
 const project: ProjectSummary = {
   id: 'project-one',
@@ -24,18 +46,22 @@ const project: ProjectSummary = {
   lastActivityAt: 123,
 }
 
+const idleRunState: SessionRunState = { phase: 'idle', activeTurnId: null }
+
 const sessions: SessionSummary[] = [
   {
     id: 'session-newest',
     projectId: project.id,
     title: 'Newest session',
     lastActivityAt: 123,
+    runState: idleRunState,
   },
   {
     id: 'session-older',
     projectId: project.id,
     title: 'Older session',
     lastActivityAt: 100,
+    runState: idleRunState,
   },
 ]
 
@@ -128,14 +154,14 @@ const messages: TimestampedSessionMessage[] = [
 ]
 
 function createTestApp(
-  liveStates: Record<string, 'running' | 'requires_action'> = {},
+  liveStates: Record<string, SessionRunState> = {},
   sessionMessages: TimestampedSessionMessage[] = messages,
   liveEvents: PersistedLiveEvent[] = [],
 ) {
   return createApp({
     liveTurnManager: {
       ensureRuntime: () => {},
-      sessionState: (sessionId) => liveStates[sessionId] ?? null,
+      sessionRunState: (sessionId: string) => liveStates[sessionId] ?? null,
       startTurn: async () => { throw new Error('not implemented') },
       interrupt: async () => false,
       subscribe: () => () => {},
@@ -181,6 +207,71 @@ function createTestApp(
 }
 
 describe('project routes', () => {
+  it('creates a nested project directory inside the configured root', async () => {
+    const root = await createProjectsRoot()
+    const response = await createTestApp().request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directoryPath: 'experiments/demo-project' }),
+    })
+
+    expect(response.status).toBe(201)
+    expect(await response.json()).toEqual({
+      project: {
+        id: Buffer.from(join(root, 'experiments/demo-project')).toString('base64url'),
+        name: 'demo-project',
+        path: join(root, 'experiments/demo-project'),
+      },
+    })
+  })
+
+  it('rejects project paths outside the configured root', async () => {
+    await createProjectsRoot()
+    const response = await createTestApp().request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directoryPath: '../outside' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'invalid_project_path' })
+  })
+
+  it('rejects duplicate project directories while allowing existing parents', async () => {
+    const root = await createProjectsRoot()
+    await mkdir(join(root, 'experiments'), { recursive: true })
+    const app = createTestApp()
+    const first = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directoryPath: 'experiments/demo-project' }),
+    })
+    const second = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directoryPath: 'experiments/demo-project' }),
+    })
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(409)
+    expect(await second.json()).toEqual({ error: 'project_already_exists' })
+  })
+
+  it('rejects project paths escaping through a symbolic link', async () => {
+    const root = await createProjectsRoot()
+    const outside = await mkdtemp(join(tmpdir(), 'cotta-outside-'))
+    createdRoots.push(outside)
+    await symlink(outside, join(root, 'linked'))
+    const response = await createTestApp().request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directoryPath: 'linked/demo-project' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'invalid_project_path' })
+  })
+
   it('lists projects from the Claude Code API adapter', async () => {
     const response = await createTestApp().request('/api/projects')
 
@@ -193,7 +284,7 @@ describe('project routes', () => {
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionState: () => null,
+        sessionRunState: () => null,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -211,11 +302,34 @@ describe('project routes', () => {
     expect(receivedLimit).toBe(101)
   })
 
+  it('returns a stale cursor error from projects', async () => {
+    const app = createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { throw new ListCursorError('stale') },
+        async getProject() { return null },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    })
+    const response = await app.request('/api/projects?cursor=stale')
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'pagination_cursor_stale' })
+  })
+
   it('returns a stale cursor error from project sessions', async () => {
     const app = createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionState: () => null,
+        sessionRunState: () => null,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -254,15 +368,18 @@ describe('project routes', () => {
     })
   })
 
-  it('overlays live session status on project sessions', async () => {
-    const response = await createTestApp({ 'session-newest': 'running', 'session-older': 'requires_action' }).request(`/api/projects/${project.id}/sessions`)
+  it('overlays live session runState on project sessions', async () => {
+    const response = await createTestApp({
+      'session-newest': { phase: 'running', activeTurnId: 'user-1', lastTurn: null },
+      'session-older': { phase: 'requires_action', activeTurnId: 'user-2', lastTurn: null },
+    }).request(`/api/projects/${project.id}/sessions`)
 
     expect(response.status).toBe(200)
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
       project: { ...project },
       sessions: [
-        { ...sessions[0], rawStatus: 'running', displayStatus: 'running' },
-        { ...sessions[1], rawStatus: 'requires_action', displayStatus: 'requires_action' },
+        { ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } },
+        { ...sessions[1], runState: { phase: 'requires_action', activeTurnId: 'user-2', lastTurn: null } },
       ],
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -303,11 +420,87 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'project_not_found' })
   })
 
+  it('streams the current list version snapshot', async () => {
+    let listener: ((event: ListVersionsEvent) => void) | undefined
+    const snapshot = { epoch: '123e4567-e89b-12d3-a456-426614174000', projectsVersion: 2, projectVersions: [{ projectId: project.id, version: 3 }] }
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+      sessionSummaryCache: {
+        versionSnapshot: snapshot,
+        ensureReady: async () => {},
+        setSessionRunStateReader: () => {},
+        scheduleRefresh: async () => {},
+        queryProjectSessions: () => ({ sessionsByProject: {} }),
+        subscribe: (next: (event: ListVersionsEvent) => void) => { listener = next; return () => {} },
+      } as never,
+    }).request('/api/list-versions/events')
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/event-stream')
+    const reader = response.body!.getReader()
+    await reader.read()
+    const snapshotChunk = await reader.read()
+    expect(listVersionsEventSchema.parse(JSON.parse(new TextDecoder().decode(snapshotChunk.value).replace(/^data: |\n\n$/g, '')))).toEqual(snapshot)
+    await reader.cancel()
+    expect(listener).toBeTypeOf('function')
+  })
+
+  it.each(['/api/projects/refresh', `/api/projects/${project.id}/refresh`])('schedules a manual cache refresh through %s', async (path) => {
+    const scheduleRefresh = vi.fn(async () => {})
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+      sessionSummaryCache: {
+        ensureReady: async () => {},
+        setSessionRunStateReader: () => {},
+        subscribe: () => () => {},
+        scheduleRefresh,
+        queryProjectSessions: () => ({ sessionsByProject: {} }),
+      } as never,
+    }).request(path, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+    expect(scheduleRefresh).toHaveBeenCalledWith({ reason: 'manual' })
+  })
+
+  it('returns refresh unavailable without a summary cache', async () => {
+    const response = await createTestApp().request('/api/projects/refresh', { method: 'POST' })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'projects_refresh_unavailable' })
+  })
+
   it('returns batch project sessions for requested projects only', async () => {
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionState: (sessionId) => sessionId === 'session-newest' ? 'running' : null,
+        sessionRunState: (sessionId: string) => sessionId === 'session-newest' ? { phase: 'running', activeTurnId: 'user-1', lastTurn: null } : null,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -323,11 +516,11 @@ describe('project routes', () => {
         subscribe: () => () => {},
         scheduleRefresh: async () => {},
         ensureReady: async () => {},
-        setSessionStateReader: () => {},
+        setSessionRunStateReader: () => {},
         queryProjectSessions: () => ({
           sessionsByProject: {
             [project.id]: {
-              sessions: [{ ...sessions[0], rawStatus: 'running', displayStatus: 'running' }, sessions[1]],
+              sessions: [{ ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }, sessions[1]],
               hasMore: false,
               nextCursor: null,
             },
@@ -344,7 +537,7 @@ describe('project routes', () => {
     expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({
       sessionsByProject: {
         [project.id]: {
-          sessions: [{ ...sessions[0], rawStatus: 'running', displayStatus: 'running' }, sessions[1]],
+          sessions: [{ ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }, sessions[1]],
           hasMore: false,
           nextCursor: null,
         },
@@ -356,7 +549,7 @@ describe('project routes', () => {
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionState: () => null,
+        sessionRunState: () => null,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -370,7 +563,7 @@ describe('project routes', () => {
       },
       sessionSummaryCache: {
         ensureReady: async () => {},
-        setSessionStateReader: () => {},
+        setSessionRunStateReader: () => {},
         subscribe: () => () => {},
         scheduleRefresh: async () => {},
         queryProjectSessions: () => ({ sessionsByProject: {} }),
@@ -389,7 +582,7 @@ describe('project routes', () => {
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionState: () => null,
+        sessionRunState: () => null,
         startTurn: async ({ userMessageUuid }) => ({ sessionId: 'session-new', userMessageUuid }),
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -420,7 +613,7 @@ describe('project routes', () => {
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionState: () => null,
+        sessionRunState: () => null,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async (sessionId) => { interruptedSessionId = sessionId; return true },
         subscribe: () => () => {},

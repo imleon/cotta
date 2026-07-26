@@ -1,5 +1,9 @@
+import { lstat, mkdir, realpath, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { Hono } from 'hono'
 import {
+  createProjectRequestSchema,
   createTurnRequestSchema,
   projectSessionsQuerySchema,
   projectSessionsQueryResponseSchema,
@@ -12,16 +16,17 @@ import {
   type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
   type SessionTimelineResponse,
+  type SessionRunState,
   type SessionTimelineStateResponse,
 } from '@cotta/shared'
-import type { ClaudeCodeApi } from '../claude-code-api.js'
+import { projectIdFromPath, type ClaudeCodeApi } from '../claude-code-api.js'
 import { ListCursorError } from '../list-cursor.js'
 import type { SessionSummaryCache } from '../session-summary-cache.js'
 import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
 
-export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionState' | 'startTurn' | 'subscribe'>
+export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionRunState' | 'startTurn' | 'subscribe'>
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
 
 function parseLimit(value: string | undefined, fallback: number, max = 10_000): number {
@@ -51,16 +56,61 @@ function listCursorErrorResponse(error: unknown) {
     : { status: 400 as const, body: { error: 'invalid_cursor' } }
 }
 
-function overlayLiveSessionStatus<T extends { sessions: Array<{ id: string }> }>(
+function isPathInside(root: string, target: string): boolean {
+  const path = relative(root, target)
+  return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path))
+}
+
+function projectsRoot(): string {
+  return resolve(process.env.COTTA_PROJECTS_ROOT ?? homedir())
+}
+
+async function createProjectDirectory(directoryPath: string) {
+  const root = projectsRoot()
+  const segments = directoryPath.split(/[\\/]+/)
+
+  try {
+    if (!(await stat(root)).isDirectory()) return { error: 'projects_root_unavailable' as const }
+    const resolvedRoot = await realpath(root)
+    let current = resolvedRoot
+
+    for (const [index, segment] of segments.entries()) {
+      const target = resolve(current, segment)
+      if (!isPathInside(resolvedRoot, target)) return { error: 'invalid_project_path' as const }
+      const isFinal = index === segments.length - 1
+
+      try {
+        await lstat(target)
+        if (isFinal) return { error: 'project_already_exists' as const }
+      } catch (error) {
+        if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') return { error: 'project_create_failed' as const }
+        await mkdir(target)
+      }
+
+      current = await realpath(target)
+      if (!isPathInside(resolvedRoot, current)) return { error: 'invalid_project_path' as const }
+    }
+
+    return { project: { id: projectIdFromPath(current), name: segments.at(-1)!, path: current } }
+  } catch (error) {
+    return { error: 'project_create_failed' as const }
+  }
+}
+
+function defaultRunState(): SessionRunState {
+  return { phase: 'idle', activeTurnId: null }
+}
+
+function overlayLiveSessionRunState<T extends { sessions: Array<{ id: string }> }>(
   liveTurnManager: ProjectRoutesLiveTurnManager,
   response: T,
 ): T {
   return {
     ...response,
-    sessions: response.sessions.map((session) => {
-      const liveState = liveTurnManager.sessionState(session.id)
-      return liveState ? { ...session, rawStatus: liveState, displayStatus: liveState } : session
-    }),
+    sessions: response.sessions.map((session) => ({
+      ...session,
+      runState: liveTurnManager.sessionRunState(session.id) ?? defaultRunState(),
+    })),
   }
 }
 
@@ -80,6 +130,22 @@ export function registerProjectRoutes(
       if (cursorError) return c.json(cursorError.body, cursorError.status)
       console.error('projects:list failed', error)
       return c.json({ error: 'projects_list_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects', async (c) => {
+    try {
+      const parsed = createProjectRequestSchema.safeParse(await c.req.json())
+      if (!parsed.success) return c.json({ error: 'invalid_project_path' }, 400)
+      const result = await createProjectDirectory(parsed.data.directoryPath)
+      if ('error' in result) {
+        const status = result.error === 'project_already_exists' ? 409 : result.error === 'projects_root_unavailable' ? 503 : result.error === 'invalid_project_path' ? 400 : 500
+        return c.json({ error: result.error }, status)
+      }
+      return c.json(result, 201)
+    } catch (error) {
+      console.error('projects:create failed', error)
+      return c.json({ error: 'project_create_failed' }, 500)
     }
   })
 
@@ -106,7 +172,7 @@ export function registerProjectRoutes(
       if (!result) {
         return c.json({ error: 'project_not_found' }, 404)
       }
-      const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionStatus(input.liveTurnManager, result)
+      const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionRunState(input.liveTurnManager, result)
       return c.json(response)
     } catch (error) {
       const cursorError = listCursorErrorResponse(error)

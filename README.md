@@ -2,6 +2,19 @@
 
 Cotta v2 是一个 Web-first 的 Claude Code Project Dashboard。
 
+## 创建项目目录
+
+点击项目列表的 `+` 可开始新对话。首次发送消息时，可选择已有项目，或创建一个新项目目录并以它启动首条 Claude Code session。
+
+新目录仅创建在 `COTTA_PROJECTS_ROOT` 下；未设置时默认使用当前用户的 home 目录。目录路径相对于该根目录，可使用多级路径：
+
+```bash
+COTTA_PROJECTS_ROOT=~/workspace npm run dev
+# 创建 experiments/demo 会落在 ~/workspace/experiments/demo
+```
+
+`CLAUDE_CONFIG_DIR` 控制 Claude 配置和 transcript 存储，不决定新项目目录位置。
+
 它的目标不是替代终端，而是把 Claude Code 的 project / session 工作流延伸到 Web：
 
 - 让历史 session 更容易发现、浏览和继续

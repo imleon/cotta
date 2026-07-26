@@ -5,12 +5,12 @@ import {
   type SessionMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
-import type { ProjectSummary, SessionSummary, SessionTimelineState } from '@cotta/shared'
+import type { ProjectSummary, SessionRunState, SessionSummary, SessionTimelineState } from '@cotta/shared'
 import { createListCursor, resolveListCursor } from './list-cursor.js'
 import { SessionActivityTracker } from './session-activity.js'
 import type { SessionSummaryCache } from './session-summary-cache.js'
 
-function projectIdFromPath(path: string): string {
+export function projectIdFromPath(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
 }
 
@@ -78,12 +78,17 @@ function toProjectSummaries(activity: SessionActivityTracker, sessions: SDKSessi
     })
 }
 
+function defaultRunState(): SessionRunState {
+  return { phase: 'idle', activeTurnId: null }
+}
+
 function toSessionSummary(activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo): SessionSummary {
   return {
     id: session.sessionId,
     title: titleFromSession(session),
     projectId,
     lastActivityAt: activity.get(session),
+    runState: defaultRunState(),
   }
 }
 

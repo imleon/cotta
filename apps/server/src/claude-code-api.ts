@@ -1,4 +1,5 @@
 import {
+  getSessionInfo,
   getSessionMessages,
   listSessions,
   type SDKSessionInfo,
@@ -44,6 +45,11 @@ function isExactProjectPath(projectPath: string, sessionPath: string | undefined
 async function listExactProjectSessions(projectPath: string): Promise<SDKSessionInfo[]> {
   const sessions = await listSessions({ dir: projectPath, includeWorktrees: true, includeProgrammatic: true })
   return sessions.filter((session) => isExactProjectPath(projectPath, session.cwd))
+}
+
+async function getExactProjectSession(projectPath: string, sessionId: string): Promise<SDKSessionInfo | null> {
+  const session = await getSessionInfo(sessionId, { dir: projectPath })
+  return session && isExactProjectPath(projectPath, session.cwd) ? session : null
 }
 
 function sortSessions(activity: SessionActivityTracker, sessions: SDKSessionInfo[]): SDKSessionInfo[] {
@@ -198,8 +204,7 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
     async getSessionTimelineState(projectId, sessionId) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
-      const sessions = await listExactProjectSessions(projectPath)
-      const session = sessions.find((candidate) => candidate.sessionId === sessionId)
+      const session = await getExactProjectSession(projectPath, sessionId)
       if (!session) return null
       return toSessionTimelineState(activity, projectId, session)
     },
@@ -207,8 +212,8 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
     async getSessionMessages(projectId, sessionId) {
       const projectPath = projectPathFromId(projectId)
       if (!projectPath) return null
-      const sessions = await listExactProjectSessions(projectPath)
-      if (!sessions.some((session) => session.sessionId === sessionId)) return null
+      const session = await getExactProjectSession(projectPath, sessionId)
+      if (!session) return null
       return getSessionMessages(sessionId, {
         dir: projectPath,
         limit: 10_000,

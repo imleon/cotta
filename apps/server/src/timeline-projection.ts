@@ -1,4 +1,5 @@
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
+import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineToolUseId } from '@cotta/shared'
 import type { SessionTimelineResponse, TimelineBlock, TurnSummary } from '@cotta/shared'
 
 type ProjectedSessionTimeline = Omit<SessionTimelineResponse, 'state'>
@@ -75,15 +76,7 @@ function taskNotificationMetadata(message: SessionMessage): TaskNotificationMeta
 }
 
 function isTaskNotificationMessage(message: SessionMessage): boolean {
-  return taskNotificationMetadata(message) !== null
-}
-
-function isPrimaryUserMessage(message: SessionMessage): boolean {
-  return message.type === 'user'
-    && !isToolResultMessage(message)
-    && !isTaskNotificationMessage(message)
-    && !isInternalUserMessage(message)
-    && hasDisplayableUserContent(message)
+  return isTimelineTaskNotificationMessage(message)
 }
 
 function textFromUnknownContent(content: unknown): string {
@@ -104,28 +97,15 @@ function userText(message: SessionMessage): string {
   return textFromUnknownContent(messageContent(message))
 }
 
-function hasDisplayableUserContent(message: SessionMessage): boolean {
-  const content = messageContent(message)
-  if (userText(message).trim()) return true
-  return Array.isArray(content) && content.some((block) => isRecord(block) && (block.type === 'image' || block.type === 'file' || block.type === 'document'))
-}
-
-function isInternalUserMessage(message: SessionMessage): boolean {
-  if (!isRecord(message.message)) return false
-  if (message.message.shouldQuery === false || message.message.isSynthetic === true) return true
-  return message.message.origin === 'internal'
-}
-
 function blockKindForContentBlock(block: unknown): string {
   if (!isRecord(block) || typeof block.type !== 'string') return 'assistant.unknown_block'
   return `assistant.${block.type}`
 }
 
-function toolUseMetadata(block: unknown): Pick<TimelineBlock, 'contentBlockId' | 'toolUseId'> {
-  if (!isRecord(block)) return {}
-  if (block.type === 'tool_use' && typeof block.id === 'string') return { contentBlockId: block.id, toolUseId: block.id }
-  if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') return { toolUseId: block.tool_use_id }
-  return {}
+function toolUseMetadata(message: SessionMessage, block: unknown): Pick<TimelineBlock, 'contentBlockId' | 'toolUseId'> {
+  if (isRecord(block) && block.type === 'tool_use' && typeof block.id === 'string') return { contentBlockId: block.id, toolUseId: block.id }
+  const toolUseId = timelineToolUseId(message, block)
+  return toolUseId ? { toolUseId } : {}
 }
 
 function messageApiMessageId(message: SessionMessage): string | undefined {
@@ -134,22 +114,23 @@ function messageApiMessageId(message: SessionMessage): string | undefined {
 
 function timelineBlocksForTaskNotificationMessage(message: SessionMessage): TimelineBlock[] {
   const metadata = taskNotificationMetadata(message)
-  if (!metadata) return []
   return [{
     id: `${message.uuid}:task_notification`,
     kind: 'assistant.task_notification',
     sourceEventIds: [message.uuid],
-    data: { ...metadata, raw: message.message },
+    data: metadata ? { ...metadata, raw: message.message } : { raw: message.message },
   }]
 }
 
 function timelineBlocksForToolResultMessage(message: SessionMessage): TimelineBlock[] {
   const content = messageContent(message)
   if (!Array.isArray(content)) {
+    const toolUseId = timelineToolUseId(message, null)
     return [{
       id: `${message.uuid}:tool_result`,
       kind: 'tool.result',
       sourceEventIds: [message.uuid],
+      ...(toolUseId ? { toolUseId } : {}),
       data: jsonData(message.message),
     }]
   }
@@ -161,7 +142,7 @@ function timelineBlocksForToolResultMessage(message: SessionMessage): TimelineBl
         id: `${message.uuid}:tool_result:${index}`,
         kind: 'tool.result',
         sourceEventIds: [message.uuid],
-        ...toolUseMetadata(block),
+        ...toolUseMetadata(message, block),
         data: jsonData(block),
       }
     })
@@ -204,7 +185,7 @@ function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
       kind: blockKindForContentBlock(block),
       sourceEventIds: [message.uuid],
       ...(apiMessageId ? { apiMessageId } : {}),
-      ...toolUseMetadata(block),
+      ...toolUseMetadata(message, block),
       data: jsonData(block),
     }))
   }
@@ -226,10 +207,11 @@ function turnTitleFromMessage(message: SessionMessage): string {
 
 function projectTurns(messages: SessionMessage[]): TurnSummary[] {
   const turns: TurnSummary[] = []
+  const turnsByToolUseId = new Map<string, TurnSummary>()
   let current: TurnSummary | null = null
 
   for (const message of messages) {
-    const isPrimary = isPrimaryUserMessage(message)
+    const isPrimary = isPrimaryTimelineUserMessage(message)
     const timestamp = messageTimestampMs(message)
     if (isPrimary || current === null) {
       current = {
@@ -244,8 +226,14 @@ function projectTurns(messages: SessionMessage[]): TurnSummary[] {
       turns.push(current)
     }
 
-    current.blocks.push(...timelineBlocksForMessage(message))
-    if (!isPrimary && timestamp !== undefined) current.completedAt = timestamp
+    for (const block of timelineBlocksForMessage(message)) {
+      const target = block.kind === 'tool.result' && block.toolUseId
+        ? turnsByToolUseId.get(block.toolUseId) ?? current
+        : current
+      target.blocks.push(block)
+      if (block.kind === 'assistant.tool_use' && block.toolUseId) turnsByToolUseId.set(block.toolUseId, target)
+      if (!isPrimary && timestamp !== undefined) target.completedAt = timestamp
+    }
   }
 
   return turns

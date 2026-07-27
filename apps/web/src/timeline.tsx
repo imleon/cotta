@@ -2,8 +2,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { LiveTurnFailureEvent, PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { fetchSessionLiveEvents, fetchSessionTimeline, fetchSessionTimelineState, withToken } from './api'
+import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineToolUseId, type PersistedLiveEvent, type TimelineBlock, type TurnSummary } from '@cotta/shared'
+import { fetchSessionLiveEvents, fetchSessionRawMessages, fetchSessionTimeline, fetchSessionTimelineState } from './api'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -77,12 +77,16 @@ function TimelineTimestamp({
   className = '',
   copyText,
   copyLabel,
+  onViewRaw,
+  viewRawLabel,
   source,
 }: {
   value?: number
   className?: string
   copyText?: string | null
   copyLabel?: string
+  onViewRaw?: () => void
+  viewRawLabel?: string
   source?: 'history' | 'live'
 }) {
   const [copyStatus, setCopyStatus] = useState<'Copied' | 'Copy failed' | null>(null)
@@ -118,6 +122,7 @@ function TimelineTimestamp({
   const contents = (
     <>
       {copyText ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={copyLabel} onClick={handleCopy}>{copyIcon}</button> : null}
+      {onViewRaw ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={viewRawLabel} onClick={onViewRaw}><svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M9 11h4M11 9v4" /></svg></button> : null}
       <time dateTime={new Date(value).toISOString()}>{label}</time>
       {source ? <span className="rounded-full bg-[var(--tl-surface-soft)] px-1.5 py-px text-[var(--text-xs)] font-bold uppercase tracking-[0.04em] text-[var(--tl-muted)]">{source}</span> : null}
       <span className="sr-only" aria-live="polite">{copyStatus}</span>
@@ -163,6 +168,27 @@ type TimelineRenderItem =
   | { type: 'tool-call'; toolUse: TimelineBlock | null; results: TimelineBlock[]; toolUseId: string }
 
 type AssistantResponseFrameItem = { type: 'assistant-response-frame'; id: string; items: TimelineRenderItem[] }
+
+function timelineRenderItemBlocks(item: TimelineRenderItem): TimelineBlock[] {
+  return item.type === 'block' ? [item.block] : [...(item.toolUse ? [item.toolUse] : []), ...item.results]
+}
+
+export function rawMessagesForTimelineBlocks(messages: unknown[], blocks: TimelineBlock[]): unknown[] {
+  const sourceEventIds = new Set(blocks.flatMap((block) => block.sourceEventIds))
+  const apiMessageIds = new Set(blocks.flatMap((block) => block.apiMessageId ? [block.apiMessageId] : []))
+  const seen = new Set<string>()
+
+  return messages.filter((message) => {
+    if (!isRecord(message)) return false
+    const uuid = typeof message.uuid === 'string' ? message.uuid : undefined
+    const apiMessageId = isRecord(message.message) && typeof message.message.id === 'string' ? message.message.id : undefined
+    if (!(uuid && sourceEventIds.has(uuid)) && !(apiMessageId && apiMessageIds.has(apiMessageId))) return false
+    const key = uuid ? `uuid:${uuid}` : `api:${apiMessageId}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
 
 type TimelineDisplayItem =
   | { type: 'item'; item: TimelineRenderItem }
@@ -214,8 +240,8 @@ const timelineMessageClass = {
   userStack: 'grid max-w-[min(76%,720px)] justify-items-end gap-1 max-[720px]:max-w-full max-[560px]:max-w-[min(86%,720px)]',
   userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[var(--radius-md)] border border-[var(--tl-user-border)] bg-[var(--tl-user-soft)] px-3.5 py-2.5 text-[15px] leading-[1.6] text-[var(--tl-ink)] shadow-[var(--tl-shadow-soft)]',
   timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-xs leading-4 text-[var(--tl-muted)] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
-  timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-visible:opacity-100',
-  timestampAssistant: 'block -mt-[5px] px-1 group-hover:opacity-100 focus-visible:opacity-100',
+  timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-within:opacity-100',
+  timestampAssistant: 'block -mt-[5px] px-1 group-hover:opacity-100 focus-within:opacity-100',
   assistantFrame: 'group w-full max-w-none justify-self-stretch [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
   assistantFrameBody: 'grid min-w-0 gap-2.5',
 }
@@ -582,7 +608,7 @@ function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
   )
 }
 
-function TimelineBlockView({ block, timestamp, source }: { block: TimelineBlock; timestamp?: number; source?: 'history' | 'live' }) {
+function TimelineBlockView({ block, timestamp, source, onViewRaw }: { block: TimelineBlock; timestamp?: number; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void }) {
   const text = textFromData(block.data)
 
   if (block.kind === 'assistant.thinking') return <ThinkingBlockView block={block} />
@@ -598,7 +624,7 @@ function TimelineBlockView({ block, timestamp, source }: { block: TimelineBlock;
       <div className={timelineMessageClass.rowUser}>
         <div className={timelineMessageClass.userStack}>
           <div className={timelineMessageClass.userBubble}>{text ?? dataPreview(block.data)}</div>
-          <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampUser} copyText={text ?? dataPreview(block.data)} copyLabel="Copy user message" source={source} />
+          <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampUser} copyText={text ?? dataPreview(block.data)} copyLabel="Copy user message" onViewRaw={onViewRaw ? () => onViewRaw([block]) : undefined} viewRawLabel="View raw user message" source={source} />
         </div>
       </div>
     )
@@ -625,12 +651,12 @@ function TimelineBlockView({ block, timestamp, source }: { block: TimelineBlock;
   )
 }
 
-const TimelineRenderItemView = memo(function TimelineRenderItemView({ item, timestamp, source }: { item: TimelineRenderItem; timestamp?: number; source?: 'history' | 'live' }) {
-  if (item.type === 'block') return <TimelineBlockView block={item.block} timestamp={timestamp} source={source} />
+const TimelineRenderItemView = memo(function TimelineRenderItemView({ item, timestamp, source, onViewRaw }: { item: TimelineRenderItem; timestamp?: number; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void }) {
+  if (item.type === 'block') return <TimelineBlockView block={item.block} timestamp={timestamp} source={source} onViewRaw={onViewRaw} />
   return <ToolCallBlockView toolUse={item.toolUse} results={item.results} />
 })
 
-const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, source }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live' }) {
+const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, source, onViewRaw }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void }) {
   const copyText = assistantResponseText(item.items)
 
   return (
@@ -640,69 +666,12 @@ const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ it
           {item.items.map((child) => <TimelineRenderItemView item={child} key={timelineRenderItemKey(child)} />)}
         </div>
       </section>
-      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" source={source} />
+      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" onViewRaw={onViewRaw ? () => onViewRaw(item.items.flatMap(timelineRenderItemBlocks)) : undefined} viewRawLabel="View raw assistant response" source={source} />
     </div>
   )
 })
 
-function persistedPayloadContent(payload: unknown): unknown {
-  return isRecord(payload) && isRecord(payload.message) ? payload.message.content : undefined
-}
-
-function protocolAnomalyBlock(event: PersistedLiveEvent, reason: string): TimelineBlock {
-  return { id: `live-event:${event.id}:protocol_anomaly`, kind: 'raw.protocol_anomaly', sourceEventIds: [`live-event:${event.id}`], data: { reason, raw: event.payload } }
-}
-
-function sdkMessageToTimelineBlocks(event: PersistedLiveEvent): TimelineBlock[] {
-  const payload = event.payload
-  const uuid = isRecord(payload) && typeof payload.uuid === 'string' ? payload.uuid : null
-  const content = persistedPayloadContent(payload)
-  if (!isRecord(payload) || payload.type === 'result') return []
-
-  if (payload.type === 'assistant') {
-    const apiMessageId = isRecord(payload.message) && typeof payload.message.id === 'string' ? payload.message.id : undefined
-    if (!uuid) return [protocolAnomalyBlock(event, 'assistant message missing sdk uuid')]
-    if (!apiMessageId) return [protocolAnomalyBlock(event, 'assistant message missing apiMessageId')]
-    if (!Array.isArray(content)) return [{ id: `${uuid}:assistant`, kind: 'assistant.message', sourceEventIds: [uuid], apiMessageId, data: payload.message ?? payload }]
-    return content.map((block, index): TimelineBlock => {
-      const blockType = isRecord(block) && typeof block.type === 'string' ? block.type : 'unknown_block'
-      const toolUseId = isRecord(block) && block.type === 'tool_use' && typeof block.id === 'string' ? block.id : undefined
-      return {
-        id: `${uuid}:assistant:${index}`,
-        kind: `assistant.${blockType}`,
-        sourceEventIds: [uuid],
-        ...(apiMessageId ? { apiMessageId } : {}),
-        ...(toolUseId ? { contentBlockId: toolUseId, toolUseId } : {}),
-        data: block,
-      }
-    })
-  }
-
-  if (payload.type === 'user') {
-    if (!uuid) return [protocolAnomalyBlock(event, 'user message missing sdk uuid')]
-    if (Array.isArray(content)) {
-      return content.flatMap((block, index): TimelineBlock[] => {
-        if (!isRecord(block)) return []
-        if (block.type === 'tool_result') return [{ id: `${uuid}:tool_result:${index}`, kind: 'tool.result', sourceEventIds: [uuid], ...(typeof block.tool_use_id === 'string' ? { toolUseId: block.tool_use_id } : {}), data: block }]
-        if (block.type === 'text' && typeof block.text === 'string') return [{ id: `${uuid}:user:${index}`, kind: 'user.message', sourceEventIds: [uuid], data: { text: block.text, status: 'confirmed', raw: block } }]
-        if (block.type === 'image') return [{ id: `${uuid}:image:${index}`, kind: 'user.image', sourceEventIds: [uuid], data: block }]
-        if (block.type === 'file' || block.type === 'document') return [{ id: `${uuid}:file:${index}`, kind: 'user.file', sourceEventIds: [uuid], data: block }]
-        return []
-      })
-    }
-    const text = textFromData({ content })
-    return text ? [{ id: `${uuid}:user`, kind: 'user.message', sourceEventIds: [uuid], data: { text, status: 'confirmed', raw: isRecord(payload.message) ? payload.message : null } }] : []
-  }
-
-  return uuid ? [{ id: `${uuid}:raw`, kind: `raw.${String(payload.type)}`, sourceEventIds: [uuid], data: payload }] : [protocolAnomalyBlock(event, 'sdk message missing uuid')]
-}
-
-function liveEventsToTurns(sessionId: string, events: PersistedLiveEvent[]): TurnSummary[] {
-  const blocks = events.flatMap(sdkMessageToTimelineBlocks)
-  return blocks.length === 0 ? [] : [{ id: `live-events:${sessionId}`, sessionId, title: 'SDK events', startedAt: events[0]?.recordedAtMs, completedAt: events.at(-1)?.recordedAtMs, rawStatus: 'complete', displayStatus: 'complete', blocks }]
-}
-
-export type TimelineTurnIndex = { userMessageUuids: Set<string>; apiMessageIds: Set<string>; sourceEventIds: Set<string> }
+export type TimelineTurnIndex = { userMessageUuids: Set<string>; apiMessageIds: Set<string>; blockIds: Set<string> }
 
 type LiveAssistantBlockDraft = {
   id: string
@@ -830,11 +799,10 @@ function sdkMessageContent(message: Record<string, unknown>): unknown {
   return isRecord(message.message) ? message.message.content : undefined
 }
 
-function toolUseMetadata(block: unknown): Pick<TimelineBlock, 'contentBlockId' | 'toolUseId'> {
-  if (!isRecord(block)) return {}
-  if (block.type === 'tool_use' && typeof block.id === 'string') return { contentBlockId: block.id, toolUseId: block.id }
-  if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') return { toolUseId: block.tool_use_id }
-  return {}
+function toolUseMetadata(message: Record<string, unknown>, block: unknown): Pick<TimelineBlock, 'contentBlockId' | 'toolUseId'> {
+  if (isRecord(block) && block.type === 'tool_use' && typeof block.id === 'string') return { contentBlockId: block.id, toolUseId: block.id }
+  const toolUseId = timelineToolUseId(message, block)
+  return toolUseId ? { toolUseId } : {}
 }
 
 function assistantBlocksFromMessage(message: Record<string, unknown>, uuid: string, apiMessageId: string, idPrefix = `${uuid}:assistant`): TimelineBlock[] {
@@ -847,7 +815,7 @@ function assistantBlocksFromMessage(message: Record<string, unknown>, uuid: stri
       kind: `assistant.${blockType}`,
       sourceEventIds: [uuid],
       apiMessageId,
-      ...toolUseMetadata(block),
+      ...toolUseMetadata(message, block),
       data: block,
     }
   })
@@ -858,7 +826,7 @@ function userBlocksFromMessage(message: Record<string, unknown>, uuid: string): 
   if (Array.isArray(content)) {
     return content.flatMap((block, index): TimelineBlock[] => {
       if (!isRecord(block)) return []
-      if (block.type === 'tool_result') return [{ id: `${uuid}:tool_result:${index}`, kind: 'tool.result', sourceEventIds: [uuid], ...toolUseMetadata(block), data: block }]
+      if (block.type === 'tool_result') return [{ id: `${uuid}:tool_result:${index}`, kind: 'tool.result', sourceEventIds: [uuid], ...toolUseMetadata(message, block), data: block }]
       if (block.type === 'text' && typeof block.text === 'string') return [{ id: `${uuid}:user:${index}`, kind: 'user.message', sourceEventIds: [uuid], data: { text: block.text, status: 'confirmed', raw: block } }]
       if (block.type === 'image') return [{ id: `${uuid}:image:${index}`, kind: 'user.image', sourceEventIds: [uuid], data: block }]
       if (block.type === 'file' || block.type === 'document') return [{ id: `${uuid}:file:${index}`, kind: 'user.file', sourceEventIds: [uuid], data: block }]
@@ -869,54 +837,35 @@ function userBlocksFromMessage(message: Record<string, unknown>, uuid: string): 
   return text ? [{ id: `${uuid}:user`, kind: 'user.message', sourceEventIds: [uuid], data: { text, status: 'confirmed', raw: isRecord(message.message) ? message.message : null } }] : []
 }
 
-export function isPrimaryUserMessage(message: Record<string, unknown>): boolean {
-  const content = sdkMessageContent(message)
-  if (Array.isArray(content)) return content.some((block) => isRecord(block) && (block.type === 'text' || block.type === 'image' || block.type === 'file' || block.type === 'document'))
-  return Boolean(textFromData({ content }))
-}
+export const isPrimaryUserMessage = isPrimaryTimelineUserMessage
 
-function isLiveTurnFailure(value: unknown): value is LiveTurnFailureEvent {
-  return isRecord(value) && value.type === 'live.turn.failed' && typeof value.userMessageUuid === 'string' && typeof value.error === 'string'
-}
-
-function turnApiMessageIds(turn: TurnSummary): Set<string> {
-  const ids = new Set<string>()
-  for (const block of turn.blocks) {
-    if (block.apiMessageId) ids.add(block.apiMessageId)
-  }
-  return ids
-}
-
-function turnSourceEventIds(turn: TurnSummary): Set<string> {
-  return new Set(turn.blocks.flatMap((block) => block.sourceEventIds))
+function resultFailureMessage(value: unknown): string | null {
+  if (!isRecord(value) || value.type !== 'result') return null
+  const failed = value.is_error === true || (typeof value.subtype === 'string' && (value.subtype === 'failed' || value.subtype.startsWith('error')))
+  if (!failed) return null
+  return Array.isArray(value.errors) && typeof value.errors[0] === 'string' ? value.errors[0] : 'Turn failed'
 }
 
 export function timelineTurnIndex(turns: TurnSummary[]): TimelineTurnIndex {
   const userMessageUuids = new Set<string>()
   const apiMessageIds = new Set<string>()
-  const sourceEventIds = new Set<string>()
+  const blockIds = new Set<string>()
   for (const turn of turns) {
     userMessageUuids.add(turn.id)
-    for (const apiMessageId of turnApiMessageIds(turn)) apiMessageIds.add(apiMessageId)
-    for (const sourceEventId of turnSourceEventIds(turn)) sourceEventIds.add(sourceEventId)
+    for (const block of turn.blocks) {
+      blockIds.add(block.id)
+      if (block.apiMessageId) apiMessageIds.add(block.apiMessageId)
+    }
   }
-  return { userMessageUuids, apiMessageIds, sourceEventIds }
+  return { userMessageUuids, apiMessageIds, blockIds }
 }
 
 function blockIsRepresentedBy(block: TimelineBlock, index: TimelineTurnIndex): boolean {
-  if (block.apiMessageId && index.apiMessageIds.has(block.apiMessageId)) return true
-  return block.sourceEventIds.some((sourceEventId) => index.sourceEventIds.has(sourceEventId))
+  return block.apiMessageId ? index.apiMessageIds.has(block.apiMessageId) : index.blockIds.has(block.id)
 }
 
 function turnIsRepresentedBy(turn: TurnSummary, index: TimelineTurnIndex): boolean {
-  if (index.userMessageUuids.has(turn.id)) return true
-  for (const apiMessageId of turnApiMessageIds(turn)) {
-    if (index.apiMessageIds.has(apiMessageId)) return true
-  }
-  for (const sourceEventId of turnSourceEventIds(turn)) {
-    if (index.sourceEventIds.has(sourceEventId)) return true
-  }
-  return false
+  return index.userMessageUuids.has(turn.id)
 }
 
 function turnOrderValue(turn: TurnSummary): number | null {
@@ -928,7 +877,7 @@ function isLiveTurn(turn: TurnSummary): boolean {
 }
 
 function upsertBlock(blocks: TimelineBlock[], block: TimelineBlock): TimelineBlock[] {
-  const index = blocks.findIndex((item) => item.id === block.id || item.sourceEventIds.some((sourceEventId) => block.sourceEventIds.includes(sourceEventId)))
+  const index = blocks.findIndex((item) => item.id === block.id)
   if (index === -1) return [...blocks, block]
   const next = [...blocks]
   next[index] = block
@@ -941,43 +890,99 @@ function upsertBlocks(blocks: TimelineBlock[], nextBlocks: TimelineBlock[], hist
 
 type ApplySdkMessageResult = { turns: TurnSummary[]; currentUserMessageUuid: string | null; terminal: boolean }
 
+function rawMessageBlock(message: Record<string, unknown>): TimelineBlock {
+  const uuid = sdkMessageUuid(message) ?? String(message.type)
+  return { id: `${uuid}:raw`, kind: `raw.${String(message.type)}`, sourceEventIds: sdkMessageUuid(message) ? [uuid] : [], data: message }
+}
+
+function appendBlocksToTurn(turns: TurnSummary[], turnId: string | null, raw: Record<string, unknown>, blocks: TimelineBlock[], historyIndex: TimelineTurnIndex, occurredAt: number): TurnSummary[] {
+  if (turnId && turns.some((turn) => turn.id === turnId)) {
+    return turns.map((turn) => turn.id === turnId ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndex) } : turn)
+  }
+  const sessionId = typeof raw.session_id === 'string' ? raw.session_id : turns[0]?.sessionId ?? 'pending'
+  const containerId = `session-events:${sessionId}`
+  const existing = turns.find((turn) => turn.id === containerId)
+  if (existing) return turns.map((turn) => turn.id === containerId ? { ...turn, completedAt: occurredAt, blocks: upsertBlocks(turn.blocks, blocks, historyIndex) } : turn)
+  return [...turns, { id: containerId, sessionId, title: 'Session events', startedAt: occurredAt, completedAt: occurredAt, rawStatus: 'complete', displayStatus: 'complete', blocks: upsertBlocks([], blocks, historyIndex) }]
+}
+
 export function applySdkMessage(
   turns: TurnSummary[],
   raw: unknown,
   historyIndex: TimelineTurnIndex,
   currentUserMessageUuid: string | null,
   accumulator: LiveAssistantStreamAccumulator | null,
+  occurredAt = Date.now(),
 ): ApplySdkMessageResult {
   if (!isRecord(raw) || typeof raw.type !== 'string') return { turns, currentUserMessageUuid, terminal: false }
 
   if (raw.type === 'user') {
     const uuid = sdkMessageUuid(raw)
-    if (!uuid) return { turns, currentUserMessageUuid, terminal: false }
-    const blocks = userBlocksFromMessage(raw, uuid)
-    const hasUserMessage = blocks.some((block) => block.kind === 'user.message' || block.kind === 'user.image' || block.kind === 'user.file')
-    if (!hasUserMessage && currentUserMessageUuid) {
-      return {
-        turns: turns.map((turn) => turn.id === currentUserMessageUuid ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndex) } : turn),
-        currentUserMessageUuid,
-        terminal: false,
-      }
+    if (!uuid) return { turns: appendBlocksToTurn(turns, currentUserMessageUuid, raw, [rawMessageBlock(raw)], historyIndex, occurredAt), currentUserMessageUuid, terminal: false }
+    if (!isPrimaryTimelineUserMessage(raw)) {
+      const userBlocks = userBlocksFromMessage(raw, uuid)
+      const blocks = isTimelineTaskNotificationMessage(raw)
+        ? [{ id: `${uuid}:task_notification`, kind: 'assistant.task_notification', sourceEventIds: [uuid], data: { raw: raw.message } }]
+        : userBlocks.some((block) => block.kind === 'tool.result') ? userBlocks.filter((block) => block.kind === 'tool.result') : [rawMessageBlock(raw)]
+      return { turns: appendBlocksToTurn(turns, currentUserMessageUuid, raw, blocks, historyIndex, occurredAt), currentUserMessageUuid, terminal: false }
     }
-    const turn: TurnSummary = { id: uuid, sessionId: typeof raw.session_id === 'string' ? raw.session_id : 'pending', title: shortText(textFromData({ content: sdkMessageContent(raw) }) ?? uuid, 80), startedAt: Date.now(), rawStatus: 'running', displayStatus: 'running', blocks }
+    const blocks = userBlocksFromMessage(raw, uuid)
+    const existing = turns.find((turn) => turn.id === uuid)
+    if (existing) {
+      const nextTurns = historyIndex.userMessageUuids.has(uuid)
+        ? turns
+        : turns.map((turn) => turn.id === uuid ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndex) } : turn)
+      return { turns: nextTurns, currentUserMessageUuid: uuid, terminal: false }
+    }
+    const turn: TurnSummary = { id: uuid, sessionId: typeof raw.session_id === 'string' ? raw.session_id : 'pending', title: shortText(textFromData({ content: sdkMessageContent(raw) }) ?? uuid, 80), startedAt: occurredAt, rawStatus: 'running', displayStatus: 'running', blocks }
     return { turns: turnIsRepresentedBy(turn, historyIndex) ? turns : [...turns.filter((item) => item.id !== uuid && !turnIsRepresentedBy(item, historyIndex)), turn], currentUserMessageUuid: uuid, terminal: false }
   }
 
-  if (raw.type === 'stream_event' && currentUserMessageUuid && accumulator) {
-    const blocks = accumulator.processStreamEvent(raw)
-    return { turns: turns.map((turn) => turn.id === currentUserMessageUuid ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndex) } : turn), currentUserMessageUuid, terminal: false }
+  if (raw.type === 'stream_event') {
+    const blocks = currentUserMessageUuid && accumulator ? accumulator.processStreamEvent(raw) : [rawMessageBlock(raw)]
+    return { turns: appendBlocksToTurn(turns, currentUserMessageUuid, raw, blocks, historyIndex, occurredAt), currentUserMessageUuid, terminal: false }
   }
 
-  if (raw.type === 'assistant' && currentUserMessageUuid && accumulator) {
-    const blocks = accumulator.finalAssistantBlocks(raw)
-    return { turns: turns.map((turn) => turn.id === currentUserMessageUuid ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndex) } : turn), currentUserMessageUuid, terminal: false }
+  if (raw.type === 'assistant') {
+    const uuid = sdkMessageUuid(raw)
+    const apiMessageId = isRecord(raw.message) && typeof raw.message.id === 'string' ? raw.message.id : undefined
+    const blocks = currentUserMessageUuid && accumulator
+      ? accumulator.finalAssistantBlocks(raw)
+      : uuid && apiMessageId ? assistantBlocksFromMessage(raw, uuid, apiMessageId) : [rawMessageBlock(raw)]
+    return { turns: appendBlocksToTurn(turns, currentUserMessageUuid, raw, blocks, historyIndex, occurredAt), currentUserMessageUuid, terminal: false }
   }
 
-  if (raw.type === 'result') return { turns, currentUserMessageUuid: null, terminal: true }
-  return { turns, currentUserMessageUuid, terminal: false }
+  if (raw.type === 'result') {
+    const failed = raw.is_error === true || (typeof raw.subtype === 'string' && (raw.subtype === 'failed' || raw.subtype.startsWith('error')))
+    return {
+      turns: turns.map((turn) => turn.id === currentUserMessageUuid ? { ...turn, rawStatus: failed ? 'error' : 'complete', displayStatus: failed ? 'error' : 'complete', completedAt: occurredAt } : turn),
+      currentUserMessageUuid: null,
+      terminal: true,
+    }
+  }
+
+  return { turns: appendBlocksToTurn(turns, currentUserMessageUuid, raw, [rawMessageBlock(raw)], historyIndex, occurredAt), currentUserMessageUuid, terminal: false }
+}
+
+export function mergePersistedLiveEvents(turns: TurnSummary[], events: PersistedLiveEvent[]): TurnSummary[] {
+  let merged = turns
+  let currentUserMessageUuid: string | null = null
+  let accumulator: LiveAssistantStreamAccumulator | null = null
+  const historyIndex = timelineTurnIndex(turns)
+  for (const event of [...events].sort((a, b) => a.id - b.id)) {
+    const raw = isRecord(event.payload) && event.payload.type !== 'result' && !sdkMessageUuid(event.payload)
+      ? { ...event.payload, uuid: `live-event:${event.id}`, session_id: event.sessionId }
+      : event.payload
+    if (isRecord(raw) && isPrimaryTimelineUserMessage(raw)) {
+      const uuid = sdkMessageUuid(raw)
+      if (uuid && uuid !== currentUserMessageUuid) accumulator = new LiveAssistantStreamAccumulator(uuid)
+    }
+    const result = applySdkMessage(merged, raw, historyIndex, currentUserMessageUuid, accumulator, event.recordedAtMs)
+    merged = result.turns
+    currentUserMessageUuid = result.currentUserMessageUuid
+    if (result.terminal) accumulator = null
+  }
+  return merged
 }
 
 export function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSummary[]): TurnSummary[] {
@@ -985,7 +990,7 @@ export function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSum
   const mergedIncoming = incoming.map((turn) => {
     const liveTurn = current.find((item) => item.id === turn.id && isLiveTurn(item))
     if (!liveTurn) return turn
-    const liveBlocks = liveTurn.blocks.filter((block) => !blockIsRepresentedBy(block, incomingIndex))
+    const liveBlocks = liveTurn.blocks.filter((block) => !['user.message', 'user.image', 'user.file'].includes(block.kind) && !blockIsRepresentedBy(block, incomingIndex))
     if (liveBlocks.length === 0) return turn
     return { ...turn, rawStatus: 'running', displayStatus: 'running', blocks: [...turn.blocks, ...liveBlocks] }
   })
@@ -1005,6 +1010,179 @@ export function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSum
 function prependOlderTimelineTurns(current: TurnSummary[], older: TurnSummary[]): TurnSummary[] {
   const currentIndex = timelineTurnIndex(current)
   return [...older.filter((turn) => !turnIsRepresentedBy(turn, currentIndex)), ...current]
+}
+
+export type SessionTimelineScope = { projectId: string | null; sessionId: string | null; pendingPrimaryTurnUuid: string | null }
+
+export function shouldResetSessionTimeline(previous: SessionTimelineScope | null, next: SessionTimelineScope): boolean {
+  if (!previous || previous.projectId !== next.projectId) return true
+  if (previous.sessionId === next.sessionId) return false
+  return !(previous.sessionId === null && next.sessionId !== null && previous.pendingPrimaryTurnUuid !== null && previous.pendingPrimaryTurnUuid === next.pendingPrimaryTurnUuid)
+}
+
+function rawStringField(value: unknown, field: string): string {
+  return isRecord(value) && typeof value[field] === 'string' ? value[field] : '—'
+}
+
+function beijingTimestamp(value: unknown): { date: string; time: string } {
+  if (typeof value !== 'string') return { date: '—', time: '' }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return { date: value, time: '' }
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).map((part) => [part.type, part.value]))
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}:${parts.second}` }
+}
+
+function rawMessageContentRows(value: unknown): unknown[] {
+  if (!isRecord(value) || !isRecord(value.message)) return [undefined]
+  return Array.isArray(value.message.content) ? value.message.content : [value.message.content]
+}
+
+function contentBlockType(value: unknown): string {
+  return isRecord(value) && typeof value.type === 'string' ? value.type : '—'
+}
+
+function contentWithoutType(value: unknown): unknown {
+  if (!isRecord(value)) return value
+  const { type: _type, ...content } = value
+  return content
+}
+
+export type RawMessageWaterfallRow = {
+  messageIndex: number
+  blockType: string
+  offsetMs: number
+  durationMs: number
+}
+
+export function rawMessageTimestampMs(message: unknown): number | null {
+  const value = isRecord(message) ? message.timestamp : undefined
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const ms = new Date(value).getTime()
+  return Number.isFinite(ms) ? ms : null
+}
+
+function rawMessageBlockTypeLabel(message: unknown): string {
+  const types = rawMessageContentRows(message).map(contentBlockType)
+  const unique = [...new Set(types)]
+  if (unique.length === 0) return '—'
+  if (unique.length <= 2) return unique.join(' + ')
+  return `${types.length} blocks`
+}
+
+export function rawMessageWaterfallRows(messages: unknown[]): RawMessageWaterfallRow[] {
+  const timed = messages
+    .map((message, messageIndex) => ({ message, messageIndex, timestampMs: rawMessageTimestampMs(message) }))
+    .filter((item): item is { message: unknown; messageIndex: number; timestampMs: number } => item.timestampMs !== null)
+  const startMs = timed[0]?.timestampMs
+  if (startMs === undefined) return []
+
+  return timed.map((item, index) => ({
+    messageIndex: item.messageIndex,
+    blockType: rawMessageBlockTypeLabel(item.message),
+    offsetMs: item.timestampMs - startMs,
+    durationMs: Math.max(0, (timed[index + 1]?.timestampMs ?? item.timestampMs) - item.timestampMs),
+  }))
+}
+
+function formatDuration(ms: number): string {
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
+function RawMessagesWaterfall({ messages }: { messages: unknown[] }) {
+  const rows = rawMessageWaterfallRows(messages)
+  if (rows.length === 0) return null
+  const unavailable = messages.length - rows.length
+  const maxEndMs = Math.max(1, ...rows.map((row) => row.offsetMs + row.durationMs))
+
+  return (
+    <section className="raw-message-waterfall" aria-labelledby="raw-message-waterfall-title">
+      <div className="raw-message-waterfall-header">
+        <h3 id="raw-message-waterfall-title">Timing waterfall</h3>
+        {unavailable > 0 ? <span>{unavailable} without timestamp</span> : null}
+      </div>
+      <div className="raw-message-waterfall-rows">
+        {rows.map((row, index) => {
+          const left = `${Math.min(99, (row.offsetMs / maxEndMs) * 100)}%`
+          const width = row.durationMs === 0 ? '2px' : `${(row.durationMs / maxEndMs) * 100}%`
+          return (
+            <div className="raw-message-waterfall-row" key={`${row.messageIndex}:${row.offsetMs}`}>
+              <div className="raw-message-waterfall-meta">
+                <span>{index + 1}/{rows.length}</span>
+                <strong>{row.blockType}</strong>
+                <span>+{formatDuration(row.offsetMs)}</span>
+                <span>{formatDuration(row.durationMs)}</span>
+              </div>
+              <div className="raw-message-waterfall-track" aria-hidden="true">
+                <div className="raw-message-waterfall-bar" style={{ marginLeft: left, width }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function RawMessagesDialog({ messages, loading, error, onClose }: {
+  messages: unknown[]
+  loading: boolean
+  error: unknown
+  onClose: () => void
+}) {
+  const dialogRef = useRef<HTMLDialogElement | null>(null)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) dialog.showModal()
+    return () => dialog?.close()
+  }, [])
+
+  return (
+    <dialog className="raw-messages-dialog" ref={dialogRef} aria-labelledby="raw-messages-title" onCancel={onClose} onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <div className="raw-messages-header">
+        <div>
+          <h2 id="raw-messages-title">Raw messages</h2>
+          <div className="raw-messages-session">Session: <span className="debug-mono">{messages.length > 0 ? rawStringField(messages[0], 'session_id') : '—'}</span></div>
+        </div>
+        <button type="button" onClick={onClose}>Close</button>
+      </div>
+      {loading ? <p className="panel muted">Loading raw messages…</p> : error ? (
+        <p className="panel error">Failed to load raw messages: {error instanceof Error ? error.message : String(error)}</p>
+      ) : messages.length === 0 ? <p className="panel muted">No matching raw messages are persisted yet.</p> : (
+        <>
+          <RawMessagesWaterfall messages={messages} />
+          <div className="debug-table-wrap">
+          <table className="debug-table raw-messages-table">
+            <thead><tr><th>Timestamp</th><th>Type</th><th>Stop reason</th><th>Block type</th><th>Content</th></tr></thead>
+            <tbody>{messages.flatMap((message, messageIndex) => {
+              const contentRows = rawMessageContentRows(message)
+              const timestamp = beijingTimestamp(isRecord(message) ? message.timestamp : undefined)
+              const type = rawStringField(message, 'type')
+              return contentRows.map((content, contentIndex) => (
+                <tr className={type === 'assistant' ? 'raw-message-assistant' : type === 'user' ? 'raw-message-user' : undefined} key={`${rawStringField(message, 'uuid')}:${messageIndex}:${contentIndex}`}>
+                  {contentIndex === 0 ? <td className="debug-mono debug-timestamp-cell" rowSpan={contentRows.length}><div>{timestamp.date}</div><div className="debug-muted">{timestamp.time}</div></td> : null}
+                  {contentIndex === 0 ? <td className="debug-type-cell" rowSpan={contentRows.length}>{type}</td> : null}
+                  {contentIndex === 0 ? <td rowSpan={contentRows.length}>{isRecord(message) && isRecord(message.message) ? rawStringField(message.message, 'stop_reason') : '—'}</td> : null}
+                  <td>{contentBlockType(content)}</td>
+                  <td className="debug-content-cell raw-message-json"><pre>{JSON.stringify(contentWithoutType(content), null, 2) ?? ''}</pre></td>
+                </tr>
+              ))
+            })}</tbody>
+          </table>
+          </div>
+        </>
+      )}
+    </dialog>
+  )
 }
 
 function useSessionTimelineData(
@@ -1032,7 +1210,8 @@ function useSessionTimelineData(
   const isTimelineAtBottomRef = useRef(isTimelineAtBottom)
   const refetchTimelineRef = useRef<() => unknown>(() => undefined)
   const refetchLiveEventsRef = useRef<() => unknown>(() => undefined)
-  const effectiveSessionId = sessionId ?? pendingTurn?.sessionId ?? null
+  const previousScopeRef = useRef<SessionTimelineScope | null>(null)
+  const pendingPrimaryTurnUuid = pendingTurn?.id ?? null
   const enabled = Boolean(projectId && sessionId)
 
   const timeline = useQuery({
@@ -1067,6 +1246,10 @@ function useSessionTimelineData(
   })
 
   useEffect(() => {
+    const nextScope = { projectId, sessionId, pendingPrimaryTurnUuid }
+    const reset = shouldResetSessionTimeline(previousScopeRef.current, nextScope)
+    previousScopeRef.current = nextScope
+    if (!reset) return
     loadOlderRequestRef.current += 1
     setTurns([])
     setNextCursor(null)
@@ -1078,15 +1261,17 @@ function useSessionTimelineData(
     historyIndexRef.current = timelineTurnIndex([])
     liveUserMessageUuidRef.current = null
     liveAccumulatorRef.current = null
-  }, [projectId, effectiveSessionId])
+  }, [pendingPrimaryTurnUuid, projectId, sessionId])
 
   useEffect(() => {
     if (!pendingTurn) return
     if (sessionId && pendingTurn.sessionId !== 'pending' && pendingTurn.sessionId !== sessionId) return
-    shouldScrollToBottomRef.current = true
-    liveUserMessageUuidRef.current = pendingTurn.id
-    liveAccumulatorRef.current ??= new LiveAssistantStreamAccumulator(pendingTurn.id)
-    onLiveTurnChangeRef.current?.(pendingTurn.id)
+    if (liveUserMessageUuidRef.current !== pendingTurn.id) {
+      shouldScrollToBottomRef.current = true
+      liveUserMessageUuidRef.current = pendingTurn.id
+      liveAccumulatorRef.current = new LiveAssistantStreamAccumulator(pendingTurn.id)
+      onLiveTurnChangeRef.current?.(pendingTurn.id)
+    }
     setTurns((current) => {
       if (current.some((turn) => turn.id === pendingTurn.id)) return current
       return [...current.filter((turn) => !turn.id.startsWith('pending:')), pendingTurn]
@@ -1118,7 +1303,7 @@ function useSessionTimelineData(
 
   useEffect(() => {
     if (!projectId || !sessionId) return
-    const events = new EventSource(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`))
+    const events = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`)
     events.onmessage = (message) => {
       let raw: unknown
       try {
@@ -1130,11 +1315,8 @@ function useSessionTimelineData(
         void refetchLiveEventsRef.current()
         return
       }
-      if (isLiveTurnFailure(raw)) {
-        setLiveConnectionError(`Turn failed: ${raw.error}`)
-      } else {
-        setLiveConnectionError(null)
-      }
+      const failure = resultFailureMessage(raw)
+      setLiveConnectionError(failure ? `Turn failed: ${failure}` : null)
       if (isRecord(raw) && raw.type === 'user' && isPrimaryUserMessage(raw)) {
         const userMessageUuid = sdkMessageUuid(raw)
         if (userMessageUuid && userMessageUuid !== liveUserMessageUuidRef.current) {
@@ -1143,18 +1325,8 @@ function useSessionTimelineData(
           onLiveTurnChangeRef.current?.(userMessageUuid)
         }
       }
-      const terminal = isLiveTurnFailure(raw) || (isRecord(raw) && raw.type === 'result')
-      if (isRecord(raw) && raw.type === 'stream_event' && liveUserMessageUuidRef.current && liveAccumulatorRef.current) {
-        const userMessageUuid = liveUserMessageUuidRef.current
-        const blocks = liveAccumulatorRef.current.processStreamEvent(raw)
-        setTurns((current) => current.map((turn) => turn.id === userMessageUuid ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndexRef.current) } : turn))
-      } else if (isRecord(raw) && raw.type === 'assistant' && liveUserMessageUuidRef.current && liveAccumulatorRef.current) {
-        const userMessageUuid = liveUserMessageUuidRef.current
-        const blocks = liveAccumulatorRef.current.finalAssistantBlocks(raw)
-        setTurns((current) => current.map((turn) => turn.id === userMessageUuid ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndexRef.current) } : turn))
-      } else {
-        setTurns((current) => applySdkMessage(current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current).turns)
-      }
+      const terminal = isRecord(raw) && raw.type === 'result'
+      setTurns((current) => applySdkMessage(current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current).turns)
       if (terminal) {
         liveUserMessageUuidRef.current = null
         liveAccumulatorRef.current = null
@@ -1197,13 +1369,12 @@ function useSessionTimelineData(
   }, [loadingOlder, nextCursor, projectId, sessionId])
 
   return {
-    turns,
+    turns: liveEvents.data ? mergePersistedLiveEvents(turns, liveEvents.data.events) : turns,
     hasMore,
     olderError,
     loadingOlder,
     liveConnectionError,
     timeline,
-    eventTurns: sessionId && turns.length === 0 && liveEvents.data ? liveEventsToTurns(sessionId, liveEvents.data.events) : [],
     loadOlder,
     shouldScrollToBottomRef,
   }
@@ -1219,14 +1390,26 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
   const timelinePanelRef = useRef<HTMLElement | null>(null)
   const olderScrollAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
   const loadingOlderFromScrollRef = useRef(false)
+  const previousScopeRef = useRef<SessionTimelineScope | null>(null)
+  const pendingPrimaryTurnUuid = pendingTurn?.id ?? null
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const [rawMessageBlocks, setRawMessageBlocks] = useState<TimelineBlock[] | null>(null)
+  const rawMessages = useQuery({
+    queryKey: ['session-raw-messages', projectId, sessionId],
+    queryFn: () => fetchSessionRawMessages(projectId, sessionId!),
+    enabled: Boolean(sessionId && rawMessageBlocks),
+    retry: false,
+  })
+  const matchingRawMessages = rawMessageBlocks && rawMessages.data
+    ? rawMessagesForTimelineBlocks(rawMessages.data.messages, rawMessageBlocks)
+    : []
   const isTimelineAtBottom = useCallback(() => {
     const panel = timelinePanelRef.current
     if (!panel) return true
     return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
   }, [])
-  const { turns, eventTurns, hasMore, olderError, loadingOlder, liveConnectionError, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
-  const visibleTurns = turns.length > 0 ? turns : eventTurns
+  const { turns, hasMore, olderError, loadingOlder, liveConnectionError, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
+  const visibleTurns = turns
   const loadOlderKeepingAnchor = useCallback(async () => {
     const panel = timelinePanelRef.current
     if (!panel || !hasMore || loadingOlder || loadingOlderFromScrollRef.current) return
@@ -1249,11 +1432,16 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
   }, [])
 
   useEffect(() => {
+    const nextScope = { projectId, sessionId, pendingPrimaryTurnUuid }
+    const reset = shouldResetSessionTimeline(previousScopeRef.current, nextScope)
+    previousScopeRef.current = nextScope
+    if (!reset) return
     olderScrollAnchorRef.current = null
     loadingOlderFromScrollRef.current = false
     shouldScrollToBottomRef.current = true
     setShowScrollToBottom(false)
-  }, [projectId, sessionId, shouldScrollToBottomRef])
+    setRawMessageBlocks(null)
+  }, [pendingPrimaryTurnUuid, projectId, sessionId, shouldScrollToBottomRef])
 
   useLayoutEffect(() => {
     const anchor = olderScrollAnchorRef.current
@@ -1290,14 +1478,15 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
           return (
             <article className="turn-card" key={turn.id}>
               <div className="timeline-blocks">{displayItems.map((item) => item.type === 'assistant-response-frame'
-                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} source={source} key={item.id} />
-                : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.startedAt : undefined} source={source} key={timelineRenderItemKey(item.item)} />,
+                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} source={source} onViewRaw={source === 'history' ? setRawMessageBlocks : undefined} key={item.id} />
+                : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.startedAt : undefined} source={source} onViewRaw={source === 'history' ? setRawMessageBlocks : undefined} key={timelineRenderItemKey(item.item)} />,
               )}</div>
             </article>
           )
         })}
       </section>
       {showScrollToBottom ? <button className="timeline-scroll-bottom" type="button" onClick={scrollToTimelineBottom} aria-label="Scroll to latest message"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v12m0 0 5-5m-5 5-5-5" /></svg></button> : null}
+      {rawMessageBlocks ? <RawMessagesDialog messages={matchingRawMessages} loading={rawMessages.isLoading} error={rawMessages.error} onClose={() => setRawMessageBlocks(null)} /> : null}
     </section>
   )
 }

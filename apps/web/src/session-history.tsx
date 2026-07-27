@@ -478,7 +478,7 @@ export function ProjectSessionRail({
   )
 }
 
-export function useProjectSessionSelection({ sessionLimit = 10, selectInitialProject = true }: { sessionLimit?: number; selectInitialProject?: boolean } = {}) {
+export function useProjectSessionSelection({ sessionLimit = 10, selectInitialProject = true, enabled = true }: { sessionLimit?: number; selectInitialProject?: boolean; enabled?: boolean } = {}) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [shouldSelectInitialProject, setShouldSelectInitialProject] = useState(selectInitialProject)
@@ -490,6 +490,7 @@ export function useProjectSessionSelection({ sessionLimit = 10, selectInitialPro
     retry: false,
     refetchInterval: false,
     refetchOnWindowFocus: false,
+    enabled,
   })
   const projectSessions = useQuery({
     queryKey: sessionQueryKeys.projectSessionsDetail(selectedProjectId, sessionLimit),
@@ -504,7 +505,7 @@ export function useProjectSessionSelection({ sessionLimit = 10, selectInitialPro
         nextCursor: window?.nextCursor ?? null,
       }
     },
-    enabled: Boolean(selectedProjectId),
+    enabled: enabled && Boolean(selectedProjectId),
     retry: false,
     refetchInterval: false,
     refetchIntervalInBackground: false,

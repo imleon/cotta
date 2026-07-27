@@ -1,6 +1,35 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { healthResponseSchema } from '@cotta/shared'
+import { createAuth } from './auth.js'
 import { createApp } from './index.js'
+
+function emptyClaudeCodeApi() {
+  return {
+    async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
+    async getProject() { return null },
+    async listProjectSessions() { return null },
+    async getSessionTimelineState() { return null },
+    async getSessionMessages() { return null },
+  }
+}
+
+function memorySettingsStore() {
+  const authSessions = new Map<string, { user: { login: string; name: string | null; avatarUrl: string | null }; expiresAt: number }>()
+  return {
+    getAll: () => ({}),
+    setMany() {},
+    getSessionSettings: () => null,
+    setSessionSettings() {},
+    getAuthSession: (sessionId: string) => authSessions.get(sessionId) ?? null,
+    setAuthSession: (sessionId: string, session: { user: { login: string; name: string | null; avatarUrl: string | null }; expiresAt: number }) => { authSessions.set(sessionId, session) },
+    deleteAuthSession: (sessionId: string) => { authSessions.delete(sessionId) },
+  }
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+})
 
 describe('server routes', () => {
   it('returns the service health payload', async () => {
@@ -12,67 +41,99 @@ describe('server routes', () => {
     })
   })
 
-  it('does not require token for health checks', async () => {
-    const response = await createApp({ authToken: 'secret' }).request('/api/health')
-    expect(response.status).toBe(200)
-  })
-
-  it('rejects protected API requests without token when auth is configured', async () => {
-    const response = await createApp({ authToken: 'secret' }).request('/api/projects')
+  it('rejects protected API requests without a GitHub session when auth is configured', async () => {
+    const response = await createApp({ auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }) }).request('/api/projects')
     expect(response.status).toBe(401)
     expect(await response.json()).toEqual({ error: 'unauthorized' })
   })
 
-  it('accepts token query parameter for protected API requests', async () => {
-    const response = await createApp({
-      authToken: 'secret',
-      claudeCodeApi: {
-        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
-        async getProject() { return null },
-        async listProjectSessions() { return null },
-        async getSessionTimelineState() { return null },
-        async getSessionMessages() { return null },
-      },
-    }).request('/api/projects?token=secret')
+  it('returns unauthenticated auth session publicly', async () => {
+    const response = await createApp({ auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }) }).request('/api/auth/session')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ authenticated: false, user: null, githubConfigured: true })
+  })
+
+  it('accepts GitHub device login session cookies for protected API requests', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/device/code')) return new Response(JSON.stringify({ device_code: 'device-1', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }))
+      if (url.includes('/oauth/access_token')) return new Response(JSON.stringify({ access_token: 'gho_token' }))
+      if (url.includes('/user')) return new Response(JSON.stringify({ login: 'imleon', name: 'Leon', avatar_url: 'https://example.com/avatar.png' }))
+      return new Response('{}', { status: 404 })
+    }))
+    const authedApp = createApp({
+      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      claudeCodeApi: emptyClaudeCodeApi(),
+    })
+    const start = await authedApp.request('/api/auth/github/device/start', { method: 'POST' })
+    const { flowId } = await start.json() as { flowId: string }
+    const poll = await authedApp.request('/api/auth/github/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) })
+    const cookie = poll.headers.get('set-cookie')!
+    expect(cookie).toContain('cotta_session=')
+    expect(cookie).toContain('HttpOnly')
+    const response = await authedApp.request('/api/projects', { headers: { cookie } })
     expect(response.status).toBe(200)
   })
 
-  it('accepts bearer token for protected API requests', async () => {
-    const response = await createApp({
-      authToken: 'secret',
-      claudeCodeApi: {
-        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
-        async getProject() { return null },
-        async listProjectSessions() { return null },
-        async getSessionTimelineState() { return null },
-        async getSessionMessages() { return null },
-      },
-    }).request('/api/projects', { headers: { authorization: 'Bearer secret' } })
-    expect(response.status).toBe(200)
+  it('keeps GitHub sessions after recreating auth with the same store and secret', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/device/code')) return new Response(JSON.stringify({ device_code: 'device-1', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }))
+      if (url.includes('/oauth/access_token')) return new Response(JSON.stringify({ access_token: 'gho_token' }))
+      if (url.includes('/user')) return new Response(JSON.stringify({ login: 'imleon', name: null, avatar_url: null }))
+      return new Response('{}', { status: 404 })
+    }))
+    const settingsStore = memorySettingsStore()
+    const authConfig = { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' }
+    const firstApp = createApp({ auth: createAuth({ github: authConfig, settingsStore }), claudeCodeApi: emptyClaudeCodeApi() })
+    const start = await firstApp.request('/api/auth/github/device/start', { method: 'POST' })
+    const { flowId } = await start.json() as { flowId: string }
+    const poll = await firstApp.request('/api/auth/github/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) })
+    const cookie = poll.headers.get('set-cookie')!
+
+    const secondApp = createApp({ auth: createAuth({ github: authConfig, settingsStore }), claudeCodeApi: emptyClaudeCodeApi() })
+    expect((await secondApp.request('/api/projects', { headers: { cookie } })).status).toBe(200)
+    await secondApp.request('/api/auth/logout', { method: 'POST', headers: { cookie } })
+    expect((await secondApp.request('/api/projects', { headers: { cookie } })).status).toBe(401)
   })
 
-  it('rejects protected API requests with wrong query token', async () => {
-    const response = await createApp({ authToken: 'secret' }).request('/api/projects?token=wrong')
-    expect(response.status).toBe(401)
-    expect(await response.json()).toEqual({ error: 'unauthorized' })
+  it('rejects GitHub users outside the allowlist', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/device/code')) return new Response(JSON.stringify({ device_code: 'device-1', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }))
+      if (url.includes('/oauth/access_token')) return new Response(JSON.stringify({ access_token: 'gho_token' }))
+      if (url.includes('/user')) return new Response(JSON.stringify({ login: 'someone-else', name: null, avatar_url: null }))
+      return new Response('{}', { status: 404 })
+    }))
+    const app = createApp({ auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }) })
+    const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
+    const { flowId } = await start.json() as { flowId: string }
+    const poll = await app.request('/api/auth/github/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) })
+
+    expect(poll.status).toBe(403)
+    expect(await poll.json()).toEqual({ error: 'forbidden' })
   })
 
-  it('rejects protected API requests with wrong bearer token', async () => {
-    const response = await createApp({ authToken: 'secret' }).request('/api/projects', { headers: { authorization: 'Bearer wrong' } })
-    expect(response.status).toBe(401)
-    expect(await response.json()).toEqual({ error: 'unauthorized' })
+  it('logs out a GitHub session', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/device/code')) return new Response(JSON.stringify({ device_code: 'device-1', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }))
+      if (url.includes('/oauth/access_token')) return new Response(JSON.stringify({ access_token: 'gho_token' }))
+      if (url.includes('/user')) return new Response(JSON.stringify({ login: 'imleon', name: null, avatar_url: null }))
+      return new Response('{}', { status: 404 })
+    }))
+    const app = createApp({ auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }), claudeCodeApi: emptyClaudeCodeApi() })
+    const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
+    const { flowId } = await start.json() as { flowId: string }
+    const poll = await app.request('/api/auth/github/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) })
+    const cookie = poll.headers.get('set-cookie')!
+
+    expect((await app.request('/api/projects', { headers: { cookie } })).status).toBe(200)
+    const logout = await app.request('/api/auth/logout', { method: 'POST', headers: { cookie } })
+    expect(logout.status).toBe(200)
+    expect(await logout.json()).toEqual({ ok: true })
+    expect((await app.request('/api/projects', { headers: { cookie } })).status).toBe(401)
   })
 
-  it('leaves protected API requests open when auth is not configured', async () => {
-    const response = await createApp({
-      claudeCodeApi: {
-        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
-        async getProject() { return null },
-        async listProjectSessions() { return null },
-        async getSessionTimelineState() { return null },
-        async getSessionMessages() { return null },
-      },
-    }).request('/api/projects')
+  it('leaves protected API requests open when GitHub auth is not configured', async () => {
+    vi.stubEnv('COTTA_GITHUB_CLIENT_ID', '')
+    const response = await createApp({ claudeCodeApi: emptyClaudeCodeApi() }).request('/api/projects')
     expect(response.status).toBe(200)
   })
 })

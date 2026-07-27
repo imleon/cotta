@@ -13,6 +13,7 @@ import {
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
   type ListVersionsEvent,
+  type ModelCatalogResponse,
   type PersistedLiveEvent,
   type ProjectSummary,
   type SessionRunState,
@@ -44,6 +45,26 @@ const project: ProjectSummary = {
   name: 'cotta-v2',
   path: '/tmp/cotta-v2',
   lastActivityAt: 123,
+}
+
+const modelCatalog: ModelCatalogResponse = {
+  models: [
+    {
+      value: 'gateway/my-model',
+      resolvedModel: 'gateway/my-model',
+      displayName: 'Gateway model',
+      description: 'Gateway model discovered by Claude Code.',
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh'],
+    },
+    {
+      value: 'no-effort-model',
+      displayName: 'No effort model',
+      description: 'Model without effort controls.',
+      supportsEffort: false,
+      supportedEffortLevels: [],
+    },
+  ],
 }
 
 const idleRunState: SessionRunState = { phase: 'idle', activeTurnId: null }
@@ -153,6 +174,24 @@ const messages: TimestampedSessionMessage[] = [
   },
 ]
 
+function memorySettingsStore(initial: Record<string, unknown> = {}, initialSessions: Record<string, { permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'; model: string | null; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }> = {}) {
+  const data = { ...initial }
+  const sessionData = new Map(Object.entries(initialSessions))
+  return {
+    getAll: () => data,
+    setMany(_scope: string, settings: Record<string, unknown>) {
+      Object.assign(data, settings)
+    },
+    getSessionSettings: (_projectId: string, sessionId: string) => sessionData.get(sessionId) ?? null,
+    setSessionSettings(_projectId: string, sessionId: string, settings: { permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'; model: string | null; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }) {
+      sessionData.set(sessionId, settings)
+    },
+    getAuthSession: () => null,
+    setAuthSession() {},
+    deleteAuthSession() {},
+  }
+}
+
 function createTestApp(
   liveStates: Record<string, SessionRunState> = {},
   sessionMessages: TimestampedSessionMessage[] = messages,
@@ -207,6 +246,42 @@ function createTestApp(
 }
 
 describe('project routes', () => {
+  it('reads, saves, and refreshes global settings', async () => {
+    const settingsStore = memorySettingsStore({ defaultPermissionMode: 'plan' })
+    const app = createApp({
+      settingsStore,
+      modelCatalogProvider: async () => modelCatalog,
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    })
+
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan' } })
+
+    const saved = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultModel: 'gateway/my-model', defaultEffort: 'high' } }),
+    })
+    expect(saved.status).toBe(200)
+    expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'high' } })
+
+    const refreshed = await app.request('/api/settings/model-catalog/refresh', { method: 'POST' })
+    expect(refreshed.status).toBe(200)
+    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'high', modelCatalog } })
+  })
+
   it('creates a nested project directory inside the configured root', async () => {
     const root = await createProjectsRoot()
     const response = await createTestApp().request('/api/projects', {
@@ -578,12 +653,13 @@ describe('project routes', () => {
     expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({ sessionsByProject: {} })
   })
 
-  it('creates a session with userMessageUuid and no turnId', async () => {
+  it('creates a session with turn options and no turnId', async () => {
+    let received: unknown
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
         sessionRunState: () => null,
-        startTurn: async ({ userMessageUuid }) => ({ sessionId: 'session-new', userMessageUuid }),
+        startTurn: async (input) => { received = input; return { sessionId: 'session-new', userMessageUuid: input.userMessageUuid } },
         interrupt: async () => false,
         subscribe: () => () => {},
       },
@@ -594,18 +670,151 @@ describe('project routes', () => {
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
+      settingsStore: memorySettingsStore({ modelCatalog }),
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001' }),
+      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001', permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' }),
     })
 
     expect(response.status).toBe(202)
+    expect(received).toMatchObject({
+      projectId: project.id,
+      text: 'hello',
+      userMessageUuid: '00000000-0000-4000-8000-000000000001',
+      permissionMode: 'plan',
+      model: 'gateway/my-model',
+      effort: 'xhigh',
+    })
     expect(await response.json()).toEqual({
       projectId: project.id,
       sessionId: 'session-new',
       userMessageUuid: '00000000-0000-4000-8000-000000000001',
     })
+  })
+
+  it('creates an existing-session turn without SDK model and effort by default', async () => {
+    let received: unknown
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async (input) => { received = input; return { sessionId: input.sessionId ?? 'missing', userMessageUuid: input.userMessageUuid } },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/turns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000002' }),
+    })
+
+    expect(response.status).toBe(202)
+    expect(received).toMatchObject({
+      projectId: project.id,
+      sessionId: 'session-newest',
+      text: 'hello',
+      userMessageUuid: '00000000-0000-4000-8000-000000000002',
+      permissionMode: 'default',
+    })
+    expect(received).not.toHaveProperty('model')
+    expect(received).not.toHaveProperty('effort')
+  })
+
+  it('treats explicit default model and effort as SDK omissions', async () => {
+    let received: unknown
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async (input) => { received = input; return { sessionId: input.sessionId ?? 'session-new', userMessageUuid: input.userMessageUuid } },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+      settingsStore: memorySettingsStore({ modelCatalog }),
+    }).request(`/api/projects/${project.id}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000006', model: 'default', effort: 'default' }),
+    })
+
+    expect(response.status).toBe(202)
+    expect(received).toMatchObject({
+      projectId: project.id,
+      text: 'hello',
+      userMessageUuid: '00000000-0000-4000-8000-000000000006',
+      permissionMode: 'default',
+    })
+    expect(received).not.toHaveProperty('model')
+    expect(received).not.toHaveProperty('effort')
+  })
+
+  it('rejects unsupported turn model', async () => {
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('should not start') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+      settingsStore: memorySettingsStore({ modelCatalog }),
+    }).request(`/api/projects/${project.id}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003', model: 'missing-model' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'unsupported_model' })
+  })
+
+  it('rejects unsupported turn effort', async () => {
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('should not start') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+      settingsStore: memorySettingsStore({ modelCatalog }),
+    }).request(`/api/projects/${project.id}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004', model: 'no-effort-model', effort: 'high' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'unsupported_effort' })
   })
 
   it('interrupts a session without a turn id', async () => {
@@ -733,13 +942,32 @@ describe('project routes', () => {
   })
 
   it('ensures runtime for an existing session', async () => {
-    const response = await createTestApp().request(
+    let ensured: unknown
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: (input) => { ensured = input },
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionTimelineState() { return timelineState },
+        async getSessionMessages() { return messages },
+      },
+    }).request(
       `/api/projects/${project.id}/sessions/session-newest/runtime`,
       { method: 'POST' },
     )
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ ok: true })
+    expect(ensured).toMatchObject({ projectId: project.id, sessionId: 'session-newest', permissionMode: 'default' })
+    expect(ensured).not.toHaveProperty('model')
+    expect(ensured).not.toHaveProperty('effort')
+    expect(await response.json()).toMatchObject({ ok: true, projectId: project.id, sessionId: 'session-newest', settings: { model: null, effort: null } })
   })
 
   it('returns 404 when ensuring runtime for an unknown session', async () => {

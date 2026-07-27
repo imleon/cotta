@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createProject, fetchProjects, PaginationCursorStaleError, queryProjectSessions } from './api'
+import { createProject, fetchAuthSession, fetchProjects, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, saveSettings, startGitHubDeviceLogin } from './api'
 
 describe('createProject', () => {
   beforeEach(() => {
-    vi.stubGlobal('window', { location: { origin: 'http://localhost', search: '?token=secret' } })
+    vi.stubGlobal('window', { location: { origin: 'http://localhost', search: '' } })
   })
 
   afterEach(() => {
@@ -15,7 +15,7 @@ describe('createProject', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(createProject('experiments/demo')).resolves.toEqual({ project: { id: 'p1', name: 'demo', path: '/home/demo' } })
-    expect(fetchMock).toHaveBeenCalledWith('/api/projects?token=secret', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ directoryPath: 'experiments/demo' }),
     }))
@@ -28,6 +28,59 @@ describe('createProject', () => {
       status: 409,
       code: 'project_already_exists',
     })
+  })
+})
+
+describe('auth', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost', search: '' } })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('uses auth endpoints without appending the URL token', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ authenticated: false, user: null, githubConfigured: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ flowId: 'flow', userCode: 'ABCD-EFGH', verificationUri: 'https://github.com/login/device', expiresIn: 900, interval: 5 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', interval: 5 }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchAuthSession()).resolves.toMatchObject({ authenticated: false })
+    await expect(startGitHubDeviceLogin()).resolves.toMatchObject({ flowId: 'flow' })
+    await expect(pollGitHubDeviceLogin('flow')).resolves.toEqual({ status: 'pending', interval: 5 })
+    await expect(logout()).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/auth/session')
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/auth/github/device/start', { method: 'POST' })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/auth/github/device/poll', expect.objectContaining({ method: 'POST', body: JSON.stringify({ flowId: 'flow' }) }))
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/auth/logout', { method: 'POST' })
+  })
+})
+
+describe('settings', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost', search: '' } })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('reads, saves, and refreshes settings', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ settings: { defaultPermissionMode: 'plan' } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ settings: { defaultPermissionMode: 'default' } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ settings: { modelCatalog: { models: [] } } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchSettings()).resolves.toEqual({ settings: { defaultPermissionMode: 'plan' } })
+    await expect(saveSettings({ defaultPermissionMode: 'default' })).resolves.toEqual({ settings: { defaultPermissionMode: 'default' } })
+    await expect(refreshModelCatalog('p1')).resolves.toEqual({ settings: { modelCatalog: { models: [] } } })
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/settings')
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/settings', expect.objectContaining({ method: 'PUT' }))
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/settings/model-catalog/refresh?projectId=p1', { method: 'POST' })
   })
 })
 

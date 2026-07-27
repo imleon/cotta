@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 
-const { listSessionsMock, getSessionMessagesMock } = vi.hoisted(() => ({
+const { getSessionInfoMock, listSessionsMock, getSessionMessagesMock } = vi.hoisted(() => ({
+  getSessionInfoMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').getSessionInfo>(),
   listSessionsMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').listSessions>(),
   getSessionMessagesMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').getSessionMessages>(),
 }))
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  getSessionInfo: getSessionInfoMock,
   listSessions: listSessionsMock,
   getSessionMessages: getSessionMessagesMock,
 }))
@@ -33,6 +35,7 @@ function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sess
 
 describe('createClaudeCodeApi', () => {
   beforeEach(() => {
+    getSessionInfoMock.mockReset()
     listSessionsMock.mockReset()
     getSessionMessagesMock.mockReset()
   })
@@ -103,13 +106,10 @@ describe('createClaudeCodeApi', () => {
 
   it('shares visible activity with the summary cache without hiding timeline changes', async () => {
     const cache = new SessionSummaryCache(10)
-    listSessionsMock
-      .mockResolvedValueOnce([
-        session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 100, fileSize: 10 }),
-      ])
-      .mockResolvedValueOnce([
-        session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 200, fileSize: 10 }),
-      ])
+    listSessionsMock.mockResolvedValueOnce([
+      session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 100, fileSize: 10 }),
+    ])
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 200, fileSize: 10 }))
 
     await cache.scheduleRefresh()
     const api = createClaudeCodeApi(cache)
@@ -122,24 +122,24 @@ describe('createClaudeCodeApi', () => {
   })
 
   it('returns null timeline state for a session that belongs to a sibling worktree path', async () => {
-    listSessionsMock.mockResolvedValue([
-      session({ sessionId: 'other', cwd: '/repo/cotta-v2', lastModified: 10, fileSize: 99 }),
-    ])
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'other', cwd: '/repo/cotta-v2', lastModified: 10, fileSize: 99 }))
 
     const api = createClaudeCodeApi()
 
     await expect(api.getSessionTimelineState(projectId('/repo/cotta'), 'other')).resolves.toBeNull()
+    expect(getSessionInfoMock).toHaveBeenCalledWith('other', { dir: '/repo/cotta' })
+    expect(listSessionsMock).not.toHaveBeenCalled()
   })
 
   it('does not read messages for a session that belongs to a sibling worktree path', async () => {
-    listSessionsMock.mockResolvedValue([
-      session({ sessionId: 'other', cwd: '/repo/cotta-v2', lastModified: 10 }),
-    ])
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'other', cwd: '/repo/cotta-v2', lastModified: 10 }))
 
     const api = createClaudeCodeApi()
 
     await expect(api.getSessionMessages(projectId('/repo/cotta'), 'other')).resolves.toBeNull()
+    expect(getSessionInfoMock).toHaveBeenCalledWith('other', { dir: '/repo/cotta' })
     expect(getSessionMessagesMock).not.toHaveBeenCalled()
+    expect(listSessionsMock).not.toHaveBeenCalled()
   })
 
   it('treats trailing slashes as the same project path', async () => {
@@ -147,6 +147,7 @@ describe('createClaudeCodeApi', () => {
       session({ sessionId: 'slashy', cwd: '/repo/cotta/', lastModified: 7 }),
       session({ sessionId: 'other', cwd: '/repo/cotta-v2/', lastModified: 8 }),
     ])
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'slashy', cwd: '/repo/cotta/', lastModified: 7 }))
     getSessionMessagesMock.mockResolvedValue([])
 
     const api = createClaudeCodeApi()
@@ -158,6 +159,7 @@ describe('createClaudeCodeApi', () => {
       lastActivityAt: 7,
     })
     await expect(api.getSessionMessages(projectId('/repo/cotta'), 'slashy')).resolves.toEqual([])
+    expect(getSessionInfoMock).toHaveBeenCalledWith('slashy', { dir: '/repo/cotta' })
     expect(getSessionMessagesMock).toHaveBeenCalledWith('slashy', {
       dir: '/repo/cotta',
       limit: 10_000,

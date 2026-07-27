@@ -1,33 +1,37 @@
 import {
+  authSessionResponseSchema,
   createProjectResponseSchema,
+  githubDevicePollResponseSchema,
+  githubDeviceStartResponseSchema,
   listVersionsEventSchema,
+  logoutResponseSchema,
+  modelCatalogResponseSchema,
   projectSessionsQueryResponseSchema,
+  settingsResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
   sessionLiveEventsResponseSchema,
+  sessionRawMessagesResponseSchema,
+  sessionRuntimeResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  type AuthSessionResponse,
   type CreateProjectResponse,
+  type GitHubDevicePollResponse,
+  type GitHubDeviceStartResponse,
   type ListVersionsEvent,
+  type LogoutResponse,
+  type ModelCatalogResponse,
   type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
   type ProjectsResponse,
+  type SettingsResponse,
   type SessionLiveEventsResponse,
+  type SessionRawMessagesResponse,
+  type SessionRuntimeResponse,
   type SessionTimelineResponse,
   type SessionTimelineStateResponse,
 } from '@cotta/shared'
-
-export function authToken(): string | null {
-  return new URLSearchParams(window.location.search).get('token')
-}
-
-export function withToken(path: string): string {
-  const token = authToken()
-  if (!token) return path
-  const url = new URL(path, window.location.origin)
-  url.searchParams.set('token', token)
-  return `${url.pathname}${url.search}`
-}
 
 export class PaginationCursorStaleError extends Error {}
 
@@ -44,8 +48,36 @@ export class CreateProjectHttpError extends Error {
   }
 }
 
+export async function fetchAuthSession(): Promise<AuthSessionResponse> {
+  const response = await fetch('/api/auth/session')
+  if (!response.ok) throw new Error(`Auth session request failed: ${response.status}`)
+  return authSessionResponseSchema.parse(await response.json())
+}
+
+export async function startGitHubDeviceLogin(): Promise<GitHubDeviceStartResponse> {
+  const response = await fetch('/api/auth/github/device/start', { method: 'POST' })
+  if (!response.ok) throw new Error(`GitHub login start failed: ${response.status}`)
+  return githubDeviceStartResponseSchema.parse(await response.json())
+}
+
+export async function pollGitHubDeviceLogin(flowId: string): Promise<GitHubDevicePollResponse> {
+  const response = await fetch('/api/auth/github/device/poll', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flowId }),
+  })
+  if (response.status !== 202 && !response.ok) throw new Error(`GitHub login poll failed: ${response.status}`)
+  return githubDevicePollResponseSchema.parse(await response.json())
+}
+
+export async function logout(): Promise<LogoutResponse> {
+  const response = await fetch('/api/auth/logout', { method: 'POST' })
+  if (!response.ok) throw new Error(`Logout failed: ${response.status}`)
+  return logoutResponseSchema.parse(await response.json())
+}
+
 export async function createProject(directoryPath: string): Promise<CreateProjectResponse> {
-  const response = await fetch(withToken('/api/projects'), {
+  const response = await fetch('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ directoryPath }),
@@ -60,7 +92,7 @@ export async function createProject(directoryPath: string): Promise<CreateProjec
 export async function fetchProjects(cursor: string | null = null, limit = 20): Promise<ProjectsResponse> {
   const params = new URLSearchParams({ limit: String(limit) })
   if (cursor) params.set('cursor', cursor)
-  const response = await fetch(withToken(`/api/projects?${params}`))
+  const response = await fetch(`/api/projects?${params}`)
   if (!response.ok) await throwRequestError(response, 'Projects')
   return projectsResponseSchema.parse(await response.json())
 }
@@ -72,19 +104,49 @@ export async function fetchProjectSessions(
 ): Promise<ProjectSessionsResponse> {
   const params = new URLSearchParams({ limit: String(limit) })
   if (cursor) params.set('cursor', cursor)
-  const response = await fetch(withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`))
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`)
   if (!response.ok) await throwRequestError(response, 'Project sessions')
   return projectSessionsResponseSchema.parse(await response.json())
 }
 
 export async function queryProjectSessions(projects: Array<{ projectId: string; limit: number; selectedSessionId?: string }>): Promise<ProjectSessionsQueryResponse> {
-  const response = await fetch(withToken('/api/project-sessions/query'), {
+  const response = await fetch('/api/project-sessions/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ projects }),
   })
   if (!response.ok) throw new Error(`Project sessions query failed: ${response.status}`)
   return projectSessionsQueryResponseSchema.parse(await response.json())
+}
+
+export async function fetchModelCatalog(projectId: string | null): Promise<ModelCatalogResponse> {
+  const params = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+  const response = await fetch(`/api/model-catalog${params}`)
+  if (!response.ok) throw new Error(`Model catalog request failed: ${response.status}`)
+  return modelCatalogResponseSchema.parse(await response.json())
+}
+
+export async function fetchSettings(): Promise<SettingsResponse> {
+  const response = await fetch('/api/settings')
+  if (!response.ok) throw new Error(`Settings request failed: ${response.status}`)
+  return settingsResponseSchema.parse(await response.json())
+}
+
+export async function saveSettings(settings: SettingsResponse['settings']): Promise<SettingsResponse> {
+  const response = await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings }),
+  })
+  if (!response.ok) throw new Error(`Settings save failed: ${response.status}`)
+  return settingsResponseSchema.parse(await response.json())
+}
+
+export async function refreshModelCatalog(projectId: string | null): Promise<SettingsResponse> {
+  const params = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+  const response = await fetch(`/api/settings/model-catalog/refresh${params}`, { method: 'POST' })
+  if (!response.ok) throw new Error(`Model catalog refresh failed: ${response.status}`)
+  return settingsResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionTimeline(
@@ -95,10 +157,21 @@ export async function fetchSessionTimeline(
   const params = new URLSearchParams({ limitTurns: '20' })
   if (cursor) params.set('cursor', cursor)
   const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`),
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`,
   )
   if (!response.ok) throw new Error(`Session timeline request failed: ${response.status}`)
   return sessionTimelineResponseSchema.parse(await response.json())
+}
+
+export async function fetchSessionRawMessages(
+  projectId: string,
+  sessionId: string,
+): Promise<SessionRawMessagesResponse> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/raw-messages`,
+  )
+  if (!response.ok) throw new Error(`Session raw messages request failed: ${response.status}`)
+  return sessionRawMessagesResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionLiveEvents(
@@ -107,7 +180,7 @@ export async function fetchSessionLiveEvents(
   limit = 500,
 ): Promise<SessionLiveEventsResponse> {
   const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/live-sessions/${encodeURIComponent(sessionId)}/events?limit=${limit}`),
+    `/api/projects/${encodeURIComponent(projectId)}/live-sessions/${encodeURIComponent(sessionId)}/events?limit=${limit}`,
   )
   if (!response.ok) throw new Error(`Session live events request failed: ${response.status}`)
   return sessionLiveEventsResponseSchema.parse(await response.json())
@@ -118,29 +191,30 @@ export async function fetchSessionTimelineState(
   sessionId: string,
 ): Promise<SessionTimelineStateResponse> {
   const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline/state`),
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/timeline/state`,
   )
   if (!response.ok) throw new Error(`Session timeline state request failed: ${response.status}`)
   return sessionTimelineStateResponseSchema.parse(await response.json())
 }
 
 export async function refreshProjects(_projectId: string | null = null): Promise<void> {
-  const response = await fetch(withToken('/api/projects/refresh'), { method: 'POST' })
+  const response = await fetch('/api/projects/refresh', { method: 'POST' })
   if (!response.ok) throw new Error(`Projects refresh request failed: ${response.status}`)
 }
 
 export function connectListVersions(onEvent: (event: ListVersionsEvent) => void): EventSource {
-  const events = new EventSource(withToken('/api/list-versions/events'))
+  const events = new EventSource('/api/list-versions/events')
   events.onmessage = (message) => {
     onEvent(listVersionsEventSchema.parse(JSON.parse(message.data)))
   }
   return events
 }
 
-export async function ensureSessionRuntime(projectId: string, sessionId: string): Promise<void> {
+export async function ensureSessionRuntime(projectId: string, sessionId: string): Promise<SessionRuntimeResponse> {
   const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/runtime`),
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/runtime`,
     { method: 'POST' },
   )
   if (!response.ok) throw new Error(`Session runtime request failed: ${response.status}`)
+  return sessionRuntimeResponseSchema.parse(await response.json())
 }

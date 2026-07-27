@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { LiveTurnFailureEvent, SessionRunState } from '@cotta/shared'
+import { query, type Query, type SDKMessage, type SDKResultError, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { EffortLevel, ModelSelection, PermissionMode, SessionRunState } from '@cotta/shared'
 import { projectPathFromId } from './claude-code-api.js'
 import type { LiveEventStore } from './live-event-store.js'
 import type { SessionSummaryCache } from './session-summary-cache.js'
@@ -13,6 +13,37 @@ function sdkUserMessage(input: { uuid: SDKUserMessage['uuid']; text: string; ses
     uuid: input.uuid,
     session_id: input.sessionId,
     timestamp: new Date(input.startedAt).toISOString(),
+  }
+}
+
+function sdkFailureResult(input: { error: string; sessionId: string }): SDKResultError {
+  return {
+    type: 'result',
+    subtype: 'error_during_execution',
+    duration_ms: 0,
+    duration_api_ms: 0,
+    is_error: true,
+    num_turns: 0,
+    stop_reason: null,
+    total_cost_usd: 0,
+    usage: {
+      cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      inference_geo: '',
+      input_tokens: 0,
+      iterations: [],
+      output_tokens: 0,
+      output_tokens_details: { thinking_tokens: 0 },
+      server_tool_use: { web_fetch_requests: 0, web_search_requests: 0 },
+      service_tier: 'standard',
+      speed: 'standard',
+    },
+    modelUsage: {},
+    permission_denials: [],
+    errors: [input.error],
+    uuid: randomUUID(),
+    session_id: input.sessionId,
   }
 }
 
@@ -43,6 +74,9 @@ type SessionRuntime = {
   sessionId: string
   query: Query
   input: AsyncQueue<SDKUserMessage>
+  permissionMode: PermissionMode
+  model?: ModelSelection
+  effort?: EffortLevel
   currentUserMessageUuid: string | null
 }
 
@@ -52,7 +86,7 @@ function liveSessionStateFromSdkMessage(message: SDKMessage): LiveSessionState |
   return message.state === 'idle' || message.state === 'running' || message.state === 'requires_action' ? message.state : null
 }
 
-export type LiveTurnEvent = SDKMessage | LiveTurnFailureEvent
+export type LiveTurnEvent = SDKMessage
 export type LiveTurnSubscriber = (event: LiveTurnEvent) => void
 
 export class LiveTurnManager {
@@ -96,14 +130,31 @@ export class LiveTurnManager {
     }, 'session-stale')
   }
 
-  ensureRuntime(input: { projectId: string; sessionId: string }): void {
-    this.ensureRuntimeInternal({ ...input, resume: true })
+  ensureRuntime(input: { projectId: string; sessionId: string; permissionMode?: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): void {
+    this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
   }
 
-  async startTurn(input: { projectId: string; sessionId?: string; text: string; userMessageUuid: string }): Promise<{ sessionId: string; userMessageUuid: string }> {
+  async startTurn(input: { projectId: string; sessionId?: string; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<{ sessionId: string; userMessageUuid: string }> {
     const sessionId = input.sessionId ?? randomUUID()
-    const runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: Boolean(input.sessionId) })
+    let runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: Boolean(input.sessionId), permissionMode: input.permissionMode, model: input.model, effort: input.effort })
     if (runtime.currentUserMessageUuid) throw new Error('Session already has a running generation')
+    if (input.effort === 'max' && runtime.effort !== 'max') {
+      runtime.query.close()
+      this.runtimes.delete(sessionId)
+      runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: true, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
+    }
+    if (runtime.permissionMode !== input.permissionMode) {
+      await runtime.query.setPermissionMode(input.permissionMode)
+      runtime.permissionMode = input.permissionMode
+    }
+    if (input.model !== undefined && runtime.model !== input.model) {
+      await runtime.query.setModel(input.model)
+      runtime.model = input.model
+    }
+    if (input.effort !== undefined && input.effort !== 'max' && runtime.effort !== input.effort) {
+      await runtime.query.applyFlagSettings({ effortLevel: input.effort })
+      runtime.effort = input.effort
+    }
 
     const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
     runtime.currentUserMessageUuid = userMessageUuid
@@ -120,7 +171,7 @@ export class LiveTurnManager {
     return true
   }
 
-  private ensureRuntimeInternal(input: { projectId: string; sessionId: string; resume: boolean }): SessionRuntime {
+  private ensureRuntimeInternal(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): SessionRuntime {
     const existing = this.runtimes.get(input.sessionId)
     if (existing) {
       if (existing.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
@@ -140,10 +191,15 @@ export class LiveTurnManager {
           cwd: projectPath,
           ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
           includePartialMessages: true,
-          permissionMode: 'bypassPermissions',
+          permissionMode: input.permissionMode,
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
           allowDangerouslySkipPermissions: true,
         },
       }),
+      permissionMode: input.permissionMode,
+      model: input.model,
+      effort: input.effort,
       currentUserMessageUuid: null,
     }
     this.runtimes.set(input.sessionId, runtime)
@@ -171,16 +227,15 @@ export class LiveTurnManager {
       console.error('live-runtime:drain failed', error)
       if (runtime.currentUserMessageUuid) {
         const userMessageUuid = runtime.currentUserMessageUuid
-        this.publish(runtime, {
-          type: 'live.turn.failed',
-          userMessageUuid,
+        this.publish(runtime, sdkFailureResult({
           error: error instanceof Error ? error.message : String(error),
-        })
+          sessionId: runtime.sessionId,
+        }))
         this.finishTurn(runtime.sessionId, userMessageUuid, 'error')
       }
     } finally {
       runtime.currentUserMessageUuid = null
-      this.runtimes.delete(runtime.sessionId)
+      if (this.runtimes.get(runtime.sessionId) === runtime) this.runtimes.delete(runtime.sessionId)
     }
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { TimelineBlock, TurnSummary } from '@cotta/shared'
-import { applySdkMessage, isPrimaryUserMessage, LiveAssistantStreamAccumulator, reconcileTimelineTurns, timelineTurnIndex } from './timeline'
+import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
+import { applySdkMessage, isPrimaryUserMessage, LiveAssistantStreamAccumulator, mergePersistedLiveEvents, rawMessagesForTimelineBlocks, rawMessageWaterfallRows, reconcileTimelineTurns, shouldResetSessionTimeline, timelineTurnIndex } from './timeline'
 
 function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
   return {
@@ -13,6 +13,87 @@ function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
     blocks: blocks.length > 0 ? blocks : [{ id: `${id}:user`, kind: 'user.message', sourceEventIds: [id], data: { text: id, status: 'pending' } }],
   }
 }
+
+describe('timeline scope reset', () => {
+  it('preserves pending state when the same primary turn hydrates a real session id', () => {
+    expect(shouldResetSessionTimeline(
+      { projectId: 'project-1', sessionId: null, pendingPrimaryTurnUuid: 'user-1' },
+      { projectId: 'project-1', sessionId: 'session-1', pendingPrimaryTurnUuid: 'user-1' },
+    )).toBe(false)
+  })
+
+  it('resets when switching real sessions', () => {
+    expect(shouldResetSessionTimeline(
+      { projectId: 'project-1', sessionId: 'session-1', pendingPrimaryTurnUuid: null },
+      { projectId: 'project-1', sessionId: 'session-2', pendingPrimaryTurnUuid: null },
+    )).toBe(true)
+  })
+
+  it('resets when switching projects', () => {
+    expect(shouldResetSessionTimeline(
+      { projectId: 'project-1', sessionId: null, pendingPrimaryTurnUuid: 'user-1' },
+      { projectId: 'project-2', sessionId: 'session-1', pendingPrimaryTurnUuid: 'user-1' },
+    )).toBe(true)
+  })
+
+  it('resets null to real session without a pending anchor', () => {
+    expect(shouldResetSessionTimeline(
+      { projectId: 'project-1', sessionId: null, pendingPrimaryTurnUuid: null },
+      { projectId: 'project-1', sessionId: 'session-1', pendingPrimaryTurnUuid: null },
+    )).toBe(true)
+  })
+})
+
+describe('raw timeline messages', () => {
+  const messages = [
+    { type: 'user', uuid: 'user-1', message: { content: 'hello' } },
+    { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', content: [] } },
+    { type: 'user', uuid: 'tool-result-1', message: { content: [] } },
+    { type: 'assistant', uuid: 'unrelated', parent_tool_use_id: 'tool-1', message: { id: 'other', content: [] } },
+  ]
+
+  it('matches user messages by source event id', () => {
+    const blocks: TimelineBlock[] = [{ id: 'user', kind: 'user.message', sourceEventIds: ['user-1'], data: {} }]
+    expect(rawMessagesForTimelineBlocks(messages, blocks)).toEqual([messages[0]])
+  })
+
+  it('matches assistant frames by source or api message id without duplicates', () => {
+    const blocks: TimelineBlock[] = [
+      { id: 'text', kind: 'assistant.text', sourceEventIds: ['stream-1'], apiMessageId: 'msg-1', data: {} },
+      { id: 'tool', kind: 'assistant.tool_use', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', toolUseId: 'tool-1', data: {} },
+      { id: 'result', kind: 'tool.result', sourceEventIds: ['tool-result-1'], toolUseId: 'tool-1', data: {} },
+    ]
+    expect(rawMessagesForTimelineBlocks(messages, blocks)).toEqual([messages[1], messages[2]])
+  })
+
+  it('does not use tool ids as message identity and preserves endpoint order', () => {
+    const blocks: TimelineBlock[] = [
+      { id: 'result', kind: 'tool.result', sourceEventIds: ['tool-result-1'], toolUseId: 'tool-1', data: {} },
+      { id: 'assistant', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: {} },
+    ]
+    expect(rawMessagesForTimelineBlocks(messages, blocks)).toEqual([messages[1], messages[2]])
+  })
+
+  it('builds waterfall rows from timestamps and block types in endpoint order', () => {
+    expect(rawMessageWaterfallRows([
+      { timestamp: '2026-01-01T00:00:00.000Z', message: { content: [{ type: 'text', text: 'hi' }] } },
+      { timestamp: '2026-01-01T00:00:00.120Z', message: { content: [{ type: 'tool_use' }, { type: 'text' }] } },
+      { timestamp: '2026-01-01T00:00:00.500Z', message: { content: [{ type: 'tool_result' }] } },
+    ])).toEqual([
+      { messageIndex: 0, blockType: 'text', offsetMs: 0, durationMs: 120 },
+      { messageIndex: 1, blockType: 'tool_use + text', offsetMs: 120, durationMs: 380 },
+      { messageIndex: 2, blockType: 'tool_result', offsetMs: 500, durationMs: 0 },
+    ])
+  })
+
+  it('ignores raw messages without valid timestamps', () => {
+    expect(rawMessageWaterfallRows([
+      { timestamp: 'bad', message: { content: [{ type: 'text' }] } },
+      { message: { content: [{ type: 'tool_use' }] } },
+      { timestamp: '2026-01-01T00:00:00.000Z', message: { content: [{ type: 'tool_result' }] } },
+    ])).toEqual([{ messageIndex: 2, blockType: 'tool_result', offsetMs: 0, durationMs: 0 }])
+  })
+})
 
 describe('timeline reconciliation', () => {
   it('removes pending/live turns represented by history user uuid', () => {
@@ -30,6 +111,17 @@ describe('timeline reconciliation', () => {
     const history = { ...userTurn('user-1'), rawStatus: 'complete', displayStatus: 'complete', blocks: [{ id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello', status: 'confirmed' } }] }
 
     expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([...history.blocks, live.blocks[1]])
+  })
+
+  it('keeps reply-side live tool and raw blocks missing from same-turn history', () => {
+    const live = userTurn('user-1', [
+      { id: 'live-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello', status: 'pending' } },
+      { id: 'live-tool-result', kind: 'tool.result', sourceEventIds: ['tool-result-1'], toolUseId: 'tool-1', data: { content: 'done' } },
+      { id: 'live-status', kind: 'raw.status', sourceEventIds: ['status-1'], data: { state: 'running' } },
+    ])
+    const history = { ...userTurn('user-1'), rawStatus: 'complete', displayStatus: 'complete', blocks: [{ id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello' } }] }
+
+    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([history.blocks[0], live.blocks[1], live.blocks[2]])
   })
 
   it('ignores late live assistant blocks represented by history apiMessageId', () => {
@@ -110,12 +202,93 @@ describe('timeline reconciliation', () => {
     expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: [{ type: 'image' }] } })).toBe(true)
   })
 
-  it('treats raw SDK result as terminal without adding timeline content', () => {
+  it('uses turn, api message, and block ids for identity but not provenance ids', () => {
+    const first = userTurn('user-1', [
+      { id: 'assistant-text', kind: 'assistant.text', sourceEventIds: ['same-event'], apiMessageId: 'msg-1', data: { text: 'text' } },
+      { id: 'assistant-tool', kind: 'assistant.tool_use', sourceEventIds: ['same-event'], apiMessageId: 'msg-1', data: { name: 'Read' } },
+    ])
+    const second = userTurn('user-2', [{ id: 'stable-block', kind: 'system.message', sourceEventIds: ['same-event'], data: {} }])
+    const index = timelineTurnIndex([first, second])
+
+    expect(index).toEqual({ userMessageUuids: new Set(['user-1', 'user-2']), apiMessageIds: new Set(['msg-1']), blockIds: new Set(['assistant-text', 'assistant-tool', 'stable-block']) })
+    expect(reconcileTimelineTurns([userTurn('other', [{ id: 'other-block', kind: 'system.message', sourceEventIds: ['same-event'], data: {} }])], [second])).toHaveLength(2)
+  })
+
+  it.each([
+    ['tool result', { type: 'user', uuid: 'tool', session_id: 'session-1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: 'done' }] } }],
+    ['task notification', { type: 'user', uuid: 'task', session_id: 'session-1', message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-1</tool-use-id><output-file>/tmp/task.output</output-file><status>completed</status><summary>Done</summary></task-notification>' } }],
+    ['parent tool', { type: 'user', uuid: 'parent-tool', session_id: 'session-1', parent_tool_use_id: 'call-1', message: { role: 'user', content: 'internal' } }],
+    ['synthetic', { type: 'user', uuid: 'synthetic', session_id: 'session-1', message: { role: 'user', content: 'internal', isSynthetic: true } }],
+    ['internal', { type: 'user', uuid: 'internal', session_id: 'session-1', message: { role: 'user', content: 'internal', origin: 'internal' } }],
+    ['non-query', { type: 'user', uuid: 'non-query', session_id: 'session-1', message: { role: 'user', content: 'internal', shouldQuery: false } }],
+    ['parent agent', { type: 'user', uuid: 'parent', session_id: 'session-1', parent_agent_id: 'agent-1', message: { role: 'user', content: 'internal' } }],
+  ])('does not open a primary turn for %s messages', (_label, raw) => {
+    const result = applySdkMessage([], raw, timelineTurnIndex([]), null, null, 10)
+
+    expect(isPrimaryUserMessage(raw)).toBe(false)
+    expect(result.currentUserMessageUuid).toBeNull()
+    expect(result.turns[0]?.id).toBe('session-events:session-1')
+  })
+
+  it('attaches orphan tool results to session events and uses message-level parent tool id', () => {
+    const raw = { type: 'user', uuid: 'tool-result', session_id: 'session-1', parent_tool_use_id: 'call-parent', message: { role: 'user', content: [{ type: 'tool_result', content: 'done' }] } }
+    const result = applySdkMessage([], raw, timelineTurnIndex([]), null, null, 10)
+
+    expect(result.turns[0]?.blocks[0]).toMatchObject({ kind: 'tool.result', toolUseId: 'call-parent' })
+  })
+
+  it.each(['status', 'unknown'])('keeps %s messages as raw session events', (type) => {
+    const result = applySdkMessage([], { type, uuid: `${type}-1`, session_id: 'session-1', state: 'running' }, timelineTurnIndex([]), null, null, 10)
+
+    expect(result.turns[0]?.blocks[0]).toMatchObject({ kind: `raw.${type}`, id: `${type}-1:raw` })
+  })
+
+  it('marks the active turn complete on result without adding timeline content', () => {
     const live = userTurn('user-1')
     const raw = { type: 'result', subtype: 'success', is_error: false, errors: [] }
 
-    const result = applySdkMessage([live], raw, timelineTurnIndex([]), 'user-1', null)
+    const result = applySdkMessage([live], raw, timelineTurnIndex([]), 'user-1', null, 42)
 
-    expect(result).toEqual({ turns: [live], currentUserMessageUuid: null, terminal: true })
+    expect(result).toEqual({ turns: [{ ...live, rawStatus: 'complete', displayStatus: 'complete', completedAt: 42 }], currentUserMessageUuid: null, terminal: true })
+  })
+
+  it('marks the active turn error on a failed result', () => {
+    const live = userTurn('user-1')
+    const raw = { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['SDK stream failed'] }
+
+    const result = applySdkMessage([live], raw, timelineTurnIndex([]), 'user-1', null, 42)
+
+    expect(result).toEqual({ turns: [{ ...live, rawStatus: 'error', displayStatus: 'error', completedAt: 42 }], currentUserMessageUuid: null, terminal: true })
+  })
+
+  it('replays persisted events in id order, merges history, and is idempotent', () => {
+    const history = userTurn('user-1', [{ id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello' } }])
+    const events: PersistedLiveEvent[] = [
+      { id: 3, projectId: 'project-1', sessionId: 'session-1', eventType: 'result', source: 'sdk', recordedAtMs: 30, payload: { type: 'result', subtype: 'success' } },
+      { id: 2, projectId: 'project-1', sessionId: 'session-1', eventType: 'status', source: 'sdk', recordedAtMs: 20, payload: { type: 'status', uuid: 'status-1', session_id: 'session-1', state: 'running' } },
+      { id: 1, projectId: 'project-1', sessionId: 'session-1', eventType: 'user', source: 'sdk', recordedAtMs: 10, payload: { type: 'user', uuid: 'user-1', session_id: 'session-1', message: { role: 'user', content: 'hello' } } },
+    ]
+
+    const once = mergePersistedLiveEvents([history], events)
+    const twice = mergePersistedLiveEvents(once, events)
+
+    expect(once).toEqual(twice)
+    const replayed = once.find((turn) => turn.id === 'user-1')
+    expect(replayed).toMatchObject({ rawStatus: 'complete', displayStatus: 'complete', completedAt: 30 })
+    expect(replayed?.blocks.filter((block) => block.kind === 'user.message')).toEqual(history.blocks)
+    expect(replayed?.blocks.some((block) => block.kind === 'raw.status')).toBe(true)
+  })
+
+  it('replays persisted failed results as terminal errors', () => {
+    const history = userTurn('user-1')
+    const events: PersistedLiveEvent[] = [
+      { id: 2, projectId: 'project-1', sessionId: 'session-1', eventType: 'result', source: 'sdk', recordedAtMs: 20, payload: { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['SDK stream failed'] } },
+      { id: 1, projectId: 'project-1', sessionId: 'session-1', eventType: 'user', source: 'sdk', recordedAtMs: 10, payload: { type: 'user', uuid: 'user-1', session_id: 'session-1', message: { role: 'user', content: 'hello' } } },
+    ]
+
+    const once = mergePersistedLiveEvents([history], events)
+
+    expect(mergePersistedLiveEvents(once, events)).toEqual(once)
+    expect(once.find((turn) => turn.id === 'user-1')).toMatchObject({ rawStatus: 'error', displayStatus: 'error', completedAt: 20 })
   })
 })

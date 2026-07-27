@@ -35,12 +35,6 @@ export const listVersionsEventSchema = z.object({
 
 export type ListVersionsEvent = z.infer<typeof listVersionsEventSchema>
 
-export type LiveTurnFailureEvent = {
-  type: 'live.turn.failed'
-  userMessageUuid: string
-  error: string
-}
-
 export const sessionRunStateSchema = z.discriminatedUnion('phase', [
   z.object({
     phase: z.literal('idle'),
@@ -187,6 +181,37 @@ export const rawSessionMessageSchema = z.unknown()
 
 export type RawSessionMessage = z.infer<typeof rawSessionMessageSchema>
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+export function timelineToolUseId(message: unknown, block: unknown): string | undefined {
+  if (isRecord(block) && typeof block.tool_use_id === 'string') return block.tool_use_id
+  return isRecord(message) && typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : undefined
+}
+
+export function isTimelineTaskNotificationMessage(value: unknown): boolean {
+  if (!isRecord(value) || value.type !== 'user' || !isRecord(value.message) || typeof value.message.content !== 'string') return false
+  const content = value.message.content.trim()
+  if (!/^<task-notification(?:\s[^>]*)?>[\s\S]*<\/task-notification>$/.test(content)) return false
+  return ['task-id', 'tool-use-id', 'output-file', 'status', 'summary'].every((tag) => content.includes(`<${tag}>`) && content.includes(`</${tag}>`))
+}
+
+export function isPrimaryTimelineUserMessage(value: unknown): boolean {
+  if (!isRecord(value) || value.type !== 'user' || value.parent_tool_use_id != null || value.parent_agent_id != null || !isRecord(value.message)) return false
+  const message = value.message
+  if (message.role !== 'user' || message.shouldQuery === false || message.isSynthetic === true || message.origin === 'internal' || isTimelineTaskNotificationMessage(value)) return false
+  const content = message.content
+  if (typeof content === 'string') return Boolean(content.trim())
+  if (!Array.isArray(content) || content.some((block) => isRecord(block) && block.type === 'tool_result')) return false
+  return content.some((block) => isRecord(block) && (
+    (block.type === 'text' && typeof block.text === 'string' && Boolean(block.text.trim()))
+    || block.type === 'image'
+    || block.type === 'file'
+    || block.type === 'document'
+  ))
+}
+
 export const sessionRawMessagesResponseSchema = z.object({
   sessionId: z.string(),
   messages: z.array(rawSessionMessageSchema),
@@ -213,12 +238,119 @@ export const sessionLiveEventsResponseSchema = z.object({
 
 export type SessionLiveEventsResponse = z.infer<typeof sessionLiveEventsResponseSchema>
 
+export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'])
+export type PermissionMode = z.infer<typeof permissionModeSchema>
+
+export const modelSelectionSchema = z.string().trim().min(1)
+export type ModelSelection = z.infer<typeof modelSelectionSchema>
+
+export const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
+export type EffortLevel = z.infer<typeof effortLevelSchema>
+export const defaultTurnOptionSchema = z.literal('default')
+export type DefaultTurnOption = z.infer<typeof defaultTurnOptionSchema>
+export const turnEffortSelectionSchema = z.union([effortLevelSchema, defaultTurnOptionSchema])
+export type TurnEffortSelection = z.infer<typeof turnEffortSelectionSchema>
+
+export const modelCatalogItemSchema = z.object({
+  value: z.string(),
+  resolvedModel: z.string().optional(),
+  displayName: z.string(),
+  description: z.string(),
+  supportsEffort: z.boolean().optional(),
+  supportedEffortLevels: z.array(effortLevelSchema).optional(),
+  supportsAdaptiveThinking: z.boolean().optional(),
+  supportsFastMode: z.boolean().optional(),
+  supportsAutoMode: z.boolean().optional(),
+})
+export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>
+
+export const modelCatalogResponseSchema = z.object({
+  models: z.array(modelCatalogItemSchema),
+})
+export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>
+
+export const appSettingsSchema = z.object({
+  defaultPermissionMode: permissionModeSchema.optional(),
+  defaultModel: modelSelectionSchema.nullable().optional(),
+  defaultEffort: effortLevelSchema.nullable().optional(),
+  modelCatalog: modelCatalogResponseSchema.optional(),
+  showDebugNav: z.boolean().optional(),
+}).catchall(z.unknown())
+export type AppSettings = z.infer<typeof appSettingsSchema>
+
+export const settingsResponseSchema = z.object({
+  settings: appSettingsSchema,
+})
+export type SettingsResponse = z.infer<typeof settingsResponseSchema>
+
+export const settingsUpdateRequestSchema = z.object({
+  settings: appSettingsSchema,
+})
+export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>
+
+export const authUserSchema = z.object({
+  login: z.string(),
+  name: z.string().nullable(),
+  avatarUrl: z.string().nullable(),
+})
+export type AuthUser = z.infer<typeof authUserSchema>
+
+export const authSessionResponseSchema = z.object({
+  authenticated: z.boolean(),
+  user: authUserSchema.nullable(),
+  githubConfigured: z.boolean(),
+})
+export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>
+
+export const githubDeviceStartResponseSchema = z.object({
+  flowId: z.string(),
+  userCode: z.string(),
+  verificationUri: z.string(),
+  verificationUriComplete: z.string().optional(),
+  expiresIn: z.number(),
+  interval: z.number(),
+})
+export type GitHubDeviceStartResponse = z.infer<typeof githubDeviceStartResponseSchema>
+
+export const githubDevicePollRequestSchema = z.object({
+  flowId: z.string(),
+})
+export type GitHubDevicePollRequest = z.infer<typeof githubDevicePollRequestSchema>
+
+export const githubDevicePollResponseSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('pending'), interval: z.number() }),
+  z.object({ status: z.literal('slow_down'), interval: z.number() }),
+  z.object({ status: z.literal('authorized'), user: authUserSchema }),
+])
+export type GitHubDevicePollResponse = z.infer<typeof githubDevicePollResponseSchema>
+
+export const logoutResponseSchema = z.object({ ok: z.literal(true) })
+export type LogoutResponse = z.infer<typeof logoutResponseSchema>
+
 export const createTurnRequestSchema = z.object({
   text: z.string().trim().min(1),
   userMessageUuid: z.string().uuid(),
+  permissionMode: permissionModeSchema.optional(),
+  model: z.union([modelSelectionSchema, defaultTurnOptionSchema]).optional(),
+  effort: turnEffortSelectionSchema.optional(),
 })
 
 export type CreateTurnRequest = z.infer<typeof createTurnRequestSchema>
+
+export const sessionRuntimeResponseSchema = z.object({
+  ok: z.literal(true),
+  projectId: z.string(),
+  sessionId: z.string(),
+  settings: z.object({
+    permissionMode: permissionModeSchema,
+    model: modelSelectionSchema.nullable(),
+    effort: effortLevelSchema.nullable(),
+  }),
+  availablePermissionModes: z.array(permissionModeSchema),
+  availableModels: z.array(modelCatalogItemSchema),
+})
+
+export type SessionRuntimeResponse = z.infer<typeof sessionRuntimeResponseSchema>
 
 export const createTurnResponseSchema = z.object({
   projectId: z.string(),

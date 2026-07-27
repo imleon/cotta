@@ -114,21 +114,52 @@ describe('projectSessionTimeline', () => {
     ]))
   })
 
-  it('does not start a new turn for non-query user messages', () => {
+  it.each([
+    ['internal', { origin: 'internal' }, null],
+    ['synthetic', { isSynthetic: true }, null],
+    ['non-query', { shouldQuery: false }, null],
+    ['parent-agent', {}, 'agent-1'],
+  ])('does not start a new turn for %s user messages', (_, metadata, parentAgentId) => {
     const timeline = projectSessionTimeline('session-1', [
       messages[0]!,
       {
         type: 'user',
-        uuid: 'internal-user',
+        uuid: 'filtered-user',
         session_id: 'session-1',
         parent_tool_use_id: null,
-        parent_agent_id: null,
+        parent_agent_id: parentAgentId,
         timestamp: '2026-07-14T08:00:05.000Z',
-        message: { role: 'user', content: 'Internal note', shouldQuery: false },
+        message: { role: 'user', content: 'Internal note', ...metadata },
       } as TimestampedSessionMessage,
     ], { limitTurns: 10, cursor: null })
 
     expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
-    expect(timeline.turns[0]?.blocks.map((block) => block.id)).toEqual(['user-1:user', 'internal-user:user'])
+  })
+
+  it('starts turns only for normal primary messages, not task notifications', () => {
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, messages[4]!, messages[2]!], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'user-2'])
+    expect(timeline.turns[0]?.blocks[1]).toEqual(expect.objectContaining({
+      kind: 'assistant.task_notification',
+      data: expect.objectContaining({ taskId: 'task_123', toolUseId: 'call_123', outputFile: '/tmp/task.output', status: 'completed', summary: 'Agent finished', result: 'Done' }),
+    }))
+  })
+
+  it('uses message-level parent_tool_use_id for tool results and reattaches late results', () => {
+    const lateResult = {
+      type: 'user',
+      uuid: 'late-result',
+      session_id: 'session-1',
+      parent_tool_use_id: 'toolu_123',
+      parent_agent_id: null,
+      timestamp: '2026-07-14T08:02:00.000Z',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'late contents' }] },
+    } as TimestampedSessionMessage
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, messages[3]!, messages[2]!, lateResult], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'user-2'])
+    expect(timeline.turns[0]?.blocks.at(-1)).toEqual(expect.objectContaining({ id: 'late-result:tool_result:0', kind: 'tool.result', toolUseId: 'toolu_123' }))
+    expect(timeline.turns[1]?.blocks.some((block) => block.id === 'late-result:tool_result:0')).toBe(false)
   })
 })

@@ -1,31 +1,42 @@
 import 'dotenv/config'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
-import { createTokenAuthMiddleware } from './auth.js'
+import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici'
+import { createAuth, type CottaAuth } from './auth.js'
 import { createClaudeCodeApi, type ClaudeCodeApi } from './claude-code-api.js'
 import { createLiveEventStore, type LiveEventStore } from './live-event-store.js'
 import { LiveTurnManager } from './live-turn-manager.js'
+import { defaultModelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerProjectRoutes, type ProjectRoutesLiveTurnManager } from './routes/projects.js'
 import { SessionSummaryCache } from './session-summary-cache.js'
+import { createSettingsStore, type SettingsStore } from './settings-store.js'
+
+setGlobalDispatcher(new EnvHttpProxyAgent())
 
 export function createApp(input: {
   claudeCodeApi?: ClaudeCodeApi
   liveTurnManager?: ProjectRoutesLiveTurnManager
   liveEventStore?: LiveEventStore
   sessionSummaryCache?: SessionSummaryCache
-  authToken?: string
+  modelCatalogProvider?: ModelCatalogProvider
+  settingsStore?: SettingsStore
+  auth?: CottaAuth
 } = {}): Hono {
   const app = new Hono()
   const liveEventStore = input.liveEventStore ?? (process.env.NODE_ENV === 'test' ? undefined : createLiveEventStore())
   const sessionSummaryCache = input.sessionSummaryCache ?? (input.claudeCodeApi || input.liveTurnManager ? undefined : new SessionSummaryCache())
   const claudeCodeApi = input.claudeCodeApi ?? createClaudeCodeApi(sessionSummaryCache)
   const liveTurnManager = input.liveTurnManager ?? new LiveTurnManager(liveEventStore, sessionSummaryCache)
+  const modelCatalogProvider = input.modelCatalogProvider ?? defaultModelCatalogProvider
+  const settingsStore = input.settingsStore ?? (process.env.NODE_ENV === 'test' ? undefined : createSettingsStore())
+  const auth = input.auth ?? (process.env.NODE_ENV === 'test' ? createAuth({ github: { clientId: '' }, settingsStore }) : createAuth({ settingsStore }))
   sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId))
   void sessionSummaryCache?.ensureReady().catch((error) => console.error('session-summary-cache:ensure-ready failed', error))
-  app.use('*', createTokenAuthMiddleware(input.authToken ?? process.env.COTTA_AUTH_TOKEN))
+  app.use('*', auth.middleware)
   registerHealthRoute(app)
-  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, liveEventStore, sessionSummaryCache })
+  auth.registerRoutes(app)
+  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore })
   return app
 }
 

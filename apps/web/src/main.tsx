@@ -5,31 +5,50 @@ import { StrictMode, type CSSProperties, type Dispatch, type PointerEvent as Rea
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
+  type AppSettings,
   type ListVersionsEvent,
-  sessionRawMessagesResponseSchema,
   type CreateTurnResponse,
+  type DefaultTurnOption,
+  type EffortLevel,
+  type ModelCatalogItem,
+  type ModelSelection,
+  type PermissionMode,
   type PersistedLiveEvent,
   type ProjectSessionsResponse,
+  type SessionRuntimeResponse,
   type TurnSummary,
-  type SessionRawMessagesResponse,
 } from '@cotta/shared'
-import { authToken, connectListVersions, createProject, ensureSessionRuntime, fetchSessionLiveEvents, fetchSessionTimeline, PaginationCursorStaleError, refreshProjects, withToken } from './api'
+import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
 import './styles.css'
 
 const DASHBOARD_NAV_ITEMS = [
-  { key: 'chat', label: 'Chat' },
-  { key: 'debug', label: 'Debug' },
-  { key: 'automations', label: 'Automations' },
-  { key: 'agents', label: 'Agents' },
-  { key: 'skills', label: 'Skills' },
-  { key: 'mcp', label: 'MCP' },
-  { key: 'settings', label: 'Settings' },
+  { key: 'chat', label: 'Chat', path: '/chat' },
+  { key: 'automations', label: 'Automations', path: '/automations' },
+  { key: 'agents', label: 'Agents', path: '/agents' },
+  { key: 'skills', label: 'Skills', path: '/skills' },
+  { key: 'mcp', label: 'MCP', path: '/mcp' },
+  { key: 'settings', label: 'Settings', path: '/settings' },
+  { key: 'debug', label: 'Debug', path: '/debug' },
 ] as const
 
-function DashboardNavIcon({ itemKey }: { itemKey: (typeof DASHBOARD_NAV_ITEMS)[number]['key'] }) {
+type DashboardNavKey = (typeof DASHBOARD_NAV_ITEMS)[number]['key']
+
+function routePath(key: DashboardNavKey): string {
+  return DASHBOARD_NAV_ITEMS.find((item) => item.key === key)?.path ?? '/chat'
+}
+
+function navKeyFromPath(): DashboardNavKey {
+  const path = window.location.pathname === '/' ? '/chat' : window.location.pathname
+  const pathKey = DASHBOARD_NAV_ITEMS.find((item) => item.path === path)?.key
+  if (pathKey) return pathKey
+  const hashKey = window.location.pathname === '/' ? window.location.hash.slice(1) : ''
+  return DASHBOARD_NAV_ITEMS.some((item) => item.key === hashKey) ? hashKey as DashboardNavKey : 'chat'
+}
+
+function DashboardNavIcon({ itemKey }: { itemKey: DashboardNavKey }) {
   if (itemKey === 'chat') {
     return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 5.5h11a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 3v-3H4.5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2Z" /></svg>
   }
@@ -61,14 +80,6 @@ function clampDashboardNavWidth(width: number): number {
   return Math.min(DASHBOARD_NAV_MAX_WIDTH, Math.max(DASHBOARD_NAV_MIN_WIDTH, width))
 }
 
-async function fetchSessionRawMessages(projectId: string, sessionId: string): Promise<SessionRawMessagesResponse> {
-  const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/raw-messages`),
-  )
-  if (!response.ok) throw new Error(`Session raw messages request failed: ${response.status}`)
-  return sessionRawMessagesResponseSchema.parse(await response.json())
-}
-
 class CreateTurnHttpError extends Error {
   constructor(readonly status: number) {
     super(`Create turn failed: ${status}`)
@@ -84,14 +95,14 @@ function createUserMessageUuid(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-async function createTurn(projectId: string, sessionId: string | null, text: string, userMessageUuid: string): Promise<CreateTurnResponse> {
+async function createTurn(projectId: string, sessionId: string | null, text: string, userMessageUuid: string, permissionMode: PermissionMode, model: ModelSelection | DefaultTurnOption, effort: EffortLevel | DefaultTurnOption): Promise<CreateTurnResponse> {
   const path = sessionId
     ? `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns`
     : `/api/projects/${encodeURIComponent(projectId)}/sessions`
-  const response = await fetch(withToken(path), {
+  const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, userMessageUuid }),
+    body: JSON.stringify({ text, userMessageUuid, permissionMode, model, effort }),
   })
   if (!response.ok) throw new CreateTurnHttpError(response.status)
   return createTurnResponseSchema.parse(await response.json())
@@ -99,7 +110,7 @@ async function createTurn(projectId: string, sessionId: string | null, text: str
 
 async function interruptTurn(projectId: string, sessionId: string): Promise<void> {
   const response = await fetch(
-    withToken(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/interrupt`),
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/interrupt`,
     { method: 'POST' },
   )
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
@@ -431,6 +442,38 @@ function pendingUserTurn(text: string, sessionId: string | null, userMessageUuid
   }
 }
 
+function effortLabel(value: EffortLevel | DefaultTurnOption): string {
+  return value
+}
+
+const EFFORT_ORDER: EffortLevel[] = ['max', 'xhigh', 'high', 'medium', 'low']
+const DEFAULT_TURN_OPTION: DefaultTurnOption = 'default'
+const DEFAULT_EFFORT: EffortLevel = 'medium'
+
+function defaultEffort(levels: EffortLevel[]): EffortLevel {
+  return levels.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : levels[0] ?? DEFAULT_EFFORT
+}
+
+const PERMISSION_MODE_OPTIONS: Array<{ value: PermissionMode; description: string }> = [
+  { value: 'plan', description: 'Planning mode, no execution of tools.' },
+  { value: 'dontAsk', description: "Don't prompt for permissions, deny if not pre-approved." },
+  { value: 'default', description: 'Standard permission behavior, prompts for dangerous operations.' },
+  { value: 'acceptEdits', description: 'Auto-accept file edit operations.' },
+  { value: 'auto', description: 'Use a model classifier to approve/deny permission prompts.' },
+  { value: 'bypassPermissions', description: 'Bypass all permission checks.' },
+]
+
+function ComposerIcon({ name }: { name: PermissionMode | 'add' | 'shield' }) {
+  if (name === 'add') return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4.5v11M4.5 10h11" /></svg>
+  if (name === 'shield') return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2 15 5v4.1c0 3.2-1.8 5.8-5 7.7-3.2-1.9-5-4.5-5-7.7V5Z" /></svg>
+  if (name === 'plan') return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5h10M5 10h10M5 15h6" /></svg>
+  if (name === 'dontAsk') return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" /></svg>
+  if (name === 'acceptEdits') return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 13.5-.5 2 2-.5 8-8-1.5-1.5Z" /><path d="M11.5 5.5 13 4l3 3-1.5 1.5" /></svg>
+  if (name === 'auto') return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v2M10 14v2M4 10h2M14 10h2M5.8 5.8l1.4 1.4M12.8 12.8l1.4 1.4M14.2 5.8l-1.4 1.4M7.2 12.8l-1.4 1.4" /></svg>
+  if (name === 'bypassPermissions') return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m11 2-6 9h4l-1 7 7-10h-4Z" /></svg>
+  return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 10a5.5 5.5 0 1 0 11 0 5.5 5.5 0 0 0-11 0Z" /></svg>
+}
+
 function TurnComposer({
   projectId,
   selectedSessionId,
@@ -442,6 +485,8 @@ function TurnComposer({
   pendingProjectId,
   pendingProjectRequest,
   onSessionCreated,
+  settings,
+  sessionRuntime,
 }: {
   projectId: string | null
   selectedSessionId: string | null
@@ -453,6 +498,8 @@ function TurnComposer({
   pendingProjectId: string | null
   pendingProjectRequest: number
   onSessionCreated: (projectId: string, sessionId: string) => void
+  settings: AppSettings
+  sessionRuntime: SessionRuntimeResponse | null
 }) {
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -461,15 +508,64 @@ function TurnComposer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const handledProjectRequestRef = useRef(0)
   const [retryProjectId, setRetryProjectId] = useState<string | null>(null)
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode ?? 'default')
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
+  const permissionMenuRef = useRef<HTMLDivElement | null>(null)
+  const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
+  const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_EFFORT)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [menuModelValue, setMenuModelValue] = useState<ModelSelection | DefaultTurnOption>(DEFAULT_TURN_OPTION)
+  const [effortMenuPosition, setEffortMenuPosition] = useState<CSSProperties>()
+  const modelMenuRef = useRef<HTMLDivElement | null>(null)
+  const runtimeSettings = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId ? sessionRuntime.settings : null
+  const permissionOptions = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId
+    ? PERMISSION_MODE_OPTIONS.filter((option) => sessionRuntime.availablePermissionModes.includes(option.value))
+    : PERMISSION_MODE_OPTIONS
+  const catalogModels = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId ? sessionRuntime.availableModels : settings.modelCatalog?.models ?? []
+  const selectedModel = model === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === model || item.resolvedModel === model)
+  const menuModel = menuModelValue === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === menuModelValue || item.resolvedModel === menuModelValue)
+  const triggerModelLabel = selectedModel?.displayName || 'Claude Code default'
+  const triggerEffortLabel = model === DEFAULT_TURN_OPTION ? effortLabel(effort) : selectedModel?.supportsEffort && effort !== DEFAULT_TURN_OPTION ? effortLabel(effort) : null
 
   useEffect(() => { setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
   useEffect(() => { if (!liveUserMessageUuid) setInterrupting(false) }, [liveUserMessageUuid])
+  useEffect(() => {
+    setPermissionMode(runtimeSettings?.permissionMode ?? settings.defaultPermissionMode ?? 'default')
+    setModel(runtimeSettings ? runtimeSettings.model ?? DEFAULT_TURN_OPTION : settings.defaultModel ?? DEFAULT_TURN_OPTION)
+    setEffort(runtimeSettings ? runtimeSettings.effort ?? DEFAULT_EFFORT : settings.defaultEffort ?? DEFAULT_EFFORT)
+  }, [runtimeSettings, settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort])
+  useEffect(() => {
+    if (model === DEFAULT_TURN_OPTION || selectedModel) return
+    setModel(DEFAULT_TURN_OPTION)
+    setEffort(DEFAULT_TURN_OPTION)
+  }, [model, selectedModel])
   useEffect(() => {
     const input = inputRef.current
     if (!input) return
     input.style.height = 'auto'
     input.style.height = `${Math.min(input.scrollHeight, 112)}px`
   }, [inputText])
+  useEffect(() => {
+    if (!permissionMenuOpen && !modelMenuOpen) return
+    function closeOnOutsidePointer(event: globalThis.PointerEvent) {
+      const target = event.target as Node
+      if (permissionMenuRef.current?.contains(target) || modelMenuRef.current?.contains(target)) return
+      setPermissionMenuOpen(false)
+      setModelMenuOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setPermissionMenuOpen(false)
+        setModelMenuOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [permissionMenuOpen, modelMenuOpen])
 
   async function submitTurn(targetProjectId = projectId) {
     if (submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
@@ -485,7 +581,7 @@ function TurnComposer({
       const targetSessionId = targetProjectId === projectId ? selectedSessionId : null
       setPendingTurn(pendingUserTurn(text, targetSessionId, userMessageUuid))
       setInputText('')
-      const response = await createTurn(targetProjectId, targetSessionId, text, userMessageUuid)
+      const response = await createTurn(targetProjectId, targetSessionId, text, userMessageUuid, permissionMode, model, selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION)
       if (targetProjectId !== projectId) onSessionCreated(response.projectId, response.sessionId)
       else setSelectedSessionId(response.sessionId)
       setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
@@ -524,6 +620,43 @@ function TurnComposer({
     }
   }
 
+  function toggleModelMenu() {
+    setMenuModelValue(DEFAULT_TURN_OPTION)
+    setModelMenuOpen((open) => !open)
+  }
+
+  function showEffortMenu(option: ModelCatalogItem, target: HTMLElement) {
+    const menu = modelMenuRef.current?.querySelector('.model-effort-menu')
+    if (!(menu instanceof HTMLElement)) return
+    const itemRect = target.getBoundingClientRect()
+    const menuRect = menu.getBoundingClientRect()
+    const effortCount = option.supportedEffortLevels?.length ?? 0
+    const effortMenuHeight = Math.min(220, effortCount * 38 + 16)
+    const alignedTop = itemRect.top - menuRect.top
+    const clippingBottom = menu.closest('.workspace-main-panel')?.getBoundingClientRect().bottom ?? window.innerHeight
+    const maxTop = Math.min(window.innerHeight, clippingBottom) - menuRect.top - effortMenuHeight - 8
+    setMenuModelValue(option.value)
+    setEffortMenuPosition({ top: Math.max(8, Math.min(alignedTop, maxTop)) })
+  }
+
+  function chooseDefaultModel() {
+    setModel(DEFAULT_TURN_OPTION)
+    setEffort(DEFAULT_EFFORT)
+    setModelMenuOpen(false)
+  }
+
+  function chooseModelOnly(option: ModelCatalogItem) {
+    setModel(option.value)
+    setEffort(DEFAULT_TURN_OPTION)
+    setModelMenuOpen(false)
+  }
+
+  function chooseEffort(option: ModelCatalogItem, nextEffort: EffortLevel) {
+    setModel(option.value)
+    setEffort(nextEffort)
+    setModelMenuOpen(false)
+  }
+
   const actionMode = submitting || interrupting ? 'loading' : liveUserMessageUuid ? 'stop' : 'submit'
 
   return (
@@ -532,7 +665,7 @@ function TurnComposer({
         <div
           className="turn-composer"
           onClick={(event) => {
-            if ((event.target as HTMLElement).closest('button, textarea')) return
+            if ((event.target as HTMLElement).closest('button, textarea, select, .permission-mode-menu, .model-effort-menu')) return
             inputRef.current?.focus()
           }}
         >
@@ -545,19 +678,126 @@ function TurnComposer({
               event.preventDefault()
               void submitTurn(retryProjectId ?? projectId)
             }}
-            placeholder="Chat with Cotta..."
+            placeholder="随心输入"
             rows={1}
           />
           <div className="turn-composer-footer">
-            <button
-              type={actionMode === 'submit' ? 'submit' : 'button'}
-              className="turn-action-button"
-              onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
-              disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
-              aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
-            >
-              {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
-            </button>
+            <div className="turn-composer-left-actions">
+              <button type="button" className="turn-tool-button" disabled aria-label="Add attachment" title="Add attachment">
+                <ComposerIcon name="add" />
+              </button>
+              <div className="permission-mode-picker" ref={permissionMenuRef}>
+                <button
+                  type="button"
+                  className="turn-tool-button permission-mode-trigger"
+                  aria-haspopup="menu"
+                  aria-expanded={permissionMenuOpen}
+                  aria-label={`Permission mode: ${permissionMode}`}
+                  onClick={() => setPermissionMenuOpen((open) => !open)}
+                >
+                  <ComposerIcon name="shield" />
+                  <span>{permissionMode}</span>
+                </button>
+                {permissionMenuOpen ? (
+                  <div className="permission-mode-menu" role="menu" aria-label="Permission mode">
+                    {permissionOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className="permission-mode-option"
+                        role="menuitemradio"
+                        aria-checked={permissionMode === option.value}
+                        onClick={() => { setPermissionMode(option.value); setPermissionMenuOpen(false) }}
+                      >
+                        <span className="permission-mode-option-icon"><ComposerIcon name={option.value} /></span>
+                        <span className="permission-mode-option-copy">
+                          <span className="permission-mode-option-title">{option.value}</span>
+                          <span className="permission-mode-option-description">{option.description}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="turn-composer-submit-actions">
+              <div className="model-effort-picker" ref={modelMenuRef}>
+                <button
+                  type="button"
+                  className="model-effort-trigger"
+                  aria-haspopup="menu"
+                  aria-expanded={modelMenuOpen}
+                  aria-label={`Model ${triggerModelLabel}${triggerEffortLabel ? `, effort ${triggerEffortLabel}` : ''}`}
+                  title={`${triggerModelLabel}${triggerEffortLabel ? ` / ${triggerEffortLabel}` : ''}`}
+                  onClick={toggleModelMenu}
+                >
+                  <span className="model-effort-trigger-icon" aria-hidden="true">◉</span>
+                  <span className="model-effort-trigger-copy">
+                    <span className="model-effort-trigger-model">{triggerModelLabel}</span>
+                    {triggerEffortLabel ? <span className="model-effort-trigger-effort">{triggerEffortLabel}</span> : null}
+                  </span>
+                </button>
+                {modelMenuOpen ? (
+                  <div className="model-effort-menu" role="menu" aria-label="Model and effort">
+                    {!catalogModels.length ? <div className="model-effort-hint">Load models in Settings to choose one.</div> : null}
+                    <div className="model-effort-models" role="group" aria-label="Models">
+                      <button type="button" className="model-effort-option" role="menuitem" aria-current={model === DEFAULT_TURN_OPTION} onClick={chooseDefaultModel}>
+                        <span className="model-effort-option-title">Claude Code default</span>
+                        {model === DEFAULT_TURN_OPTION ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
+                      </button>
+                      {catalogModels.length ? catalogModels.map((option) => {
+                        const active = menuModel?.value === option.value
+                        const selected = selectedModel?.value === option.value
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className="model-effort-option"
+                            role="menuitem"
+                            aria-current={active}
+                            onMouseEnter={(event) => showEffortMenu(option, event.currentTarget)}
+                            onFocus={(event) => showEffortMenu(option, event.currentTarget)}
+                            onClick={(event) => option.supportsEffort && option.supportedEffortLevels?.length ? showEffortMenu(option, event.currentTarget) : chooseModelOnly(option)}
+                          >
+                            <span className="model-effort-option-title">{option.displayName || option.value}</span>
+                            {selected ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
+                          </button>
+                        )
+                      }) : null}
+                    </div>
+                    {menuModel?.supportsEffort && menuModel.supportedEffortLevels?.length ? (
+                      <div className="model-effort-efforts" style={effortMenuPosition} role="group" aria-label={`${menuModel.displayName || menuModel.value} efforts`}>
+                        {EFFORT_ORDER.filter((level) => menuModel.supportedEffortLevels!.includes(level)).map((level) => {
+                          const selected = selectedModel?.value === menuModel.value && effort === level
+                          return (
+                            <button
+                              key={`${menuModel.value}:${level}`}
+                              type="button"
+                              className="model-effort-option model-effort-option-compact"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              onClick={() => chooseEffort(menuModel, level)}
+                            >
+                              <span className="model-effort-option-title">{effortLabel(level)}</span>
+                              {selected ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type={actionMode === 'submit' ? 'submit' : 'button'}
+                className="turn-action-button"
+                onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
+                disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
+                aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
+              >
+                {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
+              </button>
+            </div>
           </div>
         </div>
         {submitError ? <div className="panel error">{submitError}</div> : null}
@@ -576,6 +816,8 @@ function WorkspacePanel({
   pendingProjectId,
   pendingProjectRequest,
   onSessionCreated,
+  settings,
+  sessionRuntime,
 }: {
   projectId: string | null
   detail: ProjectSessionsResponse | undefined
@@ -586,6 +828,8 @@ function WorkspacePanel({
   pendingProjectId: string | null
   pendingProjectRequest: number
   onSessionCreated: (projectId: string, sessionId: string) => void
+  settings: AppSettings
+  sessionRuntime: SessionRuntimeResponse | null
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
@@ -620,7 +864,311 @@ function WorkspacePanel({
         pendingProjectId={pendingProjectId}
         pendingProjectRequest={pendingProjectRequest}
         onSessionCreated={onSessionCreated}
+        settings={settings}
+        sessionRuntime={sessionRuntime}
       />
+    </section>
+  )
+}
+
+function SettingsPanel({ projectId, settings }: { projectId: string | null; settings: AppSettings }) {
+  const queryClient = useQueryClient()
+  const catalogModels = settings.modelCatalog?.models ?? []
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode ?? 'default')
+  const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
+  const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_EFFORT)
+  const [status, setStatus] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [catalogLoading, setCatalogLoading] = useState(false)
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [menuModelValue, setMenuModelValue] = useState<ModelSelection | DefaultTurnOption>(DEFAULT_TURN_OPTION)
+  const [effortMenuPosition, setEffortMenuPosition] = useState<CSSProperties>()
+  const permissionMenuRef = useRef<HTMLDivElement | null>(null)
+  const modelMenuRef = useRef<HTMLDivElement | null>(null)
+  const selectedPermission = PERMISSION_MODE_OPTIONS.find((option) => option.value === permissionMode)
+  const selectedModel = model === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === model || item.resolvedModel === model)
+  const menuModel = menuModelValue === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === menuModelValue || item.resolvedModel === menuModelValue)
+  const effortLevels = selectedModel?.supportsEffort ? EFFORT_ORDER.filter((level) => selectedModel.supportedEffortLevels?.includes(level)) : []
+  const triggerModelLabel = selectedModel?.displayName || selectedModel?.value || 'Claude Code default'
+
+  useEffect(() => {
+    setPermissionMode(settings.defaultPermissionMode ?? 'default')
+    setModel(settings.defaultModel ?? DEFAULT_TURN_OPTION)
+    setEffort(settings.defaultEffort ?? DEFAULT_EFFORT)
+  }, [settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort])
+
+  useEffect(() => {
+    if (model === DEFAULT_TURN_OPTION) { if (effort === DEFAULT_TURN_OPTION) setEffort(DEFAULT_EFFORT); return }
+    if (!selectedModel) { setModel(DEFAULT_TURN_OPTION); setEffort(DEFAULT_EFFORT); return }
+    if (!effortLevels.length) { setEffort(DEFAULT_EFFORT); return }
+    if (effort === DEFAULT_TURN_OPTION || !effortLevels.includes(effort)) setEffort(defaultEffort(effortLevels))
+  }, [model, selectedModel, effort, effortLevels])
+
+  useEffect(() => {
+    if (!permissionMenuOpen && !modelMenuOpen) return
+    function closeOnOutsidePointer(event: globalThis.PointerEvent) {
+      const target = event.target as Node
+      if (permissionMenuRef.current?.contains(target) || modelMenuRef.current?.contains(target)) return
+      setPermissionMenuOpen(false)
+      setModelMenuOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setPermissionMenuOpen(false)
+        setModelMenuOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [permissionMenuOpen, modelMenuOpen])
+  useEffect(() => {
+    if (!status) return
+    const timer = window.setTimeout(() => setStatus(null), 2200)
+    return () => window.clearTimeout(timer)
+  }, [status])
+
+  function showEffortMenu(option: ModelCatalogItem, target: HTMLElement) {
+    const menu = modelMenuRef.current?.querySelector('.model-effort-menu')
+    if (!(menu instanceof HTMLElement)) return
+    const itemRect = target.getBoundingClientRect()
+    const menuRect = menu.getBoundingClientRect()
+    const effortCount = option.supportedEffortLevels?.length ?? 0
+    const effortMenuHeight = Math.min(220, effortCount * 38 + 16)
+    const alignedTop = itemRect.top - menuRect.top
+    const maxTop = window.innerHeight - menuRect.top - effortMenuHeight - 16
+    setMenuModelValue(option.value)
+    setEffortMenuPosition({ top: Math.max(8, Math.min(alignedTop, maxTop)) })
+  }
+
+  function chooseModelOnly(nextModel: ModelSelection | DefaultTurnOption) {
+    void saveModelDefault(nextModel, DEFAULT_TURN_OPTION)
+  }
+
+  function chooseEffort(option: ModelCatalogItem, nextEffort: EffortLevel) {
+    void saveModelDefault(option.value, nextEffort)
+  }
+
+  async function loadCatalog() {
+    if (catalogModels.length || catalogLoading) return
+    setCatalogLoading(true)
+    setStatus(null)
+    try {
+      const response = await refreshModelCatalog(projectId)
+      queryClient.setQueryData(['settings'], response)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCatalogLoading(false)
+    }
+  }
+
+  async function savePermissionDefault(nextPermissionMode: PermissionMode) {
+    setPermissionMode(nextPermissionMode)
+    setPermissionMenuOpen(false)
+    setSaving(true)
+    setStatus(null)
+    try {
+      const response = await saveSettings({ ...settings, defaultPermissionMode: nextPermissionMode })
+      queryClient.setQueryData(['settings'], response)
+      setStatus('Saved')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveModelDefault(nextModel: ModelSelection | DefaultTurnOption, nextEffort: EffortLevel | DefaultTurnOption) {
+    setModel(nextModel)
+    setEffort(nextEffort)
+    setModelMenuOpen(false)
+    setSaving(true)
+    setStatus(null)
+    try {
+      const response = await saveSettings({ ...settings, defaultModel: nextModel === DEFAULT_TURN_OPTION ? null : nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
+      queryClient.setQueryData(['settings'], response)
+      setStatus('Saved')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveShowDebugNav(showDebugNav: boolean) {
+    setSaving(true)
+    setStatus(null)
+    try {
+      const response = await saveSettings({ ...settings, showDebugNav })
+      queryClient.setQueryData(['settings'], response)
+      setStatus('Saved')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="detail-panel settings-panel" aria-label="Settings">
+      <div className="settings-section">
+        <h2>Settings</h2>
+        <p className="muted">These defaults apply to new turns from the composer.</p>
+      </div>
+
+      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
+        <div className="settings-card-copy">
+          <h3>Default permission</h3>
+          <p className="muted">Pick the permission mode used by new composer turns.</p>
+        </div>
+        <div className="settings-card-controls">
+          <div className="permission-mode-picker settings-picker" ref={permissionMenuRef}>
+            <button
+              type="button"
+              className="turn-tool-button permission-mode-trigger settings-trigger"
+              aria-haspopup="menu"
+              aria-expanded={permissionMenuOpen}
+              onClick={() => setPermissionMenuOpen((open) => !open)}
+            >
+              <ComposerIcon name={permissionMode} />
+              <span>{permissionMode}</span>
+            </button>
+            {permissionMenuOpen ? (
+              <div className="permission-mode-menu settings-menu" role="menu" aria-label="Default permission mode">
+                {PERMISSION_MODE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className="permission-mode-option"
+                    role="menuitemradio"
+                    aria-checked={permissionMode === option.value}
+                    onClick={() => void savePermissionDefault(option.value)}
+                  >
+                    <span className="permission-mode-option-icon"><ComposerIcon name={option.value} /></span>
+                    <span className="permission-mode-option-copy">
+                      <span className="permission-mode-option-title">{option.value}</span>
+                      <span className="permission-mode-option-description">{option.description}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <p className="settings-picked-copy">{selectedPermission?.description}</p>
+        </div>
+      </form>
+
+      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
+        <div className="settings-card-copy">
+          <h3>Default model / effort</h3>
+          <p className="muted">Choose what the composer should send by default.</p>
+        </div>
+        <div className="settings-card-controls">
+          <div className="model-effort-picker settings-picker" ref={modelMenuRef}>
+            <button
+              type="button"
+              className="model-effort-trigger settings-model-trigger"
+              aria-haspopup="menu"
+              aria-expanded={modelMenuOpen}
+              onClick={() => { setMenuModelValue(DEFAULT_TURN_OPTION); setModelMenuOpen((open) => !open); void loadCatalog() }}
+            >
+              <span className="model-effort-trigger-icon" aria-hidden="true">◉</span>
+              <span className="model-effort-trigger-copy">
+                <span className="model-effort-trigger-model">{triggerModelLabel}</span>
+                {(model === DEFAULT_TURN_OPTION || selectedModel?.supportsEffort && effort !== DEFAULT_TURN_OPTION) ? <span className="model-effort-trigger-effort">{effortLabel(effort)}</span> : null}
+              </span>
+            </button>
+            {modelMenuOpen ? (
+              <div className="model-effort-menu settings-menu" role="menu" aria-label="Default model and effort">
+                {catalogLoading ? <div className="model-effort-hint">Loading model catalog…</div> : null}
+                {!catalogLoading && !catalogModels.length ? <div className="model-effort-hint">No models found.</div> : null}
+                <div className="model-effort-models" role="group" aria-label="Models">
+                  <button type="button" className="model-effort-option" role="menuitem" aria-current={model === DEFAULT_TURN_OPTION} onClick={() => chooseModelOnly(DEFAULT_TURN_OPTION)}>
+                    <span className="model-effort-option-title">Claude Code default</span>
+                    {model === DEFAULT_TURN_OPTION ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
+                  </button>
+                  {catalogModels.map((option) => {
+                    const active = menuModel?.value === option.value
+                    const selected = selectedModel?.value === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className="model-effort-option"
+                        role="menuitem"
+                        aria-current={active}
+                        onMouseEnter={(event) => showEffortMenu(option, event.currentTarget)}
+                        onFocus={(event) => showEffortMenu(option, event.currentTarget)}
+                        onClick={(event) => option.supportsEffort && option.supportedEffortLevels?.length ? showEffortMenu(option, event.currentTarget) : chooseModelOnly(option.value)}
+                      >
+                        <span className="model-effort-option-title">{option.displayName || option.value}</span>
+                        {selected ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
+                      </button>
+                    )
+                  })}
+                </div>
+                {menuModel?.supportsEffort && menuModel.supportedEffortLevels?.length ? (
+                  <div className="model-effort-efforts" style={effortMenuPosition} role="group" aria-label={`${menuModel.displayName || menuModel.value} efforts`}>
+                    {EFFORT_ORDER.filter((level) => menuModel.supportedEffortLevels!.includes(level)).map((level) => {
+                      const selected = selectedModel?.value === menuModel.value && effort === level
+                      return (
+                        <button
+                          key={`${menuModel.value}:${level}`}
+                          type="button"
+                          className="model-effort-option model-effort-option-compact"
+                          role="menuitemradio"
+                          aria-checked={selected}
+                          onClick={() => chooseEffort(menuModel, level)}
+                        >
+                          <span className="model-effort-option-title">{effortLabel(level)}</span>
+                          {selected ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </form>
+
+      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
+        <div className="settings-card-copy">
+          <h3>Show Debug</h3>
+          <p className="muted">Keep the raw message inspector in the sidebar.</p>
+        </div>
+        <div className="settings-card-controls">
+          <button
+            type="button"
+            className="settings-switch"
+            role="switch"
+            aria-checked={settings.showDebugNav !== false}
+            disabled={saving}
+            onClick={() => void saveShowDebugNav(settings.showDebugNav === false)}
+          >
+            <span className="settings-switch-thumb" />
+          </button>
+        </div>
+      </form>
+
+      {status ? <div className="settings-toast" role="status">{status}</div> : null}
+    </section>
+  )
+}
+
+function PlaceholderPage({ title }: { title: string }) {
+  return (
+    <section className="detail-panel settings-panel" aria-label={title}>
+      <div className="settings-section">
+        <h2>{title}</h2>
+        <p className="muted">Coming soon.</p>
+      </div>
     </section>
   )
 }
@@ -648,7 +1196,17 @@ function DebugWorkspacePanel({ projectId, sessionId }: { projectId: string | nul
 
 function ProjectsDashboard() {
   const queryClient = useQueryClient()
-  const selection = useProjectSessionSelection({ selectInitialProject: false })
+  const [activeNav, setActiveNav] = useState<DashboardNavKey>(navKeyFromPath)
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings,
+    retry: false,
+  })
+  const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
+  const settings = settingsQuery.data?.settings ?? {}
+  const navItems = settings.showDebugNav === false ? DASHBOARD_NAV_ITEMS.filter((item) => item.key !== 'debug') : DASHBOARD_NAV_ITEMS
+  const workspaceNavActive = activeNav === 'chat' || (settings.showDebugNav !== false && activeNav === 'debug')
+  const selection = useProjectSessionSelection({ selectInitialProject: false, enabled: workspaceNavActive })
   const {
     selectedProjectId,
     selectedSessionId,
@@ -656,15 +1214,14 @@ function ProjectsDashboard() {
     selectProject,
     setSelectedSessionId,
   } = selection
-  const [activeNav, setActiveNav] = useState<(typeof DASHBOARD_NAV_ITEMS)[number]['key']>('chat')
   const [navWidth, setNavWidth] = useState(DASHBOARD_NAV_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
-  const [pendingSessionTarget, setPendingSessionTarget] = useState<{ projectId: string; sessionId: string } | null>(null)
   const [projectChoice, setProjectChoice] = useState<{ text: string; mode: 'choose' | 'create'; error: string | null } | null>(null)
   const [newProjectPath, setNewProjectPath] = useState('')
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null)
   const [pendingProjectRequest, setPendingProjectRequest] = useState(0)
   const [refreshingLists, setRefreshingLists] = useState(false)
+  const [selectedSessionRuntime, setSelectedSessionRuntime] = useState<SessionRuntimeResponse | null>(null)
   const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
   const navWidthRef = useRef(DASHBOARD_NAV_DEFAULT_WIDTH)
@@ -676,29 +1233,50 @@ function ProjectsDashboard() {
   const acknowledgedProjectVersionsRef = useRef(new Map<string, number>())
   const visibleSessionGenerationsRef = useRef(new Map<string, number>())
   const projectLoadMoreInFlightRef = useRef(false)
+  useEffect(() => {
+    function syncPathNav() { setActiveNav(navKeyFromPath()) }
+    window.addEventListener('popstate', syncPathNav)
+    return () => window.removeEventListener('popstate', syncPathNav)
+  }, [])
+  useEffect(() => {
+    if (settings.showDebugNav === false && activeNav === 'debug') navigateNav('settings')
+  }, [settings.showDebugNav, activeNav])
+
+  function navigateNav(nextNav: DashboardNavKey) {
+    if (nextNav === 'chat') beginNewConversation()
+    history.pushState(null, '', `${routePath(nextNav)}${window.location.search}`)
+    setActiveNav(nextNav)
+  }
+
+  async function handleLogout() {
+    await logout()
+    await authSession.refetch()
+  }
 
   function beginSelectionIntent(): number {
     const requestId = pendingSessionRequestRef.current + 1
     pendingSessionRequestRef.current = requestId
-    setPendingSessionTarget(null)
     return requestId
   }
 
   function beginNewConversation() {
     beginSelectionIntent()
     setPendingProjectId(null)
+    setSelectedSessionRuntime(null)
     selection.clearSelection()
   }
 
   function startPendingProject(projectId: string) {
     const requestId = beginSelectionIntent()
     setProjectChoice(null)
+    setSelectedSessionRuntime(null)
     setPendingProjectId(projectId)
     setPendingProjectRequest(requestId)
   }
 
   function handleSessionCreated(projectId: string, sessionId: string) {
     selection.selectSession(projectId, sessionId)
+    setSelectedSessionRuntime(null)
     setPendingProjectId(null)
   }
 
@@ -782,8 +1360,6 @@ function ProjectsDashboard() {
       .flatMap((page) => page.sessions)
       .find((session) => session.id === selectedSessionId)
   const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : 'New conversation')
-  const railSelectedProjectId = pendingSessionTarget?.projectId ?? selectedProjectId
-  const railSelectedSessionId = pendingSessionTarget?.sessionId ?? selectedSessionId
 
   const reconcileSelection = useCallback((selectionSnapshot: { intentId: number; projectId: string | null; sessionId: string | null }, outcomes: Map<string, { outcome: string; selectedSessionExists?: boolean }>) => {
     if (pendingSessionRequestRef.current !== selectionSnapshot.intentId || selectedProjectId !== selectionSnapshot.projectId || selectedSessionId !== selectionSnapshot.sessionId) return
@@ -854,24 +1430,13 @@ function ProjectsDashboard() {
     return outcome
   }, [queryClient])
 
-  async function handleSelectSession(projectId: string, sessionId: string) {
+  function handleSelectSession(projectId: string, sessionId: string) {
     const requestId = beginSelectionIntent()
-    if (projectId === selectedProjectId && sessionId === selectedSessionId) return
-    setPendingSessionTarget({ projectId, sessionId })
-    try {
-      await queryClient.fetchQuery({
-        queryKey: ['session-timeline', projectId, sessionId],
-        queryFn: () => fetchSessionTimeline(projectId, sessionId),
-        retry: false,
-      })
-      if (pendingSessionRequestRef.current !== requestId) return
-      selection.selectSession(projectId, sessionId)
-      void ensureSessionRuntime(projectId, sessionId).catch(() => {})
-      setPendingSessionTarget(null)
-    } catch {
-      if (pendingSessionRequestRef.current !== requestId) return
-      setPendingSessionTarget(null)
-    }
+    setSelectedSessionRuntime(null)
+    if (projectId !== selectedProjectId || sessionId !== selectedSessionId) selection.selectSession(projectId, sessionId)
+    void ensureSessionRuntime(projectId, sessionId).then((runtime) => {
+      if (pendingSessionRequestRef.current === requestId) setSelectedSessionRuntime(runtime)
+    }).catch(() => {})
   }
 
   useEffect(() => {
@@ -942,8 +1507,8 @@ function ProjectsDashboard() {
     }
   }
 
-  if (selection.projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
-  if (selection.projects.isError) return <div className="panel error">Failed to load projects: {selection.projects.error instanceof Error ? selection.projects.error.message : 'unknown error'}</div>
+  if (workspaceNavActive && selection.projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
+  if (workspaceNavActive && selection.projects.isError) return <div className="panel error">Failed to load projects: {selection.projects.error instanceof Error ? selection.projects.error.message : 'unknown error'}</div>
 
   return (
     <div
@@ -954,26 +1519,33 @@ function ProjectsDashboard() {
     >
       <aside className="dashboard-nav-rail" aria-label="Dashboard navigation">
         <nav className="dashboard-nav-links" aria-label="Workspace sections">
-          {DASHBOARD_NAV_ITEMS.map((item) => (
-            <button
+          {navItems.map((item) => (
+            <a
               key={item.key}
               className={`dashboard-nav-link ${activeNav === item.key ? 'active' : ''}`}
-              type="button"
-              onClick={() => {
-                if (item.key === 'chat') beginNewConversation()
-                setActiveNav(item.key)
+              href={`${item.path}${window.location.search}`}
+              onClick={(event) => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                event.preventDefault()
+                navigateNav(item.key)
               }}
               aria-current={activeNav === item.key ? 'page' : undefined}
               aria-label={item.label}
             >
               <span className="dashboard-nav-icon" aria-hidden="true"><DashboardNavIcon itemKey={item.key} /></span>
               <span className="dashboard-nav-label">{item.label}</span>
-            </button>
+            </a>
           ))}
         </nav>
+        {authSession.data?.authenticated ? <button className="dashboard-nav-link logout-link" type="button" onClick={() => void handleLogout()}>Logout</button> : null}
       </aside>
-      <section className="workspace-panel">
-        <div className="dashboard-nav-resize-handle" role="separator" aria-label="Resize navigation sidebar" aria-orientation="vertical" onPointerDown={beginNavResize} />
+      {!workspaceNavActive ? (
+        <section className="settings-page-shell">
+          {activeNav === 'settings' ? <SettingsPanel projectId={null} settings={settings} /> : <PlaceholderPage title={DASHBOARD_NAV_ITEMS.find((item) => item.key === activeNav)?.label ?? 'Page'} />}
+        </section>
+      ) : (
+        <section className="workspace-panel">
+          <div className="dashboard-nav-resize-handle" role="separator" aria-label="Resize navigation sidebar" aria-orientation="vertical" onPointerDown={beginNavResize} />
         <header className="project-rail-header workspace-panel-header">
           <h2 className="project-rail-title" id="projects-sidebar-section-heading">Projects</h2>
           <button
@@ -999,10 +1571,10 @@ function ProjectsDashboard() {
         </header>
         <ProjectSessionRail
           projects={selection.items}
-          selectedProjectId={railSelectedProjectId}
-          selectedSessionId={railSelectedSessionId}
-          pendingProjectId={pendingSessionTarget?.projectId ?? null}
-          pendingSessionId={pendingSessionTarget?.sessionId ?? null}
+          selectedProjectId={selectedProjectId}
+          selectedSessionId={selectedSessionId}
+          pendingProjectId={null}
+          pendingSessionId={null}
           projectsHasMore={selection.projects.hasNextPage}
           projectsLoadingMore={selection.projects.isFetchingNextPage}
           onLoadMoreProjects={() => {
@@ -1018,6 +1590,7 @@ function ProjectsDashboard() {
           onVisibleProjectIdsChange={setVisibleProjectIds}
           onSelectProject={(projectId) => {
             beginSelectionIntent()
+            setSelectedSessionRuntime(null)
             selection.selectProject(projectId)
           }}
           onSelectSession={handleSelectSession}
@@ -1038,19 +1611,22 @@ function ProjectsDashboard() {
           </div>
         </header>
         {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
-          ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
-          : <WorkspacePanel
-            projectId={selection.selectedProjectId}
-            detail={selection.projectSessions.data}
-            selectedSessionId={selection.selectedSessionId}
-            setSelectedSessionId={selection.setSelectedSessionId}
-            refreshSessionLists={refreshVisibleWindows}
-            onProjectRequired={(text) => { setNewProjectPath(''); setProjectChoice({ text, mode: 'choose', error: null }) }}
-            pendingProjectId={pendingProjectId}
-            pendingProjectRequest={pendingProjectRequest}
-            onSessionCreated={handleSessionCreated}
-          />}
-      </section>
+            ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
+            : <WorkspacePanel
+              projectId={selection.selectedProjectId}
+              detail={selection.projectSessions.data}
+              selectedSessionId={selection.selectedSessionId}
+              setSelectedSessionId={selection.setSelectedSessionId}
+              refreshSessionLists={refreshVisibleWindows}
+              onProjectRequired={(text) => { setNewProjectPath(''); setProjectChoice({ text, mode: 'choose', error: null }) }}
+              pendingProjectId={pendingProjectId}
+              pendingProjectRequest={pendingProjectRequest}
+              onSessionCreated={handleSessionCreated}
+              settings={settings}
+              sessionRuntime={selectedSessionRuntime}
+            />}
+        </section>
+      )}
       {projectChoice ? (
         <dialog className="project-choice-dialog" open aria-labelledby="project-choice-title">
           <form className="project-choice-form" onSubmit={(event) => {
@@ -1132,22 +1708,67 @@ function DebugDashboard() {
   )
 }
 
-function AccessRequired() {
+function AccessRequired({ session }: { session?: { githubConfigured: boolean } }) {
+  const queryClient = useQueryClient()
+  const [flow, setFlow] = useState<{ flowId: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!flow) return
+    let stopped = false
+    const poll = async () => {
+      try {
+        const response = await pollGitHubDeviceLogin(flow.flowId)
+        if (stopped) return
+        if (response.status === 'authorized') {
+          await queryClient.invalidateQueries({ queryKey: ['auth-session'] })
+          return
+        }
+        window.setTimeout(poll, response.interval * 1000)
+      } catch (error) {
+        if (!stopped) setError(error instanceof Error ? error.message : String(error))
+      }
+    }
+    const timer = window.setTimeout(poll, flow.interval * 1000)
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [flow, queryClient])
+
+  async function startLogin() {
+    setError(null)
+    try {
+      setFlow(await startGitHubDeviceLogin())
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   return (
     <section className="panel access-required">
-      <p className="eyebrow">Token required</p>
-      <h2>Open this dashboard with a token.</h2>
-      <p className="lede">Add <code>?token=&lt;token&gt;</code> to the URL to load projects and sessions.</p>
+      <p className="eyebrow">Sign in</p>
+      <h2>Open Cotta with GitHub.</h2>
+      <p className="lede">GitHub authorizes your identity; Cotta stores a local HttpOnly session cookie.</p>
+      {session?.githubConfigured ? <div className="login-actions"><button type="button" onClick={startLogin}>Sign in with GitHub</button></div> : null}
+      {flow ? (
+        <div className="panel login-device-flow">
+          <p className="muted">Enter this code on GitHub:</p>
+          <p className="login-code">{flow.userCode}</p>
+          <a href={flow.verificationUriComplete ?? flow.verificationUri} target="_blank" rel="noreferrer">Open GitHub device login</a>
+          <p className="muted">Waiting for authorization…</p>
+        </div>
+      ) : null}
+      {error ? <div className="panel error">{error}</div> : null}
     </section>
   )
 }
 
 function App() {
-  const token = authToken()
+  const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
+  const session = authSession.data
+  const authenticated = Boolean(session?.authenticated || (session && !session.githubConfigured))
 
   return (
     <main className="shell">
-      {token ? <ProjectsDashboard /> : <AccessRequired />}
+      {authSession.isLoading ? <div className="panel muted">Loading authentication…</div> : authenticated ? <ProjectsDashboard /> : <AccessRequired session={session} />}
     </main>
   )
 }

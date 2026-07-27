@@ -3,12 +3,25 @@ import { homedir } from 'node:os'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { Hono } from 'hono'
 import {
+  appSettingsSchema,
   createProjectRequestSchema,
   createTurnRequestSchema,
+  modelCatalogResponseSchema,
   projectSessionsQuerySchema,
   projectSessionsQueryResponseSchema,
+  permissionModeSchema,
+  sessionRuntimeResponseSchema,
+  settingsResponseSchema,
+  settingsUpdateRequestSchema,
+  type AppSettings,
+  type CreateTurnRequest,
   type CreateTurnResponse,
+  type DefaultTurnOption,
+  type EffortLevel,
+  type ModelCatalogItem,
+  type ModelSelection,
   type ListVersionsEvent,
+  type PermissionMode,
   type ProjectResponse,
   type ProjectsResponse,
   type ProjectSessionsQueryResponse,
@@ -19,11 +32,13 @@ import {
   type SessionRunState,
   type SessionTimelineStateResponse,
 } from '@cotta/shared'
-import { projectIdFromPath, type ClaudeCodeApi } from '../claude-code-api.js'
+import { projectIdFromPath, projectPathFromId, type ClaudeCodeApi } from '../claude-code-api.js'
 import { ListCursorError } from '../list-cursor.js'
 import type { SessionSummaryCache } from '../session-summary-cache.js'
 import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
+import type { ModelCatalogProvider } from '../model-catalog.js'
+import type { SettingsStore } from '../settings-store.js'
 import { projectSessionTimeline } from '../timeline-projection.js'
 
 export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionRunState' | 'startTurn' | 'subscribe'>
@@ -114,10 +129,96 @@ function overlayLiveSessionRunState<T extends { sessions: Array<{ id: string }> 
   }
 }
 
+function matchingCatalogModel(models: ModelCatalogItem[], model: string): ModelCatalogItem | undefined {
+  return models.find((item) => item.value === model || item.resolvedModel === model)
+}
+
+function readSettings(settingsStore?: SettingsStore): AppSettings {
+  return appSettingsSchema.parse(settingsStore?.getAll('global') ?? {})
+}
+
+type ResolvedTurnOptions = {
+  permissionMode: PermissionMode
+  model: ModelSelection | DefaultTurnOption | null
+  effort: EffortLevel | DefaultTurnOption | null
+}
+
+function resolveTurnOptions(input: { body?: Pick<CreateTurnRequest, 'permissionMode' | 'model' | 'effort'>; projectId: string; sessionId?: string; settingsStore?: SettingsStore }): ResolvedTurnOptions {
+  const globalSettings = readSettings(input.settingsStore)
+  const sessionSettings = input.sessionId ? input.settingsStore?.getSessionSettings(input.projectId, input.sessionId) : null
+  return {
+    permissionMode: input.body?.permissionMode ?? sessionSettings?.permissionMode ?? globalSettings.defaultPermissionMode ?? 'default',
+    model: input.body?.model ?? sessionSettings?.model ?? globalSettings.defaultModel ?? null,
+    effort: input.body?.effort ?? sessionSettings?.effort ?? globalSettings.defaultEffort ?? null,
+  }
+}
+
+function sdkModel(model: ResolvedTurnOptions['model']): ModelSelection | undefined {
+  return !model || model === 'default' ? undefined : model
+}
+
+function sdkEffort(effort: ResolvedTurnOptions['effort']): EffortLevel | undefined {
+  return !effort || effort === 'default' ? undefined : effort
+}
+
+function persistedTurnOptions(options: ResolvedTurnOptions) {
+  return { ...options, model: sdkModel(options.model) ?? null, effort: sdkEffort(options.effort) ?? null }
+}
+
+function validateTurnOptions(options: ResolvedTurnOptions, settingsStore?: SettingsStore): { ok: true } | { ok: false; error: 'unsupported_model' | 'unsupported_effort' } {
+  const modelValue = sdkModel(options.model)
+  const effortValue = sdkEffort(options.effort)
+  if (!modelValue && !effortValue) return { ok: true }
+  const catalog = readSettings(settingsStore).modelCatalog
+  if (!catalog) return { ok: true }
+  const model = modelValue ? matchingCatalogModel(catalog.models, modelValue) : catalog.models[0]
+  if (!model) return { ok: false, error: 'unsupported_model' }
+  if (effortValue && (!model.supportsEffort || !model.supportedEffortLevels?.includes(effortValue))) return { ok: false, error: 'unsupported_effort' }
+  return { ok: true }
+}
+
 export function registerProjectRoutes(
   app: Hono,
-  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache },
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; modelCatalogProvider: ModelCatalogProvider; settingsStore?: SettingsStore; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache },
 ): void {
+  app.get('/api/settings', (c) => c.json(settingsResponseSchema.parse({ settings: readSettings(input.settingsStore) })))
+
+  app.put('/api/settings', async (c) => {
+    try {
+      const body = settingsUpdateRequestSchema.parse(await c.req.json())
+      input.settingsStore?.setMany('global', body.settings)
+      return c.json(settingsResponseSchema.parse({ settings: readSettings(input.settingsStore) }))
+    } catch (error) {
+      console.error('settings:update failed', error)
+      return c.json({ error: 'settings_update_failed' }, 500)
+    }
+  })
+
+  app.post('/api/settings/model-catalog/refresh', async (c) => {
+    try {
+      const projectId = c.req.query('projectId')
+      const cwd = projectId ? projectPathFromId(projectId) : undefined
+      if (projectId && !cwd) return c.json({ error: 'invalid_project_id' }, 400)
+      input.settingsStore?.setMany('global', { modelCatalog: await input.modelCatalogProvider(cwd ?? undefined) })
+      return c.json(settingsResponseSchema.parse({ settings: readSettings(input.settingsStore) }))
+    } catch (error) {
+      console.error('settings:model-catalog-refresh failed', error)
+      return c.json({ error: 'model_catalog_refresh_failed' }, 500)
+    }
+  })
+
+  app.get('/api/model-catalog', async (c) => {
+    try {
+      const projectId = c.req.query('projectId')
+      const cwd = projectId ? projectPathFromId(projectId) : undefined
+      if (projectId && !cwd) return c.json({ error: 'invalid_project_id' }, 400)
+      return c.json(modelCatalogResponseSchema.parse(await input.modelCatalogProvider(cwd ?? undefined)))
+    } catch (error) {
+      console.error('model-catalog:list failed', error)
+      return c.json({ error: 'model_catalog_failed' }, 500)
+    }
+  })
+
   app.get('/api/projects', async (c) => {
     try {
       const response: ProjectsResponse = await input.claudeCodeApi.listProjects({
@@ -247,12 +348,22 @@ export function registerProjectRoutes(
 
   app.post('/api/projects/:projectId/sessions', async (c) => {
     try {
+      const projectId = c.req.param('projectId')
       const body = createTurnRequestSchema.parse(await c.req.json())
+      const options = resolveTurnOptions({ body, projectId, settingsStore: input.settingsStore })
+      const validation = validateTurnOptions(options, input.settingsStore)
+      if (!validation.ok) return c.json({ error: validation.error }, 400)
+      const model = sdkModel(options.model)
+      const effort = sdkEffort(options.effort)
       const result = await input.liveTurnManager.startTurn({
-        projectId: c.req.param('projectId'),
+        projectId,
         text: body.text,
         userMessageUuid: body.userMessageUuid,
+        permissionMode: options.permissionMode,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
       })
+      input.settingsStore?.setSessionSettings(projectId, result.sessionId, persistedTurnOptions(options))
       const response: CreateTurnResponse = {
         projectId: c.req.param('projectId'),
         sessionId: result.sessionId,
@@ -267,13 +378,24 @@ export function registerProjectRoutes(
 
   app.post('/api/projects/:projectId/sessions/:sessionId/turns', async (c) => {
     try {
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
       const body = createTurnRequestSchema.parse(await c.req.json())
+      const options = resolveTurnOptions({ body, projectId, sessionId, settingsStore: input.settingsStore })
+      const validation = validateTurnOptions(options, input.settingsStore)
+      if (!validation.ok) return c.json({ error: validation.error }, 400)
+      const model = sdkModel(options.model)
+      const effort = sdkEffort(options.effort)
       const result = await input.liveTurnManager.startTurn({
-        projectId: c.req.param('projectId'),
-        sessionId: c.req.param('sessionId'),
+        projectId,
+        sessionId,
         text: body.text,
         userMessageUuid: body.userMessageUuid,
+        permissionMode: options.permissionMode,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
       })
+      input.settingsStore?.setSessionSettings(projectId, result.sessionId, persistedTurnOptions(options))
       const response: CreateTurnResponse = {
         projectId: c.req.param('projectId'),
         sessionId: result.sessionId,
@@ -294,8 +416,25 @@ export function registerProjectRoutes(
       if (!state) {
         return c.json({ error: 'session_not_found' }, 404)
       }
-      input.liveTurnManager.ensureRuntime({ projectId, sessionId })
-      return c.json({ ok: true })
+      const settings = readSettings(input.settingsStore)
+      const options = resolveTurnOptions({ projectId, sessionId, settingsStore: input.settingsStore })
+      const model = sdkModel(options.model)
+      const effort = sdkEffort(options.effort)
+      input.liveTurnManager.ensureRuntime({
+        projectId,
+        sessionId,
+        permissionMode: options.permissionMode,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+      })
+      return c.json(sessionRuntimeResponseSchema.parse({
+        ok: true,
+        projectId,
+        sessionId,
+        settings: persistedTurnOptions(options),
+        availablePermissionModes: permissionModeSchema.options,
+        availableModels: settings.modelCatalog?.models ?? [],
+      }))
     } catch (error) {
       console.error('session:runtime failed', error)
       return c.json({ error: 'session_runtime_failed' }, 500)

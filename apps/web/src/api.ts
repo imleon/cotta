@@ -166,9 +166,11 @@ export async function fetchSessionTimeline(
 export async function fetchSessionRawMessages(
   projectId: string,
   sessionId: string,
+  turnId?: string,
 ): Promise<SessionRawMessagesResponse> {
+  const params = turnId ? `?turnId=${encodeURIComponent(turnId)}` : ''
   const response = await fetch(
-    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/raw-messages`,
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/raw-messages${params}`,
   )
   if (!response.ok) throw new Error(`Session raw messages request failed: ${response.status}`)
   return sessionRawMessagesResponseSchema.parse(await response.json())

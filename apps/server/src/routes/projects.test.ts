@@ -693,6 +693,7 @@ describe('project routes', () => {
     })
   })
 
+
   it('creates an existing-session turn without SDK model and effort by default', async () => {
     let received: unknown
     const response = await createApp({
@@ -1052,6 +1053,51 @@ describe('project routes', () => {
       sessionId: 'session-newest',
       messages,
     })
+  })
+
+  it('returns raw messages for one turn', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/session-newest/raw-messages?turnId=user-1`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(sessionRawMessagesResponseSchema.parse(await response.json())).toEqual({
+      sessionId: 'session-newest',
+      messages: messages.slice(0, 2),
+    })
+  })
+
+  it('returns all user and assistant messages for one turn', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/session-newest/raw-messages?turnId=user-2`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(sessionRawMessagesResponseSchema.parse(await response.json())).toEqual({
+      sessionId: 'session-newest',
+      messages: messages.slice(2),
+    })
+  })
+
+  it('returns raw messages for a leading response-only frame', async () => {
+    const response = await createTestApp({}, [messages[1]!, messages[0]!]).request(
+      `/api/projects/${project.id}/sessions/session-newest/raw-messages?turnId=assistant-1`,
+    )
+
+    expect(response.status).toBe(200)
+    expect(sessionRawMessagesResponseSchema.parse(await response.json())).toEqual({
+      sessionId: 'session-newest',
+      messages: [messages[1]],
+    })
+  })
+
+  it('returns 404 for an unknown turn', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/session-newest/raw-messages?turnId=missing`,
+    )
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'turn_not_found' })
   })
 
   it('returns 404 for raw messages of an unknown session', async () => {

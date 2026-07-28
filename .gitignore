@@ -7,6 +7,7 @@ dist/
 data/
 .env
 *.log
+*.tsbuildinfo
 .dbg/
 TODO.md
 NOTES.md

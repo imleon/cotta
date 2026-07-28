@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createProject, fetchAuthSession, fetchProjects, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, saveSettings, startGitHubDeviceLogin } from './api'
+import { createProject, fetchAuthSession, fetchProjects, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, saveSettings, startGitHubDeviceLogin } from './api'
 
 describe('createProject', () => {
   beforeEach(() => {
@@ -81,6 +81,19 @@ describe('settings', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/settings')
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/settings', expect.objectContaining({ method: 'PUT' }))
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/settings/model-catalog/refresh?projectId=p1', { method: 'POST' })
+  })
+})
+
+describe('fetchSessionRawMessages', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('requests only the selected turn when provided', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ sessionId: 'session-1', messages: [] }), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchSessionRawMessages('project-1', 'session-1', 'turn/1')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session-1/raw-messages?turnId=turn%2F1')
   })
 })
 

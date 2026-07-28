@@ -156,15 +156,30 @@ function timelineBlocksForToolResultMessage(message: SessionMessage): TimelineBl
   }]
 }
 
+function primaryInputData(message: SessionMessage, data: unknown): unknown {
+  if (!isPrimaryTimelineUserMessage(message)) return data
+  return isRecord(data) ? { ...data, primaryTimelineUserMessage: true } : data
+}
+
 function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
   if (message.type === 'user') {
     if (isToolResultMessage(message)) return timelineBlocksForToolResultMessage(message)
     if (isTaskNotificationMessage(message)) return timelineBlocksForTaskNotificationMessage(message)
+    const content = messageContent(message)
+    if (Array.isArray(content)) {
+      return content.flatMap((block, index): TimelineBlock[] => {
+        if (!isRecord(block)) return []
+        if (block.type === 'text' && typeof block.text === 'string') return [{ id: `${message.uuid}:user:${index}`, kind: 'user.message', sourceEventIds: [message.uuid], data: primaryInputData(message, { text: block.text, raw: block }) }]
+        if (block.type === 'image') return [{ id: `${message.uuid}:image:${index}`, kind: 'user.image', sourceEventIds: [message.uuid], data: primaryInputData(message, block) }]
+        if (block.type === 'file' || block.type === 'document') return [{ id: `${message.uuid}:file:${index}`, kind: 'user.file', sourceEventIds: [message.uuid], data: primaryInputData(message, block) }]
+        return []
+      })
+    }
     return [{
       id: `${message.uuid}:user`,
       kind: 'user.message',
       sourceEventIds: [message.uuid],
-      data: { text: userText(message), raw: message.message },
+      data: primaryInputData(message, { text: userText(message), raw: message.message }),
     }]
   }
 
@@ -201,7 +216,13 @@ function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
 
 function turnTitleFromMessage(message: SessionMessage): string {
   const text = userText(message).trim().replace(/\s+/g, ' ')
-  if (!text) return 'Untitled turn'
+  if (!text) {
+    const content = messageContent(message)
+    const imageCount = Array.isArray(content)
+      ? content.filter((block) => isRecord(block) && block.type === 'image').length
+      : 0
+    return imageCount > 1 ? `${imageCount} images` : imageCount === 1 ? 'Image' : 'Untitled turn'
+  }
   return text.length > 80 ? `${text.slice(0, 77)}…` : text
 }
 
@@ -237,6 +258,29 @@ function projectTurns(messages: SessionMessage[]): TurnSummary[] {
   }
 
   return turns
+}
+
+export function sessionMessagesForTurn(messages: SessionMessage[], turnId: string): SessionMessage[] | null {
+  const turnsByToolUseId = new Map<string, string>()
+  let currentTurnId: string | null = null
+  let foundTurn = false
+
+  const selected = messages.filter((message) => {
+    if (isPrimaryTimelineUserMessage(message) || currentTurnId === null) {
+      currentTurnId = message.uuid
+      if (currentTurnId === turnId) foundTurn = true
+    }
+    const blocks = timelineBlocksForMessage(message)
+    const targetTurnIds = new Set(blocks.map((block) => block.kind === 'tool.result' && block.toolUseId
+      ? turnsByToolUseId.get(block.toolUseId) ?? currentTurnId
+      : currentTurnId))
+    for (const block of blocks) {
+      if (block.kind === 'assistant.tool_use' && block.toolUseId && currentTurnId) turnsByToolUseId.set(block.toolUseId, currentTurnId)
+    }
+    return (message.type === 'user' || message.type === 'assistant') && targetTurnIds.has(turnId)
+  })
+
+  return foundTurn ? selected : null
 }
 
 export function projectSessionTimeline(

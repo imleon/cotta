@@ -17,6 +17,7 @@ import {
   type ProjectSessionsResponse,
   type SessionRuntimeResponse,
   type TurnSummary,
+  isPrimaryTimelineUserMessage,
 } from '@cotta/shared'
 import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
@@ -185,23 +186,8 @@ function rawStopReason(value: unknown): string | null {
   return typeof stopReason === 'string' && stopReason ? stopReason : null
 }
 
-function containsToolResult(content: unknown): boolean {
-  return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
-}
-
-function hasUserTextContent(content: unknown): boolean {
-  if (typeof content === 'string') return content.trim().length > 0
-  return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)
-}
-
 function isPrimaryUserMessage(value: unknown): boolean {
-  const message = rawField(value, 'message')
-  const content = isRecord(message) ? message.content : undefined
-  return rawStringField(value, 'type') === 'user'
-    && isRecord(message)
-    && message.role === 'user'
-    && !containsToolResult(content)
-    && hasUserTextContent(content)
+  return isPrimaryTimelineUserMessage(value)
 }
 
 function sourceEventLabel(ids: string[]): string {
@@ -437,7 +423,7 @@ function pendingUserTurn(text: string, sessionId: string | null, userMessageUuid
       id: `${userMessageUuid}:user`,
       kind: 'user.message',
       sourceEventIds: [userMessageUuid],
-      data: { text, status: 'pending' },
+      data: { text, status: 'pending', primaryTimelineUserMessage: true },
     }],
   }
 }

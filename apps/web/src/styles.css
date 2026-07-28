@@ -433,7 +433,7 @@ h2 {
 .raw-messages-dialog {
   width: min(1100px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
-  overflow: hidden;
+  overflow: auto;
   border: 1px solid var(--color-border);
   border-radius: 16px;
   background: var(--color-surface);
@@ -457,6 +457,7 @@ h2 {
 .raw-message-waterfall-track { height: 10px; overflow: hidden; border-radius: 999px; background: rgb(37 99 235 / 8%); }
 .raw-message-waterfall-bar { min-width: 2px; height: 100%; border-radius: 999px; background: rgb(37 99 235 / 68%); }
 .raw-messages-dialog .debug-table-wrap { max-height: calc(100vh - 350px); }
+.raw-live-events { gap: 8px; margin-top: 16px; }
 .raw-messages-table { min-width: 720px; }
 .raw-messages-table tr.raw-message-user td { background: var(--color-accent-soft); }
 .raw-messages-table tr.raw-message-assistant td { background: var(--tl-surface-soft); }
@@ -1134,7 +1135,6 @@ h2 {
 
 .turn-composer textarea:focus-visible { box-shadow: none; }
 .turn-composer textarea::placeholder { color: rgb(100 116 139 / 68%); }
-
 .turn-composer-footer {
   display: flex;
   justify-content: space-between;
@@ -1571,7 +1571,6 @@ h2 {
   justify-items: end;
   gap: 10px;
 }
-
 .settings-picker .permission-mode-menu,
 .settings-picker .model-effort-menu {
   top: calc(100% + 8px);

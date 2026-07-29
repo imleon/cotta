@@ -6,7 +6,7 @@ import {
   type SessionMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
-import type { ProjectSummary, SessionRunState, SessionSummary, SessionTimelineState } from '@cotta/shared'
+import type { ProjectSummary, SessionInfoResponse, SessionRunState, SessionSummary, SessionTimelineState } from '@cotta/shared'
 import { createListCursor, resolveListCursor } from './list-cursor.js'
 import { SessionActivityTracker } from './session-activity.js'
 import type { SessionSummaryCache } from './session-summary-cache.js'
@@ -118,6 +118,23 @@ function toSessionTimelineState(activity: SessionActivityTracker, projectId: str
   }
 }
 
+function toSessionInfo(activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo): Omit<SessionInfoResponse, 'runState' | 'availablePermissionModes' | 'availableModels'> {
+  return {
+    projectId,
+    lastActivityAt: activity.get(session),
+    sessionId: session.sessionId,
+    summary: session.summary,
+    lastModified: session.lastModified,
+    fileSize: session.fileSize,
+    customTitle: session.customTitle,
+    firstPrompt: session.firstPrompt,
+    gitBranch: session.gitBranch,
+    cwd: session.cwd,
+    tag: session.tag,
+    createdAt: session.createdAt,
+  }
+}
+
 export type ProjectSessionsOptions = {
   limit?: number
   cursor?: string | null
@@ -135,6 +152,7 @@ export type ClaudeCodeApi = {
   listProjects(options?: ProjectSessionsOptions): Promise<{ projects: ProjectSummary[]; hasMore: boolean; nextCursor: string | null }>
   getProject(projectId: string): Promise<ProjectSummary | null>
   listProjectSessions(projectId: string, options?: ProjectSessionsOptions): Promise<ProjectSessions | null>
+  getSessionInfo(projectId: string, sessionId: string): Promise<Omit<SessionInfoResponse, 'runState' | 'availablePermissionModes' | 'availableModels'> | null>
   getSessionTimelineState(projectId: string, sessionId: string): Promise<SessionTimelineState | null>
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
@@ -199,6 +217,14 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
           ? createListCursor({ kind: 'project-sessions', epoch: paginationEpoch, ids, offset, projectId })
           : null,
       }
+    },
+
+    async getSessionInfo(projectId, sessionId) {
+      const projectPath = projectPathFromId(projectId)
+      if (!projectPath) return null
+      const session = await getExactProjectSession(projectPath, sessionId)
+      if (!session) return null
+      return toSessionInfo(activity, projectId, session)
     },
 
     async getSessionTimelineState(projectId, sessionId) {

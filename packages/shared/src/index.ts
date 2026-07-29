@@ -287,6 +287,25 @@ export const modelCatalogResponseSchema = z.object({
 })
 export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>
 
+export const sessionInfoResponseSchema = z.object({
+  projectId: z.string(),
+  lastActivityAt: z.number().optional(),
+  runState: sessionRunStateSchema,
+  sessionId: z.string(),
+  summary: z.string(),
+  lastModified: z.number(),
+  fileSize: z.number().optional(),
+  customTitle: z.string().optional(),
+  firstPrompt: z.string().optional(),
+  gitBranch: z.string().optional(),
+  cwd: z.string().optional(),
+  tag: z.string().optional(),
+  createdAt: z.number().optional(),
+  availablePermissionModes: z.array(permissionModeSchema),
+  availableModels: z.array(modelCatalogItemSchema),
+})
+export type SessionInfoResponse = z.infer<typeof sessionInfoResponseSchema>
+
 export const appSettingsSchema = z.object({
   defaultPermissionMode: permissionModeSchema.optional(),
   defaultModel: modelSelectionSchema.nullable().optional(),
@@ -364,8 +383,6 @@ export const sessionRuntimeResponseSchema = z.object({
     model: modelSelectionSchema.nullable(),
     effort: effortLevelSchema.nullable(),
   }),
-  availablePermissionModes: z.array(permissionModeSchema),
-  availableModels: z.array(modelCatalogItemSchema),
 })
 
 export type SessionRuntimeResponse = z.infer<typeof sessionRuntimeResponseSchema>

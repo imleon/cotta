@@ -10,6 +10,7 @@ import {
   settingsResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  sessionInfoResponseSchema,
   sessionLiveEventsResponseSchema,
   sessionRawMessagesResponseSchema,
   sessionRuntimeResponseSchema,
@@ -26,6 +27,7 @@ import {
   type ProjectSessionsResponse,
   type ProjectsResponse,
   type SettingsResponse,
+  type SessionInfoResponse,
   type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
   type SessionRuntimeResponse,
@@ -186,6 +188,14 @@ export async function fetchSessionLiveEvents(
   )
   if (!response.ok) throw new Error(`Session live events request failed: ${response.status}`)
   return sessionLiveEventsResponseSchema.parse(await response.json())
+}
+
+export async function fetchSessionInfo(projectId: string, sessionId: string): Promise<SessionInfoResponse> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/info`,
+  )
+  if (!response.ok) throw new Error(`Session info request failed: ${response.status}`)
+  return sessionInfoResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionTimelineState(

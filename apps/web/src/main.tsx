@@ -15,11 +15,12 @@ import {
   type PermissionMode,
   type PersistedLiveEvent,
   type ProjectSessionsResponse,
+  type SessionInfoResponse,
   type SessionRuntimeResponse,
   type TurnSummary,
   isPrimaryTimelineUserMessage,
 } from '@cotta/shared'
-import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
@@ -486,6 +487,7 @@ function TurnComposer({
   onSessionCreated,
   settings,
   sessionRuntime,
+  sessionInfo,
 }: {
   projectId: string | null
   selectedSessionId: string | null
@@ -499,6 +501,7 @@ function TurnComposer({
   onSessionCreated: (projectId: string, sessionId: string) => void
   settings: AppSettings
   sessionRuntime: SessionRuntimeResponse | null
+  sessionInfo: SessionInfoResponse | null
 }) {
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -517,10 +520,11 @@ function TurnComposer({
   const [effortMenuPosition, setEffortMenuPosition] = useState<CSSProperties>()
   const modelMenuRef = useRef<HTMLDivElement | null>(null)
   const runtimeSettings = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId ? sessionRuntime.settings : null
-  const permissionOptions = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId
-    ? PERMISSION_MODE_OPTIONS.filter((option) => sessionRuntime.availablePermissionModes.includes(option.value))
+  const info = sessionInfo?.projectId === projectId && sessionInfo.sessionId === selectedSessionId ? sessionInfo : null
+  const permissionOptions = info
+    ? PERMISSION_MODE_OPTIONS.filter((option) => info.availablePermissionModes.includes(option.value))
     : PERMISSION_MODE_OPTIONS
-  const catalogModels = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId ? sessionRuntime.availableModels : settings.modelCatalog?.models ?? []
+  const catalogModels = info?.availableModels ?? settings.modelCatalog?.models ?? []
   const selectedModel = model === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === model || item.resolvedModel === model)
   const menuModel = menuModelValue === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === menuModelValue || item.resolvedModel === menuModelValue)
   const triggerModelLabel = selectedModel?.displayName || 'Claude Code default'
@@ -677,7 +681,7 @@ function TurnComposer({
               event.preventDefault()
               void submitTurn(retryProjectId ?? projectId)
             }}
-            placeholder="随心输入"
+            placeholder="Type whatever you like"
             rows={1}
           />
           <div className="turn-composer-footer">
@@ -817,6 +821,7 @@ function WorkspacePanel({
   onSessionCreated,
   settings,
   sessionRuntime,
+  sessionInfo,
 }: {
   projectId: string | null
   detail: ProjectSessionsResponse | undefined
@@ -829,6 +834,7 @@ function WorkspacePanel({
   onSessionCreated: (projectId: string, sessionId: string) => void
   settings: AppSettings
   sessionRuntime: SessionRuntimeResponse | null
+  sessionInfo: SessionInfoResponse | null
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
@@ -865,6 +871,7 @@ function WorkspacePanel({
         onSessionCreated={onSessionCreated}
         settings={settings}
         sessionRuntime={sessionRuntime}
+        sessionInfo={sessionInfo}
       />
     </section>
   )
@@ -1224,6 +1231,9 @@ function ProjectsDashboard() {
   const [pendingProjectRequest, setPendingProjectRequest] = useState(0)
   const [refreshingLists, setRefreshingLists] = useState(false)
   const [selectedSessionRuntime, setSelectedSessionRuntime] = useState<SessionRuntimeResponse | null>(null)
+  const [selectedSessionInfo, setSelectedSessionInfo] = useState<SessionInfoResponse | null>(null)
+  const [sessionInfoOpen, setSessionInfoOpen] = useState(false)
+  const [isSessionRailSnapping, setIsSessionRailSnapping] = useState(false)
   const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
   const navWidthRef = useRef(DASHBOARD_NAV_DEFAULT_WIDTH)
@@ -1266,6 +1276,7 @@ function ProjectsDashboard() {
     beginSelectionIntent()
     setPendingProjectId(null)
     setSelectedSessionRuntime(null)
+    setSelectedSessionInfo(null)
     selection.clearSelection()
   }
 
@@ -1273,6 +1284,7 @@ function ProjectsDashboard() {
     const requestId = beginSelectionIntent()
     setProjectChoice(null)
     setSelectedSessionRuntime(null)
+    setSelectedSessionInfo(null)
     setPendingProjectId(projectId)
     setPendingProjectRequest(requestId)
   }
@@ -1280,8 +1292,24 @@ function ProjectsDashboard() {
   function handleSessionCreated(projectId: string, sessionId: string) {
     selection.selectSession(projectId, sessionId)
     setSelectedSessionRuntime(null)
+    setSelectedSessionInfo(null)
     setPendingProjectId(null)
   }
+
+  useEffect(() => { setSessionInfoOpen(false) }, [selectedProjectId, selectedSessionId])
+
+  useEffect(() => {
+    if (!selectedProjectId || !selectedSessionId) {
+      setSelectedSessionInfo(null)
+      return
+    }
+    let cancelled = false
+    setSelectedSessionInfo(null)
+    void fetchSessionInfo(selectedProjectId, selectedSessionId).then((info) => {
+      if (!cancelled) setSelectedSessionInfo(info)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [selectedProjectId, selectedSessionId])
 
   async function createProjectForPendingTurn(directoryPath: string) {
     if (!projectChoice || projectChoice.mode !== 'create') return
@@ -1396,28 +1424,34 @@ function ProjectsDashboard() {
     const handle = event.currentTarget
     const pointerId = event.pointerId
     const startX = event.clientX
-    const startWidth = isSessionRailCollapsed ? 0 : sessionRailWidthRef.current
+    const startWidth = isSessionRailCollapsed ? 0 : sessionRailWidth
     let nextSavedWidth = startWidth
     setIsSessionRailResizing(true)
+    setIsSessionRailSnapping(false)
     handle.setPointerCapture?.(pointerId)
 
     function handlePointerMove(moveEvent: PointerEvent) {
       const dragWidth = clampWorkspaceRailDragWidth(startWidth + moveEvent.clientX - startX)
-      if (startWidth === 0 && dragWidth >= sessionRailWidthRef.current / 3) {
-        nextSavedWidth = sessionRailWidthRef.current
-        setSessionRailWidth(sessionRailWidthRef.current)
-        finishResize(false)
-        return
-      }
-      if (startWidth >= WORKSPACE_RAIL_MIN_WIDTH && dragWidth <= startWidth * 2 / 3) {
+      if (startWidth === 0 && dragWidth < WORKSPACE_RAIL_MIN_WIDTH / 2) {
         nextSavedWidth = 0
-        finishResize(true)
+        setIsSessionRailSnapping(false)
+        setSessionRailWidth(0)
+        setIsSessionRailCollapsed(true)
         return
       }
-      nextSavedWidth = dragWidth
-      setSessionRailWidth(dragWidth)
+      if (startWidth > 0 && dragWidth < WORKSPACE_RAIL_MIN_WIDTH / 2) {
+        nextSavedWidth = 0
+        setIsSessionRailSnapping(true)
+        setSessionRailWidth(0)
+        setIsSessionRailCollapsed(true)
+        return
+      }
+      const nextWidth = Math.max(WORKSPACE_RAIL_MIN_WIDTH, dragWidth)
+      nextSavedWidth = nextWidth
+      setIsSessionRailSnapping(dragWidth < WORKSPACE_RAIL_MIN_WIDTH)
+      setSessionRailWidth(nextWidth)
       setIsSessionRailCollapsed(false)
-      if (dragWidth >= WORKSPACE_RAIL_MIN_WIDTH) sessionRailWidthRef.current = dragWidth
+      sessionRailWidthRef.current = nextWidth
     }
 
     function finishResize(forceCollapsed?: boolean) {
@@ -1425,6 +1459,7 @@ function ProjectsDashboard() {
       if (collapsed) setSessionRailWidth(0)
       setIsSessionRailCollapsed(collapsed)
       setIsSessionRailResizing(false)
+      setIsSessionRailSnapping(false)
       try {
         handle.releasePointerCapture?.(pointerId)
       } catch {
@@ -1461,6 +1496,30 @@ function ProjectsDashboard() {
       .flatMap((page) => page.sessions)
       .find((session) => session.id === selectedSessionId)
   const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : 'New conversation')
+  const headerSessionInfo = selectedSessionInfo?.projectId === selectedProjectId && selectedSessionInfo.sessionId === selectedSessionId ? selectedSessionInfo : null
+  const headerSessionInfoRows = headerSessionInfo
+    ? [
+        ['Summary', headerSessionInfo.summary],
+        ['Session ID', headerSessionInfo.sessionId],
+        ['Status', headerSessionInfo.runState.phase],
+        ['Custom title', headerSessionInfo.customTitle],
+        ['First prompt', headerSessionInfo.firstPrompt],
+        ['Git branch', headerSessionInfo.gitBranch],
+        ['CWD', headerSessionInfo.cwd],
+        ['Tag', headerSessionInfo.tag],
+        ['Created', headerSessionInfo.createdAt ? new Date(headerSessionInfo.createdAt).toLocaleString() : null],
+        ['Last activity', headerSessionInfo.lastActivityAt ? new Date(headerSessionInfo.lastActivityAt).toLocaleString() : null],
+        ['Last modified', new Date(headerSessionInfo.lastModified).toLocaleString()],
+        ['File size', headerSessionInfo.fileSize ? `${headerSessionInfo.fileSize.toLocaleString()} bytes` : null],
+      ].filter((row): row is [string, string] => Boolean(row[1]))
+    : selectedSession
+      ? [
+          ['Title', selectedSession.title],
+          ['Session ID', selectedSession.id],
+          ['Status', selectedSession.runState.phase],
+          ['Last activity', selectedSession.lastActivityAt ? new Date(selectedSession.lastActivityAt).toLocaleString() : null],
+        ].filter((row): row is [string, string] => Boolean(row[1]))
+      : []
 
   const reconcileSelection = useCallback((selectionSnapshot: { intentId: number; projectId: string | null; sessionId: string | null }, outcomes: Map<string, { outcome: string; selectedSessionExists?: boolean }>) => {
     if (pendingSessionRequestRef.current !== selectionSnapshot.intentId || selectedProjectId !== selectionSnapshot.projectId || selectedSessionId !== selectionSnapshot.sessionId) return
@@ -1617,6 +1676,7 @@ function ProjectsDashboard() {
       data-nav-collapsed={navCollapsed ? 'true' : 'false'}
       data-nav-resizing={isResizing ? 'true' : 'false'}
       data-session-rail-resizing={isSessionRailResizing ? 'true' : 'false'}
+      data-session-rail-snapping={isSessionRailSnapping ? 'true' : 'false'}
       style={{ '--dashboard-nav-width': `${navWidth}px`, '--workspace-rail-width': `${sessionRailWidth}px` } as CSSProperties}
     >
       <aside className="dashboard-nav-rail" aria-label="Dashboard navigation">
@@ -1661,16 +1721,6 @@ function ProjectsDashboard() {
               >
                 {refreshingLists ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : '↻'}
               </button>
-              <button
-                className="project-rail-header-action"
-                type="button"
-                onClick={beginNewConversation}
-                disabled={refreshingLists}
-                aria-label="Start new conversation"
-                title="Start new conversation"
-              >
-                +
-              </button>
             </header>
             <ProjectSessionRail
               projects={selection.items}
@@ -1694,6 +1744,7 @@ function ProjectsDashboard() {
               onSelectProject={(projectId) => {
                 beginSelectionIntent()
                 setSelectedSessionRuntime(null)
+                setSelectedSessionInfo(null)
                 selection.selectProject(projectId)
               }}
               onSelectSession={handleSelectSession}
@@ -1733,12 +1784,37 @@ function ProjectsDashboard() {
                 </div>
               </div>
               <div className="project-meta-lines">
-                {selection.selectedSessionId ? <span className="project-meta-icon" data-tooltip={`Session ID: ${selection.selectedSessionId}`} aria-label={`Session ID: ${selection.selectedSessionId}`}>#</span> : null}
-                {detail?.project.path ? <span className="project-meta-icon project-path-icon" data-tooltip={`Project directory: ${detail.project.path}`} aria-label={`Project directory: ${detail.project.path}`}>
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h5l1.5 2h6.5v5.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 1.5 12Z" /></svg>
-                </span> : null}
+                {headerSessionInfoRows.length > 0 ? (
+                  <button
+                    className="project-meta-icon project-session-info-toggle"
+                    type="button"
+                    aria-label="Toggle session info"
+                    aria-expanded={sessionInfoOpen}
+                    aria-controls="workspace-session-info"
+                    onClick={() => setSessionInfoOpen((open) => !open)}
+                  >
+                    i
+                  </button>
+                ) : null}
+                <button
+                  className="project-meta-icon workspace-new-conversation-button"
+                  type="button"
+                  onClick={beginNewConversation}
+                  disabled={refreshingLists}
+                  aria-label="Start new conversation"
+                  title="Start new conversation"
+                >
+                  +
+                </button>
               </div>
             </header>
+            {sessionInfoOpen && headerSessionInfoRows.length > 0 ? (
+              <div className="session-info-block" id="workspace-session-info">
+                <dl className="session-info-kv">
+                  {headerSessionInfoRows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+                </dl>
+              </div>
+            ) : null}
             <div className="workspace-main-content">
               {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
                   ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
@@ -1754,6 +1830,7 @@ function ProjectsDashboard() {
                     onSessionCreated={handleSessionCreated}
                     settings={settings}
                     sessionRuntime={selectedSessionRuntime}
+                    sessionInfo={selectedSessionInfo}
                   />}
             </div>
           </div>

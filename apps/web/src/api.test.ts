@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createProject, fetchAuthSession, fetchProjects, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, saveSettings, startGitHubDeviceLogin } from './api'
+import { createProject, ensureSessionRuntime, fetchAuthSession, fetchProjects, fetchSessionInfo, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, saveSettings, startGitHubDeviceLogin } from './api'
 
 describe('createProject', () => {
   beforeEach(() => {
@@ -81,6 +81,37 @@ describe('settings', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/settings')
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/settings', expect.objectContaining({ method: 'PUT' }))
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/settings/model-catalog/refresh?projectId=p1', { method: 'POST' })
+  })
+})
+
+describe('session detail APIs', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('fetches session info', async () => {
+    const body = {
+      projectId: 'project-1',
+      lastActivityAt: 123,
+      runState: { phase: 'idle', activeTurnId: null },
+      sessionId: 'session-1',
+      summary: 'Session one',
+      lastModified: 123,
+      fileSize: 456,
+      availablePermissionModes: ['default'],
+      availableModels: [],
+    }
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchSessionInfo('project-1', 'session/1')).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/info')
+  })
+
+  it('ensures runtime without catalog fields', async () => {
+    const body = { ok: true, projectId: 'project-1', sessionId: 'session-1', settings: { permissionMode: 'default', model: null, effort: null } }
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(ensureSessionRuntime('project-1', 'session-1')).resolves.toEqual(body)
   })
 })
 

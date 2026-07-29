@@ -10,6 +10,7 @@ import {
   projectSessionsQuerySchema,
   projectSessionsQueryResponseSchema,
   permissionModeSchema,
+  sessionInfoResponseSchema,
   sessionRuntimeResponseSchema,
   settingsResponseSchema,
   settingsUpdateRequestSchema,
@@ -26,6 +27,7 @@ import {
   type ProjectsResponse,
   type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
+  type SessionInfoResponse,
   type SessionLiveEventsResponse,
   type SessionRawMessagesResponse,
   type SessionTimelineResponse,
@@ -408,6 +410,26 @@ export function registerProjectRoutes(
     }
   })
 
+  app.get('/api/projects/:projectId/sessions/:sessionId/info', async (c) => {
+    try {
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
+      const session = await input.claudeCodeApi.getSessionInfo(projectId, sessionId)
+      if (!session) return c.json({ error: 'session_not_found' }, 404)
+      const settings = readSettings(input.settingsStore)
+      const response: SessionInfoResponse = {
+        ...session,
+        runState: input.liveTurnManager.sessionRunState(sessionId) ?? defaultRunState(),
+        availablePermissionModes: permissionModeSchema.options,
+        availableModels: settings.modelCatalog?.models ?? [],
+      }
+      return c.json(sessionInfoResponseSchema.parse(response))
+    } catch (error) {
+      console.error('session:info failed', error)
+      return c.json({ error: 'session_info_failed' }, 500)
+    }
+  })
+
   app.post('/api/projects/:projectId/sessions/:sessionId/runtime', async (c) => {
     try {
       const projectId = c.req.param('projectId')
@@ -416,7 +438,6 @@ export function registerProjectRoutes(
       if (!state) {
         return c.json({ error: 'session_not_found' }, 404)
       }
-      const settings = readSettings(input.settingsStore)
       const options = resolveTurnOptions({ projectId, sessionId, settingsStore: input.settingsStore })
       const model = sdkModel(options.model)
       const effort = sdkEffort(options.effort)
@@ -432,8 +453,6 @@ export function registerProjectRoutes(
         projectId,
         sessionId,
         settings: persistedTurnOptions(options),
-        availablePermissionModes: permissionModeSchema.options,
-        availableModels: settings.modelCatalog?.models ?? [],
       }))
     } catch (error) {
       console.error('session:runtime failed', error)

@@ -8,6 +8,7 @@ import {
   projectSessionsQueryResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  sessionInfoResponseSchema,
   sessionLiveEventsResponseSchema,
   sessionRawMessagesResponseSchema,
   sessionTimelineResponseSchema,
@@ -233,6 +234,23 @@ function createTestApp(
           nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
         }
       },
+      async getSessionInfo(projectId, sessionId) {
+        if (projectId !== project.id || sessionId !== 'session-newest') return null
+        return {
+          projectId,
+          lastActivityAt: 123,
+          sessionId,
+          summary: 'Newest session',
+          lastModified: 123,
+          fileSize: 456,
+          customTitle: 'Custom newest',
+          firstPrompt: 'First prompt',
+          gitBranch: 'main',
+          cwd: '/tmp/cotta-v2',
+          tag: 'demo',
+          createdAt: 111,
+        }
+      },
       async getSessionTimelineState(projectId, sessionId) {
         if (projectId !== project.id || sessionId !== 'session-newest') return null
         return timelineState
@@ -262,6 +280,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -368,6 +387,7 @@ describe('project routes', () => {
         async listProjects(options) { receivedLimit = options?.limit; return { projects: [], hasMore: false, nextCursor: null } },
         async getProject() { return null },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -390,6 +410,7 @@ describe('project routes', () => {
         async listProjects() { throw new ListCursorError('stale') },
         async getProject() { return null },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -413,6 +434,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { throw new ListCursorError('stale') },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -510,6 +532,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -547,6 +570,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -584,6 +608,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -633,6 +658,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -667,6 +693,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -708,6 +735,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -743,6 +771,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -777,6 +806,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -804,6 +834,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -832,6 +863,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -942,6 +974,56 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'session_not_found' })
   })
 
+  it('returns session info for an existing session', async () => {
+    const runningState: SessionRunState = { phase: 'running', activeTurnId: 'turn-1', lastTurn: null }
+    const response = await createApp({
+      settingsStore: memorySettingsStore({ modelCatalog }),
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => runningState,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return { projectId: project.id, lastActivityAt: 123, sessionId: 'session-newest', summary: 'Newest session', lastModified: 123, fileSize: 456, customTitle: 'Custom newest', firstPrompt: 'First prompt', gitBranch: 'main', cwd: '/tmp/cotta-v2', tag: 'demo', createdAt: 111 } },
+        async getSessionTimelineState() { return timelineState },
+        async getSessionMessages() { return messages },
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/info`)
+
+    expect(response.status).toBe(200)
+    expect(sessionInfoResponseSchema.parse(await response.json())).toEqual({
+      projectId: project.id,
+      lastActivityAt: 123,
+      runState: runningState,
+      sessionId: 'session-newest',
+      summary: 'Newest session',
+      lastModified: 123,
+      fileSize: 456,
+      customTitle: 'Custom newest',
+      firstPrompt: 'First prompt',
+      gitBranch: 'main',
+      cwd: '/tmp/cotta-v2',
+      tag: 'demo',
+      createdAt: 111,
+      availablePermissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'],
+      availableModels: modelCatalog.models,
+    })
+  })
+
+  it('returns 404 for session info of an unknown session', async () => {
+    const response = await createTestApp().request(
+      `/api/projects/${project.id}/sessions/missing/info`,
+    )
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
   it('ensures runtime for an existing session', async () => {
     let ensured: unknown
     const response = await createApp({
@@ -956,6 +1038,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
+        async getSessionInfo() { return { projectId: project.id, lastActivityAt: 123, sessionId: 'session-newest', summary: 'Newest session', lastModified: 123, fileSize: 456 } },
         async getSessionTimelineState() { return timelineState },
         async getSessionMessages() { return messages },
       },
@@ -968,7 +1051,7 @@ describe('project routes', () => {
     expect(ensured).toMatchObject({ projectId: project.id, sessionId: 'session-newest', permissionMode: 'default' })
     expect(ensured).not.toHaveProperty('model')
     expect(ensured).not.toHaveProperty('effort')
-    expect(await response.json()).toMatchObject({ ok: true, projectId: project.id, sessionId: 'session-newest', settings: { model: null, effort: null } })
+    expect(await response.json()).toEqual({ ok: true, projectId: project.id, sessionId: 'session-newest', settings: { permissionMode: 'default', model: null, effort: null } })
   })
 
   it('returns 404 when ensuring runtime for an unknown session', async () => {

@@ -505,7 +505,7 @@ h2 {
 
 .workspace-main-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 18px;
 }
@@ -714,6 +714,14 @@ h2 {
   letter-spacing: -0.02em;
 }
 
+.workspace-main-header h2 {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .detail-panel {
   display: grid;
   min-width: 0;
@@ -801,6 +809,41 @@ h2 {
   color: rgb(100 116 139 / 42%);
 }
 
+.session-info-block {
+  grid-row: 2;
+  border-bottom: 1px solid var(--color-border);
+  background: rgb(148 163 184 / 10%);
+  padding: 10px 24px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.session-info-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  max-width: min(880px, 100%);
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.session-info-kv div {
+  display: contents;
+}
+
+.session-info-kv dt {
+  color: var(--color-muted);
+  font-weight: 700;
+}
+
+.session-info-kv dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .debug-toggle {
   border: 1px solid var(--color-border);
   border-radius: 999px;
@@ -835,6 +878,7 @@ h2 {
   place-items: center;
   border: 1px solid rgb(100 116 139 / 30%);
   border-radius: 999px;
+  background: transparent;
   color: rgb(100 116 139 / 76%);
   font-family: var(--font-mono);
   font-size: 14px;
@@ -875,6 +919,22 @@ h2 {
 .project-meta-icon:focus-visible::after {
   opacity: 1;
   transform: translateY(0);
+}
+
+.project-session-info-toggle {
+  font-style: italic;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.project-session-info-toggle[aria-expanded='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.project-session-info-toggle::after {
+  content: none;
 }
 
 .project-path-icon svg {
@@ -930,8 +990,9 @@ h2 {
   box-shadow: var(--shadow-card);
 }
 
-.dashboard-layout:not([data-session-rail-resizing='true']) .workspace-panel {
-  transition: grid-template-columns 420ms ease;
+.dashboard-layout:not([data-session-rail-resizing='true']) .workspace-panel,
+.dashboard-layout[data-session-rail-snapping='true'] .workspace-panel {
+  transition: grid-template-columns 460ms ease;
 }
 
 .workspace-panel[data-session-rail-collapsed='true'] {
@@ -947,6 +1008,10 @@ h2 {
   overflow: hidden;
 }
 
+.workspace-main-pane {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .workspace-rail-pane {
   grid-column: 1;
   border-right: 1px solid var(--color-border);
@@ -958,6 +1023,7 @@ h2 {
 
 .workspace-main-content {
   display: grid;
+  grid-row: 3;
   grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -988,6 +1054,11 @@ h2 {
   width: 14px;
   transform: translateX(-7px);
   cursor: col-resize;
+}
+
+.dashboard-layout:not([data-session-rail-resizing='true']) .workspace-rail-resize-handle,
+.dashboard-layout[data-session-rail-snapping='true'] .workspace-rail-resize-handle {
+  transition: left 460ms ease;
 }
 
 .workspace-rail-resize-handle::before {
@@ -1031,6 +1102,7 @@ h2 {
 
 .composer-card-bottom {
   min-width: 0;
+  max-width: 100%;
   align-self: end;
   border-top: 0;
 }
@@ -1183,12 +1255,16 @@ h2 {
 
 .turn-form {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 10px;
   margin-top: 0;
 }
 
 .turn-composer {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   border: 1px solid var(--color-border);
   border-radius: 22px;
@@ -1216,6 +1292,8 @@ h2 {
 .turn-composer textarea::placeholder { color: rgb(100 116 139 / 68%); }
 .turn-composer-footer {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
@@ -1223,6 +1301,7 @@ h2 {
 
 .turn-composer-left-actions {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 8px;
 }
@@ -1354,6 +1433,7 @@ h2 {
 
 .turn-composer-submit-actions {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 8px;
 }
@@ -1361,7 +1441,7 @@ h2 {
 .model-effort-trigger {
   display: inline-flex;
   min-width: 0;
-  max-width: min(260px, 42vw);
+  max-width: min(260px, 100%);
   height: 32px;
   align-items: center;
   gap: 8px;

@@ -157,9 +157,11 @@ export class LiveTurnManager {
     }
 
     const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
+    const userMessage = sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() })
     runtime.currentUserMessageUuid = userMessageUuid
     this.setRunState(sessionId, { phase: 'running', activeTurnId: userMessageUuid, lastTurn: null }, 'session-created')
-    runtime.input.push(sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() }))
+    this.persist(runtime, userMessage)
+    runtime.input.push(userMessage)
 
     return { sessionId, userMessageUuid }
   }
@@ -239,14 +241,17 @@ export class LiveTurnManager {
     }
   }
 
-  private publish(runtime: SessionRuntime, event: LiveTurnEvent): void {
-    if (this.liveEventStore) {
-      try {
-        this.liveEventStore.append(runtime.projectId, runtime.sessionId, event)
-      } catch (error) {
-        console.error('live-events:append failed', error)
-      }
+  private persist(runtime: SessionRuntime, event: LiveTurnEvent): void {
+    if (!this.liveEventStore) return
+    try {
+      this.liveEventStore.append(runtime.projectId, runtime.sessionId, event)
+    } catch (error) {
+      console.error('live-events:append failed', error)
     }
+  }
+
+  private publish(runtime: SessionRuntime, event: LiveTurnEvent): void {
+    this.persist(runtime, event)
     for (const subscriber of this.subscribers.get(runtime.sessionId) ?? []) subscriber(event)
   }
 }

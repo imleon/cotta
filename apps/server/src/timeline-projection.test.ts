@@ -60,12 +60,14 @@ const messages: TimestampedSessionMessage[] = [
     session_id: 'session-1',
     parent_tool_use_id: null,
     parent_agent_id: null,
+    promptSource: 'sdk',
+    origin: { kind: 'task-notification' },
     timestamp: '2026-07-14T08:01:20.000Z',
     message: {
       role: 'user',
       content: '<task-notification>\n<task-id>task_123</task-id>\n<tool-use-id>call_123</tool-use-id>\n<output-file>/tmp/task.output</output-file>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>Done</result>\n</task-notification>',
     },
-  },
+  } as unknown as TimestampedSessionMessage,
   {
     type: 'user',
     uuid: 'tool-result-1',
@@ -206,12 +208,11 @@ describe('projectSessionTimeline', () => {
 
   it.each<[string, Record<string, unknown>, string | null, Record<string, unknown>?]>([
     ['internal', { origin: 'internal' }, null],
-    ['synthetic', { isSynthetic: true }, null],
-    ['non-query', { shouldQuery: false }, null],
+    ['synthetic', {}, null, { isSynthetic: true }],
+    ['non-query', {}, null, { shouldQuery: false }],
     ['meta', {}, null, { isMeta: true }],
     ['sidechain', {}, null, { isSidechain: true }],
     ['peer', {}, null, { origin: { kind: 'peer' } }],
-    ['parent-agent', {}, 'agent-1'],
   ])('does not start a new turn for %s user messages', (_, metadata, parentAgentId, entryMetadata = {}) => {
     const timeline = projectSessionTimeline('session-1', [
       messages[0]!,
@@ -230,7 +231,57 @@ describe('projectSessionTimeline', () => {
     expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
   })
 
-  it('starts turns for scheme A boundary messages, not task notifications', () => {
+  it.each([
+    ['parent ids', { parent_tool_use_id: 'call-1', parent_agent_id: 'agent-1' }, { role: 'user', content: 'Nested reply' }],
+    ['nested flags', {}, { role: 'user', content: 'Nested reply', isSynthetic: true, shouldQuery: false }],
+    ['incomplete task wrapper', {}, { role: 'user', content: '<task-notification><summary>Looks like one</summary></task-notification>' }],
+  ])('starts a new turn for %s when the scheme A predicate matches', (_, entryMetadata, message) => {
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, {
+      type: 'user',
+      uuid: 'scheme-a-user',
+      session_id: 'session-1',
+      timestamp: '2026-07-14T08:00:05.000Z',
+      ...entryMetadata,
+      message,
+    } as unknown as TimestampedSessionMessage], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'scheme-a-user'])
+  })
+
+  it('keeps complete task notifications on the tool call turn', () => {
+    const agentCall = {
+      type: 'assistant',
+      uuid: 'agent-call',
+      session_id: 'session-1',
+      timestamp: '2026-07-14T08:00:05.000Z',
+      message: { id: 'msg-agent', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-agent', name: 'Agent', input: { prompt: 'Investigate' } }] },
+    } as unknown as TimestampedSessionMessage
+    const notification = {
+      type: 'user',
+      uuid: 'agent-done',
+      session_id: 'session-1',
+      timestamp: '2026-07-14T08:00:10.000Z',
+      message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-agent</tool-use-id></task-notification>' },
+    } as unknown as TimestampedSessionMessage
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, agentCall, notification], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
+    expect(timeline.turns[0]?.blocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'agent-call:assistant:0', kind: 'assistant.tool_use', toolUseId: 'call-agent' }),
+      expect.objectContaining({
+        id: 'agent-done:task_notification',
+        kind: 'assistant.task_notification',
+        data: expect.objectContaining({
+          taskId: 'task-1',
+          toolUseId: 'call-agent',
+          originalToolUse: { id: 'call-agent', name: 'Agent', input: { prompt: 'Investigate' } },
+        }),
+      }),
+    ]))
+    expect(sessionMessagesForTurn([messages[0]!, agentCall, notification], 'user-1')?.map((message) => message.uuid)).toEqual(['user-1', 'agent-call', 'agent-done'])
+  })
+
+  it('starts turns for scheme A boundary messages, not task notifications with task origin', () => {
     const sdkUser = {
       type: 'user',
       uuid: 'sdk-user',

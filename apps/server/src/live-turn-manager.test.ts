@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { LiveEventStore, PersistedLiveEventRecord } from './live-event-store.js'
 
 const { queryMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
@@ -33,9 +34,51 @@ function failingQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
   })())
 }
 
+function resultOnlyQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
+  return queryFromGenerator((async function* () {
+    for await (const _message of prompt) yield { type: 'result', subtype: 'success' } as SDKMessage
+  })())
+}
+
+function recordingStore(messages: unknown[]): LiveEventStore {
+  return {
+    append: (_projectId, _sessionId, message) => messages.push(message),
+    listSessionEvents: () => [] as PersistedLiveEventRecord[],
+  }
+}
+
 describe('LiveTurnManager', () => {
   beforeEach(() => {
     queryMock.mockReset()
+  })
+
+  it('persists the user turn before SDK output without publishing it', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => resultOnlyQuery(prompt))
+    const persisted: unknown[] = []
+    const manager = new LiveTurnManager(recordingStore(persisted))
+    const events: LiveTurnEvent[] = []
+    manager.subscribe('session-1', (event) => events.push(event))
+
+    await manager.startTurn({
+      projectId: Buffer.from('/repo/a').toString('base64url'),
+      sessionId: 'session-1',
+      text: 'hello',
+      userMessageUuid: 'user-1',
+      permissionMode: 'default',
+    })
+
+    await vi.waitFor(() => expect(persisted).toHaveLength(2))
+
+    expect(persisted[0]).toMatchObject({
+      type: 'user',
+      message: { role: 'user', content: 'hello' },
+      parent_tool_use_id: null,
+      uuid: 'user-1',
+      session_id: 'session-1',
+      timestamp: expect.any(String),
+    })
+    expect(persisted[1]).toMatchObject({ type: 'result', subtype: 'success' })
+    expect(events).toEqual([expect.objectContaining({ type: 'result', subtype: 'success' })])
   })
 
   it('publishes a failure terminal event when the SDK stream rejects', async () => {

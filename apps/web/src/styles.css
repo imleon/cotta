@@ -1890,6 +1890,17 @@ h2 {
   line-height: 1.62;
 }
 
+.timeline-assistant-text .debug-markdown a {
+  color: color-mix(in srgb, var(--tl-user) 80%, var(--tl-ink) 20%);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.timeline-assistant-text .debug-markdown a:hover {
+  text-decoration: 0.5px dashed underline;
+  text-underline-offset: 2px;
+}
+
 .timeline-assistant-text .debug-markdown p,
 .timeline-assistant-text .debug-markdown ul,
 .timeline-assistant-text .debug-markdown ol,

@@ -190,26 +190,44 @@ export function timelineToolUseId(message: unknown, block: unknown): string | un
   return isRecord(message) && typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : undefined
 }
 
-export function isTimelineTaskNotificationMessage(value: unknown): boolean {
-  if (!isRecord(value) || value.type !== 'user' || !isRecord(value.message) || typeof value.message.content !== 'string') return false
+function containsToolResult(content: unknown): boolean {
+  return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
+}
+
+function timelineOriginKind(value: Record<string, unknown>): string | undefined {
+  const origin = value.origin
+  if (isRecord(origin) && typeof origin.kind === 'string') return origin.kind
+  if (typeof origin === 'string') return origin
+  const message = isRecord(value.message) ? value.message : null
+  return message && typeof message.origin === 'string' ? message.origin : undefined
+}
+
+function tagText(content: string, tagName: string): string | null {
+  const match = content.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`))
+  return match?.[1]?.trim() || null
+}
+
+export function timelineTaskNotificationToolUseId(value: unknown): string | undefined {
+  if (!isRecord(value) || value.type !== 'user' || !isRecord(value.message) || typeof value.message.content !== 'string') return undefined
   const content = value.message.content.trim()
-  if (!/^<task-notification(?:\s[^>]*)?>[\s\S]*<\/task-notification>$/.test(content)) return false
-  return ['task-id', 'tool-use-id', 'output-file', 'status', 'summary'].every((tag) => content.includes(`<${tag}>`) && content.includes(`</${tag}>`))
+  if (!/^<task-notification(?:\s[^>]*)?>[\s\S]*<\/task-notification>$/.test(content)) return undefined
+  if (!tagText(content, 'task-id')) return undefined
+  return tagText(content, 'tool-use-id') ?? undefined
+}
+
+export function isTimelineTaskNotificationMessage(value: unknown): boolean {
+  return timelineTaskNotificationToolUseId(value) !== undefined
 }
 
 export function isPrimaryTimelineUserMessage(value: unknown): boolean {
-  if (!isRecord(value) || value.type !== 'user' || value.parent_tool_use_id != null || value.parent_agent_id != null || !isRecord(value.message)) return false
+  if (!isRecord(value) || value.type !== 'user' || !isRecord(value.message)) return false
   const message = value.message
-  if (message.role !== 'user' || message.shouldQuery === false || message.isSynthetic === true || message.origin === 'internal' || isTimelineTaskNotificationMessage(value)) return false
-  const content = message.content
-  if (typeof content === 'string') return Boolean(content.trim())
-  if (!Array.isArray(content) || content.some((block) => isRecord(block) && block.type === 'tool_result')) return false
-  return content.some((block) => isRecord(block) && (
-    (block.type === 'text' && typeof block.text === 'string' && Boolean(block.text.trim()))
-    || block.type === 'image'
-    || block.type === 'file'
-    || block.type === 'document'
-  ))
+  if (message.role !== 'user' || value.isSynthetic === true || value.shouldQuery === false || isTimelineTaskNotificationMessage(value) || containsToolResult(message.content) || value.isSidechain === true) return false
+  const originKind = timelineOriginKind(value)
+  return originKind === 'human'
+    || value.promptSource === 'typed'
+    || (value.promptSource === 'sdk' && originKind !== 'task-notification')
+    || (originKind == null && value.promptSource == null && value.isMeta !== true)
 }
 
 export const sessionRawMessagesResponseSchema = z.object({

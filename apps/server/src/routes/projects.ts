@@ -39,7 +39,7 @@ import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import type { ModelCatalogProvider } from '../model-catalog.js'
 import type { SettingsStore } from '../settings-store.js'
-import { projectSessionTimeline } from '../timeline-projection.js'
+import { projectSessionTimeline, sessionMessagesForTurn } from '../timeline-projection.js'
 
 export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionRunState' | 'startTurn' | 'subscribe'>
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
@@ -581,9 +581,14 @@ export function registerProjectRoutes(
       if (!messages) {
         return c.json({ error: 'session_not_found' }, 404)
       }
+      const turnId = c.req.query('turnId')
+      const turnMessages = turnId ? sessionMessagesForTurn(messages, turnId) : messages
+      if (!turnMessages) {
+        return c.json({ error: 'turn_not_found' }, 404)
+      }
       const response: SessionRawMessagesResponse = {
         sessionId: c.req.param('sessionId'),
-        messages,
+        messages: turnMessages,
       }
       return c.json(response)
     } catch (error) {

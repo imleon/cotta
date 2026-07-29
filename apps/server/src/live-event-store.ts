@@ -33,13 +33,15 @@ function sdkMessageType(message: unknown): string {
   return isRecord(message) && typeof message.type === 'string' ? message.type : 'unknown'
 }
 
-function shouldPersistSdkMessage(message: unknown): boolean {
-  if (!isRecord(message) || message.type !== 'stream_event' || !isRecord(message.event)) return true
-  return message.event.type !== 'content_block_delta'
+function shouldSkipPersistedMessage(message: unknown): boolean {
+  if (!isRecord(message)) return false
+  if (message.type === 'system' && message.subtype === 'thinking_tokens') return true
+  return message.type === 'stream_event'
+    && isRecord(message.event)
+    && message.event.type === 'content_block_delta'
 }
 
-function toPersistedLiveEvent(projectId: string, sessionId: string, message: unknown): PersistedLiveEventInsert | null {
-  if (!shouldPersistSdkMessage(message)) return null
+function toPersistedLiveEvent(projectId: string, sessionId: string, message: unknown): PersistedLiveEventInsert {
   return {
     projectId,
     sessionId,
@@ -82,16 +84,20 @@ export class SqliteLiveEventStore implements LiveEventStore {
         source,
         recorded_at_ms,
         payload_json
-      FROM live_session_events
-      WHERE project_id = ? AND session_id = ?
+      FROM (
+        SELECT *
+        FROM live_session_events
+        WHERE project_id = ? AND session_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      )
       ORDER BY id ASC
-      LIMIT ?
     `)
   }
 
   append(projectId: string, sessionId: string, message: unknown): void {
+    if (shouldSkipPersistedMessage(message)) return
     const record = toPersistedLiveEvent(projectId, sessionId, message)
-    if (!record) return
     this.insertStatement.run(
       record.projectId,
       record.sessionId,

@@ -76,9 +76,22 @@ const DASHBOARD_NAV_MAX_WIDTH = 184
 const DASHBOARD_NAV_DEFAULT_WIDTH = 216
 const DASHBOARD_NAV_COLLAPSE_WIDTH = 96
 const DASHBOARD_NAV_WIDTH_STORAGE_KEY = 'cotta:dashboard-nav-width'
+const WORKSPACE_RAIL_MIN_WIDTH = 240
+const WORKSPACE_RAIL_MAX_WIDTH = 520
+const WORKSPACE_RAIL_DEFAULT_WIDTH = 320
+const WORKSPACE_RAIL_WIDTH_STORAGE_KEY = 'cotta:workspace-rail-width'
+const WORKSPACE_RAIL_COLLAPSED_STORAGE_KEY = 'cotta:workspace-rail-collapsed'
 
 function clampDashboardNavWidth(width: number): number {
   return Math.min(DASHBOARD_NAV_MAX_WIDTH, Math.max(DASHBOARD_NAV_MIN_WIDTH, width))
+}
+
+function clampWorkspaceRailWidth(width: number): number {
+  return Math.min(WORKSPACE_RAIL_MAX_WIDTH, Math.max(WORKSPACE_RAIL_MIN_WIDTH, width))
+}
+
+function clampWorkspaceRailDragWidth(width: number): number {
+  return Math.min(WORKSPACE_RAIL_MAX_WIDTH, Math.max(0, width))
 }
 
 class CreateTurnHttpError extends Error {
@@ -1202,6 +1215,9 @@ function ProjectsDashboard() {
   } = selection
   const [navWidth, setNavWidth] = useState(DASHBOARD_NAV_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
+  const [sessionRailWidth, setSessionRailWidth] = useState(WORKSPACE_RAIL_DEFAULT_WIDTH)
+  const [isSessionRailResizing, setIsSessionRailResizing] = useState(false)
+  const [isSessionRailCollapsed, setIsSessionRailCollapsed] = useState(false)
   const [projectChoice, setProjectChoice] = useState<{ text: string; mode: 'choose' | 'create'; error: string | null } | null>(null)
   const [newProjectPath, setNewProjectPath] = useState('')
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null)
@@ -1211,6 +1227,7 @@ function ProjectsDashboard() {
   const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
   const navWidthRef = useRef(DASHBOARD_NAV_DEFAULT_WIDTH)
+  const sessionRailWidthRef = useRef(WORKSPACE_RAIL_DEFAULT_WIDTH)
   const pendingSessionRequestRef = useRef(0)
   const listVersionEpochRef = useRef<string | null>(null)
   const desiredProjectsVersionRef = useRef(0)
@@ -1281,6 +1298,10 @@ function ProjectsDashboard() {
   }, [navWidth])
 
   useEffect(() => {
+    if (sessionRailWidth >= WORKSPACE_RAIL_MIN_WIDTH) sessionRailWidthRef.current = sessionRailWidth
+  }, [sessionRailWidth])
+
+  useEffect(() => {
     try {
       const storedWidth = window.localStorage.getItem(DASHBOARD_NAV_WIDTH_STORAGE_KEY)
       if (!storedWidth) return
@@ -1289,6 +1310,26 @@ function ProjectsDashboard() {
       const nextWidth = clampDashboardNavWidth(parsedWidth)
       navWidthRef.current = nextWidth
       setNavWidth(nextWidth)
+    } catch {
+      // ignore localStorage read errors
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      const storedCollapsed = window.localStorage.getItem(WORKSPACE_RAIL_COLLAPSED_STORAGE_KEY) === 'true'
+      const storedWidth = window.localStorage.getItem(WORKSPACE_RAIL_WIDTH_STORAGE_KEY)
+      if (storedWidth) {
+        const parsedWidth = Number(storedWidth)
+        if (Number.isFinite(parsedWidth)) {
+          const nextWidth = clampWorkspaceRailWidth(parsedWidth)
+          sessionRailWidthRef.current = nextWidth
+          setSessionRailWidth(storedCollapsed ? 0 : nextWidth)
+        }
+      } else if (storedCollapsed) {
+        setSessionRailWidth(0)
+      }
+      setIsSessionRailCollapsed(storedCollapsed)
     } catch {
       // ignore localStorage read errors
     }
@@ -1321,6 +1362,80 @@ function ProjectsDashboard() {
       window.removeEventListener('pointercancel', handlePointerCancel)
       try {
         window.localStorage.setItem(DASHBOARD_NAV_WIDTH_STORAGE_KEY, String(navWidthRef.current))
+      } catch {
+        // ignore localStorage write errors
+      }
+    }
+
+    function handlePointerUp() {
+      finishResize()
+    }
+
+    function handlePointerCancel() {
+      finishResize()
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerCancel)
+  }
+
+  function setSessionRailCollapsed(nextCollapsed: boolean) {
+    setSessionRailWidth(nextCollapsed ? 0 : sessionRailWidthRef.current)
+    setIsSessionRailCollapsed(nextCollapsed)
+    try {
+      window.localStorage.setItem(WORKSPACE_RAIL_COLLAPSED_STORAGE_KEY, String(nextCollapsed))
+    } catch {
+      // ignore localStorage write errors
+    }
+  }
+
+  function beginSessionRailResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (window.matchMedia('(max-width: 900px)').matches) return
+    event.preventDefault()
+    const handle = event.currentTarget
+    const pointerId = event.pointerId
+    const startX = event.clientX
+    const startWidth = isSessionRailCollapsed ? 0 : sessionRailWidthRef.current
+    let nextSavedWidth = startWidth
+    setIsSessionRailResizing(true)
+    handle.setPointerCapture?.(pointerId)
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const dragWidth = clampWorkspaceRailDragWidth(startWidth + moveEvent.clientX - startX)
+      if (startWidth === 0 && dragWidth >= sessionRailWidthRef.current / 3) {
+        nextSavedWidth = sessionRailWidthRef.current
+        setSessionRailWidth(sessionRailWidthRef.current)
+        finishResize(false)
+        return
+      }
+      if (startWidth >= WORKSPACE_RAIL_MIN_WIDTH && dragWidth <= startWidth * 2 / 3) {
+        nextSavedWidth = 0
+        finishResize(true)
+        return
+      }
+      nextSavedWidth = dragWidth
+      setSessionRailWidth(dragWidth)
+      setIsSessionRailCollapsed(false)
+      if (dragWidth >= WORKSPACE_RAIL_MIN_WIDTH) sessionRailWidthRef.current = dragWidth
+    }
+
+    function finishResize(forceCollapsed?: boolean) {
+      const collapsed = forceCollapsed ?? nextSavedWidth < WORKSPACE_RAIL_MIN_WIDTH
+      if (collapsed) setSessionRailWidth(0)
+      setIsSessionRailCollapsed(collapsed)
+      setIsSessionRailResizing(false)
+      try {
+        handle.releasePointerCapture?.(pointerId)
+      } catch {
+        // ignore pointer capture release errors
+      }
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerCancel)
+      try {
+        window.localStorage.setItem(WORKSPACE_RAIL_COLLAPSED_STORAGE_KEY, String(collapsed))
+        if (!collapsed) window.localStorage.setItem(WORKSPACE_RAIL_WIDTH_STORAGE_KEY, String(sessionRailWidthRef.current))
       } catch {
         // ignore localStorage write errors
       }
@@ -1501,7 +1616,8 @@ function ProjectsDashboard() {
       className="dashboard-layout"
       data-nav-collapsed={navCollapsed ? 'true' : 'false'}
       data-nav-resizing={isResizing ? 'true' : 'false'}
-      style={{ '--dashboard-nav-width': `${navWidth}px` } as CSSProperties}
+      data-session-rail-resizing={isSessionRailResizing ? 'true' : 'false'}
+      style={{ '--dashboard-nav-width': `${navWidth}px`, '--workspace-rail-width': `${sessionRailWidth}px` } as CSSProperties}
     >
       <aside className="dashboard-nav-rail" aria-label="Dashboard navigation">
         <nav className="dashboard-nav-links" aria-label="Workspace sections">
@@ -1530,87 +1646,117 @@ function ProjectsDashboard() {
           {activeNav === 'settings' ? <SettingsPanel projectId={null} settings={settings} /> : <PlaceholderPage title={DASHBOARD_NAV_ITEMS.find((item) => item.key === activeNav)?.label ?? 'Page'} />}
         </section>
       ) : (
-        <section className="workspace-panel">
+        <section className="workspace-panel" data-session-rail-collapsed={isSessionRailCollapsed ? 'true' : 'false'}>
           <div className="dashboard-nav-resize-handle" role="separator" aria-label="Resize navigation sidebar" aria-orientation="vertical" onPointerDown={beginNavResize} />
-        <header className="project-rail-header workspace-panel-header">
-          <h2 className="project-rail-title" id="projects-sidebar-section-heading">Projects</h2>
-          <button
-            className="project-rail-header-action"
-            type="button"
-            onClick={handleRefreshLists}
-            disabled={refreshingLists}
-            aria-label="Refresh project and session lists"
-            title="Refresh project and session lists"
-          >
-            {refreshingLists ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : '↻'}
-          </button>
-          <button
-            className="project-rail-header-action"
-            type="button"
-            onClick={beginNewConversation}
-            disabled={refreshingLists}
-            aria-label="Start new conversation"
-            title="Start new conversation"
-          >
-            +
-          </button>
-        </header>
-        <ProjectSessionRail
-          projects={selection.items}
-          selectedProjectId={selectedProjectId}
-          selectedSessionId={selectedSessionId}
-          pendingProjectId={null}
-          pendingSessionId={null}
-          projectsHasMore={selection.projects.hasNextPage}
-          projectsLoadingMore={selection.projects.isFetchingNextPage}
-          onLoadMoreProjects={() => {
-            if (projectLoadMoreInFlightRef.current || !selection.projects.hasNextPage || selection.projects.isFetchingNextPage) return
-            projectLoadMoreInFlightRef.current = true
-            void selection.projects.fetchNextPage({ throwOnError: true }).catch((error) => {
-              if (error instanceof PaginationCursorStaleError) return refreshProjectsWindow(queryClient)
-            }).finally(() => {
-              projectLoadMoreInFlightRef.current = false
-            })
-          }}
-          visibleSessionStates={visibleSessionStates}
-          onVisibleProjectIdsChange={setVisibleProjectIds}
-          onSelectProject={(projectId) => {
-            beginSelectionIntent()
-            setSelectedSessionRuntime(null)
-            selection.selectProject(projectId)
-          }}
-          onSelectSession={handleSelectSession}
-          onSessionCursorStale={(projectId) => { void refreshVisibleWindows([projectId]) }}
-        />
-        <header className="workspace-main-header workspace-panel-header">
-          <div className="project-title-block">
-            <div className="project-session-title">
-              <h2>{workspaceTitle}</h2>
-              {selectedSession ? <span>{selectedSession.title}</span> : null}
+          <div className="workspace-rail-pane" aria-hidden={isSessionRailCollapsed ? 'true' : undefined}>
+            <header className="project-rail-header workspace-panel-header">
+              <h2 className="project-rail-title" id="projects-sidebar-section-heading">Projects</h2>
+              <button
+                className="project-rail-header-action"
+                type="button"
+                onClick={handleRefreshLists}
+                disabled={refreshingLists}
+                aria-label="Refresh project and session lists"
+                title="Refresh project and session lists"
+              >
+                {refreshingLists ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : '↻'}
+              </button>
+              <button
+                className="project-rail-header-action"
+                type="button"
+                onClick={beginNewConversation}
+                disabled={refreshingLists}
+                aria-label="Start new conversation"
+                title="Start new conversation"
+              >
+                +
+              </button>
+            </header>
+            <ProjectSessionRail
+              projects={selection.items}
+              selectedProjectId={selectedProjectId}
+              selectedSessionId={selectedSessionId}
+              pendingProjectId={null}
+              pendingSessionId={null}
+              projectsHasMore={selection.projects.hasNextPage}
+              projectsLoadingMore={selection.projects.isFetchingNextPage}
+              onLoadMoreProjects={() => {
+                if (projectLoadMoreInFlightRef.current || !selection.projects.hasNextPage || selection.projects.isFetchingNextPage) return
+                projectLoadMoreInFlightRef.current = true
+                void selection.projects.fetchNextPage({ throwOnError: true }).catch((error) => {
+                  if (error instanceof PaginationCursorStaleError) return refreshProjectsWindow(queryClient)
+                }).finally(() => {
+                  projectLoadMoreInFlightRef.current = false
+                })
+              }}
+              visibleSessionStates={visibleSessionStates}
+              onVisibleProjectIdsChange={setVisibleProjectIds}
+              onSelectProject={(projectId) => {
+                beginSelectionIntent()
+                setSelectedSessionRuntime(null)
+                selection.selectProject(projectId)
+              }}
+              onSelectSession={handleSelectSession}
+              onSessionCursorStale={(projectId) => { void refreshVisibleWindows([projectId]) }}
+            />
+          </div>
+          <div
+            className="workspace-rail-resize-handle"
+            role="separator"
+            aria-label="Resize project and session list"
+            aria-orientation="vertical"
+            aria-valuemin={WORKSPACE_RAIL_MIN_WIDTH}
+            aria-valuemax={WORKSPACE_RAIL_MAX_WIDTH}
+            aria-valuenow={sessionRailWidth}
+            onPointerDown={beginSessionRailResize}
+          />
+          <div className="workspace-main-pane">
+            <header className="workspace-main-header workspace-panel-header">
+              <div className="project-title-block">
+                <button
+                  className="workspace-rail-toggle"
+                  type="button"
+                  aria-label={isSessionRailCollapsed ? 'Show project and session list' : 'Hide project and session list'}
+                  aria-expanded={!isSessionRailCollapsed}
+                  aria-controls="projects-sidebar-section-heading"
+                  onClick={() => setSessionRailCollapsed(!isSessionRailCollapsed)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" data-icon={isSessionRailCollapsed ? 'SideFoldOutlined' : 'SideExpandOutlined'}>
+                    <path d={isSessionRailCollapsed ? 'M22 4a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h18a1 1 0 0 0 1-1Zm-1.111 7c.614 0 1.111.448 1.111 1s-.497 1-1.111 1H13.11c-.613 0-1.11-.448-1.11-1s.498-1 1.111-1h7.778ZM22 20c0-.552-.497-1-1.111-1H13.11c-.614 0-1.111.448-1.111 1s.498 1 1.111 1h7.778c.614 0 1.111-.448 1.111-1ZM8.59 16.864a1.117 1.117 0 0 0 0-1.729l-4.95-3.916c-.676-.535-1.64-.027-1.64.864v7.834c0 .89.964 1.4 1.639.865l4.951-3.918Z' : 'M22 4a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h18a1 1 0 0 0 1-1Zm-11.111 7c.614 0 1.111.448 1.111 1s-.498 1-1.111 1H3.11C2.497 13 2 12.552 2 12s.497-1 1.111-1h7.778ZM12 20c0-.552-.498-1-1.111-1H3.11C2.497 19 2 19.448 2 20s.497 1 1.111 1h7.778c.614 0 1.111-.448 1.111-1Zm3.41-3.136a1.117 1.117 0 0 1 0-1.729l4.951-3.917c.675-.534 1.639-.026 1.639.865v7.834c0 .89-.964 1.4-1.639.865l-4.951-3.918Z'} fill="currentColor" />
+                  </svg>
+                </button>
+                <div className="project-title-text">
+                  <div className="project-session-title">
+                    <h2>{workspaceTitle}</h2>
+                    {selectedSession ? <span>{selectedSession.title}</span> : null}
+                  </div>
+                </div>
+              </div>
+              <div className="project-meta-lines">
+                {selection.selectedSessionId ? <span className="project-meta-icon" data-tooltip={`Session ID: ${selection.selectedSessionId}`} aria-label={`Session ID: ${selection.selectedSessionId}`}>#</span> : null}
+                {detail?.project.path ? <span className="project-meta-icon project-path-icon" data-tooltip={`Project directory: ${detail.project.path}`} aria-label={`Project directory: ${detail.project.path}`}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h5l1.5 2h6.5v5.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 1.5 12Z" /></svg>
+                </span> : null}
+              </div>
+            </header>
+            <div className="workspace-main-content">
+              {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
+                  ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
+                  : <WorkspacePanel
+                    projectId={selection.selectedProjectId}
+                    detail={selection.projectSessions.data}
+                    selectedSessionId={selection.selectedSessionId}
+                    setSelectedSessionId={selection.setSelectedSessionId}
+                    refreshSessionLists={refreshVisibleWindows}
+                    onProjectRequired={(text) => { setNewProjectPath(''); setProjectChoice({ text, mode: 'choose', error: null }) }}
+                    pendingProjectId={pendingProjectId}
+                    pendingProjectRequest={pendingProjectRequest}
+                    onSessionCreated={handleSessionCreated}
+                    settings={settings}
+                    sessionRuntime={selectedSessionRuntime}
+                  />}
             </div>
           </div>
-          <div className="project-meta-lines">
-            {selection.selectedSessionId ? <span className="project-meta-icon" data-tooltip={`Session ID: ${selection.selectedSessionId}`} aria-label={`Session ID: ${selection.selectedSessionId}`}>#</span> : null}
-            {detail?.project.path ? <span className="project-meta-icon project-path-icon" data-tooltip={`Project directory: ${detail.project.path}`} aria-label={`Project directory: ${detail.project.path}`}>
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h5l1.5 2h6.5v5.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 1.5 12Z" /></svg>
-            </span> : null}
-          </div>
-        </header>
-        {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
-            ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
-            : <WorkspacePanel
-              projectId={selection.selectedProjectId}
-              detail={selection.projectSessions.data}
-              selectedSessionId={selection.selectedSessionId}
-              setSelectedSessionId={selection.setSelectedSessionId}
-              refreshSessionLists={refreshVisibleWindows}
-              onProjectRequired={(text) => { setNewProjectPath(''); setProjectChoice({ text, mode: 'choose', error: null }) }}
-              pendingProjectId={pendingProjectId}
-              pendingProjectRequest={pendingProjectRequest}
-              onSessionCreated={handleSessionCreated}
-              settings={settings}
-              sessionRuntime={selectedSessionRuntime}
-            />}
         </section>
       )}
       {projectChoice ? (

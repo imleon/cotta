@@ -229,7 +229,8 @@ h2 {
   overflow: hidden;
 }
 
-.dashboard-layout[data-nav-resizing='true'] {
+.dashboard-layout[data-nav-resizing='true'],
+.dashboard-layout[data-session-rail-resizing='true'] {
   user-select: none;
 }
 
@@ -362,7 +363,6 @@ h2 {
   overflow-y: auto;
   scrollbar-gutter: stable;
   border: 0;
-  border-right: 1px solid var(--color-border);
   border-radius: 0;
   background: transparent;
   padding: 16px 14px 18px;
@@ -375,7 +375,6 @@ h2 {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-  border-right: 1px solid var(--color-border);
 }
 
 .project-rail-title {
@@ -509,16 +508,6 @@ h2 {
   grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
   align-items: center;
   gap: 18px;
-}
-
-.workspace-panel > .project-rail-header {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.workspace-panel > .project-rail {
-  grid-column: 1;
-  grid-row: 2;
 }
 
 .project-rail::-webkit-scrollbar {
@@ -751,9 +740,43 @@ h2 {
 
 .project-title-block {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   min-width: 0;
+  align-items: center;
   justify-items: start;
+  gap: 10px;
+}
+
+.project-title-text {
+  display: grid;
+  min-width: 0;
   gap: 3px;
+}
+
+.workspace-rail-toggle {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.workspace-rail-toggle:hover,
+.workspace-rail-toggle:focus-visible {
+  background: rgb(148 163 184 / 12%);
+  color: var(--color-text);
+}
+
+.workspace-rail-toggle svg {
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+  fill: currentColor;
 }
 
 .project-session-title {
@@ -898,8 +921,7 @@ h2 {
 .workspace-panel {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: var(--workspace-rail-width, 320px) minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--color-border);
@@ -908,23 +930,80 @@ h2 {
   box-shadow: var(--shadow-card);
 }
 
-.workspace-panel > .panel {
+.dashboard-layout:not([data-session-rail-resizing='true']) .workspace-panel {
+  transition: grid-template-columns 420ms ease;
+}
+
+.workspace-panel[data-session-rail-collapsed='true'] {
+  grid-template-columns: var(--workspace-rail-width, 0px) minmax(0, 1fr);
+}
+
+.workspace-rail-pane,
+.workspace-main-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-rail-pane {
+  grid-column: 1;
+  border-right: 1px solid var(--color-border);
+}
+
+.workspace-main-pane {
+  grid-column: 2;
+}
+
+.workspace-main-content {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-main-content > .workspace-panel-error {
   margin: 24px;
 }
 
-.workspace-panel > .workspace-main-header {
-  grid-column: 2;
-  grid-row: 1;
+.workspace-panel[data-session-rail-collapsed='true'] > .workspace-rail-pane {
+  overflow: hidden;
+  border-right-color: transparent;
+  pointer-events: none;
 }
 
-.workspace-panel > .workspace-main-panel,
-.workspace-panel > .workspace-panel-error {
-  grid-column: 2;
-  grid-row: 2;
+.workspace-panel[data-session-rail-collapsed='true'] .project-rail {
+  overflow: hidden;
+  scrollbar-gutter: auto;
 }
 
-.workspace-panel > .workspace-panel-error {
-  margin: 24px;
+.workspace-rail-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--workspace-rail-width, 320px);
+  z-index: 4;
+  width: 14px;
+  transform: translateX(-7px);
+  cursor: col-resize;
+}
+
+.workspace-rail-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 1px;
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+
+.workspace-rail-resize-handle:hover::before,
+.dashboard-layout[data-session-rail-resizing='true'] .workspace-rail-resize-handle::before {
+  background: rgb(71 85 105 / 36%);
 }
 
 .workspace-main-panel {
@@ -2498,7 +2577,7 @@ h2 {
   }
 
   .workspace-panel {
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
   }
 
   .dashboard-layout {
@@ -2522,8 +2601,39 @@ h2 {
     padding: 0 12px;
   }
 
-  .dashboard-nav-resize-handle {
+  .dashboard-nav-resize-handle,
+  .workspace-rail-resize-handle {
     display: none;
+  }
+
+  .workspace-panel[data-session-rail-collapsed='true'] {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-panel[data-session-rail-collapsed='true'] > .workspace-rail-pane {
+    border-bottom-color: var(--color-border);
+    pointer-events: auto;
+  }
+
+  .workspace-panel[data-session-rail-collapsed='true'] .project-rail {
+    overflow: visible;
+    scrollbar-gutter: stable;
+  }
+
+  .workspace-rail-pane,
+  .workspace-main-pane {
+    grid-column: 1;
+    overflow: visible;
+  }
+
+  .workspace-rail-pane {
+    grid-row: 1;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .workspace-main-pane {
+    grid-row: 2;
   }
 
   .project-rail,
@@ -2531,29 +2641,6 @@ h2 {
   .workspace-main-panel,
   .workspace-timeline {
     overflow: visible;
-  }
-
-  .workspace-panel > .project-rail,
-  .workspace-panel > .project-rail-header,
-  .workspace-panel > .workspace-main-header,
-  .workspace-panel > .workspace-main-panel,
-  .workspace-panel > .workspace-panel-error {
-    grid-column: 1;
-  }
-
-  .workspace-panel > .project-rail-header { grid-row: 1; }
-  .workspace-panel > .project-rail { grid-row: 2; }
-  .workspace-panel > .workspace-main-header { grid-row: 3; }
-  .workspace-panel > .workspace-main-panel,
-  .workspace-panel > .workspace-panel-error { grid-row: 4; }
-
-  .workspace-panel > .project-rail-header,
-  .workspace-panel > .project-rail {
-    border-right: 0;
-  }
-
-  .workspace-panel > .project-rail {
-    border-bottom: 1px solid var(--color-border);
   }
 
   .debug-summary-grid {
@@ -2570,7 +2657,7 @@ h2 {
   .hero,
   .detail-panel { padding: 16px; border-radius: 18px; }
   .workspace-panel,
-  .workspace-panel > .project-rail,
+  .workspace-rail-pane > .project-rail,
   .workspace-main-panel {
     padding: 0;
     border-radius: 18px;

@@ -2,6 +2,7 @@ import {
   getSessionInfo,
   getSessionMessages,
   listSessions,
+  renameSession as sdkRenameSession,
   type SDKSessionInfo,
   type SessionMessage,
 } from '@anthropic-ai/claude-agent-sdk'
@@ -154,6 +155,7 @@ export type ClaudeCodeApi = {
   getProject(projectId: string): Promise<ProjectSummary | null>
   listProjectSessions(projectId: string, options?: ProjectSessionsOptions): Promise<ProjectSessions | null>
   getSessionInfo(projectId: string, sessionId: string): Promise<SessionInfoResponse | null>
+  renameSession(projectId: string, sessionId: string, title: string): Promise<boolean>
   getSessionTimelineState(projectId: string, sessionId: string): Promise<SessionTimelineState | null>
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
@@ -226,6 +228,15 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
       const session = await getExactProjectSession(projectPath, sessionId)
       if (!session) return null
       return toSessionInfo(projectId, session)
+    },
+
+    async renameSession(projectId, sessionId, title) {
+      const projectPath = projectPathFromId(projectId)
+      if (!projectPath) return false
+      const session = await getExactProjectSession(projectPath, sessionId)
+      if (!session) return false
+      await sdkRenameSession(sessionId, title, { dir: projectPath })
+      return true
     },
 
     async getSessionTimelineState(projectId, sessionId) {

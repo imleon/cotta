@@ -9,7 +9,7 @@
     "build": "tsc -b tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run src"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.177",

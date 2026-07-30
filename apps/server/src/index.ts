@@ -44,9 +44,15 @@ const host = process.env.HOST ?? '127.0.0.1'
 const port = Number(process.env.PORT ?? 3000)
 
 if (process.env.NODE_ENV !== 'test') {
+  const liveEventStore = createLiveEventStore()
+  const sessionSummaryCache = new SessionSummaryCache()
+  const claudeCodeApi = createClaudeCodeApi(sessionSummaryCache)
+  const liveTurnManager = new LiveTurnManager(liveEventStore, sessionSummaryCache)
+  const app = createApp({ claudeCodeApi, liveEventStore, liveTurnManager, sessionSummaryCache })
+
   const server = serve(
     {
-      fetch: createApp().fetch,
+      fetch: app.fetch,
       hostname: host,
       port,
     },
@@ -55,10 +61,19 @@ if (process.env.NODE_ENV !== 'test') {
     },
   )
 
+  const shutdown = () => {
+    liveTurnManager.closeAll()
+    server.close(() => process.exit(0))
+    setTimeout(() => process.exit(0), 1000).unref()
+  }
+  process.once('SIGINT', shutdown)
+  process.once('SIGTERM', shutdown)
+
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code === 'EADDRINUSE') {
       console.error(`Cotta server failed to start: http://${host}:${port} is already in use.`)
       console.error('Stop the process using that port, or start Cotta with a different PORT.')
+      liveTurnManager.closeAll()
       process.exitCode = 1
       return
     }

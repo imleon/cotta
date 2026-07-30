@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createProject, ensureSessionRuntime, fetchAuthSession, fetchProjects, fetchSessionInfo, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, saveSettings, startGitHubDeviceLogin } from './api'
+import { createProject, ensureSessionRuntime, fetchAuthSession, fetchProjects, fetchSessionInfo, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
 
 describe('createProject', () => {
   beforeEach(() => {
@@ -103,6 +103,17 @@ describe('session detail APIs', () => {
 
     await expect(fetchSessionInfo('project-1', 'session/1')).resolves.toEqual(body)
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/info')
+  })
+
+  it('renames a session', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(renameSession('project-1', 'session/1', 'New title')).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/rename', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ title: 'New title' }),
+    }))
   })
 
   it('ensures runtime without catalog fields', async () => {

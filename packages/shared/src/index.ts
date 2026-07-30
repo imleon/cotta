@@ -89,6 +89,16 @@ export const createProjectResponseSchema = z.object({
 
 export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>
 
+export const renameSessionRequestSchema = z.object({
+  title: z.string().trim().min(1),
+})
+export type RenameSessionRequest = z.infer<typeof renameSessionRequestSchema>
+
+export const renameSessionResponseSchema = z.object({
+  ok: z.literal(true),
+})
+export type RenameSessionResponse = z.infer<typeof renameSessionResponseSchema>
+
 export const projectDirectoriesResponseSchema = z.object({
   parent: z.string(),
   directories: z.array(z.object({

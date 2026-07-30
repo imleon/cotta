@@ -9,6 +9,8 @@ import {
   modelCatalogResponseSchema,
   projectDirectoriesResponseSchema,
   projectSessionsQuerySchema,
+  renameSessionRequestSchema,
+  renameSessionResponseSchema,
   projectSessionsQueryResponseSchema,
   permissionModeSchema,
   sessionInfoResponseSchema,
@@ -448,6 +450,22 @@ export function registerProjectRoutes(
     } catch (error) {
       console.error('turns:create failed', error)
       return c.json({ error: 'turn_create_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects/:projectId/sessions/:sessionId/rename', async (c) => {
+    try {
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
+      const parsed = renameSessionRequestSchema.safeParse(await c.req.json())
+      if (!parsed.success) return c.json({ error: 'invalid_session_title' }, 400)
+      const renamed = await input.claudeCodeApi.renameSession(projectId, sessionId, parsed.data.title)
+      if (!renamed) return c.json({ error: 'session_not_found' }, 404)
+      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual' })
+      return c.json(renameSessionResponseSchema.parse({ ok: true }))
+    } catch (error) {
+      console.error('session:rename failed', error)
+      return c.json({ error: 'session_rename_failed' }, 500)
     }
   })
 

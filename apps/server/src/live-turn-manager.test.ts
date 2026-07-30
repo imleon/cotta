@@ -13,7 +13,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import { LiveTurnManager, type LiveTurnEvent } from './live-turn-manager.js'
 
 function queryFromGenerator(generator: AsyncGenerator<SDKMessage>, overrides: Partial<Query> = {}): Query {
-  return Object.assign(generator, { interrupt: vi.fn(), setPermissionMode: vi.fn(), setModel: vi.fn(), applyFlagSettings: vi.fn(), ...overrides }) as unknown as Query
+  return Object.assign(generator, { close: vi.fn(), interrupt: vi.fn(), setPermissionMode: vi.fn(), setModel: vi.fn(), applyFlagSettings: vi.fn(), ...overrides }) as unknown as Query
 }
 
 function streamingQuery(prompt: AsyncIterable<SDKUserMessage>, overrides: Partial<Query> = {}): Query {
@@ -38,6 +38,12 @@ function resultOnlyQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
   return queryFromGenerator((async function* () {
     for await (const _message of prompt) yield { type: 'result', subtype: 'success' } as SDKMessage
   })())
+}
+
+function pendingQuery(prompt: AsyncIterable<SDKUserMessage>, overrides: Partial<Query> = {}): Query {
+  return queryFromGenerator((async function* () {
+    for await (const message of prompt) yield message
+  })(), overrides)
 }
 
 function recordingStore(messages: unknown[]): LiveEventStore {
@@ -170,5 +176,127 @@ describe('LiveTurnManager', () => {
     expect(setPermissionMode).toHaveBeenCalledWith('plan')
     expect(setModel).toHaveBeenCalledWith('claude-sonnet-5')
     expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'xhigh' })
+  })
+
+  it('closes a session runtime explicitly once', async () => {
+    const close = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { close }))
+    const manager = new LiveTurnManager()
+
+    await manager.ensureRuntime({
+      projectId: Buffer.from('/repo/a').toString('base64url'),
+      sessionId: 'session-1',
+    })
+
+    expect(manager.close('session-1')).toBe(true)
+    expect(manager.close('session-1')).toBe(false)
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes all session runtimes', async () => {
+    const closeA = vi.fn()
+    const closeB = vi.fn()
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { close: closeA }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { close: closeB }))
+    const manager = new LiveTurnManager()
+
+    manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-1' })
+    manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-2' })
+    manager.closeAll()
+
+    expect(closeA).toHaveBeenCalledTimes(1)
+    expect(closeB).toHaveBeenCalledTimes(1)
+  })
+
+  it('recreates the runtime when escalating to max effort', async () => {
+    const close = vi.fn()
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { close }))
+      .mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt))
+    const manager = new LiveTurnManager()
+
+    await manager.startTurn({
+      projectId: Buffer.from('/repo/a').toString('base64url'),
+      sessionId: 'session-1',
+      text: 'first',
+      userMessageUuid: 'user-1',
+      permissionMode: 'default',
+      effort: 'high',
+    })
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
+
+    await manager.startTurn({
+      projectId: Buffer.from('/repo/a').toString('base64url'),
+      sessionId: 'session-1',
+      text: 'second',
+      userMessageUuid: 'user-2',
+      permissionMode: 'default',
+      effort: 'max',
+    })
+
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ resume: 'session-1', effort: 'max' }),
+    }))
+  })
+
+  it('closes idle runtimes after ten minutes', () => {
+    vi.useFakeTimers()
+    const close = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+    const manager = new LiveTurnManager()
+
+    manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-1' })
+    vi.advanceTimersByTime(10 * 60 * 1000 - 1)
+    expect(close).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+
+    expect(close).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+
+  it('clears the idle timer when a new turn starts', async () => {
+    vi.useFakeTimers()
+    const close = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+    const manager = new LiveTurnManager()
+
+    await manager.startTurn({
+      projectId: Buffer.from('/repo/a').toString('base64url'),
+      sessionId: 'session-1',
+      text: 'hello',
+      userMessageUuid: 'user-1',
+      permissionMode: 'default',
+    })
+    vi.advanceTimersByTime(10 * 60 * 1000)
+
+    expect(close).not.toHaveBeenCalled()
+    manager.closeAll()
+    vi.useRealTimers()
+  })
+
+  it('closes the runtime after the SDK stream rejects', async () => {
+    const close = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => queryFromGenerator((async function* () {
+      for await (const message of prompt) {
+        yield message
+        throw new Error('SDK stream failed')
+      }
+    })(), { close }))
+    const manager = new LiveTurnManager()
+    const events: LiveTurnEvent[] = []
+    manager.subscribe('session-1', (event) => events.push(event))
+
+    await manager.startTurn({
+      projectId: Buffer.from('/repo/a').toString('base64url'),
+      sessionId: 'session-1',
+      text: 'hello',
+      userMessageUuid: 'user-1',
+      permissionMode: 'default',
+    })
+
+    await vi.waitFor(() => expect(events).toHaveLength(2))
+    expect(close).toHaveBeenCalledTimes(1)
   })
 })

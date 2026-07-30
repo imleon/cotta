@@ -20,7 +20,7 @@ import {
   type TurnSummary,
   isPrimaryTimelineUserMessage,
 } from '@cotta/shared'
-import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
@@ -1647,6 +1647,14 @@ function ProjectsDashboard() {
     }).catch(() => {})
   }
 
+  async function handleRenameSession(projectId: string, sessionId: string, title: string) {
+    await renameSession(projectId, sessionId, title)
+    await refreshVisibleWindows([projectId])
+    if (selectedProjectId === projectId && selectedSessionId === sessionId) {
+      setSelectedSessionInfo(await fetchSessionInfo(projectId, sessionId))
+    }
+  }
+
   useEffect(() => {
     const events = connectListVersions((event: ListVersionsEvent) => {
       const epochChanged = listVersionEpochRef.current !== event.epoch
@@ -1796,6 +1804,7 @@ function ProjectsDashboard() {
                 selection.selectProject(projectId)
               }}
               onSelectSession={handleSelectSession}
+              onRenameSession={handleRenameSession}
               onSessionCursorStale={(projectId) => { void refreshVisibleWindows([projectId]) }}
             />
           </div>

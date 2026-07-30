@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent as ReactUIEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type UIEvent as ReactUIEvent } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import type { ProjectSessionsResponse, ProjectSummary, SessionSummary } from '@cotta/shared'
 import { fetchProjectSessions, fetchProjects, PaginationCursorStaleError, queryProjectSessions } from './api'
@@ -244,17 +244,21 @@ function SessionRow({
   session,
   selected,
   pending,
+  menuOpen,
   onSelect,
+  onOpenMenu,
   motionState,
 }: {
   session: SessionSummary
   selected: boolean
   pending?: boolean
+  menuOpen?: boolean
   onSelect: () => void
+  onOpenMenu: (button: HTMLButtonElement) => void
   motionState?: SidebarMotionState
 }) {
   return (
-    <li className={`sidebar-motion-item${motionStateClass(motionState)}`}>
+    <li className={`sidebar-motion-item session-row-wrap${motionStateClass(motionState)}`}>
       <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
         <div className="session-content">
           <div className="session-main">
@@ -263,6 +267,16 @@ function SessionRow({
           <StatusBadge runState={session.runState} />
         </div>
         <span className="session-age">{pending ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : formatAge(session.lastActivityAt)}</span>
+      </button>
+      <button
+        className="session-row-menu-button"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen || undefined}
+        aria-label={`More actions for ${session.title}`}
+        onClick={(event) => { event.stopPropagation(); onOpenMenu(event.currentTarget) }}
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="10" r="1.4" /><circle cx="10" cy="10" r="1.4" /><circle cx="15" cy="10" r="1.4" /></svg>
       </button>
     </li>
   )
@@ -283,6 +297,8 @@ function ProjectSessionBranch({
   onToggleExpanded,
   onSelectProject,
   onSelectSession,
+  onOpenSessionMenu,
+  openMenuSessionId,
   onCursorStale,
   motionState,
 }: {
@@ -296,6 +312,8 @@ function ProjectSessionBranch({
   onToggleExpanded: () => void
   onSelectProject: () => void
   onSelectSession: (projectId: string, sessionId: string) => void
+  onOpenSessionMenu: (projectId: string, session: SessionSummary, button: HTMLButtonElement) => void
+  openMenuSessionId: string | null
   onCursorStale: (projectId: string) => void
   motionState?: SidebarMotionState
 }) {
@@ -338,7 +356,9 @@ function ProjectSessionBranch({
                   session={session}
                   selected={project.id === selectedProjectId && session.id === selectedSessionId}
                   pending={project.id === pendingProjectId && session.id === pendingSessionId}
+                  menuOpen={openMenuSessionId === session.id}
                   onSelect={() => onSelectSession(project.id, session.id)}
+                  onOpenMenu={(button) => onOpenSessionMenu(project.id, session, button)}
                 />
               ))}
             </ol>
@@ -378,6 +398,7 @@ export function ProjectSessionRail({
   onVisibleProjectIdsChange,
   onSelectProject,
   onSelectSession,
+  onRenameSession,
   onSessionCursorStale,
 }: {
   projects: ProjectSummary[]
@@ -392,9 +413,13 @@ export function ProjectSessionRail({
   onVisibleProjectIdsChange?: (projectIds: string[]) => void
   onSelectProject: (projectId: string) => void
   onSelectSession: (projectId: string, sessionId: string) => void
+  onRenameSession?: (projectId: string, sessionId: string, title: string) => Promise<void>
   onSessionCursorStale: (projectId: string) => void
 }) {
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set())
+  const [openMenu, setOpenMenu] = useState<{ projectId: string; session: SessionSummary; x: number; y: number } | null>(null)
+  const [renameDialog, setRenameDialog] = useState<{ projectId: string; sessionId: string; title: string; value: string; error: string | null; saving: boolean } | null>(null)
+  const renameDialogRef = useRef<HTMLDialogElement | null>(null)
   const renderedProjects = useSidebarListMotion(projects, (project) => project.id)
 
   function expandProject(projectId: string) {
@@ -436,9 +461,56 @@ export function ProjectSessionRail({
     onVisibleProjectIdsChange?.(visibleProjectIds)
   }, [onVisibleProjectIdsChange, visibleProjectIds])
 
+  useEffect(() => {
+    if (!openMenu) return
+    function closeMenu(event: globalThis.PointerEvent) {
+      const target = event.target as Element | null
+      if (target?.closest('.session-row-menu, .session-row-menu-button')) return
+      setOpenMenu(null)
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    return () => document.removeEventListener('pointerdown', closeMenu)
+  }, [openMenu])
+
+  useEffect(() => {
+    const dialog = renameDialogRef.current
+    if (!renameDialog || !dialog) return
+    if (!dialog.open) dialog.showModal()
+    function closeRenameDialog(event: KeyboardEvent) {
+      if (event.key === 'Escape') setRenameDialog(null)
+    }
+    document.addEventListener('keydown', closeRenameDialog)
+    return () => document.removeEventListener('keydown', closeRenameDialog)
+  }, [renameDialog])
+
   function selectSession(projectId: string, sessionId: string) {
+    setOpenMenu(null)
     expandProject(projectId)
     onSelectSession(projectId, sessionId)
+  }
+
+  function openSessionMenu(projectId: string, session: SessionSummary, button: HTMLButtonElement) {
+    const rect = button.getBoundingClientRect()
+    setOpenMenu((current) => current?.projectId === projectId && current.session.id === session.id ? null : { projectId, session, x: rect.right, y: rect.bottom + 4 })
+  }
+
+  function openRenameDialog(projectId: string, session: SessionSummary) {
+    setOpenMenu(null)
+    setRenameDialog({ projectId, sessionId: session.id, title: session.title, value: session.title, error: null, saving: false })
+  }
+
+  async function submitRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!renameDialog || !onRenameSession) return
+    const title = renameDialog.value.trim()
+    if (!title) { setRenameDialog({ ...renameDialog, error: 'Title is required.' }); return }
+    setRenameDialog({ ...renameDialog, value: title, error: null, saving: true })
+    try {
+      await onRenameSession(renameDialog.projectId, renameDialog.sessionId, title)
+      setRenameDialog(null)
+    } catch (error) {
+      setRenameDialog((current) => current ? { ...current, saving: false, error: error instanceof Error ? error.message : String(error) } : current)
+    }
   }
 
   function handleProjectRailScroll(event: ReactUIEvent<HTMLElement>) {
@@ -447,8 +519,9 @@ export function ProjectSessionRail({
   }
 
   return (
-    <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions" onScroll={handleProjectRailScroll}>
-      <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
+    <>
+      <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions" onScroll={handleProjectRailScroll}>
+        <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
         <div className="project-tree">
           {renderedProjects.map(({ key, item: project, motionState }) => (
             <ProjectSessionBranch
@@ -464,6 +537,8 @@ export function ProjectSessionRail({
               onToggleExpanded={() => toggleProject(project.id)}
               onSelectProject={() => onSelectProject(project.id)}
               onSelectSession={selectSession}
+              onOpenSessionMenu={openSessionMenu}
+              openMenuSessionId={openMenu?.projectId === project.id ? openMenu.session.id : null}
               onCursorStale={onSessionCursorStale}
             />
           ))}
@@ -473,8 +548,36 @@ export function ProjectSessionRail({
             </button>
           ) : null}
         </div>
-      </section>
-    </aside>
+        </section>
+      </aside>
+      {openMenu ? (
+        <div className="session-row-menu" role="menu" style={{ left: openMenu.x, top: openMenu.y }}>
+          <button type="button" role="menuitem" onClick={() => openRenameDialog(openMenu.projectId, openMenu.session)}>Rename</button>
+        </div>
+      ) : null}
+      {renameDialog ? (
+        <dialog ref={renameDialogRef} className="rename-session-dialog" aria-labelledby="rename-session-title" onCancel={(event) => { event.preventDefault(); setRenameDialog(null) }} onClick={(event) => { if (event.target === event.currentTarget) setRenameDialog(null) }}>
+          <form className="rename-session-form" onSubmit={submitRename}>
+            <h2 id="rename-session-title">Rename session</h2>
+            <p className="muted">{renameDialog.title}</p>
+            <label className="rename-session-field">
+              <span>Title</span>
+              <input
+                value={renameDialog.value}
+                onChange={(event) => setRenameDialog((current) => current ? { ...current, value: event.target.value, error: null } : current)}
+                disabled={renameDialog.saving}
+                autoFocus
+              />
+            </label>
+            {renameDialog.error ? <div className="panel error rename-session-error">{renameDialog.error}</div> : null}
+            <div className="rename-session-actions">
+              <button type="button" onClick={() => setRenameDialog(null)} disabled={renameDialog.saving}>Cancel</button>
+              <button type="submit" disabled={renameDialog.saving || !renameDialog.value.trim()}>{renameDialog.saving ? 'Saving…' : 'Save'}</button>
+            </div>
+          </form>
+        </dialog>
+      ) : null}
+    </>
   )
 }
 

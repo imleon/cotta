@@ -5,6 +5,8 @@ import { projectPathFromId } from './claude-code-api.js'
 import type { LiveEventStore } from './live-event-store.js'
 import type { SessionSummaryCache } from './session-summary-cache.js'
 
+const IDLE_RUNTIME_TTL_MS = 10 * 60 * 1000
+
 function sdkUserMessage(input: { uuid: SDKUserMessage['uuid']; text: string; sessionId: string; startedAt: number }): SDKUserMessage {
   return {
     type: 'user',
@@ -78,6 +80,8 @@ type SessionRuntime = {
   model?: ModelSelection
   effort?: EffortLevel
   currentUserMessageUuid: string | null
+  closed: boolean
+  idleTimer: ReturnType<typeof setTimeout> | null
 }
 
 function liveSessionStateFromSdkMessage(message: SDKMessage): LiveSessionState | null {
@@ -103,6 +107,17 @@ export class LiveTurnManager {
     return this.runStateBySession.get(sessionId) ?? null
   }
 
+  close(sessionId: string): boolean {
+    const runtime = this.runtimes.get(sessionId)
+    if (!runtime) return false
+    this.closeRuntime(runtime)
+    return true
+  }
+
+  closeAll(): void {
+    for (const runtime of Array.from(this.runtimes.values())) this.closeRuntime(runtime)
+  }
+
   subscribe(sessionId: string, subscriber: LiveTurnSubscriber): () => void {
     const set = this.subscribers.get(sessionId) ?? new Set<LiveTurnSubscriber>()
     set.add(subscriber)
@@ -122,6 +137,33 @@ export class LiveTurnManager {
     this.scheduleSummaryRefresh(reason)
   }
 
+  private clearIdleTimer(runtime: SessionRuntime): void {
+    if (!runtime.idleTimer) return
+    clearTimeout(runtime.idleTimer)
+    runtime.idleTimer = null
+  }
+
+  private scheduleIdleClose(runtime: SessionRuntime): void {
+    this.clearIdleTimer(runtime)
+    if (runtime.closed || runtime.currentUserMessageUuid) return
+    runtime.idleTimer = setTimeout(() => {
+      if (this.runtimes.get(runtime.sessionId) === runtime && !runtime.currentUserMessageUuid && !runtime.closed) this.closeRuntime(runtime)
+    }, IDLE_RUNTIME_TTL_MS)
+    runtime.idleTimer.unref?.()
+  }
+
+  private closeRuntime(runtime: SessionRuntime): void {
+    if (runtime.closed) return
+    runtime.closed = true
+    this.clearIdleTimer(runtime)
+    if (this.runtimes.get(runtime.sessionId) === runtime) this.runtimes.delete(runtime.sessionId)
+    try {
+      runtime.query.close()
+    } catch (error) {
+      console.error('live-runtime:close failed', error)
+    }
+  }
+
   private finishTurn(sessionId: string, userMessageUuid: string, outcome: 'success' | 'error'): void {
     this.setRunState(sessionId, {
       phase: 'idle',
@@ -138,10 +180,11 @@ export class LiveTurnManager {
     const sessionId = input.sessionId ?? randomUUID()
     let runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: Boolean(input.sessionId), permissionMode: input.permissionMode, model: input.model, effort: input.effort })
     if (runtime.currentUserMessageUuid) throw new Error('Session already has a running generation')
+    this.clearIdleTimer(runtime)
     if (input.effort === 'max' && runtime.effort !== 'max') {
-      runtime.query.close()
-      this.runtimes.delete(sessionId)
+      this.closeRuntime(runtime)
       runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: true, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
+      this.clearIdleTimer(runtime)
     }
     if (runtime.permissionMode !== input.permissionMode) {
       await runtime.query.setPermissionMode(input.permissionMode)
@@ -203,8 +246,11 @@ export class LiveTurnManager {
       model: input.model,
       effort: input.effort,
       currentUserMessageUuid: null,
+      closed: false,
+      idleTimer: null,
     }
     this.runtimes.set(input.sessionId, runtime)
+    this.scheduleIdleClose(runtime)
     void this.drainRuntime(runtime)
     return runtime
   }
@@ -223,6 +269,7 @@ export class LiveTurnManager {
         if (message.type === 'result') {
           this.finishTurn(runtime.sessionId, runtime.currentUserMessageUuid, message.subtype === 'success' ? 'success' : 'error')
           runtime.currentUserMessageUuid = null
+          this.scheduleIdleClose(runtime)
         }
       }
     } catch (error) {
@@ -237,7 +284,7 @@ export class LiveTurnManager {
       }
     } finally {
       runtime.currentUserMessageUuid = null
-      if (this.runtimes.get(runtime.sessionId) === runtime) this.runtimes.delete(runtime.sessionId)
+      this.closeRuntime(runtime)
     }
   }
 

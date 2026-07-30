@@ -8,6 +8,7 @@ import {
   modelCatalogResponseSchema,
   projectDirectoriesResponseSchema,
   projectSessionsQueryResponseSchema,
+  renameSessionResponseSchema,
   settingsResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
@@ -28,6 +29,7 @@ import {
   type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
   type ProjectsResponse,
+  type RenameSessionResponse,
   type SettingsResponse,
   type SessionInfoResponse,
   type SessionLiveEventsResponse,
@@ -197,6 +199,19 @@ export async function fetchSessionLiveEvents(
   )
   if (!response.ok) throw new Error(`Session live events request failed: ${response.status}`)
   return sessionLiveEventsResponseSchema.parse(await response.json())
+}
+
+export async function renameSession(projectId: string, sessionId: string, title: string): Promise<RenameSessionResponse> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/rename`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    },
+  )
+  if (!response.ok) throw new Error(`Session rename request failed: ${response.status}`)
+  return renameSessionResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionInfo(projectId: string, sessionId: string): Promise<SessionInfoResponse> {

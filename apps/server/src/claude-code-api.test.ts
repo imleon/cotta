@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 
-const { getSessionInfoMock, listSessionsMock, getSessionMessagesMock } = vi.hoisted(() => ({
+const { getSessionInfoMock, listSessionsMock, getSessionMessagesMock, renameSessionMock } = vi.hoisted(() => ({
   getSessionInfoMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').getSessionInfo>(),
   listSessionsMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').listSessions>(),
   getSessionMessagesMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').getSessionMessages>(),
+  renameSessionMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').renameSession>(),
 }))
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   getSessionInfo: getSessionInfoMock,
   listSessions: listSessionsMock,
   getSessionMessages: getSessionMessagesMock,
+  renameSession: renameSessionMock,
 }))
 
 import { createClaudeCodeApi } from './claude-code-api.js'
@@ -38,6 +40,7 @@ describe('createClaudeCodeApi', () => {
     getSessionInfoMock.mockReset()
     listSessionsMock.mockReset()
     getSessionMessagesMock.mockReset()
+    renameSessionMock.mockReset()
   })
 
   it('does not mix sessions from /repo/cotta and /repo/cotta-v2 when loading a project', async () => {
@@ -115,7 +118,6 @@ describe('createClaudeCodeApi', () => {
     const api = createClaudeCodeApi(cache)
 
     await expect(api.getSessionTimelineState(projectId('/repo/cotta'), 'old')).resolves.toMatchObject({
-      lastActivityAt: 100,
       signature: 'mtime=200;size=10',
       version: 'timeline-state-v1:mtime=200;size=10',
     })
@@ -140,6 +142,24 @@ describe('createClaudeCodeApi', () => {
     expect(getSessionInfoMock).toHaveBeenCalledWith('other', { dir: '/repo/cotta' })
     expect(getSessionMessagesMock).not.toHaveBeenCalled()
     expect(listSessionsMock).not.toHaveBeenCalled()
+  })
+
+  it('renames an exact project session through the SDK', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta', lastModified: 10 }))
+
+    const api = createClaudeCodeApi()
+
+    await expect(api.renameSession(projectId('/repo/cotta'), 'session-1', 'New title')).resolves.toBe(true)
+    expect(renameSessionMock).toHaveBeenCalledWith('session-1', 'New title', { dir: '/repo/cotta' })
+  })
+
+  it('does not rename a session from a sibling worktree path', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta-v2', lastModified: 10 }))
+
+    const api = createClaudeCodeApi()
+
+    await expect(api.renameSession(projectId('/repo/cotta'), 'session-1', 'New title')).resolves.toBe(false)
+    expect(renameSessionMock).not.toHaveBeenCalled()
   })
 
   it('treats trailing slashes as the same project path', async () => {

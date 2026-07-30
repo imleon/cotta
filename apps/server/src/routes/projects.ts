@@ -1,4 +1,4 @@
-import { lstat, mkdir, realpath, stat } from 'node:fs/promises'
+import { lstat, mkdir, readdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { Hono } from 'hono'
@@ -7,6 +7,7 @@ import {
   createProjectRequestSchema,
   createTurnRequestSchema,
   modelCatalogResponseSchema,
+  projectDirectoriesResponseSchema,
   projectSessionsQuerySchema,
   projectSessionsQueryResponseSchema,
   permissionModeSchema,
@@ -23,6 +24,7 @@ import {
   type ModelSelection,
   type ListVersionsEvent,
   type PermissionMode,
+  type ProjectDirectoriesResponse,
   type ProjectResponse,
   type ProjectsResponse,
   type ProjectSessionsQueryResponse,
@@ -80,6 +82,31 @@ function isPathInside(root: string, target: string): boolean {
 
 function projectsRoot(): string {
   return resolve(process.env.COTTA_PROJECTS_ROOT ?? homedir())
+}
+
+function isSafeRelativeProjectPath(directoryPath: string): boolean {
+  if (!directoryPath) return true
+  if (directoryPath.includes('\0') || directoryPath.startsWith('/') || directoryPath.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(directoryPath)) return false
+  return directoryPath.split(/[\\/]+/).every((segment) => segment && segment !== '.' && segment !== '..')
+}
+
+async function listProjectDirectories(parent = ''): Promise<ProjectDirectoriesResponse | { error: 'invalid_project_path' | 'projects_root_unavailable' | 'project_directories_failed' }> {
+  const root = projectsRoot()
+  if (!isSafeRelativeProjectPath(parent)) return { error: 'invalid_project_path' }
+  try {
+    if (!(await stat(root)).isDirectory()) return { error: 'projects_root_unavailable' }
+    const resolvedRoot = await realpath(root)
+    const parentPath = parent ? resolve(resolvedRoot, parent) : resolvedRoot
+    const resolvedParent = await realpath(parentPath)
+    if (!isPathInside(resolvedRoot, resolvedParent) || !(await stat(resolvedParent)).isDirectory()) return { error: 'invalid_project_path' }
+    const directories = (await readdir(resolvedParent, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({ name: entry.name, path: relative(resolvedRoot, resolve(resolvedParent, entry.name)) }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    return { parent, directories }
+  } catch {
+    return { error: 'project_directories_failed' }
+  }
 }
 
 async function createProjectDirectory(directoryPath: string) {
@@ -233,6 +260,20 @@ export function registerProjectRoutes(
       if (cursorError) return c.json(cursorError.body, cursorError.status)
       console.error('projects:list failed', error)
       return c.json({ error: 'projects_list_failed' }, 500)
+    }
+  })
+
+  app.get('/api/project-directories', async (c) => {
+    try {
+      const result = await listProjectDirectories(c.req.query('parent') ?? '')
+      if ('error' in result) {
+        const status = result.error === 'projects_root_unavailable' ? 503 : result.error === 'invalid_project_path' ? 400 : 500
+        return c.json({ error: result.error }, status)
+      }
+      return c.json(projectDirectoriesResponseSchema.parse(result))
+    } catch (error) {
+      console.error('project-directories:list failed', error)
+      return c.json({ error: 'project_directories_failed' }, 500)
     }
   })
 
@@ -416,14 +457,7 @@ export function registerProjectRoutes(
       const sessionId = c.req.param('sessionId')
       const session = await input.claudeCodeApi.getSessionInfo(projectId, sessionId)
       if (!session) return c.json({ error: 'session_not_found' }, 404)
-      const settings = readSettings(input.settingsStore)
-      const response: SessionInfoResponse = {
-        ...session,
-        runState: input.liveTurnManager.sessionRunState(sessionId) ?? defaultRunState(),
-        availablePermissionModes: permissionModeSchema.options,
-        availableModels: settings.modelCatalog?.models ?? [],
-      }
-      return c.json(sessionInfoResponseSchema.parse(response))
+      return c.json(sessionInfoResponseSchema.parse(session))
     } catch (error) {
       console.error('session:info failed', error)
       return c.json({ error: 'session_info_failed' }, 500)

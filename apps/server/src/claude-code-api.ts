@@ -106,23 +106,24 @@ export function sessionTimelineVersion(session: SDKSessionInfo): string {
   return `timeline-state-v1:${sessionTimelineSignature(session)}`
 }
 
-function toSessionTimelineState(activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo): SessionTimelineState {
+function toSessionTimelineState(_activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo): SessionTimelineState {
   return {
     projectId,
     sessionId: session.sessionId,
     version: sessionTimelineVersion(session),
     signature: sessionTimelineSignature(session),
-    lastActivityAt: activity.get(session),
     fileSize: session.fileSize,
     generatedAt: Date.now(),
   }
 }
 
-function toSessionInfo(activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo): Omit<SessionInfoResponse, 'runState' | 'availablePermissionModes' | 'availableModels'> {
+function toSessionInfo(projectId: string, session: SDKSessionInfo): SessionInfoResponse {
   return {
     projectId,
-    lastActivityAt: activity.get(session),
     sessionId: session.sessionId,
+    version: sessionTimelineVersion(session),
+    signature: sessionTimelineSignature(session),
+    generatedAt: Date.now(),
     summary: session.summary,
     lastModified: session.lastModified,
     fileSize: session.fileSize,
@@ -152,7 +153,7 @@ export type ClaudeCodeApi = {
   listProjects(options?: ProjectSessionsOptions): Promise<{ projects: ProjectSummary[]; hasMore: boolean; nextCursor: string | null }>
   getProject(projectId: string): Promise<ProjectSummary | null>
   listProjectSessions(projectId: string, options?: ProjectSessionsOptions): Promise<ProjectSessions | null>
-  getSessionInfo(projectId: string, sessionId: string): Promise<Omit<SessionInfoResponse, 'runState' | 'availablePermissionModes' | 'availableModels'> | null>
+  getSessionInfo(projectId: string, sessionId: string): Promise<SessionInfoResponse | null>
   getSessionTimelineState(projectId: string, sessionId: string): Promise<SessionTimelineState | null>
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
@@ -224,7 +225,7 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
       if (!projectPath) return null
       const session = await getExactProjectSession(projectPath, sessionId)
       if (!session) return null
-      return toSessionInfo(activity, projectId, session)
+      return toSessionInfo(projectId, session)
     },
 
     async getSessionTimelineState(projectId, sessionId) {

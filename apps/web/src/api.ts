@@ -6,6 +6,7 @@ import {
   listVersionsEventSchema,
   logoutResponseSchema,
   modelCatalogResponseSchema,
+  projectDirectoriesResponseSchema,
   projectSessionsQueryResponseSchema,
   settingsResponseSchema,
   projectSessionsResponseSchema,
@@ -23,6 +24,7 @@ import {
   type ListVersionsEvent,
   type LogoutResponse,
   type ModelCatalogResponse,
+  type ProjectDirectoriesResponse,
   type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
   type ProjectsResponse,
@@ -89,6 +91,13 @@ export async function createProject(directoryPath: string): Promise<CreateProjec
     throw new CreateProjectHttpError(response.status, body?.error ?? null)
   }
   return createProjectResponseSchema.parse(await response.json())
+}
+
+export async function fetchProjectDirectories(parent = ''): Promise<ProjectDirectoriesResponse> {
+  const params = new URLSearchParams({ parent })
+  const response = await fetch(`/api/project-directories?${params}`)
+  if (!response.ok) throw new Error(`Project directories request failed: ${response.status}`)
+  return projectDirectoriesResponseSchema.parse(await response.json())
 }
 
 export async function fetchProjects(cursor: string | null = null, limit = 20): Promise<ProjectsResponse> {

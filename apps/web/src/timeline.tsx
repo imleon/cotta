@@ -2,8 +2,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId, type PersistedLiveEvent, type TimelineBlock, type TurnSummary } from '@cotta/shared'
-import { fetchSessionLiveEvents, fetchSessionRawMessages, fetchSessionTimeline, fetchSessionTimelineState } from './api'
+import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId, type PersistedLiveEvent, type SessionInfoResponse, type TimelineBlock, type TurnSummary } from '@cotta/shared'
+import { fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSessionTimeline } from './api'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -1346,6 +1346,7 @@ function useSessionTimelineData(
   pendingTurn?: TurnSummary | null,
   onLiveTurnChange?: (userMessageUuid: string | null) => void,
   onSessionListStale?: () => void,
+  onSessionInfoChange?: (info: SessionInfoResponse) => void,
   isTimelineAtBottom?: () => boolean,
 ) {
   const [turns, setTurns] = useState<TurnSummary[]>([])
@@ -1363,8 +1364,10 @@ function useSessionTimelineData(
   const loadOlderRequestRef = useRef(0)
   const onLiveTurnChangeRef = useRef(onLiveTurnChange)
   const onSessionListStaleRef = useRef(onSessionListStale)
+  const onSessionInfoChangeRef = useRef(onSessionInfoChange)
   const isTimelineAtBottomRef = useRef(isTimelineAtBottom)
   const refetchTimelineRef = useRef<() => unknown>(() => undefined)
+  const refetchSessionInfoRef = useRef<() => unknown>(() => undefined)
   const previousScopeRef = useRef<SessionTimelineScope | null>(null)
   const pendingPrimaryTurnUuid = pendingTurn?.id ?? null
   const enabled = Boolean(projectId && sessionId)
@@ -1376,9 +1379,9 @@ function useSessionTimelineData(
     retry: false,
   })
   const refetchTimeline = timeline.refetch
-  const timelineState = useQuery({
-    queryKey: ['session-timeline-state', projectId, sessionId],
-    queryFn: () => fetchSessionTimelineState(projectId!, sessionId!),
+  const sessionInfo = useQuery({
+    queryKey: ['session-info', projectId, sessionId],
+    queryFn: () => fetchSessionInfo(projectId!, sessionId!),
     enabled,
     retry: false,
     refetchInterval: liveActive ? false : 8000,
@@ -1387,8 +1390,10 @@ function useSessionTimelineData(
   useEffect(() => {
     onLiveTurnChangeRef.current = onLiveTurnChange
     onSessionListStaleRef.current = onSessionListStale
+    onSessionInfoChangeRef.current = onSessionInfoChange
     isTimelineAtBottomRef.current = isTimelineAtBottom
     refetchTimelineRef.current = refetchTimeline
+    refetchSessionInfoRef.current = sessionInfo.refetch
   })
 
   useEffect(() => {
@@ -1439,8 +1444,10 @@ function useSessionTimelineData(
   }, [timeline.data])
 
   useEffect(() => {
-    if (shouldRefetchTimelineVersion({ appliedVersion: lastAppliedTimelineVersionRef.current, observedVersion: timelineState.data?.state.version ?? null, live: liveActive, fetching: timeline.isFetching })) void refetchTimeline()
-  }, [liveActive, refetchTimeline, timeline.isFetching, timelineState.data?.state.version, timelineState.dataUpdatedAt])
+    if (!sessionInfo.data) return
+    onSessionInfoChangeRef.current?.(sessionInfo.data)
+    if (shouldRefetchTimelineVersion({ appliedVersion: lastAppliedTimelineVersionRef.current, observedVersion: sessionInfo.data.version, live: liveActive, fetching: timeline.isFetching })) void refetchTimeline()
+  }, [liveActive, refetchTimeline, sessionInfo.data, sessionInfo.dataUpdatedAt, timeline.isFetching])
 
   useEffect(() => {
     if (!projectId || !sessionId) return
@@ -1477,7 +1484,7 @@ function useSessionTimelineData(
         liveAccumulatorRef.current = null
         setLiveActive(false)
         onLiveTurnChangeRef.current?.(null)
-        void refetchTimelineRef.current()
+        void refetchSessionInfoRef.current()
         onSessionListStaleRef.current?.()
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottomRef.current?.() ?? true
@@ -1525,12 +1532,29 @@ function useSessionTimelineData(
   }
 }
 
-export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale }: {
+function SessionTimelineSkeleton() {
+  return (
+    <section className="session-workspace-view" aria-label="Loading session timeline" aria-busy="true">
+      <section className="timeline-panel timeline-skeleton-panel">
+        {[0, 1, 2].map((item) => (
+          <div className="timeline-skeleton-turn" key={item}>
+            <div className="timeline-skeleton-line timeline-skeleton-line-short" />
+            <div className="timeline-skeleton-line" />
+            <div className="timeline-skeleton-line timeline-skeleton-line-mid" />
+          </div>
+        ))}
+      </section>
+    </section>
+  )
+}
+
+export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange }: {
   projectId: string
   sessionId: string | null
   pendingTurn?: TurnSummary | null
   onLiveTurnChange?: (userMessageUuid: string | null) => void
   onSessionListStale?: () => void
+  onSessionInfoChange?: (info: SessionInfoResponse) => void
 }) {
   const timelinePanelRef = useRef<HTMLElement | null>(null)
   const olderScrollAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
@@ -1557,7 +1581,7 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
     if (!panel) return true
     return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
   }, [])
-  const { turns, hasMore, olderError, loadingOlder, liveConnectionError, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, isTimelineAtBottom)
+  const { turns, hasMore, olderError, loadingOlder, liveConnectionError, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange, isTimelineAtBottom)
   const visibleTurns = turns
   const matchingLiveEvents = rawMessageSelection && liveEvents.data
     ? liveEventsForTurn(liveEvents.data.events, rawMessageSelection.turnId)
@@ -1615,7 +1639,7 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
     setShowScrollToBottom(!isTimelineAtBottom())
   }, [isTimelineAtBottom, visibleTurns])
 
-  if (timeline.isLoading && visibleTurns.length === 0) return <div className="panel muted">Loading session timeline…</div>
+  if (timeline.isLoading && visibleTurns.length === 0) return <SessionTimelineSkeleton />
   if (timeline.isError && visibleTurns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
 
   return (

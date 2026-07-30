@@ -90,14 +90,13 @@ describe('session detail APIs', () => {
   it('fetches session info', async () => {
     const body = {
       projectId: 'project-1',
-      lastActivityAt: 123,
-      runState: { phase: 'idle', activeTurnId: null },
       sessionId: 'session-1',
+      version: 'timeline-state-v1:mtime=123;size=456',
+      signature: 'mtime=123;size=456',
+      generatedAt: 789,
       summary: 'Session one',
       lastModified: 123,
       fileSize: 456,
-      availablePermissionModes: ['default'],
-      availableModels: [],
     }
     const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)

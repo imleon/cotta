@@ -89,6 +89,16 @@ export const createProjectResponseSchema = z.object({
 
 export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>
 
+export const projectDirectoriesResponseSchema = z.object({
+  parent: z.string(),
+  directories: z.array(z.object({
+    name: z.string(),
+    path: z.string(),
+  })),
+})
+
+export type ProjectDirectoriesResponse = z.infer<typeof projectDirectoriesResponseSchema>
+
 export const projectSessionsResponseSchema = z.object({
   project: projectSummarySchema,
   sessions: z.array(sessionSummarySchema),
@@ -154,7 +164,6 @@ export const sessionTimelineStateSchema = z.object({
   sessionId: z.string(),
   version: z.string(),
   signature: z.string(),
-  lastActivityAt: z.number().optional(),
   fileSize: z.number().optional(),
   generatedAt: z.number(),
 })
@@ -289,9 +298,10 @@ export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>
 
 export const sessionInfoResponseSchema = z.object({
   projectId: z.string(),
-  lastActivityAt: z.number().optional(),
-  runState: sessionRunStateSchema,
   sessionId: z.string(),
+  version: z.string(),
+  signature: z.string(),
+  generatedAt: z.number(),
   summary: z.string(),
   lastModified: z.number(),
   fileSize: z.number().optional(),
@@ -301,8 +311,6 @@ export const sessionInfoResponseSchema = z.object({
   cwd: z.string().optional(),
   tag: z.string().optional(),
   createdAt: z.number().optional(),
-  availablePermissionModes: z.array(permissionModeSchema),
-  availableModels: z.array(modelCatalogItemSchema),
 })
 export type SessionInfoResponse = z.infer<typeof sessionInfoResponseSchema>
 

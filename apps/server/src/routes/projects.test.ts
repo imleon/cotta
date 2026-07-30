@@ -92,7 +92,6 @@ const timelineState: SessionTimelineState = {
   sessionId: 'session-newest',
   version: 'timeline-state-v1:mtime=123;size=456',
   signature: 'mtime=123;size=456',
-  lastActivityAt: 123,
   fileSize: 456,
   generatedAt: 789,
 }
@@ -238,8 +237,10 @@ function createTestApp(
         if (projectId !== project.id || sessionId !== 'session-newest') return null
         return {
           projectId,
-          lastActivityAt: 123,
           sessionId,
+          version: 'timeline-state-v1:mtime=123;size=456',
+          signature: 'mtime=123;size=456',
+          generatedAt: 789,
           summary: 'Newest session',
           lastModified: 123,
           fileSize: 456,
@@ -980,7 +981,7 @@ describe('project routes', () => {
       settingsStore: memorySettingsStore({ modelCatalog }),
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionRunState: () => runningState,
+          sessionRunState: () => runningState,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -989,7 +990,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
-        async getSessionInfo() { return { projectId: project.id, lastActivityAt: 123, sessionId: 'session-newest', summary: 'Newest session', lastModified: 123, fileSize: 456, customTitle: 'Custom newest', firstPrompt: 'First prompt', gitBranch: 'main', cwd: '/tmp/cotta-v2', tag: 'demo', createdAt: 111 } },
+        async getSessionInfo() { return { projectId: project.id, sessionId: 'session-newest', version: 'timeline-state-v1:mtime=123;size=456', signature: 'mtime=123;size=456', generatedAt: 789, summary: 'Newest session', lastModified: 123, fileSize: 456, customTitle: 'Custom newest', firstPrompt: 'First prompt', gitBranch: 'main', cwd: '/tmp/cotta-v2', tag: 'demo', createdAt: 111 } },
         async getSessionTimelineState() { return timelineState },
         async getSessionMessages() { return messages },
       },
@@ -998,9 +999,10 @@ describe('project routes', () => {
     expect(response.status).toBe(200)
     expect(sessionInfoResponseSchema.parse(await response.json())).toEqual({
       projectId: project.id,
-      lastActivityAt: 123,
-      runState: runningState,
       sessionId: 'session-newest',
+      version: 'timeline-state-v1:mtime=123;size=456',
+      signature: 'mtime=123;size=456',
+      generatedAt: 789,
       summary: 'Newest session',
       lastModified: 123,
       fileSize: 456,
@@ -1010,8 +1012,6 @@ describe('project routes', () => {
       cwd: '/tmp/cotta-v2',
       tag: 'demo',
       createdAt: 111,
-      availablePermissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'],
-      availableModels: modelCatalog.models,
     })
   })
 
@@ -1038,7 +1038,7 @@ describe('project routes', () => {
         async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
         async getProject() { return project },
         async listProjectSessions() { return null },
-        async getSessionInfo() { return { projectId: project.id, lastActivityAt: 123, sessionId: 'session-newest', summary: 'Newest session', lastModified: 123, fileSize: 456 } },
+        async getSessionInfo() { return { projectId: project.id, sessionId: 'session-newest', version: 'timeline-state-v1:mtime=123;size=456', signature: 'mtime=123;size=456', generatedAt: 789, summary: 'Newest session', lastModified: 123, fileSize: 456 } },
         async getSessionTimelineState() { return timelineState },
         async getSessionMessages() { return messages },
       },

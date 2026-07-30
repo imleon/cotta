@@ -20,7 +20,7 @@ import {
   type TurnSummary,
   isPrimaryTimelineUserMessage,
 } from '@cotta/shared'
-import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
@@ -520,11 +520,8 @@ function TurnComposer({
   const [effortMenuPosition, setEffortMenuPosition] = useState<CSSProperties>()
   const modelMenuRef = useRef<HTMLDivElement | null>(null)
   const runtimeSettings = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId ? sessionRuntime.settings : null
-  const info = sessionInfo?.projectId === projectId && sessionInfo.sessionId === selectedSessionId ? sessionInfo : null
-  const permissionOptions = info
-    ? PERMISSION_MODE_OPTIONS.filter((option) => info.availablePermissionModes.includes(option.value))
-    : PERMISSION_MODE_OPTIONS
-  const catalogModels = info?.availableModels ?? settings.modelCatalog?.models ?? []
+  const permissionOptions = PERMISSION_MODE_OPTIONS
+  const catalogModels = settings.modelCatalog?.models ?? []
   const selectedModel = model === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === model || item.resolvedModel === model)
   const menuModel = menuModelValue === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === menuModelValue || item.resolvedModel === menuModelValue)
   const triggerModelLabel = selectedModel?.displayName || 'Claude Code default'
@@ -822,6 +819,7 @@ function WorkspacePanel({
   settings,
   sessionRuntime,
   sessionInfo,
+  onSessionInfoChange,
 }: {
   projectId: string | null
   detail: ProjectSessionsResponse | undefined
@@ -835,6 +833,7 @@ function WorkspacePanel({
   settings: AppSettings
   sessionRuntime: SessionRuntimeResponse | null
   sessionInfo: SessionInfoResponse | null
+  onSessionInfoChange: (info: SessionInfoResponse) => void
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
@@ -854,7 +853,7 @@ function WorkspacePanel({
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
         {projectId && (selectedSessionId || pendingTurn)
-          ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} pendingTurn={pendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} />
+          ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} pendingTurn={pendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} />
           : null}
       </div>
 
@@ -1226,18 +1225,27 @@ function ProjectsDashboard() {
   const [isSessionRailResizing, setIsSessionRailResizing] = useState(false)
   const [isSessionRailCollapsed, setIsSessionRailCollapsed] = useState(false)
   const [projectChoice, setProjectChoice] = useState<{ text: string; mode: 'choose' | 'create'; error: string | null } | null>(null)
-  const [newProjectPath, setNewProjectPath] = useState('')
+  const [newProjectParentPath, setNewProjectParentPath] = useState('')
+  const [newProjectName, setNewProjectName] = useState('')
+  const projectDirectories = useQuery({
+    queryKey: ['project-directories', newProjectParentPath],
+    queryFn: () => fetchProjectDirectories(newProjectParentPath),
+    enabled: Boolean(projectChoice && projectChoice.mode === 'create'),
+    retry: false,
+  })
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null)
   const [pendingProjectRequest, setPendingProjectRequest] = useState(0)
   const [refreshingLists, setRefreshingLists] = useState(false)
   const [selectedSessionRuntime, setSelectedSessionRuntime] = useState<SessionRuntimeResponse | null>(null)
   const [selectedSessionInfo, setSelectedSessionInfo] = useState<SessionInfoResponse | null>(null)
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false)
+  const [newConversationMenuOpen, setNewConversationMenuOpen] = useState(false)
   const [isSessionRailSnapping, setIsSessionRailSnapping] = useState(false)
   const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
   const navWidthRef = useRef(DASHBOARD_NAV_DEFAULT_WIDTH)
   const sessionRailWidthRef = useRef(WORKSPACE_RAIL_DEFAULT_WIDTH)
+  const newConversationMenuRef = useRef<HTMLDivElement | null>(null)
   const pendingSessionRequestRef = useRef(0)
   const listVersionEpochRef = useRef<string | null>(null)
   const desiredProjectsVersionRef = useRef(0)
@@ -1280,6 +1288,26 @@ function ProjectsDashboard() {
     selection.clearSelection()
   }
 
+  function beginNewSession() {
+    setNewConversationMenuOpen(false)
+    if (!selectedProjectId) {
+      beginNewConversation()
+      return
+    }
+    beginSelectionIntent()
+    setPendingProjectId(null)
+    setSelectedSessionRuntime(null)
+    setSelectedSessionInfo(null)
+    setSelectedSessionId(null)
+  }
+
+  function beginNewProject() {
+    setNewConversationMenuOpen(false)
+    setNewProjectName('')
+    setNewProjectParentPath('')
+    setProjectChoice({ text: '', mode: 'create', error: null })
+  }
+
   function startPendingProject(projectId: string) {
     const requestId = beginSelectionIntent()
     setProjectChoice(null)
@@ -1299,6 +1327,23 @@ function ProjectsDashboard() {
   useEffect(() => { setSessionInfoOpen(false) }, [selectedProjectId, selectedSessionId])
 
   useEffect(() => {
+    if (!newConversationMenuOpen) return
+    function closeOnOutsidePointer(event: globalThis.PointerEvent) {
+      if (newConversationMenuRef.current?.contains(event.target as Node)) return
+      setNewConversationMenuOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setNewConversationMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [newConversationMenuOpen])
+
+  useEffect(() => {
     if (!selectedProjectId || !selectedSessionId) {
       setSelectedSessionInfo(null)
       return
@@ -1315,7 +1360,19 @@ function ProjectsDashboard() {
     if (!projectChoice || projectChoice.mode !== 'create') return
     try {
       const { project } = await createProject(directoryPath)
-      startPendingProject(project.id)
+      if (projectChoice.text.trim()) {
+        startPendingProject(project.id)
+        return
+      }
+      beginSelectionIntent()
+      setProjectChoice(null)
+      setPendingProjectId(null)
+      setSelectedSessionRuntime(null)
+      setSelectedSessionInfo(null)
+      selection.selectProject(project.id)
+      await refreshProjects(project.id)
+      await refreshProjectsOnly()
+      await refreshVisibleWindows([project.id])
     } catch (error) {
       setProjectChoice((current) => current ? { ...current, error: error instanceof Error ? error.message : String(error) } : current)
     }
@@ -1501,25 +1558,16 @@ function ProjectsDashboard() {
     ? [
         ['Summary', headerSessionInfo.summary],
         ['Session ID', headerSessionInfo.sessionId],
-        ['Status', headerSessionInfo.runState.phase],
         ['Custom title', headerSessionInfo.customTitle],
         ['First prompt', headerSessionInfo.firstPrompt],
         ['Git branch', headerSessionInfo.gitBranch],
         ['CWD', headerSessionInfo.cwd],
         ['Tag', headerSessionInfo.tag],
         ['Created', headerSessionInfo.createdAt ? new Date(headerSessionInfo.createdAt).toLocaleString() : null],
-        ['Last activity', headerSessionInfo.lastActivityAt ? new Date(headerSessionInfo.lastActivityAt).toLocaleString() : null],
         ['Last modified', new Date(headerSessionInfo.lastModified).toLocaleString()],
         ['File size', headerSessionInfo.fileSize ? `${headerSessionInfo.fileSize.toLocaleString()} bytes` : null],
       ].filter((row): row is [string, string] => Boolean(row[1]))
-    : selectedSession
-      ? [
-          ['Title', selectedSession.title],
-          ['Session ID', selectedSession.id],
-          ['Status', selectedSession.runState.phase],
-          ['Last activity', selectedSession.lastActivityAt ? new Date(selectedSession.lastActivityAt).toLocaleString() : null],
-        ].filter((row): row is [string, string] => Boolean(row[1]))
-      : []
+    : []
 
   const reconcileSelection = useCallback((selectionSnapshot: { intentId: number; projectId: string | null; sessionId: string | null }, outcomes: Map<string, { outcome: string; selectedSessionExists?: boolean }>) => {
     if (pendingSessionRequestRef.current !== selectionSnapshot.intentId || selectedProjectId !== selectionSnapshot.projectId || selectedSessionId !== selectionSnapshot.sessionId) return
@@ -1793,19 +1841,29 @@ function ProjectsDashboard() {
                     aria-controls="workspace-session-info"
                     onClick={() => setSessionInfoOpen((open) => !open)}
                   >
-                    i
+                    <svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" data-icon="InfoOutlined" aria-hidden="true"><path d="M11 15.5v-4a1 1 0 1 1 0-2h1.004c.55 0 .998.445.998.996.003 1.668-.002 3.336-.002 5.004h.5a1 1 0 1 1 0 2h-3a1 1 0 1 1 0-2h.5Zm1-7a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z" fill="currentColor" /></svg>
                   </button>
                 ) : null}
-                <button
-                  className="project-meta-icon workspace-new-conversation-button"
-                  type="button"
-                  onClick={beginNewConversation}
-                  disabled={refreshingLists}
-                  aria-label="Start new conversation"
-                  title="Start new conversation"
-                >
-                  +
-                </button>
+                <div className="workspace-new-conversation-menu" ref={newConversationMenuRef} onMouseEnter={() => setNewConversationMenuOpen(true)} onMouseLeave={() => setNewConversationMenuOpen(false)}>
+                  <button
+                    className="project-meta-icon workspace-new-conversation-button"
+                    type="button"
+                    onClick={() => setNewConversationMenuOpen((open) => !open)}
+                    disabled={refreshingLists}
+                    aria-haspopup="menu"
+                    aria-expanded={newConversationMenuOpen}
+                    aria-label="Create new"
+                    title="Create new"
+                  >
+                    +
+                  </button>
+                  {newConversationMenuOpen ? (
+                    <div className="workspace-new-conversation-menu-list" role="menu" aria-label="Create new">
+                      <button className="workspace-new-conversation-menu-item" type="button" role="menuitem" onClick={beginNewSession}>New Session</button>
+                      <button className="workspace-new-conversation-menu-item" type="button" role="menuitem" onClick={beginNewProject}>New Project</button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </header>
             {sessionInfoOpen && headerSessionInfoRows.length > 0 ? (
@@ -1824,13 +1882,14 @@ function ProjectsDashboard() {
                     selectedSessionId={selection.selectedSessionId}
                     setSelectedSessionId={selection.setSelectedSessionId}
                     refreshSessionLists={refreshVisibleWindows}
-                    onProjectRequired={(text) => { setNewProjectPath(''); setProjectChoice({ text, mode: 'choose', error: null }) }}
+                    onProjectRequired={(text) => { setNewProjectName(''); setNewProjectParentPath(''); setProjectChoice({ text, mode: 'choose', error: null }) }}
                     pendingProjectId={pendingProjectId}
                     pendingProjectRequest={pendingProjectRequest}
                     onSessionCreated={handleSessionCreated}
                     settings={settings}
                     sessionRuntime={selectedSessionRuntime}
                     sessionInfo={selectedSessionInfo}
+                    onSessionInfoChange={setSelectedSessionInfo}
                   />}
             </div>
           </div>
@@ -1840,10 +1899,11 @@ function ProjectsDashboard() {
         <dialog className="project-choice-dialog" open aria-labelledby="project-choice-title">
           <form className="project-choice-form" onSubmit={(event) => {
             event.preventDefault()
-            if (projectChoice.mode === 'create') void createProjectForPendingTurn(newProjectPath)
+            const name = newProjectName.trim()
+            if (projectChoice.mode === 'create' && name) void createProjectForPendingTurn(newProjectParentPath ? `${newProjectParentPath}/${name}` : name)
           }}>
-            <h2 id="project-choice-title">Choose a project</h2>
-            <p>Your first message will start a new session in the selected project.</p>
+            <h2 id="project-choice-title">{projectChoice.mode === 'create' ? 'Create project' : 'Choose a project'}</h2>
+            <p>{projectChoice.text.trim() ? 'Your first message will start a new session in the selected project.' : 'Create a project directory and start a blank session there.'}</p>
             {projectChoice.mode === 'choose' ? (
               <>
                 {selection.items.length > 0 ? (
@@ -1854,15 +1914,26 @@ function ProjectsDashboard() {
                 <button type="button" className="project-choice-link" onClick={() => setProjectChoice((current) => current ? { ...current, mode: 'create', error: null } : current)}>Create new project directory</button>
               </>
             ) : (
-              <label className="project-choice-path">
-                <span>Project path</span>
-                <input value={newProjectPath} onChange={(event) => setNewProjectPath(event.target.value)} placeholder="experiments/demo-project" autoFocus />
-              </label>
+              <div className="project-choice-create">
+                <div className="project-choice-parent-row">
+                  <span>Parent: {newProjectParentPath || '/'}</span>
+                  {newProjectParentPath ? <button type="button" onClick={() => setNewProjectParentPath(newProjectParentPath.split('/').slice(0, -1).join('/'))}>Up</button> : null}
+                </div>
+                {projectDirectories.isLoading ? <p className="muted">Loading directories…</p> : projectDirectories.isError ? <p className="error panel">Failed to load directories.</p> : projectDirectories.data?.directories.length ? (
+                  <div className="project-choice-list project-choice-directory-list">
+                    {projectDirectories.data.directories.map((directory) => <button key={directory.path} type="button" onClick={() => setNewProjectParentPath(directory.path)}>{directory.name}</button>)}
+                  </div>
+                ) : <p className="muted">No child directories.</p>}
+                <label className="project-choice-path">
+                  <span>Project directory name</span>
+                  <input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="demo-project" autoFocus />
+                </label>
+              </div>
             )}
             {projectChoice.error ? <div className="panel error">{projectChoice.error}</div> : null}
             <div className="project-choice-actions">
               <button type="button" onClick={() => setProjectChoice(null)}>Cancel</button>
-              {projectChoice.mode === 'create' ? <button type="submit" disabled={!newProjectPath.trim()}>Create and start</button> : null}
+              {projectChoice.mode === 'create' ? <button type="submit" disabled={!newProjectName.trim()}>{projectChoice.text.trim() ? 'Create and start' : 'Create project'}</button> : null}
             </div>
           </form>
         </dialog>

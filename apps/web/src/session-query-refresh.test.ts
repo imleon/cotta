@@ -13,7 +13,7 @@ vi.mock('./api', () => ({
   queryProjectSessions: queryProjectSessionsMock,
 }))
 
-import { refreshProjectSessionLists, refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
+import { refreshProjectSessionLists, refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
 
 const idleRunState = { phase: 'idle' as const, activeTurnId: null }
 
@@ -112,7 +112,7 @@ describe('refresh helpers', () => {
         { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
         { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
       ],
-      defaultSessionId: 's1',
+      defaultSessionId: 's9',
       hasMore: false,
       nextCursor: null,
     })
@@ -125,7 +125,7 @@ describe('refresh helpers', () => {
           { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
           { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
         ],
-        defaultSessionId: 's1',
+        defaultSessionId: 's9',
         hasMore: false,
         nextCursor: null,
       }],
@@ -148,6 +148,39 @@ describe('refresh helpers', () => {
 
     expect(fetchProjectsMock).toHaveBeenCalledWith(null, 1)
     expect(queryProjectSessionsMock).not.toHaveBeenCalled()
+  })
+
+  it('removes a deleted session from detail and rail caches', () => {
+    queryClient.setQueryData(sessionQueryKeys.projectSessionsDetail('p1', 2), {
+      project: { id: 'p1', name: 'P1' },
+      sessions: [
+        { id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState },
+        { id: 's2', title: 'S2', projectId: 'p1', runState: idleRunState },
+      ],
+      defaultSessionId: 's1',
+      hasMore: false,
+      nextCursor: null,
+    } satisfies ProjectSessionsResponse)
+    queryClient.setQueryData(sessionQueryKeys.projectSessionsRail('p1'), {
+      pages: [{
+        project: { id: 'p1', name: 'P1' },
+        sessions: [
+          { id: 's1', title: 'S1', projectId: 'p1', runState: idleRunState },
+          { id: 's2', title: 'S2', projectId: 'p1', runState: idleRunState },
+        ],
+        defaultSessionId: 's1',
+        hasMore: false,
+        nextCursor: null,
+      }],
+      pageParams: [null],
+    } satisfies InfiniteData<ProjectSessionsResponse, string | null>)
+
+    removeProjectSessionFromCache(queryClient, 'p1', 's1')
+
+    expect(queryClient.getQueryData<ProjectSessionsResponse>(sessionQueryKeys.projectSessionsDetail('p1', 2))?.sessions.map((session) => session.id)).toEqual(['s2'])
+    expect(queryClient.getQueryData<ProjectSessionsResponse>(sessionQueryKeys.projectSessionsDetail('p1', 2))?.defaultSessionId).toBe('s2')
+    expect(queryClient.getQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(sessionQueryKeys.projectSessionsRail('p1'))?.pages[0]?.sessions.map((session) => session.id)).toEqual(['s2'])
+    expect(queryClient.getQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(sessionQueryKeys.projectSessionsRail('p1'))?.pages[0]?.defaultSessionId).toBe('s2')
   })
 
   it('seeds an empty rail cache from visible session batch response', async () => {

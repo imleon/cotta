@@ -9,7 +9,9 @@ function emptyClaudeCodeApi() {
     async getProject() { return null },
     async listProjectSessions() { return null },
     async getSessionInfo() { return null },
+    async deleteSession() { return false },
     async renameSession() { return false },
+    async forkSession() { return null },
     async getSessionTimelineState() { return null },
     async getSessionMessages() { return null },
   }

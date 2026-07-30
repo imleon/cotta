@@ -252,7 +252,9 @@ function createTestApp(
           createdAt: 111,
         }
       },
-      async renameSession() { return false },
+      async deleteSession() { return false },
+        async renameSession() { return false },
+        async forkSession() { return null },
       async getSessionTimelineState(projectId, sessionId) {
         if (projectId !== project.id || sessionId !== 'session-newest') return null
         return timelineState
@@ -283,7 +285,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -391,7 +395,9 @@ describe('project routes', () => {
         async getProject() { return null },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -415,7 +421,9 @@ describe('project routes', () => {
         async getProject() { return null },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -440,7 +448,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { throw new ListCursorError('stale') },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -539,7 +549,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -578,7 +590,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -617,7 +631,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -668,7 +684,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -704,7 +722,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -747,7 +767,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -784,7 +806,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -820,7 +844,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -849,7 +875,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -879,7 +907,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         async renameSession() { return false },
+        async forkSession() { return null },
     async getSessionTimelineState() { return null },
         async getSessionMessages() { return null },
       },
@@ -990,6 +1020,60 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'session_not_found' })
   })
 
+  it('deletes an existing session after confirming the session id', async () => {
+    const remove = vi.fn(async () => true)
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        deleteSession: remove,
+        async renameSession() { return false },
+        async forkSession() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return messages },
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmationSessionId: 'session-newest' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+    expect(remove).toHaveBeenCalledWith(project.id, 'session-newest')
+  })
+
+  it('rejects a mismatched session delete confirmation', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions/session-newest/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmationSessionId: 'wrong' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'invalid_session_delete_confirmation' })
+  })
+
+  it('returns 404 when deleting an unknown session', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions/missing/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmationSessionId: 'missing' }),
+    })
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
   it('renames an existing session', async () => {
     const rename = vi.fn(async () => true)
     const response = await createApp({
@@ -1005,7 +1089,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return null },
+        async deleteSession() { return false },
         renameSession: rename,
+        async forkSession() { return null },
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return messages },
       },
@@ -1042,6 +1128,101 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'session_not_found' })
   })
 
+  it('forks an existing session without a title', async () => {
+    const scheduleRefresh = vi.fn(async () => {})
+    const fork = vi.fn(async () => 'fork-session')
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        async deleteSession() { return false },
+        async renameSession() { return false },
+        forkSession: fork,
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return messages },
+      },
+      sessionSummaryCache: {
+        ensureReady: async () => {},
+        setSessionRunStateReader: () => {},
+        subscribe: () => () => {},
+        scheduleRefresh,
+        queryProjectSessions: () => ({ sessionsByProject: {} }),
+      } as never,
+    }).request(`/api/projects/${project.id}/sessions/session-newest/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ upToMessageId: '123e4567-e89b-12d3-a456-426614174000' }),
+    })
+
+    expect(response.status).toBe(201)
+    expect(await response.json()).toEqual({ projectId: project.id, sessionId: 'fork-session' })
+    expect(fork).toHaveBeenCalledWith(project.id, 'session-newest', '123e4567-e89b-12d3-a456-426614174000')
+    expect(scheduleRefresh).toHaveBeenCalledWith({ reason: 'manual' })
+  })
+
+  it('forks a whole session when no fork target is provided', async () => {
+    const fork = vi.fn(async () => 'fork-session')
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        async deleteSession() { return false },
+        async renameSession() { return false },
+        forkSession: fork,
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return messages },
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+
+    expect(response.status).toBe(201)
+    expect(await response.json()).toEqual({ projectId: project.id, sessionId: 'fork-session' })
+    expect(fork).toHaveBeenCalledWith(project.id, 'session-newest', undefined)
+  })
+
+  it('rejects an invalid fork target', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions/session-newest/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ upToMessageId: 'not-a-uuid' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'invalid_fork_target' })
+  })
+
+  it('returns 404 when forking an unknown session', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions/missing/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ upToMessageId: '123e4567-e89b-12d3-a456-426614174000' }),
+    })
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
   it('returns session info for an existing session', async () => {
     const runningState: SessionRunState = { phase: 'running', activeTurnId: 'turn-1', lastTurn: null }
     const response = await createApp({
@@ -1058,7 +1239,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return { projectId: project.id, sessionId: 'session-newest', version: 'timeline-state-v1:mtime=123;size=456', signature: 'mtime=123;size=456', generatedAt: 789, summary: 'Newest session', lastModified: 123, fileSize: 456, customTitle: 'Custom newest', firstPrompt: 'First prompt', gitBranch: 'main', cwd: '/tmp/cotta-v2', tag: 'demo', createdAt: 111 } },
+        async deleteSession() { return true },
         async renameSession() { return true },
+        async forkSession() { return null },
         async getSessionTimelineState() { return timelineState },
         async getSessionMessages() { return messages },
       },
@@ -1107,7 +1290,9 @@ describe('project routes', () => {
         async getProject() { return project },
         async listProjectSessions() { return null },
         async getSessionInfo() { return { projectId: project.id, sessionId: 'session-newest', version: 'timeline-state-v1:mtime=123;size=456', signature: 'mtime=123;size=456', generatedAt: 789, summary: 'Newest session', lastModified: 123, fileSize: 456 } },
+        async deleteSession() { return true },
         async renameSession() { return true },
+        async forkSession() { return null },
         async getSessionTimelineState() { return timelineState },
         async getSessionMessages() { return messages },
       },

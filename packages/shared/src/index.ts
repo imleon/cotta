@@ -99,6 +99,27 @@ export const renameSessionResponseSchema = z.object({
 })
 export type RenameSessionResponse = z.infer<typeof renameSessionResponseSchema>
 
+export const forkSessionRequestSchema = z.object({
+  upToMessageId: z.string().uuid().optional(),
+})
+export type ForkSessionRequest = z.infer<typeof forkSessionRequestSchema>
+
+export const forkSessionResponseSchema = z.object({
+  projectId: z.string(),
+  sessionId: z.string(),
+})
+export type ForkSessionResponse = z.infer<typeof forkSessionResponseSchema>
+
+export const deleteSessionRequestSchema = z.object({
+  confirmationSessionId: z.string().trim().min(1),
+})
+export type DeleteSessionRequest = z.infer<typeof deleteSessionRequestSchema>
+
+export const deleteSessionResponseSchema = z.object({
+  ok: z.literal(true),
+})
+export type DeleteSessionResponse = z.infer<typeof deleteSessionResponseSchema>
+
 export const projectDirectoriesResponseSchema = z.object({
   parent: z.string(),
   directories: z.array(z.object({

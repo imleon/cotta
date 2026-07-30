@@ -6,6 +6,10 @@ import {
   appSettingsSchema,
   createProjectRequestSchema,
   createTurnRequestSchema,
+  deleteSessionRequestSchema,
+  deleteSessionResponseSchema,
+  forkSessionRequestSchema,
+  forkSessionResponseSchema,
   modelCatalogResponseSchema,
   projectDirectoriesResponseSchema,
   projectSessionsQuerySchema,
@@ -466,6 +470,38 @@ export function registerProjectRoutes(
     } catch (error) {
       console.error('session:rename failed', error)
       return c.json({ error: 'session_rename_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects/:projectId/sessions/:sessionId/fork', async (c) => {
+    try {
+      const projectId = c.req.param('projectId')
+      const sourceSessionId = c.req.param('sessionId')
+      const parsed = forkSessionRequestSchema.safeParse(await c.req.json())
+      if (!parsed.success) return c.json({ error: 'invalid_fork_target' }, 400)
+      const sessionId = await input.claudeCodeApi.forkSession(projectId, sourceSessionId, parsed.data.upToMessageId)
+      if (!sessionId) return c.json({ error: 'session_not_found' }, 404)
+      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual' })
+      return c.json(forkSessionResponseSchema.parse({ projectId, sessionId }), 201)
+    } catch (error) {
+      console.error('session:fork failed', error)
+      return c.json({ error: 'session_fork_failed' }, 500)
+    }
+  })
+
+  app.post('/api/projects/:projectId/sessions/:sessionId/delete', async (c) => {
+    try {
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
+      const parsed = deleteSessionRequestSchema.safeParse(await c.req.json())
+      if (!parsed.success || parsed.data.confirmationSessionId !== sessionId) return c.json({ error: 'invalid_session_delete_confirmation' }, 400)
+      const deleted = await input.claudeCodeApi.deleteSession(projectId, sessionId)
+      if (!deleted) return c.json({ error: 'session_not_found' }, 404)
+      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual' })
+      return c.json(deleteSessionResponseSchema.parse({ ok: true }))
+    } catch (error) {
+      console.error('session:delete failed', error)
+      return c.json({ error: 'session_delete_failed' }, 500)
     }
   })
 

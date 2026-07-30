@@ -1,6 +1,8 @@
 import {
   authSessionResponseSchema,
   createProjectResponseSchema,
+  deleteSessionResponseSchema,
+  forkSessionResponseSchema,
   githubDevicePollResponseSchema,
   githubDeviceStartResponseSchema,
   listVersionsEventSchema,
@@ -20,6 +22,8 @@ import {
   sessionTimelineStateResponseSchema,
   type AuthSessionResponse,
   type CreateProjectResponse,
+  type DeleteSessionResponse,
+  type ForkSessionResponse,
   type GitHubDevicePollResponse,
   type GitHubDeviceStartResponse,
   type ListVersionsEvent,
@@ -201,6 +205,19 @@ export async function fetchSessionLiveEvents(
   return sessionLiveEventsResponseSchema.parse(await response.json())
 }
 
+export async function deleteSession(projectId: string, sessionId: string, confirmationSessionId: string): Promise<DeleteSessionResponse> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/delete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmationSessionId }),
+    },
+  )
+  if (!response.ok) throw new Error(`Session delete request failed: ${response.status}`)
+  return deleteSessionResponseSchema.parse(await response.json())
+}
+
 export async function renameSession(projectId: string, sessionId: string, title: string): Promise<RenameSessionResponse> {
   const response = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/rename`,
@@ -212,6 +229,19 @@ export async function renameSession(projectId: string, sessionId: string, title:
   )
   if (!response.ok) throw new Error(`Session rename request failed: ${response.status}`)
   return renameSessionResponseSchema.parse(await response.json())
+}
+
+export async function forkSession(projectId: string, sessionId: string, upToMessageId?: string): Promise<ForkSessionResponse> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/fork`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(upToMessageId ? { upToMessageId } : {}),
+    },
+  )
+  if (!response.ok) throw new Error(`Session fork request failed: ${response.status}`)
+  return forkSessionResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionInfo(projectId: string, sessionId: string): Promise<SessionInfoResponse> {

@@ -35,10 +35,8 @@ function statusLabel(runState: SessionSummary['runState']): string {
 
 function statusIcon(runState: SessionSummary['runState']) {
   const tone = statusTone(runState)
-  if (tone === 'running') return <svg className="status-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 9.5a6 6 0 0 1 12 0c0 3.1-2.7 5.5-6 5.5H8l-2.5 2v-3.1A5.2 5.2 0 0 1 4 9.5Z" /><circle cx="7.7" cy="9.5" r=".7" fill="currentColor" stroke="none" /><circle cx="10" cy="9.5" r=".7" fill="currentColor" stroke="none" /><circle cx="12.3" cy="9.5" r=".7" fill="currentColor" stroke="none" /></svg>
-  if (tone === 'warning') return <svg className="status-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 6.5v4l2.5 1.5" /></svg>
-  if (tone === 'danger') return <svg className="status-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 6.5v4" /><path d="M10 14h.01" /></svg>
-  return null
+  if (tone === 'neutral') return null
+  return <span className="status-dot" aria-hidden="true" />
 }
 
 function projectSessionsRegionId(projectId: string): string {
@@ -240,10 +238,24 @@ function StatusBadge({ runState }: { runState: SessionSummary['runState'] }) {
   return <span className={`status-badge status-${tone}`} title={statusLabel(runState)}>{statusIcon(runState)}</span>
 }
 
+function SessionListSkeleton() {
+  return (
+    <ol className="session-list rail-session-list session-list-skeleton" aria-label="Loading sessions">
+      {[0, 1, 2].map((item) => (
+        <li className="session-row-skeleton" key={item}>
+          <span className="session-row-skeleton-title" />
+          <span className="session-row-skeleton-age" />
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 function SessionRow({
   session,
   selected,
   pending,
+  highlighted,
   menuOpen,
   onSelect,
   onOpenMenu,
@@ -252,6 +264,7 @@ function SessionRow({
   session: SessionSummary
   selected: boolean
   pending?: boolean
+  highlighted?: boolean
   menuOpen?: boolean
   onSelect: () => void
   onOpenMenu: (button: HTMLButtonElement) => void
@@ -259,7 +272,7 @@ function SessionRow({
 }) {
   return (
     <li className={`sidebar-motion-item session-row-wrap${motionStateClass(motionState)}`}>
-      <button className={`session-row ${selected ? 'selected' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
+      <button className={`session-row ${selected ? 'selected' : ''} ${highlighted ? 'highlighted' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
         <div className="session-content">
           <div className="session-main">
             <strong>{session.title}</strong>
@@ -292,6 +305,8 @@ function ProjectSessionBranch({
   selectedSessionId,
   pendingProjectId,
   pendingSessionId,
+  highlightedProjectId,
+  highlightedSessionId,
   expanded,
   visibleSessionState,
   onToggleExpanded,
@@ -300,6 +315,7 @@ function ProjectSessionBranch({
   onOpenSessionMenu,
   openMenuSessionId,
   onCursorStale,
+  onHighlightedSessionSeen,
   motionState,
 }: {
   project: ProjectSummary
@@ -307,6 +323,8 @@ function ProjectSessionBranch({
   selectedSessionId: string | null
   pendingProjectId?: string | null
   pendingSessionId?: string | null
+  highlightedProjectId?: string | null
+  highlightedSessionId?: string | null
   expanded: boolean
   visibleSessionState?: { loading: boolean; error: boolean }
   onToggleExpanded: () => void
@@ -315,6 +333,7 @@ function ProjectSessionBranch({
   onOpenSessionMenu: (projectId: string, session: SessionSummary, button: HTMLButtonElement) => void
   openMenuSessionId: string | null
   onCursorStale: (projectId: string) => void
+  onHighlightedSessionSeen?: () => void
   motionState?: SidebarMotionState
 }) {
   const sessionsQuery = useInfiniteQuery({
@@ -330,7 +349,15 @@ function ProjectSessionBranch({
   const sessions = sessionsQuery.data?.pages.flatMap((page) => page.sessions) ?? []
   const renderedSessions = useSidebarListMotion(sessions, (session) => session.id)
   const selected = project.id === selectedProjectId
+  const highlighted = project.id === highlightedProjectId && sessions.some((session) => session.id === highlightedSessionId)
   const sessionsRegionId = projectSessionsRegionId(project.id)
+  const sessionsRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!highlighted) return
+    if (sessionsRef.current) sessionsRef.current.scrollTop = 0
+    onHighlightedSessionSeen?.()
+  }, [highlighted, onHighlightedSessionSeen])
 
   return (
     <div className={`project-tree-item sidebar-motion-item${motionStateClass(motionState)}`}>
@@ -343,8 +370,8 @@ function ProjectSessionBranch({
         onSelectProject={onSelectProject}
       />
       {expanded ? (
-        <div className="project-sessions" id={sessionsRegionId} role="group" aria-label={`${project.name} sessions`}>
-          {sessionsQuery.isLoading || (!sessionsQuery.data && visibleSessionState?.loading) ? <div className="rail-empty">Loading sessions…</div> : null}
+        <div className="project-sessions" id={sessionsRegionId} role="group" aria-label={`${project.name} sessions`} ref={sessionsRef}>
+          {sessionsQuery.isLoading || (!sessionsQuery.data && visibleSessionState?.loading) ? <SessionListSkeleton /> : null}
           {sessionsQuery.isError || (!sessionsQuery.data && visibleSessionState?.error) ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
           {!sessionsQuery.isLoading && !visibleSessionState?.loading && !sessionsQuery.isError && !visibleSessionState?.error && sessions.length === 0 && renderedSessions.length === 0 ? <div className="rail-empty">No sessions</div> : null}
           {renderedSessions.length > 0 ? (
@@ -356,6 +383,7 @@ function ProjectSessionBranch({
                   session={session}
                   selected={project.id === selectedProjectId && session.id === selectedSessionId}
                   pending={project.id === pendingProjectId && session.id === pendingSessionId}
+                  highlighted={project.id === highlightedProjectId && session.id === highlightedSessionId}
                   menuOpen={openMenuSessionId === session.id}
                   onSelect={() => onSelectSession(project.id, session.id)}
                   onOpenMenu={(button) => onOpenSessionMenu(project.id, session, button)}
@@ -391,6 +419,8 @@ export function ProjectSessionRail({
   selectedSessionId,
   pendingProjectId,
   pendingSessionId,
+  highlightedProjectId,
+  highlightedSessionId,
   projectsHasMore,
   projectsLoadingMore,
   onLoadMoreProjects,
@@ -398,14 +428,19 @@ export function ProjectSessionRail({
   onVisibleProjectIdsChange,
   onSelectProject,
   onSelectSession,
+  onDeleteSession,
   onRenameSession,
+  onForkSession,
   onSessionCursorStale,
+  onHighlightedSessionSeen,
 }: {
   projects: ProjectSummary[]
   selectedProjectId: string | null
   selectedSessionId: string | null
   pendingProjectId?: string | null
   pendingSessionId?: string | null
+  highlightedProjectId?: string | null
+  highlightedSessionId?: string | null
   projectsHasMore?: boolean
   projectsLoadingMore?: boolean
   onLoadMoreProjects?: () => void
@@ -413,12 +448,17 @@ export function ProjectSessionRail({
   onVisibleProjectIdsChange?: (projectIds: string[]) => void
   onSelectProject: (projectId: string) => void
   onSelectSession: (projectId: string, sessionId: string) => void
+  onDeleteSession?: (projectId: string, sessionId: string, confirmationSessionId: string) => Promise<void>
   onRenameSession?: (projectId: string, sessionId: string, title: string) => Promise<void>
+  onForkSession?: (projectId: string, sessionId: string) => Promise<unknown>
   onSessionCursorStale: (projectId: string) => void
+  onHighlightedSessionSeen?: () => void
 }) {
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set())
   const [openMenu, setOpenMenu] = useState<{ projectId: string; session: SessionSummary; x: number; y: number } | null>(null)
+  const [deleteDialog, setDeleteDialog] = useState<{ projectId: string; sessionId: string; title: string; value: string; error: string | null; deleting: boolean } | null>(null)
   const [renameDialog, setRenameDialog] = useState<{ projectId: string; sessionId: string; title: string; value: string; error: string | null; saving: boolean } | null>(null)
+  const deleteDialogRef = useRef<HTMLDialogElement | null>(null)
   const renameDialogRef = useRef<HTMLDialogElement | null>(null)
   const renderedProjects = useSidebarListMotion(projects, (project) => project.id)
 
@@ -473,6 +513,17 @@ export function ProjectSessionRail({
   }, [openMenu])
 
   useEffect(() => {
+    const dialog = deleteDialogRef.current
+    if (!deleteDialog || !dialog) return
+    if (!dialog.open) dialog.showModal()
+    function closeDeleteDialog(event: KeyboardEvent) {
+      if (event.key === 'Escape') setDeleteDialog(null)
+    }
+    document.addEventListener('keydown', closeDeleteDialog)
+    return () => document.removeEventListener('keydown', closeDeleteDialog)
+  }, [deleteDialog])
+
+  useEffect(() => {
     const dialog = renameDialogRef.current
     if (!renameDialog || !dialog) return
     if (!dialog.open) dialog.showModal()
@@ -494,9 +545,33 @@ export function ProjectSessionRail({
     setOpenMenu((current) => current?.projectId === projectId && current.session.id === session.id ? null : { projectId, session, x: rect.right, y: rect.bottom + 4 })
   }
 
+  function openDeleteDialog(projectId: string, session: SessionSummary) {
+    setOpenMenu(null)
+    setDeleteDialog({ projectId, sessionId: session.id, title: session.title, value: '', error: null, deleting: false })
+  }
+
   function openRenameDialog(projectId: string, session: SessionSummary) {
     setOpenMenu(null)
     setRenameDialog({ projectId, sessionId: session.id, title: session.title, value: session.title, error: null, saving: false })
+  }
+
+  function forkSessionFromMenu(projectId: string, session: SessionSummary) {
+    setOpenMenu(null)
+    void onForkSession?.(projectId, session.id)
+  }
+
+  async function submitDelete(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!deleteDialog || !onDeleteSession) return
+    const confirmationSessionId = deleteDialog.value.trim()
+    if (confirmationSessionId !== deleteDialog.sessionId) { setDeleteDialog({ ...deleteDialog, error: 'Session ID does not match.' }); return }
+    setDeleteDialog({ ...deleteDialog, value: confirmationSessionId, error: null, deleting: true })
+    try {
+      await onDeleteSession(deleteDialog.projectId, deleteDialog.sessionId, confirmationSessionId)
+      setDeleteDialog(null)
+    } catch (error) {
+      setDeleteDialog((current) => current ? { ...current, deleting: false, error: error instanceof Error ? error.message : String(error) } : current)
+    }
   }
 
   async function submitRename(event: FormEvent<HTMLFormElement>) {
@@ -532,6 +607,8 @@ export function ProjectSessionRail({
               selectedSessionId={selectedSessionId}
               pendingProjectId={pendingProjectId}
               pendingSessionId={pendingSessionId}
+              highlightedProjectId={highlightedProjectId}
+              highlightedSessionId={highlightedSessionId}
               expanded={expandedProjectIds.has(project.id)}
               visibleSessionState={visibleSessionStates[project.id]}
               onToggleExpanded={() => toggleProject(project.id)}
@@ -540,6 +617,7 @@ export function ProjectSessionRail({
               onOpenSessionMenu={openSessionMenu}
               openMenuSessionId={openMenu?.projectId === project.id ? openMenu.session.id : null}
               onCursorStale={onSessionCursorStale}
+              onHighlightedSessionSeen={onHighlightedSessionSeen}
             />
           ))}
           {projectsHasMore ? (
@@ -553,7 +631,33 @@ export function ProjectSessionRail({
       {openMenu ? (
         <div className="session-row-menu" role="menu" style={{ left: openMenu.x, top: openMenu.y }}>
           <button type="button" role="menuitem" onClick={() => openRenameDialog(openMenu.projectId, openMenu.session)}>Rename</button>
+          {onForkSession ? <button type="button" role="menuitem" onClick={() => forkSessionFromMenu(openMenu.projectId, openMenu.session)}>Fork Session</button> : null}
+          <button className="session-row-menu-danger" type="button" role="menuitem" onClick={() => openDeleteDialog(openMenu.projectId, openMenu.session)}>Delete Session</button>
         </div>
+      ) : null}
+      {deleteDialog ? (
+        <dialog ref={deleteDialogRef} className="rename-session-dialog delete-session-dialog" aria-labelledby="delete-session-title" onCancel={(event) => { event.preventDefault(); setDeleteDialog(null) }} onClick={(event) => { if (event.target === event.currentTarget) setDeleteDialog(null) }}>
+          <form className="rename-session-form delete-session-form" onSubmit={submitDelete}>
+            <h2 id="delete-session-title">Delete session</h2>
+            <p className="delete-session-warning">This permanently deletes the session transcript and subagent transcripts. Type the full session ID to confirm.</p>
+            <p className="rename-session-target">{deleteDialog.title}</p>
+            <code className="delete-session-id">{deleteDialog.sessionId}</code>
+            <label className="rename-session-field delete-session-field">
+              <span>Session ID</span>
+              <input
+                value={deleteDialog.value}
+                onChange={(event) => setDeleteDialog((current) => current ? { ...current, value: event.target.value, error: null } : current)}
+                disabled={deleteDialog.deleting}
+                autoFocus
+              />
+            </label>
+            {deleteDialog.error ? <div className="panel error rename-session-error">{deleteDialog.error}</div> : null}
+            <div className="rename-session-actions delete-session-actions">
+              <button type="button" onClick={() => setDeleteDialog(null)} disabled={deleteDialog.deleting}>Cancel</button>
+              <button type="submit" disabled={deleteDialog.deleting || deleteDialog.value.trim() !== deleteDialog.sessionId}>{deleteDialog.deleting ? 'Deleting…' : 'Delete Session'}</button>
+            </div>
+          </form>
+        </dialog>
       ) : null}
       {renameDialog ? (
         <dialog ref={renameDialogRef} className="rename-session-dialog" aria-labelledby="rename-session-title" onCancel={(event) => { event.preventDefault(); setRenameDialog(null) }} onClick={(event) => { if (event.target === event.currentTarget) setRenameDialog(null) }}>

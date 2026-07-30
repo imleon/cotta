@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createProject, ensureSessionRuntime, fetchAuthSession, fetchProjects, fetchSessionInfo, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
+import { createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjects, fetchSessionInfo, fetchSessionRawMessages, fetchSettings, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, queryProjectSessions, refreshModelCatalog, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
 
 describe('createProject', () => {
   beforeEach(() => {
@@ -105,6 +105,17 @@ describe('session detail APIs', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/info')
   })
 
+  it('deletes a session with confirmation', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deleteSession('project-1', 'session/1', 'session/1')).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/delete', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ confirmationSessionId: 'session/1' }),
+    }))
+  })
+
   it('renames a session', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
@@ -113,6 +124,28 @@ describe('session detail APIs', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/rename', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ title: 'New title' }),
+    }))
+  })
+
+  it('forks a session up to a message without sending a title', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ projectId: 'project-1', sessionId: 'fork-1' }), { status: 201 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(forkSession('project-1', 'session/1', '123e4567-e89b-12d3-a456-426614174000')).resolves.toEqual({ projectId: 'project-1', sessionId: 'fork-1' })
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/fork', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ upToMessageId: '123e4567-e89b-12d3-a456-426614174000' }),
+    }))
+  })
+
+  it('forks a whole session without a message target', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ projectId: 'project-1', sessionId: 'fork-1' }), { status: 201 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(forkSession('project-1', 'session/1')).resolves.toEqual({ projectId: 'project-1', sessionId: 'fork-1' })
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/sessions/session%2F1/fork', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({}),
     }))
   })
 

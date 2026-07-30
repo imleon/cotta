@@ -1,4 +1,6 @@
 import {
+  deleteSession as sdkDeleteSession,
+  forkSession as sdkForkSession,
   getSessionInfo,
   getSessionMessages,
   listSessions,
@@ -156,6 +158,8 @@ export type ClaudeCodeApi = {
   listProjectSessions(projectId: string, options?: ProjectSessionsOptions): Promise<ProjectSessions | null>
   getSessionInfo(projectId: string, sessionId: string): Promise<SessionInfoResponse | null>
   renameSession(projectId: string, sessionId: string, title: string): Promise<boolean>
+  forkSession(projectId: string, sessionId: string, upToMessageId?: string): Promise<string | null>
+  deleteSession(projectId: string, sessionId: string): Promise<boolean>
   getSessionTimelineState(projectId: string, sessionId: string): Promise<SessionTimelineState | null>
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
@@ -236,6 +240,24 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
       const session = await getExactProjectSession(projectPath, sessionId)
       if (!session) return false
       await sdkRenameSession(sessionId, title, { dir: projectPath })
+      return true
+    },
+
+    async forkSession(projectId, sessionId, upToMessageId) {
+      const projectPath = projectPathFromId(projectId)
+      if (!projectPath) return null
+      const session = await getExactProjectSession(projectPath, sessionId)
+      if (!session) return null
+      const result = await sdkForkSession(sessionId, { dir: projectPath, ...(upToMessageId ? { upToMessageId } : {}) })
+      return result.sessionId
+    },
+
+    async deleteSession(projectId, sessionId) {
+      const projectPath = projectPathFromId(projectId)
+      if (!projectPath) return false
+      const session = await getExactProjectSession(projectPath, sessionId)
+      if (!session) return false
+      await sdkDeleteSession(sessionId, { dir: projectPath })
       return true
     },
 

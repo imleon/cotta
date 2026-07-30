@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 
-const { getSessionInfoMock, listSessionsMock, getSessionMessagesMock, renameSessionMock } = vi.hoisted(() => ({
+const { deleteSessionMock, forkSessionMock, getSessionInfoMock, listSessionsMock, getSessionMessagesMock, renameSessionMock } = vi.hoisted(() => ({
+  deleteSessionMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').deleteSession>(),
+  forkSessionMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').forkSession>(),
   getSessionInfoMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').getSessionInfo>(),
   listSessionsMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').listSessions>(),
   getSessionMessagesMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').getSessionMessages>(),
@@ -9,6 +11,8 @@ const { getSessionInfoMock, listSessionsMock, getSessionMessagesMock, renameSess
 }))
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  deleteSession: deleteSessionMock,
+  forkSession: forkSessionMock,
   getSessionInfo: getSessionInfoMock,
   listSessions: listSessionsMock,
   getSessionMessages: getSessionMessagesMock,
@@ -37,6 +41,8 @@ function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sess
 
 describe('createClaudeCodeApi', () => {
   beforeEach(() => {
+    deleteSessionMock.mockReset()
+    forkSessionMock.mockReset()
     getSessionInfoMock.mockReset()
     listSessionsMock.mockReset()
     getSessionMessagesMock.mockReset()
@@ -144,6 +150,15 @@ describe('createClaudeCodeApi', () => {
     expect(listSessionsMock).not.toHaveBeenCalled()
   })
 
+  it('deletes an exact project session through the SDK', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta', lastModified: 10 }))
+
+    const api = createClaudeCodeApi()
+
+    await expect(api.deleteSession(projectId('/repo/cotta'), 'session-1')).resolves.toBe(true)
+    expect(deleteSessionMock).toHaveBeenCalledWith('session-1', { dir: '/repo/cotta' })
+  })
+
   it('renames an exact project session through the SDK', async () => {
     getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta', lastModified: 10 }))
 
@@ -151,6 +166,42 @@ describe('createClaudeCodeApi', () => {
 
     await expect(api.renameSession(projectId('/repo/cotta'), 'session-1', 'New title')).resolves.toBe(true)
     expect(renameSessionMock).toHaveBeenCalledWith('session-1', 'New title', { dir: '/repo/cotta' })
+  })
+
+  it('forks an exact project session through the SDK without a title', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta', lastModified: 10 }))
+    forkSessionMock.mockResolvedValue({ sessionId: 'fork-1' })
+    const api = createClaudeCodeApi()
+
+    await expect(api.forkSession(projectId('/repo/cotta'), 'session-1', '123e4567-e89b-12d3-a456-426614174000')).resolves.toBe('fork-1')
+    expect(forkSessionMock).toHaveBeenCalledWith('session-1', { dir: '/repo/cotta', upToMessageId: '123e4567-e89b-12d3-a456-426614174000' })
+    expect(forkSessionMock.mock.calls[0]?.[1]).not.toHaveProperty('title')
+  })
+
+  it('forks an entire exact project session without a message target', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta', lastModified: 10 }))
+    forkSessionMock.mockResolvedValue({ sessionId: 'fork-1' })
+    const api = createClaudeCodeApi()
+
+    await expect(api.forkSession(projectId('/repo/cotta'), 'session-1')).resolves.toBe('fork-1')
+    expect(forkSessionMock).toHaveBeenCalledWith('session-1', { dir: '/repo/cotta' })
+  })
+
+  it('does not fork a session from a sibling worktree path', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta-v2', lastModified: 10 }))
+    const api = createClaudeCodeApi()
+
+    await expect(api.forkSession(projectId('/repo/cotta'), 'session-1', '123e4567-e89b-12d3-a456-426614174000')).resolves.toBeNull()
+    expect(forkSessionMock).not.toHaveBeenCalled()
+  })
+
+  it('does not delete a session from a sibling worktree path', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'session-1', cwd: '/repo/cotta-v2', lastModified: 10 }))
+
+    const api = createClaudeCodeApi()
+
+    await expect(api.deleteSession(projectId('/repo/cotta'), 'session-1')).resolves.toBe(false)
+    expect(deleteSessionMock).not.toHaveBeenCalled()
   })
 
   it('does not rename a session from a sibling worktree path', async () => {

@@ -83,9 +83,13 @@ function patchProjectDetailQueries(queryClient: QueryClient, response: ProjectSe
     if (!current) continue
     const latest = projectWindow(response, projectId)
     if (!latest) continue
+    const defaultSessionId = current.defaultSessionId && latest.sessions.some((session) => session.id === current.defaultSessionId)
+      ? current.defaultSessionId
+      : latest.sessions[0]?.id ?? null
     queryClient.setQueryData(queryKey, {
       ...current,
       sessions: latest.sessions,
+      defaultSessionId,
       hasMore: latest.hasMore,
       nextCursor: latest.nextCursor,
     })
@@ -103,7 +107,10 @@ function patchProjectRailQuery(queryClient: QueryClient, response: ProjectSessio
   const latest = projectWindow(response, projectId)
   if (!latest) return
   const project = current?.pages[0]?.project ?? projectForRail(queryClient, projectId)
-  const defaultSessionId = current?.pages[0]?.defaultSessionId ?? latest.sessions[0]?.id ?? null
+  const currentDefaultSessionId = current?.pages[0]?.defaultSessionId
+  const defaultSessionId = currentDefaultSessionId && latest.sessions.some((session) => session.id === currentDefaultSessionId)
+    ? currentDefaultSessionId
+    : latest.sessions[0]?.id ?? null
   queryClient.setQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(queryKey, {
     pages: [{
       project,
@@ -113,6 +120,29 @@ function patchProjectRailQuery(queryClient: QueryClient, response: ProjectSessio
       nextCursor: latest.nextCursor,
     }],
     pageParams: [null],
+  })
+}
+
+function withoutSession(page: ProjectSessionsResponse, sessionId: string): ProjectSessionsResponse {
+  const sessions = page.sessions.filter((session) => session.id !== sessionId)
+  return {
+    ...page,
+    sessions,
+    defaultSessionId: page.defaultSessionId === sessionId ? sessions[0]?.id ?? null : page.defaultSessionId,
+  }
+}
+
+export function removeProjectSessionFromCache(queryClient: QueryClient, projectId: string, sessionId: string): void {
+  for (const [queryKey, current] of queryClient.getQueriesData<ProjectSessionsResponse>({ queryKey: ['project-sessions-detail', projectId] })) {
+    if (current) queryClient.setQueryData(queryKey, withoutSession(current, sessionId))
+  }
+
+  const railKey = sessionQueryKeys.projectSessionsRail(projectId)
+  const rail = queryClient.getQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(railKey)
+  if (!rail) return
+  queryClient.setQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(railKey, {
+    ...rail,
+    pages: rail.pages.map((page) => withoutSession(page, sessionId)),
   })
 }
 

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -79,6 +79,7 @@ function TimelineTimestamp({
   copyLabel,
   onViewRaw,
   viewRawLabel,
+  extraActions,
   source,
 }: {
   value?: number
@@ -87,6 +88,7 @@ function TimelineTimestamp({
   copyLabel?: string
   onViewRaw?: () => void
   viewRawLabel?: string
+  extraActions?: ReactNode
   source?: 'history' | 'live'
 }) {
   const [copyStatus, setCopyStatus] = useState<'Copied' | 'Copy failed' | null>(null)
@@ -97,7 +99,7 @@ function TimelineTimestamp({
     if (clearStatusRef.current) clearTimeout(clearStatusRef.current)
   }, [])
 
-  if (!label || !value) return <span className={[timelineMessageClass.timestamp, className, 'invisible'].filter(Boolean).join(' ')} aria-hidden="true">&nbsp;</span>
+  if ((!label || !value) && !copyText && !onViewRaw && !extraActions) return <span className={[timelineMessageClass.timestamp, className, 'invisible'].filter(Boolean).join(' ')} aria-hidden="true">&nbsp;</span>
 
   function showStatus(status: 'Copied' | 'Copy failed') {
     if (clearStatusRef.current) clearTimeout(clearStatusRef.current)
@@ -123,7 +125,8 @@ function TimelineTimestamp({
     <>
       {copyText ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={copyLabel} onClick={handleCopy}>{copyIcon}</button> : null}
       {onViewRaw ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={viewRawLabel} onClick={onViewRaw}><svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M9 11h4M11 9v4" /></svg></button> : null}
-      <time dateTime={new Date(value).toISOString()}>{label}</time>
+      {extraActions}
+      {label && value ? <time dateTime={new Date(value).toISOString()}>{label}</time> : null}
       {source ? <span className="rounded-full bg-[var(--tl-surface-soft)] px-1.5 py-px text-[var(--text-xs)] font-bold uppercase tracking-[0.04em] text-[var(--tl-muted)]">{source}</span> : null}
       <span className="sr-only" aria-live="polite">{copyStatus}</span>
     </>
@@ -163,7 +166,7 @@ function shouldCollapseBlock(kind: string): boolean {
     || kind === 'tool.result'
 }
 
-type TimelineRenderItem =
+export type TimelineRenderItem =
   | { type: 'block'; block: TimelineBlock }
   | { type: 'tool-call'; toolUse: TimelineBlock | null; results: TimelineBlock[]; toolUseId: string }
 
@@ -171,6 +174,10 @@ type AssistantResponseFrameItem = { type: 'assistant-response-frame'; id: string
 
 function timelineRenderItemBlocks(item: TimelineRenderItem): TimelineBlock[] {
   return item.type === 'block' ? [item.block] : [...(item.toolUse ? [item.toolUse] : []), ...item.results]
+}
+
+export function assistantResponseFrameForkMessageId(item: AssistantResponseFrameItem): string | null {
+  return item.items.flatMap(timelineRenderItemBlocks).at(-1)?.sourceEventIds.at(-1) ?? null
 }
 
 type TimelineDisplayItem =
@@ -660,8 +667,33 @@ const TimelineRenderItemView = memo(function TimelineRenderItemView({ item, time
   return <ToolCallBlockView toolUse={item.toolUse} results={item.results} />
 })
 
-const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, source, onViewRaw }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void }) {
+type ToastNotification = { message: string; tone: 'success' | 'error' }
+
+const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, source, onViewRaw, onForkSession, onNotify }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void; onForkSession?: (upToMessageId: string) => Promise<unknown>; onNotify?: (toast: ToastNotification) => void }) {
   const copyText = assistantResponseText(item.items)
+  const forkMessageId = assistantResponseFrameForkMessageId(item)
+  const [forking, setForking] = useState(false)
+  const [forkError, setForkError] = useState<string | null>(null)
+
+  async function handleFork() {
+    if (!forkMessageId || !onForkSession || forking) return
+    setForking(true)
+    setForkError(null)
+    try {
+      await onForkSession(forkMessageId)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setForkError(message)
+    } finally {
+      setForking(false)
+    }
+  }
+
+  const forkAction = source === 'history' && forkMessageId && onForkSession ? (
+    <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)] disabled:cursor-default disabled:opacity-50" style={{ borderRadius: 5 }} type="button" aria-label="Fork session from this response" onClick={handleFork} disabled={forking}>
+      {forking ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 3v6a4 4 0 0 0 4 4h8" /><path d="m15 10 3 3-3 3" /><path d="M6 21v-6a4 4 0 0 1 4-4h1" /></svg>}
+    </button>
+  ) : null
 
   return (
     <div className="assistant-response group">
@@ -670,7 +702,8 @@ const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ it
           {item.items.map((child) => <TimelineRenderItemView item={child} key={timelineRenderItemKey(child)} />)}
         </div>
       </section>
-      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" onViewRaw={onViewRaw ? () => onViewRaw(item.items.flatMap(timelineRenderItemBlocks)) : undefined} viewRawLabel="View raw assistant response" source={source} />
+      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" onViewRaw={onViewRaw ? () => onViewRaw(item.items.flatMap(timelineRenderItemBlocks)) : undefined} viewRawLabel="View raw assistant response" extraActions={forkAction} source={source} />
+      {forkError ? <div className="panel error">Failed to fork session: {forkError}</div> : null}
     </div>
   )
 })
@@ -1548,13 +1581,15 @@ function SessionTimelineSkeleton() {
   )
 }
 
-export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange }: {
+export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange, onForkSession, onNotify }: {
   projectId: string
   sessionId: string | null
   pendingTurn?: TurnSummary | null
   onLiveTurnChange?: (userMessageUuid: string | null) => void
   onSessionListStale?: () => void
   onSessionInfoChange?: (info: SessionInfoResponse) => void
+  onForkSession?: (upToMessageId: string) => Promise<unknown>
+  onNotify?: (toast: ToastNotification) => void
 }) {
   const timelinePanelRef = useRef<HTMLElement | null>(null)
   const olderScrollAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
@@ -1655,7 +1690,7 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
           return (
             <article className="turn-card" key={turn.id}>
               <div className="timeline-blocks">{displayItems.map((item) => item.type === 'assistant-response-frame'
-                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} source={source} onViewRaw={() => openRawMessages(turn.id)} key={item.id} />
+                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} source={source} onViewRaw={() => openRawMessages(turn.id)} onForkSession={onForkSession} onNotify={onNotify} key={item.id} />
                 : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.startedAt : undefined} source={source} onViewRaw={() => openRawMessages(turn.id)} key={timelineRenderItemKey(item.item)} />,
               )}</div>
             </article>

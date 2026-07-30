@@ -632,6 +632,57 @@ h2 {
   background: var(--color-accent-soft);
 }
 
+
+.session-row-menu button + button { margin-top: 2px; }
+
+.session-row-menu-danger {
+  color: var(--color-danger) !important;
+}
+
+.session-row-menu-danger:hover,
+.session-row-menu-danger:focus-visible {
+  background: rgb(220 38 38 / 10%) !important;
+}
+
+.delete-session-dialog {
+  border-color: rgb(220 38 38 / 35%);
+}
+
+.delete-session-form h2 {
+  color: var(--color-danger);
+}
+
+.delete-session-warning {
+  color: #991b1b;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.rename-session-target {
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+
+.delete-session-id {
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  background: rgb(220 38 38 / 8%);
+  padding: 8px 10px;
+  color: #991b1b;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.delete-session-actions button:last-child {
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.delete-session-actions button:last-child:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
 .rename-session-dialog {
   z-index: 100;
   width: min(420px, calc(100vw - 32px));
@@ -749,6 +800,31 @@ h2 {
 .rail-session-list {
   margin-top: 2px !important;
 }
+
+.session-list-skeleton {
+  pointer-events: none;
+}
+
+.session-row-skeleton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 7px;
+}
+
+.session-row-skeleton-title,
+.session-row-skeleton-age {
+  display: block;
+  height: 11px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(148 163 184 / 12%), rgb(148 163 184 / 24%), rgb(148 163 184 / 12%));
+  background-size: 220% 100%;
+  animation: timeline-skeleton-pulse 1.2s ease-in-out infinite;
+}
+
+.session-row-skeleton-title { width: 78%; }
+.session-row-skeleton-age { width: 24px; }
 
 .project-card {
   display: grid;
@@ -1363,6 +1439,23 @@ h2 {
   background: var(--color-accent-soft);
 }
 
+.session-row.highlighted {
+  animation: fork-session-highlight-breathe 900ms ease-in-out infinite alternate;
+}
+
+@keyframes fork-session-highlight-breathe {
+  from {
+    color: #14532d;
+    background: #dcfce7;
+    box-shadow: inset 0 0 0 1px #22c55e;
+  }
+  to {
+    color: var(--color-text);
+    background: var(--color-surface-muted);
+    box-shadow: inset 0 0 0 1px var(--color-border);
+  }
+}
+
 .session-content {
   display: grid;
   min-width: 0;
@@ -1418,26 +1511,30 @@ h2 {
   text-transform: uppercase;
 }
 
-.status-icon {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.status-dot {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
-.status-glyph {
-  font-size: 12px;
-  line-height: 1;
+.status-running .status-dot,
+.status-warning .status-dot,
+.status-danger .status-dot {
+  animation: status-dot-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes status-dot-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: .72; transform: scale(.9); }
+  50% { box-shadow: 0 0 0 4px transparent; opacity: .95; transform: scale(1); }
 }
 
 .status-neutral { background: #e2e8f0; color: #334155; }
-.status-running { background: #e0f2fe; color: #0369a1; }
+.status-running { background: rgb(52 168 83 / 9%); color: #3aa878; }
 .status-success { background: #dcfce7; color: #166534; }
-.status-warning { background: #fef3c7; color: #92400e; }
-.status-danger { background: #fee2e2; color: #991b1b; }
+.status-warning { background: rgb(250 204 21 / 9%); color: #d6a300; }
+.status-danger { background: rgb(244 63 94 / 9%); color: #dc4c64; }
 
 .turn-form {
   display: grid;
@@ -2006,17 +2103,33 @@ h2 {
 
 .settings-toast {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  top: 18px;
+  left: 50%;
   z-index: 50;
-  max-width: min(360px, calc(100vw - 48px));
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: #1e293b;
-  color: #fff;
-  padding: 10px 14px;
+  min-width: min(360px, calc(100vw - 48px));
+  max-width: min(560px, calc(100vw - 48px));
+  transform: translateX(-50%);
+  border: 1px solid rgb(148 163 184 / 44%);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--color-text);
+  padding: 12px 18px;
   box-shadow: 0 18px 50px rgb(15 23 42 / 18%);
   font-size: 13px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.settings-toast-success {
+  border-color: rgb(34 197 94 / 34%);
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.settings-toast-error {
+  border-color: rgb(239 68 68 / 34%);
+  background: #fef2f2;
+  color: #991b1b;
 }
 
 .debug-page-content {

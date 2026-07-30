@@ -20,9 +20,9 @@ import {
   type TurnSummary,
   isPrimaryTimelineUserMessage,
 } from '@cotta/shared'
-import { connectListVersions, createProject, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
-import { refreshProjectsWindow, refreshVisibleProjectSessions, sessionQueryKeys } from './session-query-refresh'
+import { refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
 import './styles.css'
 
@@ -820,6 +820,8 @@ function WorkspacePanel({
   sessionRuntime,
   sessionInfo,
   onSessionInfoChange,
+  onForkSession,
+  onNotify,
 }: {
   projectId: string | null
   detail: ProjectSessionsResponse | undefined
@@ -834,6 +836,8 @@ function WorkspacePanel({
   sessionRuntime: SessionRuntimeResponse | null
   sessionInfo: SessionInfoResponse | null
   onSessionInfoChange: (info: SessionInfoResponse) => void
+  onForkSession: (projectId: string, sessionId: string, upToMessageId: string) => Promise<unknown>
+  onNotify: (toast: ToastState) => void
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
@@ -853,7 +857,7 @@ function WorkspacePanel({
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
         {projectId && (selectedSessionId || pendingTurn)
-          ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} pendingTurn={pendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} />
+          ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} pendingTurn={pendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
           : null}
       </div>
 
@@ -876,13 +880,15 @@ function WorkspacePanel({
   )
 }
 
+type ToastState = { message: string; tone: 'success' | 'error' }
+
 function SettingsPanel({ projectId, settings }: { projectId: string | null; settings: AppSettings }) {
   const queryClient = useQueryClient()
   const catalogModels = settings.modelCatalog?.models ?? []
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode ?? 'default')
   const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
   const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_EFFORT)
-  const [status, setStatus] = useState<string | null>(null)
+  const [status, setStatus] = useState<ToastState | null>(null)
   const [saving, setSaving] = useState(false)
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
@@ -966,7 +972,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
       const response = await refreshModelCatalog(projectId)
       queryClient.setQueryData(['settings'], response)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
     } finally {
       setCatalogLoading(false)
     }
@@ -980,9 +986,9 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     try {
       const response = await saveSettings({ ...settings, defaultPermissionMode: nextPermissionMode })
       queryClient.setQueryData(['settings'], response)
-      setStatus('Saved')
+      setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
     } finally {
       setSaving(false)
     }
@@ -997,9 +1003,9 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     try {
       const response = await saveSettings({ ...settings, defaultModel: nextModel === DEFAULT_TURN_OPTION ? null : nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
       queryClient.setQueryData(['settings'], response)
-      setStatus('Saved')
+      setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
     } finally {
       setSaving(false)
     }
@@ -1011,9 +1017,9 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     try {
       const response = await saveSettings({ ...settings, showDebugNav })
       queryClient.setQueryData(['settings'], response)
-      setStatus('Saved')
+      setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
     } finally {
       setSaving(false)
     }
@@ -1162,7 +1168,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
         </div>
       </form>
 
-      {status ? <div className="settings-toast" role="status">{status}</div> : null}
+      {status ? <div className={`settings-toast settings-toast-${status.tone}`} role="status">{status.message}</div> : null}
     </section>
   )
 }
@@ -1238,6 +1244,9 @@ function ProjectsDashboard() {
   const [refreshingLists, setRefreshingLists] = useState(false)
   const [selectedSessionRuntime, setSelectedSessionRuntime] = useState<SessionRuntimeResponse | null>(null)
   const [selectedSessionInfo, setSelectedSessionInfo] = useState<SessionInfoResponse | null>(null)
+  const [toast, setToast] = useState<ToastState | null>(null)
+  const [highlightedForkSession, setHighlightedForkSession] = useState<{ projectId: string; sessionId: string } | null>(null)
+  const [highlightedForkSeen, setHighlightedForkSeen] = useState(false)
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false)
   const [newConversationMenuOpen, setNewConversationMenuOpen] = useState(false)
   const [isSessionRailSnapping, setIsSessionRailSnapping] = useState(false)
@@ -1324,7 +1333,38 @@ function ProjectsDashboard() {
     setPendingProjectId(null)
   }
 
+  async function handleForkSession(projectId: string, sessionId: string, upToMessageId?: string) {
+    try {
+      const fork = await forkSession(projectId, sessionId, upToMessageId)
+      setHighlightedForkSession(fork)
+      setHighlightedForkSeen(false)
+      await refreshProjectsOnly()
+      await refreshVisibleWindows([projectId])
+      setToast({ message: 'Fork created', tone: 'success' })
+      return fork
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setToast({ message: `Failed to fork session: ${message}`, tone: 'error' })
+      throw error
+    }
+  }
+
   useEffect(() => { setSessionInfoOpen(false) }, [selectedProjectId, selectedSessionId])
+
+  useEffect(() => {
+    if (!toast) return
+    const timeout = window.setTimeout(() => setToast(null), 2200)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
+
+  useEffect(() => {
+    if (!highlightedForkSession || !highlightedForkSeen) return
+    const timeout = window.setTimeout(() => {
+      setHighlightedForkSession(null)
+      setHighlightedForkSeen(false)
+    }, 2500)
+    return () => window.clearTimeout(timeout)
+  }, [highlightedForkSeen, highlightedForkSession])
 
   useEffect(() => {
     if (!newConversationMenuOpen) return
@@ -1360,6 +1400,7 @@ function ProjectsDashboard() {
     if (!projectChoice || projectChoice.mode !== 'create') return
     try {
       const { project } = await createProject(directoryPath)
+      setToast({ message: 'Project created', tone: 'success' })
       if (projectChoice.text.trim()) {
         startPendingProject(project.id)
         return
@@ -1374,7 +1415,9 @@ function ProjectsDashboard() {
       await refreshProjectsOnly()
       await refreshVisibleWindows([project.id])
     } catch (error) {
-      setProjectChoice((current) => current ? { ...current, error: error instanceof Error ? error.message : String(error) } : current)
+      const message = error instanceof Error ? error.message : String(error)
+      setProjectChoice((current) => current ? { ...current, error: message } : current)
+      setToast({ message: `Failed to create project: ${message}`, tone: 'error' })
     }
   }
 
@@ -1554,19 +1597,26 @@ function ProjectsDashboard() {
       .find((session) => session.id === selectedSessionId)
   const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : 'New conversation')
   const headerSessionInfo = selectedSessionInfo?.projectId === selectedProjectId && selectedSessionInfo.sessionId === selectedSessionId ? selectedSessionInfo : null
-  const headerSessionInfoRows = headerSessionInfo
+  const infoText = (value: string | number | null | undefined) => {
+    if (value == null) return '—'
+    if (typeof value === 'string') return value.trim() ? value : '—'
+    return String(value)
+  }
+  const infoTime = (value: number | null | undefined) => value == null ? '—' : new Date(value).toLocaleString()
+  const infoBytes = (value: number | null | undefined) => value == null ? '—' : `${value.toLocaleString()} bytes`
+  const headerSessionInfoRows: Array<[string, string]> = headerSessionInfo
     ? [
-        ['Summary', headerSessionInfo.summary],
-        ['Session ID', headerSessionInfo.sessionId],
-        ['Custom title', headerSessionInfo.customTitle],
-        ['First prompt', headerSessionInfo.firstPrompt],
-        ['Git branch', headerSessionInfo.gitBranch],
-        ['CWD', headerSessionInfo.cwd],
-        ['Tag', headerSessionInfo.tag],
-        ['Created', headerSessionInfo.createdAt ? new Date(headerSessionInfo.createdAt).toLocaleString() : null],
-        ['Last modified', new Date(headerSessionInfo.lastModified).toLocaleString()],
-        ['File size', headerSessionInfo.fileSize ? `${headerSessionInfo.fileSize.toLocaleString()} bytes` : null],
-      ].filter((row): row is [string, string] => Boolean(row[1]))
+        ['Summary', infoText(headerSessionInfo.summary)],
+        ['Session ID', infoText(headerSessionInfo.sessionId)],
+        ['Custom title', infoText(headerSessionInfo.customTitle)],
+        ['First prompt', infoText(headerSessionInfo.firstPrompt)],
+        ['Git branch', infoText(headerSessionInfo.gitBranch)],
+        ['CWD', infoText(headerSessionInfo.cwd)],
+        ['Tag', infoText(headerSessionInfo.tag)],
+        ['Created', infoTime(headerSessionInfo.createdAt)],
+        ['Last modified', infoTime(headerSessionInfo.lastModified)],
+        ['File size', infoBytes(headerSessionInfo.fileSize)],
+      ]
     : []
 
   const reconcileSelection = useCallback((selectionSnapshot: { intentId: number; projectId: string | null; sessionId: string | null }, outcomes: Map<string, { outcome: string; selectedSessionExists?: boolean }>) => {
@@ -1647,11 +1697,38 @@ function ProjectsDashboard() {
     }).catch(() => {})
   }
 
+  async function handleDeleteSession(projectId: string, sessionId: string, confirmationSessionId: string) {
+    try {
+      await deleteSession(projectId, sessionId, confirmationSessionId)
+      removeProjectSessionFromCache(queryClient, projectId, sessionId)
+      if (selectedProjectId === projectId && selectedSessionId === sessionId) {
+        beginSelectionIntent()
+        setSelectedSessionId(null)
+        setSelectedSessionRuntime(null)
+        setSelectedSessionInfo(null)
+      }
+      await refreshProjectsOnly()
+      await refreshVisibleWindows([projectId])
+      setToast({ message: 'Session deleted', tone: 'success' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setToast({ message: `Failed to delete session: ${message}`, tone: 'error' })
+      throw error
+    }
+  }
+
   async function handleRenameSession(projectId: string, sessionId: string, title: string) {
-    await renameSession(projectId, sessionId, title)
-    await refreshVisibleWindows([projectId])
-    if (selectedProjectId === projectId && selectedSessionId === sessionId) {
-      setSelectedSessionInfo(await fetchSessionInfo(projectId, sessionId))
+    try {
+      await renameSession(projectId, sessionId, title)
+      await refreshVisibleWindows([projectId])
+      if (selectedProjectId === projectId && selectedSessionId === sessionId) {
+        setSelectedSessionInfo(await fetchSessionInfo(projectId, sessionId))
+      }
+      setToast({ message: 'Session renamed', tone: 'success' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setToast({ message: `Failed to rename session: ${message}`, tone: 'error' })
+      throw error
     }
   }
 
@@ -1784,6 +1861,8 @@ function ProjectsDashboard() {
               selectedSessionId={selectedSessionId}
               pendingProjectId={null}
               pendingSessionId={null}
+              highlightedProjectId={highlightedForkSession?.projectId ?? null}
+              highlightedSessionId={highlightedForkSession?.sessionId ?? null}
               projectsHasMore={selection.projects.hasNextPage}
               projectsLoadingMore={selection.projects.isFetchingNextPage}
               onLoadMoreProjects={() => {
@@ -1804,8 +1883,11 @@ function ProjectsDashboard() {
                 selection.selectProject(projectId)
               }}
               onSelectSession={handleSelectSession}
+              onDeleteSession={handleDeleteSession}
               onRenameSession={handleRenameSession}
+              onForkSession={handleForkSession}
               onSessionCursorStale={(projectId) => { void refreshVisibleWindows([projectId]) }}
+              onHighlightedSessionSeen={() => setHighlightedForkSeen(true)}
             />
           </div>
           <div
@@ -1899,11 +1981,14 @@ function ProjectsDashboard() {
                     sessionRuntime={selectedSessionRuntime}
                     sessionInfo={selectedSessionInfo}
                     onSessionInfoChange={setSelectedSessionInfo}
+                    onForkSession={handleForkSession}
+                    onNotify={setToast}
                   />}
             </div>
           </div>
         </section>
       )}
+      {toast ? <div className={`settings-toast settings-toast-${toast.tone}`} role="status">{toast.message}</div> : null}
       {projectChoice ? (
         <dialog className="project-choice-dialog" open aria-labelledby="project-choice-title">
           <form className="project-choice-form" onSubmit={(event) => {

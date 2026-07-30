@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { applySdkMessage, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, shouldRefetchTimelineVersion, shouldResetSessionTimeline, TimelineBlockView, timelineTurnIndex } from './timeline'
+import { applySdkMessage, assistantResponseFrameForkMessageId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, shouldRefetchTimelineVersion, shouldResetSessionTimeline, TimelineBlockView, timelineTurnIndex } from './timeline'
 
 function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
   return {
@@ -269,6 +269,17 @@ describe('timeline response frame grouping', () => {
     expect(display[0]).toMatchObject({ type: 'item', item: { type: 'block', block: { id: 'primary:user' } } })
     expect(display[1]).toMatchObject({ type: 'assistant-response-frame' })
     expect(display[1]?.type === 'assistant-response-frame' ? display[1].items.map((item) => item.type === 'block' ? item.block.id : item.toolUseId) : []).toEqual(['assistant:text', 'non-primary:user'])
+  })
+
+  it('uses the last response frame source event as fork target', () => {
+    const display = groupAssistantResponseFrames(groupTimelineBlocks([
+      { id: 'primary:user', kind: 'user.message', sourceEventIds: ['primary'], data: { text: 'prompt', primaryTimelineUserMessage: true } },
+      { id: 'assistant:text', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'answer' } },
+      { id: 'tool:result', kind: 'tool.result', toolUseId: 'tool-1', sourceEventIds: ['result-1', 'result-2'], data: { content: 'done' } },
+    ]))
+    const frame = display.find((item) => item.type === 'assistant-response-frame')
+
+    expect(frame?.type === 'assistant-response-frame' ? assistantResponseFrameForkMessageId(frame) : null).toBe('result-2')
   })
 })
 

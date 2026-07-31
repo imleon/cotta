@@ -116,6 +116,27 @@ describe('raw timeline messages', () => {
     expect(html).not.toContain('Output file')
   })
 
+  it('renders result-only task notification cards without input', () => {
+    const html = renderToStaticMarkup(createElement(TimelineBlockView, {
+      block: {
+        id: 'task-1:task_notification',
+        kind: 'assistant.task_notification',
+        sourceEventIds: ['task-1'],
+        data: {
+          taskId: 'task-1',
+          status: 'stopped',
+          summary: 'Agent stopped',
+          result: 'Partial answer',
+        },
+      },
+    }))
+
+    expect(html).toContain('Task Notification')
+    expect(html).not.toContain('Input')
+    expect(html).toContain('Result')
+    expect(html).toContain('Partial answer')
+  })
+
   it('renders raw messages as one row per content block with type split from content', () => {
     const html = renderToStaticMarkup(createElement(RawMessagesDialog, {
       messages: [{
@@ -434,7 +455,7 @@ describe('timeline reconciliation', () => {
     expect(isPrimaryUserMessage({ type: 'user', parent_tool_use_id: 'call-1', parent_agent_id: 'agent-1', message: { role: 'user', content: 'hello' } })).toBe(true)
     expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: 'hello', isSynthetic: true, shouldQuery: false } })).toBe(true)
     expect(isPrimaryUserMessage({ type: 'user', promptSource: 'typed', message: { role: 'user', content: 'hello', origin: 'internal' } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-1</tool-use-id></task-notification>' } })).toBe(false)
+    expect(isPrimaryUserMessage({ type: 'user', promptSource: 'typed', origin: { kind: 'human' }, message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-1</tool-use-id></task-notification>' } })).toBe(true)
     expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: '<task-notification><summary>Looks like one</summary></task-notification>' } })).toBe(true)
   })
 
@@ -484,6 +505,17 @@ describe('timeline reconciliation', () => {
       }),
     })
     expect(result.turns[1]?.blocks.some((block) => block.id === 'task-1:task_notification')).toBe(false)
+  })
+
+  it('renders live task notifications without tool-use ids on the active turn', () => {
+    const raw = { type: 'user', uuid: 'task-1', session_id: 'session-1', promptSource: 'system', origin: { kind: 'task-notification' }, message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><status>stopped</status><summary>Agent stopped</summary><result>Partial answer</result></task-notification>' } }
+    const result = applySdkMessage([userTurn('turn-1')], raw, timelineTurnIndex([]), 'turn-1', null, 10)
+
+    expect(result.turns[0]?.blocks.at(-1)).toMatchObject({
+      kind: 'assistant.task_notification',
+      data: expect.objectContaining({ taskId: 'task-1', status: 'stopped', summary: 'Agent stopped', result: 'Partial answer' }),
+    })
+    expect(result.turns[0]?.blocks.at(-1)?.data).not.toEqual(expect.objectContaining({ originalToolUse: expect.anything() }))
   })
 
   it('attaches orphan tool results to session events and uses message-level parent tool id', () => {

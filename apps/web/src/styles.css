@@ -1434,7 +1434,9 @@ h2 {
 }
 
 .session-row:hover,
-.session-row.selected {
+.session-row.selected,
+.session-row.menu-open,
+.session-row-wrap:has(.session-row-menu-button:hover) .session-row {
   color: var(--color-text);
   background: var(--color-accent-soft);
 }
@@ -1459,6 +1461,7 @@ h2 {
 .session-content {
   display: grid;
   min-width: 0;
+  padding-right: 22px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;

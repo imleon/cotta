@@ -272,7 +272,7 @@ function SessionRow({
 }) {
   return (
     <li className={`sidebar-motion-item session-row-wrap${motionStateClass(motionState)}`}>
-      <button className={`session-row ${selected ? 'selected' : ''} ${highlighted ? 'highlighted' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
+      <button className={`session-row ${selected ? 'selected' : ''} ${highlighted ? 'highlighted' : ''} ${menuOpen ? 'menu-open' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
         <div className="session-content">
           <div className="session-main">
             <strong>{session.title}</strong>

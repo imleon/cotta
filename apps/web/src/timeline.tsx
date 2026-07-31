@@ -1037,10 +1037,10 @@ export function applySdkMessage(
   if (raw.type === 'user') {
     const uuid = sdkMessageUuid(raw)
     if (!uuid) return { turns: appendBlocksToTurn(turns, currentUserMessageUuid, raw, [rawMessageBlock(raw)], historyIndex, occurredAt), currentUserMessageUuid, terminal: false }
-    if (!isPrimaryTimelineUserMessage(raw)) {
+    if (isTimelineTaskNotificationMessage(raw) || !isPrimaryTimelineUserMessage(raw)) {
       const userBlocks = userBlocksFromMessage(raw, uuid)
       const taskToolUseId = timelineTaskNotificationToolUseId(raw)
-      const taskData = taskToolUseId ? taskNotificationData(raw) : null
+      const taskData = isTimelineTaskNotificationMessage(raw) ? taskNotificationData(raw) : null
       if (taskData && taskToolUseId) {
         const originalToolUse = originalToolUseForTurn(turns, taskToolUseId)
         if (originalToolUse) taskData.originalToolUse = originalToolUse

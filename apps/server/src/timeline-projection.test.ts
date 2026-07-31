@@ -213,6 +213,7 @@ describe('projectSessionTimeline', () => {
     ['meta', {}, null, { isMeta: true }],
     ['sidechain', {}, null, { isSidechain: true }],
     ['peer', {}, null, { origin: { kind: 'peer' } }],
+    ['task notification origin', {}, null, { origin: { kind: 'task-notification' }, promptSource: 'sdk' }],
   ])('does not start a new turn for %s user messages', (_, metadata, parentAgentId, entryMetadata = {}) => {
     const timeline = projectSessionTimeline('session-1', [
       messages[0]!,
@@ -281,7 +282,46 @@ describe('projectSessionTimeline', () => {
     expect(sessionMessagesForTurn([messages[0]!, agentCall, notification], 'user-1')?.map((message) => message.uuid)).toEqual(['user-1', 'agent-call', 'agent-done'])
   })
 
-  it('starts turns for scheme A boundary messages, not task notifications with task origin', () => {
+  it('renders origin task notifications without tool-use ids on the current turn', () => {
+    const notification = {
+      type: 'user',
+      uuid: 'agent-stopped',
+      session_id: 'session-1',
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      promptSource: 'system',
+      origin: { kind: 'task-notification' },
+      message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><status>stopped</status><summary>Agent stopped</summary><result>Partial result</result></task-notification>' },
+    } as unknown as TimestampedSessionMessage
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, notification], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
+    expect(timeline.turns[0]?.blocks[1]).toEqual(expect.objectContaining({
+      id: 'agent-stopped:task_notification',
+      kind: 'assistant.task_notification',
+      data: expect.objectContaining({ taskId: 'task-1', status: 'stopped', summary: 'Agent stopped', result: 'Partial result' }),
+    }))
+    expect(timeline.turns[0]?.blocks[1]?.data).not.toEqual(expect.objectContaining({ toolUseId: expect.any(String), originalToolUse: expect.anything() }))
+  })
+
+  it('keeps human pasted task notifications as user messages', () => {
+    const pasted = {
+      type: 'user',
+      uuid: 'pasted-notification',
+      session_id: 'session-1',
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      promptSource: 'typed',
+      origin: { kind: 'human' },
+      message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-agent</tool-use-id><summary>Pasted</summary></task-notification>' },
+    } as unknown as TimestampedSessionMessage
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, pasted], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'pasted-notification'])
+    expect(timeline.turns[1]?.blocks[0]).toEqual(expect.objectContaining({ kind: 'user.message' }))
+  })
+
+  it('starts turns for scheme A boundary messages, not task notifications', () => {
     const sdkUser = {
       type: 'user',
       uuid: 'sdk-user',

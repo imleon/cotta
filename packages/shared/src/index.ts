@@ -256,17 +256,22 @@ export function timelineTaskNotificationToolUseId(value: unknown): string | unde
 }
 
 export function isTimelineTaskNotificationMessage(value: unknown): boolean {
-  return timelineTaskNotificationToolUseId(value) !== undefined
+  if (!isRecord(value) || value.type !== 'user' || !isRecord(value.message) || typeof value.message.content !== 'string') return false
+  const content = value.message.content.trim()
+  if (!/^<task-notification(?:\s[^>]*)?>[\s\S]*<\/task-notification>$/.test(content)) return false
+  if (!tagText(content, 'task-id')) return false
+  const originKind = timelineOriginKind(value)
+  return originKind === 'task-notification' || (originKind == null && value.promptSource == null && timelineTaskNotificationToolUseId(value) !== undefined)
 }
 
 export function isPrimaryTimelineUserMessage(value: unknown): boolean {
   if (!isRecord(value) || value.type !== 'user' || !isRecord(value.message)) return false
   const message = value.message
-  if (message.role !== 'user' || value.isSynthetic === true || value.shouldQuery === false || isTimelineTaskNotificationMessage(value) || containsToolResult(message.content) || value.isSidechain === true) return false
   const originKind = timelineOriginKind(value)
+  if (message.role !== 'user' || value.isSynthetic === true || value.shouldQuery === false || originKind === 'task-notification' || containsToolResult(message.content) || value.isSidechain === true) return false
   return originKind === 'human'
     || value.promptSource === 'typed'
-    || (value.promptSource === 'sdk' && originKind !== 'task-notification')
+    || value.promptSource === 'sdk'
     || (originKind == null && value.promptSource == null && value.isMeta !== true)
 }
 

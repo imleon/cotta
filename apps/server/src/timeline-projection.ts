@@ -31,12 +31,12 @@ function messageContent(message: SessionMessage): unknown {
   return isRecord(message.message) ? message.message.content : undefined
 }
 
-const taskNotificationStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
+const taskNotificationStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'killed', 'stopped'])
 
 type TaskNotificationMetadata = {
   text: string
   taskId: string
-  toolUseId: string
+  toolUseId?: string
   outputFile?: string
   status?: string
   summary?: string
@@ -69,10 +69,10 @@ function taskNotificationMetadata(message: SessionMessage): TaskNotificationMeta
   const status = tagText(body, 'status')
   const summary = tagText(body, 'summary')
   const result = tagText(body, 'result') ?? undefined
-  if (!taskId || !toolUseId) return null
+  if (!taskId) return null
   if (status && !taskNotificationStatuses.has(status)) return null
 
-  return { text, taskId, toolUseId, ...(outputFile ? { outputFile } : {}), ...(status ? { status } : {}), ...(summary ? { summary } : {}), ...(result ? { result } : {}) }
+  return { text, taskId, ...(toolUseId ? { toolUseId } : {}), ...(outputFile ? { outputFile } : {}), ...(status ? { status } : {}), ...(summary ? { summary } : {}), ...(result ? { result } : {}) }
 }
 
 function isTaskNotificationMessage(message: SessionMessage): boolean {
@@ -245,9 +245,10 @@ function projectTurns(messages: SessionMessage[]): TurnSummary[] {
     const blocks = timelineBlocksForMessage(message)
     const isPrimary = isPrimaryTimelineUserMessage(message)
     const timestamp = messageTimestampMs(message)
-    const taskToolUseId = blocks.some((block) => block.kind === 'assistant.task_notification') ? timelineTaskNotificationToolUseId(message) : undefined
+    const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
+    const taskToolUseId = hasTaskNotification ? timelineTaskNotificationToolUseId(message) : undefined
     const taskTurn = taskToolUseId ? turnsByToolUseId.get(taskToolUseId) : undefined
-    if ((isPrimary && !taskTurn) || current === null) {
+    if ((isPrimary && !hasTaskNotification && !taskTurn) || current === null) {
       current = {
         id: message.uuid,
         sessionId: message.session_id,
@@ -286,9 +287,10 @@ export function sessionMessagesForTurn(messages: SessionMessage[], turnId: strin
 
   const selected = messages.filter((message) => {
     const blocks = timelineBlocksForMessage(message)
-    const taskToolUseId = blocks.some((block) => block.kind === 'assistant.task_notification') ? timelineTaskNotificationToolUseId(message) : undefined
+    const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
+    const taskToolUseId = hasTaskNotification ? timelineTaskNotificationToolUseId(message) : undefined
     const taskTurnId = taskToolUseId ? turnsByToolUseId.get(taskToolUseId) : undefined
-    if ((isPrimaryTimelineUserMessage(message) && !taskTurnId) || currentTurnId === null) {
+    if ((isPrimaryTimelineUserMessage(message) && !hasTaskNotification && !taskTurnId) || currentTurnId === null) {
       currentTurnId = message.uuid
       if (currentTurnId === turnId) foundTurn = true
     }

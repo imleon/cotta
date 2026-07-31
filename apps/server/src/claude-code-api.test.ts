@@ -26,7 +26,7 @@ function projectId(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
 }
 
-const idleRunState = { phase: 'idle' as const, activeTurnId: null }
+const idleRunState = { phase: 'idle' as const, activeUserMessageUuid: null }
 
 function session(overrides: Partial<SDKSessionInfo> & Pick<SDKSessionInfo, 'sessionId' | 'cwd'>): SDKSessionInfo {
   return {

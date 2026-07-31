@@ -1401,7 +1401,20 @@ h2 {
 }
 
 .workspace-main-panel .composer-card-bottom {
+  position: relative;
+  z-index: 1;
   padding: 0 24px 24px;
+}
+
+.workspace-main-panel .composer-card-bottom::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 20px;
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0), var(--color-surface));
+  pointer-events: none;
 }
 
 .workspace-main-panel .session-workspace-view {
@@ -1490,16 +1503,16 @@ h2 {
 }
 
 .session-content {
-  display: grid;
   min-width: 0;
   padding-right: 22px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 5px;
 }
 
 .session-main {
+  display: grid;
   min-width: 0;
+  grid-template-columns: 11px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
 }
 
 .session-main strong {
@@ -1564,7 +1577,7 @@ h2 {
   50% { box-shadow: 0 0 0 4px transparent; opacity: .95; transform: scale(1); }
 }
 
-.status-neutral { background: #e2e8f0; color: #334155; }
+.status-neutral { background: transparent; color: rgb(100 116 139 / 50%); }
 .status-running { background: rgb(52 168 83 / 9%); color: #3aa878; }
 .status-success { background: #dcfce7; color: #166534; }
 .status-warning { background: rgb(250 204 21 / 9%); color: #d6a300; }
@@ -2323,7 +2336,12 @@ h2 {
 
 .timeline-blocks {
   display: grid;
+  min-width: 0;
   gap: 10px;
+}
+
+.timeline-blocks > * {
+  min-width: 0;
 }
 
 .timeline-block {
@@ -2371,11 +2389,15 @@ h2 {
 }
 
 .timeline-assistant-text {
+  min-width: 0;
+  max-width: 100%;
   padding: 4px 2px;
   white-space: normal;
 }
 
 .timeline-assistant-text .debug-markdown {
+  min-width: 0;
+  max-width: 100%;
   max-height: none;
   overflow: visible;
   color: inherit;
@@ -2406,6 +2428,12 @@ h2 {
 .timeline-assistant-text .debug-markdown code,
 .timeline-assistant-text .debug-markdown tt {
   border: 1px solid rgb(100 116 139 / 16%);
+}
+
+.timeline-assistant-text .debug-markdown blockquote {
+  border-left: 2px solid rgb(100 116 139 / 28%);
+  padding-left: 10px;
+  color: var(--tl-muted);
 }
 
 .timeline-assistant-text .debug-markdown pre {
@@ -2813,6 +2841,110 @@ h2 {
 .debug-markdown pre code {
   background: transparent;
   padding: 0;
+}
+
+.markdown-code-block {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.markdown-code-toolbar {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.markdown-code-language,
+.markdown-code-toolbar button {
+  display: inline-grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tl-surface) 88%, transparent);
+  padding: 0 5px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.markdown-code-language {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.markdown-code-toolbar button {
+  cursor: pointer;
+}
+
+.markdown-code-toolbar button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.markdown-code-toolbar button:hover,
+.markdown-code-toolbar button:focus-visible {
+  background: rgb(255 255 255 / 92%);
+  color: var(--color-text);
+}
+
+.markdown-code-block .shiki,
+.markdown-code-block .shiki pre,
+.markdown-code-block > pre {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--tl-border-soft);
+  border-radius: 8px;
+  background: #fcfcfc !important;
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  line-height: 1.6;
+}
+
+.markdown-code-block .shiki code,
+.markdown-code-block > pre code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.markdown-code-block[data-wrap='true'] .shiki,
+.markdown-code-block[data-wrap='true'] .shiki pre,
+.markdown-code-block[data-wrap='true'] > pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown-code-block[data-wrap='true'] .shiki code,
+.markdown-code-block[data-wrap='true'] > pre code {
+  width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .debug-markdown table {

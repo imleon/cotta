@@ -88,7 +88,7 @@ function toProjectSummaries(activity: SessionActivityTracker, sessions: SDKSessi
 }
 
 function defaultRunState(): SessionRunState {
-  return { phase: 'idle', activeTurnId: null }
+  return { phase: 'idle', activeUserMessageUuid: null }
 }
 
 function toSessionSummary(activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo): SessionSummary {

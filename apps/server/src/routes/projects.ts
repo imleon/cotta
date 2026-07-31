@@ -148,7 +148,7 @@ async function createProjectDirectory(directoryPath: string) {
 }
 
 function defaultRunState(): SessionRunState {
-  return { phase: 'idle', activeTurnId: null }
+  return { phase: 'idle', activeUserMessageUuid: null }
 }
 
 function overlayLiveSessionRunState<T extends { sessions: Array<{ id: string }> }>(

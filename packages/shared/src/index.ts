@@ -38,7 +38,7 @@ export type ListVersionsEvent = z.infer<typeof listVersionsEventSchema>
 export const sessionRunStateSchema = z.discriminatedUnion('phase', [
   z.object({
     phase: z.literal('idle'),
-    activeTurnId: z.null(),
+    activeUserMessageUuid: z.null(),
     lastTurn: z.object({
       id: z.string(),
       outcome: z.enum(['success', 'error']),
@@ -46,12 +46,12 @@ export const sessionRunStateSchema = z.discriminatedUnion('phase', [
   }),
   z.object({
     phase: z.literal('running'),
-    activeTurnId: z.string(),
+    activeUserMessageUuid: z.string(),
     lastTurn: z.null().optional(),
   }),
   z.object({
     phase: z.literal('requires_action'),
-    activeTurnId: z.string(),
+    activeUserMessageUuid: z.string(),
     lastTurn: z.null().optional(),
   }),
 ])

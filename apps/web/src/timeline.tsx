@@ -1,7 +1,8 @@
-import { memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Children, isValidElement, memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { codeToHtml } from 'shiki'
 import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId, type PersistedLiveEvent, type SessionInfoResponse, type TimelineBlock, type TurnSummary } from '@cotta/shared'
 import { fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSessionTimeline } from './api'
 
@@ -42,10 +43,102 @@ function formatTimestamp(value?: number): string | null {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+function textFromReactNode(value: ReactNode): string {
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (Array.isArray(value)) return value.map(textFromReactNode).join('')
+  if (isValidElement<{ children?: ReactNode }>(value)) return textFromReactNode(value.props.children)
+  return ''
+}
+
+function codeLanguage(className?: string): string | null {
+  return className?.match(/language-([\w-]+)/)?.[1] ?? null
+}
+
+function guessCodeLanguage(code: string): string {
+  const trimmed = code.trim()
+  if (/^(export\s+\w+=|(?:npm|pnpm|yarn|curl|git|claude)\b|[\w./-]+\s*\\\n)/m.test(trimmed)) return 'bash'
+  if (/^[\[{]/.test(trimmed)) return 'json'
+  if (/\b(import|export|const|let|function|type|interface)\b/.test(trimmed)) return 'ts'
+  return 'text'
+}
+
+const highlightedCodeCache = new Map<string, string>()
+
+function HighlightedCode({ className, children }: { className?: string; children?: ReactNode }) {
+  const code = textFromReactNode(children).replace(/\n$/, '')
+  const explicitLang = codeLanguage(className)
+  const lang = explicitLang ?? guessCodeLanguage(code)
+  const cacheKey = `${lang}\0${code}`
+  const [html, setHtml] = useState<string | null>(() => highlightedCodeCache.get(cacheKey) ?? null)
+  const [wrapped, setWrapped] = useState(false)
+  const [copyStatus, setCopyStatus] = useState<'Copy' | 'Copied' | 'Failed'>('Copy')
+  const copyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (copyStatusTimerRef.current) clearTimeout(copyStatusTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    const cached = highlightedCodeCache.get(cacheKey)
+    if (cached) {
+      setHtml(cached)
+      return
+    }
+    setHtml(null)
+
+    let cancelled = false
+    void codeToHtml(code, { lang, theme: 'github-light' })
+      .then((value) => {
+        highlightedCodeCache.set(cacheKey, value)
+        if (highlightedCodeCache.size > 200) {
+          const oldest = highlightedCodeCache.keys().next().value
+          if (oldest) highlightedCodeCache.delete(oldest)
+        }
+        if (!cancelled) setHtml(value)
+      })
+      .catch(() => { if (!cancelled) setHtml(null) })
+    return () => { cancelled = true }
+  }, [cacheKey, code, lang])
+
+  async function handleCopy() {
+    try {
+      await writeClipboard(code)
+      setCopyStatus('Copied')
+    } catch {
+      setCopyStatus('Failed')
+    }
+    if (copyStatusTimerRef.current) clearTimeout(copyStatusTimerRef.current)
+    copyStatusTimerRef.current = setTimeout(() => setCopyStatus('Copy'), 1400)
+  }
+
+  return (
+    <div className="markdown-code-block" data-wrap={wrapped ? 'true' : 'false'}>
+      <div className="markdown-code-toolbar">
+        {explicitLang ? <span className="markdown-code-language">{explicitLang}</span> : null}
+        <button type="button" aria-label={wrapped ? 'Disable line wrap' : 'Enable line wrap'} title={wrapped ? 'No wrap' : 'Wrap'} onClick={() => setWrapped((value) => !value)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h8a3 3 0 1 1 0 6H9" /><path d="m11 13-2 3 2 3" /></svg></button>
+        <button type="button" aria-label="Copy code" title={copyStatus} onClick={handleCopy}>{copyStatus === 'Copied' ? <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10.5 4 4L16 6" /></svg> : <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M4 13V5a1 1 0 0 1 1-1h8" /></svg>}</button>
+      </div>
+      {html ? <div className="shiki-code" dangerouslySetInnerHTML={{ __html: html }} /> : <pre><code className={className}>{children}</code></pre>}
+    </div>
+  )
+}
+
 const MarkdownValue = memo(function MarkdownValue({ value }: { value: string }) {
   return (
     <div className="debug-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+      <ReactMarkdown
+        components={{
+          pre({ children }) {
+            return <>{children}</>
+          },
+          code({ className, children }) {
+            const childList = Children.toArray(children)
+            const inline = !className && childList.every((child) => typeof child === 'string' && !child.includes('\n'))
+            return inline ? <code className={className}>{children}</code> : <HighlightedCode className={className}>{children}</HighlightedCode>
+          },
+        }}
+        remarkPlugins={[remarkGfm]}
+      >{value}</ReactMarkdown>
     </div>
   )
 })
@@ -194,7 +287,7 @@ function assistantResponseText(items: TimelineRenderItem[]): string | null {
 }
 
 const disclosureCardClass = {
-  root: 'group overflow-hidden rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-surface)]',
+  root: 'group mb-0.5 overflow-hidden rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-surface)]',
   header: 'flex cursor-pointer list-none items-center justify-between gap-[9px] border-b border-transparent bg-[var(--tl-surface-soft)] px-3 py-1.5 [&::-webkit-details-marker]:hidden group-open:border-[var(--tl-border-soft)]',
   heading: 'flex min-w-0 flex-1 items-center gap-2',
   icon: 'inline-grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[var(--tl-surface)] text-[var(--text-xs)] font-black leading-none text-[var(--tl-muted)]',
@@ -231,7 +324,7 @@ const timelineMessageClass = {
   userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[var(--radius-md)] border border-[var(--tl-user-border)] bg-[var(--tl-user-soft)] px-3.5 py-2.5 text-[15px] leading-[1.6] text-[var(--tl-ink)] shadow-[var(--tl-shadow-soft)]',
   timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-xs leading-4 text-[var(--tl-muted)] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
   timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-within:opacity-100',
-  timestampAssistant: 'block -mt-[5px] px-1 group-hover:opacity-100 focus-within:opacity-100',
+  timestampAssistant: 'block px-1 group-hover:opacity-100 focus-within:opacity-100',
   assistantFrame: 'group w-full max-w-none justify-self-stretch [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
   assistantFrameBody: 'grid min-w-0 gap-2.5',
 }
@@ -1349,7 +1442,7 @@ export function RawMessagesDialog({ messages, loading, error, liveEvents, liveEv
           <RawMessagesWaterfall messages={messages} />
           <div className="debug-table-wrap">
           <table className="debug-table raw-messages-table">
-            <thead><tr><th>Timestamp</th><th>Type</th><th>Stop reason</th><th>Block type</th><th>Content</th></tr></thead>
+            <thead><tr><th>Timestamp</th><th>UUID</th><th>Type</th><th>Stop reason</th><th>Block type</th><th>Content</th></tr></thead>
             <tbody>{messages.flatMap((message, messageIndex) => {
               const contentRows = rawMessageContentRows(message)
               const timestamp = beijingTimestamp(isRecord(message) ? message.timestamp : undefined)
@@ -1357,6 +1450,7 @@ export function RawMessagesDialog({ messages, loading, error, liveEvents, liveEv
               return contentRows.map((content, contentIndex) => (
                 <tr className={type === 'assistant' ? 'raw-message-assistant' : type === 'user' ? 'raw-message-user' : undefined} key={`${rawStringField(message, 'uuid')}:${messageIndex}:${contentIndex}`}>
                   {contentIndex === 0 ? <td className="debug-mono debug-timestamp-cell" rowSpan={contentRows.length}><div>{timestamp.date}</div><div className="debug-muted">{timestamp.time}</div></td> : null}
+                  {contentIndex === 0 ? <td className="debug-mono" rowSpan={contentRows.length}>{rawStringField(message, 'uuid')}</td> : null}
                   {contentIndex === 0 ? <td className="debug-type-cell" rowSpan={contentRows.length}>{type}</td> : null}
                   {contentIndex === 0 ? <td rowSpan={contentRows.length}>{isRecord(message) && isRecord(message.message) ? rawStringField(message.message, 'stop_reason') : '—'}</td> : null}
                   <td>{contentBlockType(content)}</td>
@@ -1392,6 +1486,7 @@ function useSessionTimelineData(
   const shouldScrollToBottomRef = useRef(false)
   const lastAppliedTimelineVersionRef = useRef<string | null>(null)
   const historyIndexRef = useRef<TimelineTurnIndex>(timelineTurnIndex([]))
+  const turnsRef = useRef<TurnSummary[]>([])
   const liveUserMessageUuidRef = useRef<string | null>(null)
   const liveAccumulatorRef = useRef<LiveAssistantStreamAccumulator | null>(null)
   const loadOlderRequestRef = useRef(0)
@@ -1435,6 +1530,7 @@ function useSessionTimelineData(
     previousScopeRef.current = nextScope
     if (!reset) return
     loadOlderRequestRef.current += 1
+    turnsRef.current = []
     setTurns([])
     setNextCursor(null)
     setHasMore(false)
@@ -1459,8 +1555,11 @@ function useSessionTimelineData(
       onLiveTurnChangeRef.current?.(pendingTurn.id)
     }
     setTurns((current) => {
-      if (current.some((turn) => turn.id === pendingTurn.id)) return current
-      return [...current.filter((turn) => !turn.id.startsWith('pending:')), pendingTurn]
+      const next = current.some((turn) => turn.id === pendingTurn.id)
+        ? current
+        : [...current.filter((turn) => !turn.id.startsWith('pending:')), pendingTurn]
+      turnsRef.current = next
+      return next
     })
   }, [pendingTurn, sessionId])
 
@@ -1469,7 +1568,11 @@ function useSessionTimelineData(
     const nextVersion = timeline.data.state.version
     shouldScrollToBottomRef.current ||= isTimelineAtBottomRef.current?.() ?? true
     historyIndexRef.current = timelineTurnIndex(timeline.data.turns)
-    setTurns((current) => reconcileTimelineTurns(current, timeline.data.turns))
+    setTurns((current) => {
+      const next = reconcileTimelineTurns(current, timeline.data.turns)
+      turnsRef.current = next
+      return next
+    })
     setNextCursor(timeline.data.nextCursor)
     setHasMore(timeline.data.hasMore)
     setOlderError(null)
@@ -1508,11 +1611,10 @@ function useSessionTimelineData(
         }
       }
       const terminal = isRecord(raw) && raw.type === 'result'
-      setTurns((current) => {
-        const result = applySdkMessage(current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current)
-        liveUserMessageUuidRef.current = result.currentUserMessageUuid
-        return result.turns
-      })
+      const result = applySdkMessage(turnsRef.current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current)
+      liveUserMessageUuidRef.current = result.currentUserMessageUuid
+      turnsRef.current = result.turns
+      setTurns(result.turns)
       if (terminal) {
         liveAccumulatorRef.current = null
         setLiveActive(false)
@@ -1540,7 +1642,11 @@ function useSessionTimelineData(
     try {
       const page = await fetchSessionTimeline(projectId, sessionId, nextCursor)
       if (loadOlderRequestRef.current !== requestId) return false
-      setTurns((current) => prependOlderTimelineTurns(current, page.turns))
+      setTurns((current) => {
+        const next = prependOlderTimelineTurns(current, page.turns)
+        turnsRef.current = next
+        return next
+      })
       setNextCursor(page.nextCursor)
       setHasMore(page.hasMore)
       return true

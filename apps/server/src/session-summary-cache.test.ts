@@ -27,7 +27,7 @@ function projectId(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
 }
 
-const idleRunState = { phase: 'idle' as const, activeTurnId: null }
+const idleRunState = { phase: 'idle' as const, activeUserMessageUuid: null }
 
 describe('SessionSummaryCache', () => {
   beforeEach(() => {
@@ -53,7 +53,7 @@ describe('SessionSummaryCache', () => {
 
   it('includes live runState in cached session windows', async () => {
     const cache = new SessionSummaryCache(10)
-    cache.setSessionRunStateReader((sessionId) => sessionId === 's1' ? { phase: 'running', activeTurnId: 'user-1', lastTurn: null } : null)
+    cache.setSessionRunStateReader((sessionId) => sessionId === 's1' ? { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } : null)
     listSessionsMock.mockResolvedValueOnce([
       session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 }),
     ])
@@ -63,7 +63,7 @@ describe('SessionSummaryCache', () => {
     expect(await cache.queryProjectSessions({ projects: [{ projectId: projectId('/repo/a'), limit: 10 }] })).toEqual({
       sessionsByProject: {
         [projectId('/repo/a')]: {
-          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5, runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }],
+          sessions: [{ id: 's1', title: 's1', projectId: projectId('/repo/a'), lastActivityAt: 5, runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }],
           hasMore: false,
           nextCursor: null,
         },
@@ -550,7 +550,7 @@ describe('SessionSummaryCache', () => {
     listSessionsMock.mockResolvedValue([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
 
     await cache.scheduleRefresh()
-    state = { phase: 'running', activeTurnId: 'user-1', lastTurn: null }
+    state = { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null }
     await cache.scheduleRefresh()
 
     expect(events.at(-1)).toEqual(expect.objectContaining({
@@ -564,7 +564,7 @@ describe('SessionSummaryCache', () => {
       title: 's1',
       projectId: projectId('/repo/a'),
       lastActivityAt: 5,
-      runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null },
+      runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null },
     })
   })
 })

@@ -107,7 +107,7 @@ describe('LiveTurnManager', () => {
 
     expect(events[0]).toMatchObject({ type: 'user', uuid: 'user-1' })
     expect(events[1]).toMatchObject({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['SDK stream failed'], session_id: 'session-1' })
-    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'error' } })
+    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
   })
 
   it('passes model and effort to new SDK runtimes', async () => {
@@ -162,7 +162,7 @@ describe('LiveTurnManager', () => {
       model: 'claude-opus-5',
       effort: 'high',
     })
-    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
@@ -224,7 +224,7 @@ describe('LiveTurnManager', () => {
       permissionMode: 'default',
       effort: 'high',
     })
-    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
 
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),

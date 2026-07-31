@@ -91,14 +91,14 @@ function sameProject(left: SummaryCacheProject, right: SummaryCacheProject): boo
 }
 
 function defaultRunState(): SessionRunState {
-  return { phase: 'idle', activeTurnId: null }
+  return { phase: 'idle', activeUserMessageUuid: null }
 }
 
 function sameRunState(left: SessionRunState | null | undefined, right: SessionRunState | null | undefined): boolean {
   const leftState = left ?? defaultRunState()
   const rightState = right ?? defaultRunState()
   return leftState.phase === rightState.phase
-    && leftState.activeTurnId === rightState.activeTurnId
+    && leftState.activeUserMessageUuid === rightState.activeUserMessageUuid
     && leftState.lastTurn?.id === rightState.lastTurn?.id
     && leftState.lastTurn?.outcome === rightState.lastTurn?.outcome
 }

@@ -33,9 +33,7 @@ function statusLabel(runState: SessionSummary['runState']): string {
   return 'Idle'
 }
 
-function statusIcon(runState: SessionSummary['runState']) {
-  const tone = statusTone(runState)
-  if (tone === 'neutral') return null
+function statusIcon(_runState: SessionSummary['runState']) {
   return <span className="status-dot" aria-hidden="true" />
 }
 
@@ -234,7 +232,6 @@ function ProjectCard({
 
 function StatusBadge({ runState }: { runState: SessionSummary['runState'] }) {
   const tone = statusTone(runState)
-  if (tone === 'neutral') return null
   return <span className={`status-badge status-${tone}`} title={statusLabel(runState)}>{statusIcon(runState)}</span>
 }
 
@@ -275,9 +272,9 @@ function SessionRow({
       <button className={`session-row ${selected ? 'selected' : ''} ${highlighted ? 'highlighted' : ''} ${menuOpen ? 'menu-open' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
         <div className="session-content">
           <div className="session-main">
+            <StatusBadge runState={session.runState} />
             <strong>{session.title}</strong>
           </div>
-          <StatusBadge runState={session.runState} />
         </div>
         <span className="session-age">{pending ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : formatAge(session.lastActivityAt)}</span>
       </button>

@@ -15,7 +15,7 @@ vi.mock('./api', () => ({
 
 import { refreshProjectSessionLists, refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
 
-const idleRunState = { phase: 'idle' as const, activeTurnId: null }
+const idleRunState = { phase: 'idle' as const, activeUserMessageUuid: null }
 
 describe('refresh helpers', () => {
   let queryClient: QueryClient

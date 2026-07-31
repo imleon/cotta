@@ -68,7 +68,7 @@ const modelCatalog: ModelCatalogResponse = {
   ],
 }
 
-const idleRunState: SessionRunState = { phase: 'idle', activeTurnId: null }
+const idleRunState: SessionRunState = { phase: 'idle', activeUserMessageUuid: null }
 
 const sessions: SessionSummary[] = [
   {
@@ -483,16 +483,16 @@ describe('project routes', () => {
 
   it('overlays live session runState on project sessions', async () => {
     const response = await createTestApp({
-      'session-newest': { phase: 'running', activeTurnId: 'user-1', lastTurn: null },
-      'session-older': { phase: 'requires_action', activeTurnId: 'user-2', lastTurn: null },
+      'session-newest': { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null },
+      'session-older': { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null },
     }).request(`/api/projects/${project.id}/sessions`)
 
     expect(response.status).toBe(200)
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
       project: { ...project },
       sessions: [
-        { ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } },
-        { ...sessions[1], runState: { phase: 'requires_action', activeTurnId: 'user-2', lastTurn: null } },
+        { ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } },
+        { ...sessions[1], runState: { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null } },
       ],
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -621,7 +621,7 @@ describe('project routes', () => {
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionRunState: (sessionId: string) => sessionId === 'session-newest' ? { phase: 'running', activeTurnId: 'user-1', lastTurn: null } : null,
+        sessionRunState: (sessionId: string) => sessionId === 'session-newest' ? { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } : null,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -645,7 +645,7 @@ describe('project routes', () => {
         queryProjectSessions: () => ({
           sessionsByProject: {
             [project.id]: {
-              sessions: [{ ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }, sessions[1]],
+              sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
               hasMore: false,
               nextCursor: null,
             },
@@ -662,7 +662,7 @@ describe('project routes', () => {
     expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({
       sessionsByProject: {
         [project.id]: {
-          sessions: [{ ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }, sessions[1]],
+          sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
           hasMore: false,
           nextCursor: null,
         },
@@ -1224,7 +1224,7 @@ describe('project routes', () => {
   })
 
   it('returns session info for an existing session', async () => {
-    const runningState: SessionRunState = { phase: 'running', activeTurnId: 'turn-1', lastTurn: null }
+    const runningState: SessionRunState = { phase: 'running', activeUserMessageUuid: 'turn-1', lastTurn: null }
     const response = await createApp({
       settingsStore: memorySettingsStore({ modelCatalog }),
       liveTurnManager: {

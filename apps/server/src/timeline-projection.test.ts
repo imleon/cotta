@@ -230,6 +230,20 @@ describe('projectSessionTimeline', () => {
     ], { limitTurns: 10, cursor: null })
 
     expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
+    if ('isSynthetic' in entryMetadata) expect(timeline.turns[0]?.blocks.map((block) => block.kind)).toEqual(['user.message'])
+    else expect(timeline.turns[0]?.blocks.at(-1)).toMatchObject({ id: 'filtered-user:user_message', kind: 'assistant.user_message' })
+  })
+
+  it('ignores a leading synthetic user message without creating a session-events turn', () => {
+    const synthetic = {
+      type: 'user',
+      uuid: 'synthetic',
+      session_id: 'session-1',
+      isSynthetic: true,
+      message: { role: 'user', content: 'Internal note' },
+    } as unknown as TimestampedSessionMessage
+
+    expect(projectSessionTimeline('session-1', [synthetic], { limitTurns: 10, cursor: null }).turns).toEqual([])
   })
 
   it.each([

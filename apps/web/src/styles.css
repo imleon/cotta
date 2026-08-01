@@ -1384,8 +1384,19 @@ h2 {
 }
 
 .workspace-timeline {
+  display: grid;
   min-height: 0;
   overflow: hidden;
+}
+
+.timeline-empty-state {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  padding: 24px;
+  color: var(--color-muted);
+  font-size: 18px;
+  text-align: center;
 }
 
 .workspace-timeline .timeline-panel {
@@ -2190,6 +2201,171 @@ h2 {
   align-content: start;
 }
 
+.debug-tabs-page {
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: #fff;
+}
+
+.debug-tab-list {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+  padding: 10px 14px 0;
+}
+
+.debug-tab-list button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 9px 12px;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.debug-tab-list button[aria-selected='true'] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+.debug-tab-list button:focus-visible,
+.debug-observation-toolbar button:focus-visible,
+.debug-pagination button:focus-visible,
+.debug-table th button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.debug-tab-panel {
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.debug-observation-toolbar,
+.debug-observation-actions,
+.debug-pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.debug-observation-toolbar {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.debug-observation-toolbar > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.debug-observation-toolbar .muted {
+  font-size: 11px;
+}
+
+.debug-observation-actions label {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.debug-observation-actions select,
+.debug-observation-actions button,
+.debug-pagination button {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 6px 9px;
+  color: var(--color-text);
+  font: inherit;
+}
+
+.debug-observation-actions button:disabled,
+.debug-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.debug-observations-wrap {
+  height: calc(100% - 88px);
+}
+
+.debug-observations-table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.debug-observations-table th button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.debug-observation-cell {
+  max-width: 280px;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.debug-row-idle td {
+  background: #f1f3f5;
+}
+
+.debug-row-busy td {
+  background: #e8f7ed;
+}
+
+.debug-row-waiting td {
+  background: #fff7d6;
+}
+
+.debug-entrypoint-cli {
+  background: #e2e6ea;
+  color: #5b6470;
+}
+
+.debug-entrypoint-ts {
+  background: #e8f7ed;
+  color: #20713d;
+}
+
+.debug-observation-rawJson,
+.debug-observation-parseError,
+.debug-observation-detail {
+  min-width: 240px;
+  white-space: normal;
+}
+
+.debug-observation-rawJson details {
+  max-width: 460px;
+}
+
+.debug-observation-rawJson pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.debug-pagination {
+  justify-content: flex-end;
+  margin-top: 10px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
 .timeline-panel {
   display: grid;
   align-content: start;
@@ -2406,7 +2582,7 @@ h2 {
 }
 
 .timeline-assistant-text .debug-markdown a {
-  color: color-mix(in srgb, var(--tl-user) 80%, var(--tl-ink) 20%);
+  color: var(--tl-user);
   font-weight: 500;
   text-decoration: none;
 }
@@ -2806,6 +2982,12 @@ h2 {
   margin-bottom: 0;
 }
 
+.debug-markdown a[href^='#'] {
+  pointer-events: none;
+  cursor: default;
+  text-decoration: none;
+}
+
 .debug-markdown p,
 .debug-markdown ul,
 .debug-markdown ol,
@@ -2950,7 +3132,7 @@ h2 {
 .debug-markdown table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: inherit;
 }
 
 .debug-markdown th,

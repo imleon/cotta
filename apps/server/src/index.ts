@@ -8,7 +8,8 @@ import { createLiveEventStore, type LiveEventStore } from './live-event-store.js
 import { LiveTurnManager } from './live-turn-manager.js'
 import { defaultModelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
 import { registerHealthRoute } from './routes/health.js'
-import { registerProjectRoutes, type ProjectRoutesLiveTurnManager } from './routes/projects.js'
+import { registerProjectRoutes, type ProjectRoutesLiveTurnManager, type ProjectRoutesSessionObservationReader } from './routes/projects.js'
+import { createSessionRegistryObserver } from './session-registry-observer.js'
 import { SessionSummaryCache } from './session-summary-cache.js'
 import { createSettingsStore, type SettingsStore } from './settings-store.js'
 
@@ -21,6 +22,7 @@ export function createApp(input: {
   sessionSummaryCache?: SessionSummaryCache
   modelCatalogProvider?: ModelCatalogProvider
   settingsStore?: SettingsStore
+  sessionObservationReader?: ProjectRoutesSessionObservationReader
   auth?: CottaAuth
 } = {}): Hono {
   const app = new Hono()
@@ -36,7 +38,7 @@ export function createApp(input: {
   app.use('*', auth.middleware)
   registerHealthRoute(app)
   auth.registerRoutes(app)
-  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore })
+  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionObservationReader: input.sessionObservationReader })
   return app
 }
 
@@ -48,7 +50,11 @@ if (process.env.NODE_ENV !== 'test') {
   const sessionSummaryCache = new SessionSummaryCache()
   const claudeCodeApi = createClaudeCodeApi(sessionSummaryCache)
   const liveTurnManager = new LiveTurnManager(liveEventStore, sessionSummaryCache)
-  const app = createApp({ claudeCodeApi, liveEventStore, liveTurnManager, sessionSummaryCache })
+  const sessionRegistryObserver = await createSessionRegistryObserver().catch((error) => {
+    console.error('session-registry-observer:start failed', error)
+    return null
+  })
+  const app = createApp({ claudeCodeApi, liveEventStore, liveTurnManager, sessionSummaryCache, sessionObservationReader: sessionRegistryObserver ?? undefined })
 
   const server = serve(
     {
@@ -63,6 +69,7 @@ if (process.env.NODE_ENV !== 'test') {
 
   const shutdown = () => {
     liveTurnManager.closeAll()
+    void sessionRegistryObserver?.close()
     server.close(() => process.exit(0))
     setTimeout(() => process.exit(0), 1000).unref()
   }
@@ -74,6 +81,7 @@ if (process.env.NODE_ENV !== 'test') {
       console.error(`Cotta server failed to start: http://${host}:${port} is already in use.`)
       console.error('Stop the process using that port, or start Cotta with a different PORT.')
       liveTurnManager.closeAll()
+      void sessionRegistryObserver?.close()
       process.exitCode = 1
       return
     }

@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { applySdkMessage, assistantResponseFrameForkMessageId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, shouldRefetchTimelineVersion, shouldResetSessionTimeline, TimelineBlockView, timelineTurnIndex } from './timeline'
+import { applySdkMessage, assistantResponseFrameForkMessageId, belongsToTimelineSession, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, shouldRefetchTimelineVersion, shouldResetSessionTimeline, TimelineBlockView, timelineTurnIndex } from './timeline'
 
 function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
   return {
@@ -27,6 +27,12 @@ describe('timeline version refresh', () => {
 })
 
 describe('timeline scope reset', () => {
+  it('accepts timeline writes only for the selected session', () => {
+    expect(belongsToTimelineSession('session-1', 'session-1')).toBe(true)
+    expect(belongsToTimelineSession('session-2', 'session-1')).toBe(false)
+    expect(belongsToTimelineSession(null, 'session-1')).toBe(false)
+  })
+
   it('preserves pending state when the same primary turn hydrates a real session id', () => {
     expect(shouldResetSessionTimeline(
       { projectId: 'project-1', sessionId: null, pendingPrimaryTurnUuid: 'user-1' },
@@ -87,6 +93,34 @@ describe('raw timeline messages', () => {
 
     expect(html).toContain('aria-label="View raw user message"')
     expect(html).toContain('>live</span>')
+  })
+
+  it('defers user message payloads until the card is expanded', () => {
+    const html = renderToStaticMarkup(createElement(TimelineBlockView, {
+      block: {
+        id: 'internal:user_message',
+        kind: 'assistant.user_message',
+        sourceEventIds: ['internal'],
+        data: { privateMarker: 'deferred-payload' },
+      },
+    }))
+
+    expect(html).toContain('<details')
+    expect(html).toContain('<summary')
+    expect(html).toContain('User message')
+    expect(html).not.toContain('Payload')
+    expect(html).not.toContain('deferred-payload')
+  })
+
+  it('renders thinking cards through the shared disclosure shell', () => {
+    const html = renderToStaticMarkup(createElement(TimelineBlockView, {
+      block: { id: 'thinking', kind: 'assistant.thinking', sourceEventIds: ['assistant'], data: { thinking: 'Consider the edge case' } },
+    }))
+
+    expect(html).toContain('aria-label="Assistant thinking"')
+    expect(html).toContain('<summary')
+    expect(html).toContain('Thinking')
+    expect(html).toContain('Consider the edge case')
   })
 
   it('renders task notification completions with the original tool input and latest result', () => {
@@ -477,7 +511,6 @@ describe('timeline reconciliation', () => {
     ['meta', { type: 'user', uuid: 'meta', session_id: 'session-1', isMeta: true, message: { role: 'user', content: 'internal' } }],
     ['task origin', { type: 'user', uuid: 'task-origin', session_id: 'session-1', promptSource: 'sdk', origin: { kind: 'task-notification' }, message: { role: 'user', content: 'internal' } }],
     ['peer origin', { type: 'user', uuid: 'peer', session_id: 'session-1', origin: { kind: 'peer' }, message: { role: 'user', content: 'internal' } }],
-    ['synthetic', { type: 'user', uuid: 'synthetic', session_id: 'session-1', isSynthetic: true, message: { role: 'user', content: 'internal' } }],
     ['internal', { type: 'user', uuid: 'internal', session_id: 'session-1', message: { role: 'user', content: 'internal', origin: 'internal' } }],
     ['non-query', { type: 'user', uuid: 'non-query', session_id: 'session-1', shouldQuery: false, message: { role: 'user', content: 'internal' } }],
   ])('does not open a primary turn for %s messages', (_label, raw) => {
@@ -486,6 +519,16 @@ describe('timeline reconciliation', () => {
     expect(isPrimaryUserMessage(raw)).toBe(false)
     expect(result.currentUserMessageUuid).toBe(raw.uuid)
     expect(result.turns[0]?.id).toBe(raw.uuid)
+  })
+
+  it('ignores synthetic user messages without changing the primary turn', () => {
+    const raw = { type: 'user', uuid: 'synthetic', session_id: 'session-1', isSynthetic: true, message: { role: 'user', content: 'internal' } }
+    const turns = [userTurn('primary')]
+    const result = applySdkMessage(turns, raw, timelineTurnIndex([]), 'primary', null, 10)
+
+    expect(isPrimaryUserMessage(raw)).toBe(false)
+    expect(result.currentUserMessageUuid).toBe('primary')
+    expect(result.turns).toBe(turns)
   })
 
   it('attaches live task notifications to the originating tool turn with parsed result and input', () => {

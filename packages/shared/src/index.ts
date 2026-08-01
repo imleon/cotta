@@ -332,6 +332,68 @@ export const modelCatalogResponseSchema = z.object({
 })
 export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>
 
+export const sessionObservationEventKindSchema = z.enum(['snapshot', 'create', 'change', 'delete'])
+export const sessionObservationSortSchema = z.enum([
+  'id', 'eventKind', 'observedAtMs', 'fileName', 'filePath', 'filePid', 'fileMtimeMs', 'fileSizeBytes', 'rawJson', 'parseError',
+  'payloadPid', 'procStart', 'sessionId', 'cwd', 'startedAtMs', 'updatedAtMs', 'statusUpdatedAtMs', 'version', 'peerProtocol',
+  'kind', 'entrypoint', 'name', 'nameSource', 'status', 'waitingFor', 'tempo', 'state', 'detail', 'needs', 'agent',
+  'messagingSocketPath', 'jobId', 'parkedJobId', 'bridgeSessionId', 'logPath', 'tmux', 'pidAlive', 'procStartMatches',
+])
+export type SessionObservationSort = z.infer<typeof sessionObservationSortSchema>
+
+export const sessionObservationSchema = z.object({
+  id: z.number().int(),
+  eventKind: sessionObservationEventKindSchema,
+  observedAtMs: z.number(),
+  fileName: z.string(),
+  filePath: z.string(),
+  filePid: z.number().int().nullable(),
+  fileMtimeMs: z.number().nullable(),
+  fileSizeBytes: z.number().int().nullable(),
+  rawJson: z.string(),
+  parseError: z.string().nullable(),
+  payloadPid: z.number().int().nullable(),
+  procStart: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  cwd: z.string().nullable(),
+  startedAtMs: z.number().nullable(),
+  updatedAtMs: z.number().nullable(),
+  statusUpdatedAtMs: z.number().nullable(),
+  version: z.string().nullable(),
+  peerProtocol: z.number().int().nullable(),
+  kind: z.string().nullable(),
+  entrypoint: z.string().nullable(),
+  name: z.string().nullable(),
+  nameSource: z.string().nullable(),
+  status: z.string().nullable(),
+  waitingFor: z.string().nullable(),
+  tempo: z.string().nullable(),
+  state: z.string().nullable(),
+  detail: z.string().nullable(),
+  needs: z.string().nullable(),
+  agent: z.string().nullable(),
+  messagingSocketPath: z.string().nullable(),
+  jobId: z.string().nullable(),
+  parkedJobId: z.string().nullable(),
+  bridgeSessionId: z.string().nullable(),
+  logPath: z.string().nullable(),
+  tmux: z.string().nullable(),
+  pidAlive: z.boolean().nullable(),
+  procStartMatches: z.boolean().nullable(),
+})
+export type SessionObservation = z.infer<typeof sessionObservationSchema>
+
+export const sessionObservationsResponseSchema = z.object({
+  observations: z.array(sessionObservationSchema),
+  sessionIds: z.array(z.string().nullable()),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  hasMore: z.boolean(),
+  sort: sessionObservationSortSchema,
+  direction: z.enum(['asc', 'desc']),
+})
+export type SessionObservationsResponse = z.infer<typeof sessionObservationsResponseSchema>
+
 export const sessionInfoResponseSchema = z.object({
   projectId: z.string(),
   sessionId: z.string(),
@@ -409,6 +471,7 @@ export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>
 
 export const createTurnRequestSchema = z.object({
+  sessionId: z.string().uuid().optional(),
   text: z.string().trim().min(1),
   userMessageUuid: z.string().uuid(),
   permissionMode: permissionModeSchema.optional(),

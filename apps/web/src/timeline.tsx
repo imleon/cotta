@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Children, isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -64,13 +64,18 @@ function guessCodeLanguage(code: string): string {
 
 const highlightedCodeCache = new Map<string, string>()
 
+function MarkdownLink({ href, children, ...props }: ComponentPropsWithoutRef<'a'>) {
+  const external = /^https?:\/\//.test(href ?? '')
+  return <a href={href} target={external ? '_blank' : undefined} rel={external ? 'noreferrer' : undefined} {...props}>{children}</a>
+}
+
 function HighlightedCode({ className, children }: { className?: string; children?: ReactNode }) {
   const code = textFromReactNode(children).replace(/\n$/, '')
   const explicitLang = codeLanguage(className)
   const lang = explicitLang ?? guessCodeLanguage(code)
   const cacheKey = `${lang}\0${code}`
   const [html, setHtml] = useState<string | null>(() => highlightedCodeCache.get(cacheKey) ?? null)
-  const [wrapped, setWrapped] = useState(false)
+  const [wrapped, setWrapped] = useState(true)
   const [copyStatus, setCopyStatus] = useState<'Copy' | 'Copied' | 'Failed'>('Copy')
   const copyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -128,6 +133,7 @@ const MarkdownValue = memo(function MarkdownValue({ value }: { value: string }) 
     <div className="debug-markdown">
       <ReactMarkdown
         components={{
+          a: MarkdownLink,
           pre({ children }) {
             return <>{children}</>
           },
@@ -298,6 +304,37 @@ const disclosureCardClass = {
   expand: 'inline-grid h-6 w-6 shrink-0 place-items-center rounded-full leading-none text-[var(--tl-muted)]',
   chevron: 'h-[13px] w-[13px] overflow-visible fill-none stroke-current stroke-[1.8] transition-transform duration-[140ms] [stroke-linecap:round] [stroke-linejoin:round] group-open:rotate-90',
   body: 'grid gap-0 bg-[var(--tl-surface-soft)]',
+}
+
+function TimelineDisclosureCard({ ariaLabel, icon, title, summary, badges, bodyClassName, renderBody, deferBody = false }: {
+  ariaLabel: string
+  icon: ReactNode
+  title: ReactNode
+  summary?: ReactNode
+  badges?: ReactNode
+  bodyClassName?: string
+  renderBody: () => ReactNode
+  deferBody?: boolean
+}) {
+  const [hasOpened, setHasOpened] = useState(!deferBody)
+  return (
+    <details className={disclosureCardClass.root} aria-label={ariaLabel} onToggle={deferBody ? (event) => { if (event.currentTarget.open) setHasOpened(true) } : undefined}>
+      <summary className={disclosureCardClass.header}>
+        <div className={disclosureCardClass.heading}>
+          <span className={disclosureCardClass.icon} aria-hidden="true">{icon}</span>
+          <div className={disclosureCardClass.title}>
+            <strong className={disclosureCardClass.name}>{title}</strong>
+            {summary ? <span className={disclosureCardClass.summary}><span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>{summary}</span> : null}
+            {badges}
+          </div>
+        </div>
+        <span className={disclosureCardClass.expand} aria-hidden="true">
+          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false"><path d="M4 2.5 8 6 4 9.5" /></svg>
+        </span>
+      </summary>
+      {hasOpened ? <div className={[disclosureCardClass.body, bodyClassName].filter(Boolean).join(' ')}>{renderBody()}</div> : null}
+    </details>
+  )
 }
 
 const toolTimelineClass = {
@@ -525,30 +562,13 @@ function ToolCallBlockView({ toolUse, results }: { toolUse: TimelineBlock | null
   const summary = toolInputSummary(toolInput)
   const hasError = results.some(toolResultIsError)
   return (
-    <details className={disclosureCardClass.root} aria-label={`Tool call ${toolName}`}>
-      <summary className={disclosureCardClass.header}>
-        <div className={disclosureCardClass.heading}>
-          <span className={disclosureCardClass.icon} aria-hidden="true">{toolIcon(toolName)}</span>
-          <div className={disclosureCardClass.title}>
-            <strong className={disclosureCardClass.name}>{toolName}</strong>
-            {summary ? (
-              <span className={disclosureCardClass.summary}>
-                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
-                {summary}
-              </span>
-            ) : null}
-            {!toolUse ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Unmatched</span> : null}
-            {results.length === 0 ? <span className={toolTimelineClass.state}>Pending</span> : null}
-            {hasError ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Error</span> : null}
-          </div>
-        </div>
-        <span className={disclosureCardClass.expand} aria-hidden="true">
-          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
-            <path d="M4 2.5 8 6 4 9.5" />
-          </svg>
-        </span>
-      </summary>
-      <div className={disclosureCardClass.body}>
+    <TimelineDisclosureCard
+      ariaLabel={`Tool call ${toolName}`}
+      icon={toolIcon(toolName)}
+      title={toolName}
+      summary={summary}
+      badges={<>{!toolUse ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Unmatched</span> : null}{results.length === 0 ? <span className={toolTimelineClass.state}>Pending</span> : null}{hasError ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Error</span> : null}</>}
+      renderBody={() => <>
         {toolUse ? (
           <section className={toolTimelineClass.section}>
             <div className={toolTimelineClass.sectionLabel}>Input</div>
@@ -563,8 +583,8 @@ function ToolCallBlockView({ toolUse, results }: { toolUse: TimelineBlock | null
             </article>
           ))}
         </section>
-      </div>
-    </details>
+      </>}
+    />
   )
 }
 
@@ -577,30 +597,14 @@ function ThinkingBlockView({ block }: { block: TimelineBlock }) {
   const value = thinkingValue(block)
   const summary = thinkingSummary(value)
   return (
-    <details className={disclosureCardClass.root} aria-label="Assistant thinking">
-      <summary className={disclosureCardClass.header}>
-        <div className={disclosureCardClass.heading}>
-          <span className={disclosureCardClass.icon} aria-hidden="true">✦</span>
-          <div className={disclosureCardClass.title}>
-            <strong className={disclosureCardClass.name}>Thinking</strong>
-            {summary ? (
-              <span className={disclosureCardClass.summary}>
-                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
-                {summary}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <span className={disclosureCardClass.expand} aria-hidden="true">
-          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
-            <path d="M4 2.5 8 6 4 9.5" />
-          </svg>
-        </span>
-      </summary>
-      <div className={[disclosureCardClass.body, thinkingTimelineClass.body].join(' ')}>
-        {typeof value === 'string' ? <MarkdownValue value={value} /> : <pre className={thinkingTimelineClass.code}>{dataPreview(value)}</pre>}
-      </div>
-    </details>
+    <TimelineDisclosureCard
+      ariaLabel="Assistant thinking"
+      icon="✦"
+      title="Thinking"
+      summary={summary}
+      bodyClassName={thinkingTimelineClass.body}
+      renderBody={() => typeof value === 'string' ? <MarkdownValue value={value} /> : <pre className={thinkingTimelineClass.code}>{dataPreview(value)}</pre>}
+    />
   )
 }
 
@@ -655,6 +659,23 @@ function AttachmentBlockView({ block }: { block: TimelineBlock }) {
   )
 }
 
+function UserMessageCardView({ block }: { block: TimelineBlock }) {
+  return (
+    <TimelineDisclosureCard
+      ariaLabel="User message"
+      icon="U"
+      title="User message"
+      deferBody
+      renderBody={() => (
+        <section className={toolTimelineClass.section}>
+          <div className={toolTimelineClass.sectionLabel}>Payload</div>
+          <pre className={toolTimelineClass.outputText}>{dataPreview(block.data)}</pre>
+        </section>
+      )}
+    />
+  )
+}
+
 function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
   const summary = taskNotificationField(block, 'summary')
   const status = taskNotificationField(block, 'status')
@@ -665,28 +686,13 @@ function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
   const originalToolInput = originalToolUse?.input
 
   return (
-    <details className={disclosureCardClass.root} aria-label="Task notification">
-      <summary className={disclosureCardClass.header}>
-        <div className={disclosureCardClass.heading}>
-          <span className={disclosureCardClass.icon} aria-hidden="true">↯</span>
-          <div className={disclosureCardClass.title}>
-            <strong className={disclosureCardClass.name}>{originalToolName && status ? `${originalToolName} ${status}` : originalToolName ? originalToolName : 'Task Notification'}</strong>
-            {summary ? (
-              <span className={disclosureCardClass.summary}>
-                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
-                {summary}
-              </span>
-            ) : null}
-            {status ? <span className={toolTimelineClass.state}>{status}</span> : null}
-          </div>
-        </div>
-        <span className={disclosureCardClass.expand} aria-hidden="true">
-          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
-            <path d="M4 2.5 8 6 4 9.5" />
-          </svg>
-        </span>
-      </summary>
-      <div className={disclosureCardClass.body}>
+    <TimelineDisclosureCard
+      ariaLabel="Task notification"
+      icon="↯"
+      title={originalToolName && status ? `${originalToolName} ${status}` : originalToolName ? originalToolName : 'Task Notification'}
+      summary={summary}
+      badges={status ? <span className={toolTimelineClass.state}>{status}</span> : null}
+      renderBody={() => <>
         {originalToolUse ? (
           <section className={toolTimelineClass.section}>
             <div className={toolTimelineClass.sectionLabel}>Input</div>
@@ -706,8 +712,8 @@ function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
             <pre className={toolTimelineClass.outputText}>{text ?? dataPreview(block.data)}</pre>
           </section>
         )}
-      </div>
-    </details>
+      </>}
+    />
   )
 }
 
@@ -715,6 +721,7 @@ export function TimelineBlockView({ block, timestamp, source, onViewRaw }: { blo
   const text = textFromData(block.data)
 
   if (block.kind === 'assistant.thinking') return <ThinkingBlockView block={block} />
+  if (block.kind === 'assistant.user_message') return <UserMessageCardView block={block} />
   if (block.kind === 'assistant.task_notification') return <TaskNotificationBlockView block={block} />
   if (block.kind === 'user.image' || block.kind === 'user.file') return <AttachmentBlockView block={block} />
 
@@ -1078,6 +1085,10 @@ function rawMessageBlock(message: Record<string, unknown>): TimelineBlock {
   return { id: `${uuid}:raw`, kind: `raw.${String(message.type)}`, sourceEventIds: sdkMessageUuid(message) ? [uuid] : [], data: message }
 }
 
+function userMessageCardBlock(message: Record<string, unknown>, uuid: string): TimelineBlock {
+  return { id: `${uuid}:user_message`, kind: 'assistant.user_message', sourceEventIds: [uuid], data: message }
+}
+
 function appendBlocksToTurn(turns: TurnSummary[], turnId: string | null, raw: Record<string, unknown>, blocks: TimelineBlock[], historyIndex: TimelineTurnIndex, occurredAt: number): TurnSummary[] {
   if (turnId && turns.some((turn) => turn.id === turnId)) {
     return turns.map((turn) => turn.id === turnId ? { ...turn, blocks: upsertBlocks(turn.blocks, blocks, historyIndex) } : turn)
@@ -1140,7 +1151,8 @@ export function applySdkMessage(
       }
       const blocks = taskData
         ? [{ id: `${uuid}:task_notification`, kind: 'assistant.task_notification', sourceEventIds: [uuid], data: taskData }]
-        : userBlocks.some((block) => block.kind === 'tool.result') ? userBlocks.filter((block) => block.kind === 'tool.result') : [rawMessageBlock(raw)]
+        : userBlocks.some((block) => block.kind === 'tool.result') ? userBlocks.filter((block) => block.kind === 'tool.result') : raw.isSynthetic === true ? [] : [userMessageCardBlock(raw, uuid)]
+      if (raw.isSynthetic === true) return { turns, currentUserMessageUuid, terminal: false }
       return { turns: appendReplyBlocks(turns, responseFrameId, raw, blocks, historyIndex, occurredAt), currentUserMessageUuid: responseFrameId, terminal: false }
     }
     const blocks = userBlocksFromMessage(raw, uuid, true)
@@ -1260,6 +1272,10 @@ export function shouldRefetchTimelineVersion(input: { appliedVersion: string | n
 }
 
 export type SessionTimelineScope = { projectId: string | null; sessionId: string | null; pendingPrimaryTurnUuid: string | null }
+
+export function belongsToTimelineSession(sessionId: string | null, candidateSessionId: string): boolean {
+  return sessionId !== null && candidateSessionId === sessionId
+}
 
 export function shouldResetSessionTimeline(previous: SessionTimelineScope | null, next: SessionTimelineScope): boolean {
   if (!previous || previous.projectId !== next.projectId) return true
@@ -1524,7 +1540,7 @@ function useSessionTimelineData(
     refetchSessionInfoRef.current = sessionInfo.refetch
   })
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nextScope = { projectId, sessionId, pendingPrimaryTurnUuid }
     const reset = shouldResetSessionTimeline(previousScopeRef.current, nextScope)
     previousScopeRef.current = nextScope
@@ -1545,8 +1561,7 @@ function useSessionTimelineData(
   }, [pendingPrimaryTurnUuid, projectId, sessionId])
 
   useEffect(() => {
-    if (!pendingTurn) return
-    if (sessionId && pendingTurn.sessionId !== 'pending' && pendingTurn.sessionId !== sessionId) return
+    if (!pendingTurn || !belongsToTimelineSession(sessionId, pendingTurn.sessionId)) return
     if (liveUserMessageUuidRef.current !== pendingTurn.id) {
       shouldScrollToBottomRef.current = true
       liveUserMessageUuidRef.current = pendingTurn.id
@@ -1587,8 +1602,10 @@ function useSessionTimelineData(
 
   useEffect(() => {
     if (!projectId || !sessionId) return
+    let active = true
     const events = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`)
     events.onmessage = (message) => {
+      if (!active) return
       let raw: unknown
       try {
         raw = JSON.parse(message.data)
@@ -1599,6 +1616,7 @@ function useSessionTimelineData(
         void refetchTimelineRef.current()
         return
       }
+      if (isRecord(raw) && typeof raw.session_id === 'string' && !belongsToTimelineSession(sessionId, raw.session_id)) return
       const failure = resultFailureMessage(raw)
       setLiveConnectionError(failure ? `Turn failed: ${failure}` : null)
       if (isRecord(raw) && raw.type === 'user' && isPrimaryUserMessage(raw)) {
@@ -1624,13 +1642,17 @@ function useSessionTimelineData(
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottomRef.current?.() ?? true
     }
-    events.onopen = () => setLiveConnectionError(null)
+    events.onopen = () => { if (active) setLiveConnectionError(null) }
     events.onerror = () => {
+      if (!active) return
       setLiveConnectionError('Live connection interrupted; waiting for history…')
       setLiveActive(false)
       void refetchTimelineRef.current()
     }
-    return () => events.close()
+    return () => {
+      active = false
+      events.close()
+    }
   }, [projectId, sessionId])
 
   const loadOlder = useCallback(async (): Promise<boolean> => {
@@ -1687,8 +1709,9 @@ function SessionTimelineSkeleton() {
   )
 }
 
-export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange, onForkSession, onNotify }: {
+export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange, onForkSession, onNotify }: {
   projectId: string
+  projectName?: string | null
   sessionId: string | null
   pendingTurn?: TurnSummary | null
   onLiveTurnChange?: (userMessageUuid: string | null) => void
@@ -1789,7 +1812,8 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
         {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlderKeepingAnchor} disabled={loadingOlder} aria-label={loadingOlder ? 'Loading older turns' : undefined}>{loadingOlder ? <span className="loading-dots" aria-hidden="true"><span /><span /><span /></span> : 'Load older'}</button></div> : null}
         {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
         {liveConnectionError ? <div className="panel muted">{liveConnectionError}</div> : null}
-        {visibleTurns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : visibleTurns.map((turn) => {
+        {visibleTurns.length === 0 && !olderError && !liveConnectionError ? <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div> : null}
+        {visibleTurns.map((turn) => {
           const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
           const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
           const source = isLiveTurn(turn) ? 'live' : 'history'

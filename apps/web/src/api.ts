@@ -16,6 +16,7 @@ import {
   projectsResponseSchema,
   sessionInfoResponseSchema,
   sessionLiveEventsResponseSchema,
+  sessionObservationsResponseSchema,
   sessionRawMessagesResponseSchema,
   sessionRuntimeResponseSchema,
   sessionTimelineResponseSchema,
@@ -37,6 +38,8 @@ import {
   type SettingsResponse,
   type SessionInfoResponse,
   type SessionLiveEventsResponse,
+  type SessionObservationsResponse,
+  type SessionObservationSort,
   type SessionRawMessagesResponse,
   type SessionRuntimeResponse,
   type SessionTimelineResponse,
@@ -141,6 +144,14 @@ export async function fetchModelCatalog(projectId: string | null): Promise<Model
   const response = await fetch(`/api/model-catalog${params}`)
   if (!response.ok) throw new Error(`Model catalog request failed: ${response.status}`)
   return modelCatalogResponseSchema.parse(await response.json())
+}
+
+export async function fetchSessionObservations(input: { sessionId?: string | null; sort: SessionObservationSort; direction: 'asc' | 'desc'; limit: number; offset: number }): Promise<SessionObservationsResponse> {
+  const params = new URLSearchParams({ sort: input.sort, direction: input.direction, limit: String(input.limit), offset: String(input.offset) })
+  if (input.sessionId !== undefined) params.set('sessionId', input.sessionId ?? '')
+  const response = await fetch(`/api/debug/session-observations?${params}`)
+  if (!response.ok) throw new Error(`Session observations request failed: ${response.status}`)
+  return sessionObservationsResponseSchema.parse(await response.json())
 }
 
 export async function fetchSettings(): Promise<SettingsResponse> {

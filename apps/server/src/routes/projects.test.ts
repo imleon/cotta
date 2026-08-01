@@ -713,7 +713,7 @@ describe('project routes', () => {
       liveTurnManager: {
         ensureRuntime: () => {},
         sessionRunState: () => null,
-        startTurn: async (input) => { received = input; return { sessionId: 'session-new', userMessageUuid: input.userMessageUuid } },
+        startTurn: async (input) => { received = input; return { sessionId: input.sessionId, userMessageUuid: input.userMessageUuid } },
         interrupt: async () => false,
         subscribe: () => () => {},
       },
@@ -732,12 +732,14 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001', permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000001', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001', permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' }),
     })
 
     expect(response.status).toBe(202)
     expect(received).toMatchObject({
       projectId: project.id,
+      sessionId: '10000000-0000-4000-8000-000000000001',
+      resume: false,
       text: 'hello',
       userMessageUuid: '00000000-0000-4000-8000-000000000001',
       permissionMode: 'plan',
@@ -746,7 +748,7 @@ describe('project routes', () => {
     })
     expect(await response.json()).toEqual({
       projectId: project.id,
-      sessionId: 'session-new',
+      sessionId: '10000000-0000-4000-8000-000000000001',
       userMessageUuid: '00000000-0000-4000-8000-000000000001',
     })
   })
@@ -783,12 +785,24 @@ describe('project routes', () => {
     expect(received).toMatchObject({
       projectId: project.id,
       sessionId: 'session-newest',
+      resume: true,
       text: 'hello',
       userMessageUuid: '00000000-0000-4000-8000-000000000002',
       permissionMode: 'default',
     })
     expect(received).not.toHaveProperty('model')
     expect(received).not.toHaveProperty('effort')
+  })
+
+  it('rejects a body session id that differs from the existing-session path', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions/session-newest/turns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000099', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000099' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'session_id_mismatch' })
   })
 
   it('treats explicit default model and effort as SDK omissions', async () => {
@@ -816,7 +830,7 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000006', model: 'default', effort: 'default' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000006', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000006', model: 'default', effort: 'default' }),
     })
 
     expect(response.status).toBe(202)
@@ -854,7 +868,7 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003', model: 'missing-model' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000003', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003', model: 'missing-model' }),
     })
 
     expect(response.status).toBe(400)
@@ -885,7 +899,7 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004', model: 'no-effort-model', effort: 'high' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000004', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004', model: 'no-effort-model', effort: 'high' }),
     })
 
     expect(response.status).toBe(400)

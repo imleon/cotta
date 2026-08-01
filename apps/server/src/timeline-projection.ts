@@ -48,6 +48,10 @@ function isToolResultMessage(message: SessionMessage): boolean {
   return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
 }
 
+function isSyntheticUserMessage(message: SessionMessage): boolean {
+  return message.type === 'user' && 'isSynthetic' in message && message.isSynthetic === true
+}
+
 function tagText(content: string, tagName: string): string | null {
   const match = content.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`))
   return match?.[1]?.trim() || null
@@ -170,10 +174,16 @@ function primaryInputData(message: SessionMessage, data: unknown): unknown {
   return isRecord(data) ? { ...data, primaryTimelineUserMessage: true } : data
 }
 
+function timelineBlocksForUserMessageCard(message: SessionMessage): TimelineBlock[] {
+  return [{ id: `${message.uuid}:user_message`, kind: 'assistant.user_message', sourceEventIds: [message.uuid], data: jsonData(message) }]
+}
+
 function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
   if (message.type === 'user') {
     if (isToolResultMessage(message)) return timelineBlocksForToolResultMessage(message)
     if (isTaskNotificationMessage(message)) return timelineBlocksForTaskNotificationMessage(message)
+    if (isSyntheticUserMessage(message)) return []
+    if (!isPrimaryTimelineUserMessage(message)) return timelineBlocksForUserMessageCard(message)
     const content = messageContent(message)
     if (Array.isArray(content)) {
       return content.flatMap((block, index): TimelineBlock[] => {
@@ -243,6 +253,7 @@ function projectTurns(messages: SessionMessage[]): TurnSummary[] {
 
   for (const message of messages) {
     const blocks = timelineBlocksForMessage(message)
+    if (message.type === 'user' && isSyntheticUserMessage(message)) continue
     const isPrimary = isPrimaryTimelineUserMessage(message)
     const timestamp = messageTimestampMs(message)
     const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
@@ -286,6 +297,7 @@ export function sessionMessagesForTurn(messages: SessionMessage[], turnId: strin
   let foundTurn = false
 
   const selected = messages.filter((message) => {
+    if (isSyntheticUserMessage(message)) return false
     const blocks = timelineBlocksForMessage(message)
     const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
     const taskToolUseId = hasTaskNotification ? timelineTaskNotificationToolUseId(message) : undefined

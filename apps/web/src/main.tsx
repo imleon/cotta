@@ -1,7 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { StrictMode, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
+import { StrictMode, type CSSProperties, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   createTurnResponseSchema,
@@ -13,14 +11,14 @@ import {
   type ModelCatalogItem,
   type ModelSelection,
   type PermissionMode,
-  type PersistedLiveEvent,
   type ProjectSessionsResponse,
   type SessionInfoResponse,
+  type SessionObservation,
+  type SessionObservationSort,
   type SessionRuntimeResponse,
   type TurnSummary,
-  isPrimaryTimelineUserMessage,
 } from '@cotta/shared'
-import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSettings, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
 import { SessionTimeline } from './timeline'
@@ -110,14 +108,14 @@ function createUserMessageUuid(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-async function createTurn(projectId: string, sessionId: string | null, text: string, userMessageUuid: string, permissionMode: PermissionMode, model: ModelSelection | DefaultTurnOption, effort: EffortLevel | DefaultTurnOption): Promise<CreateTurnResponse> {
-  const path = sessionId
-    ? `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns`
+async function createTurn(projectId: string, existingSessionId: string | null, sessionId: string, text: string, userMessageUuid: string, permissionMode: PermissionMode, model: ModelSelection | DefaultTurnOption, effort: EffortLevel | DefaultTurnOption): Promise<CreateTurnResponse> {
+  const path = existingSessionId
+    ? `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(existingSessionId)}/turns`
     : `/api/projects/${encodeURIComponent(projectId)}/sessions`
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, userMessageUuid, permissionMode, model, effort }),
+    body: JSON.stringify({ sessionId, text, userMessageUuid, permissionMode, model, effort }),
   })
   if (!response.ok) throw new CreateTurnHttpError(response.status)
   return createTurnResponseSchema.parse(await response.json())
@@ -131,304 +129,11 @@ async function interruptTurn(projectId: string, sessionId: string): Promise<void
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-function dataPreview(value: unknown, space = 2): string {
-  if (typeof value === 'object' && value !== null && 'text' in value && typeof value.text === 'string') return value.text
-  return JSON.stringify(value, null, space) ?? ''
-}
-
-function textFromData(value: unknown): string | null {
-  if (isRecord(value) && typeof value.text === 'string') return value.text
-  if (isRecord(value) && isRecord(value.raw) && typeof value.raw.content === 'string') return value.raw.content
-  if (isRecord(value) && typeof value.content === 'string') return value.content
-  if (isRecord(value) && Array.isArray(value.content)) {
-    const text = value.content
-      .map((block) => isRecord(block) && typeof block.text === 'string' ? block.text : '')
-      .filter(Boolean)
-      .join('\n')
-    return text || null
-  }
-  return null
-}
-
-function shortText(value: string, max = 140): string {
-  const normalized = value.replace(/\s+/g, ' ').trim()
-  if (!normalized) return '—'
-  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized
-}
-
-function debugDataPreview(value: unknown, max = 180): string {
-  return shortText(textFromData(value) ?? dataPreview(value), max)
-}
-
-function rawField(value: unknown, key: string): unknown {
-  return isRecord(value) ? value[key] : undefined
-}
-
-function rawStringField(value: unknown, key: string): string {
-  const field = rawField(value, key)
-  return typeof field === 'string' ? field : '—'
-}
-
-function rawMessagePreview(value: unknown): string {
-  return debugDataPreview(rawField(value, 'message') ?? value)
-}
-
-function rawMessageField(value: unknown, key: string): unknown {
-  const message = rawField(value, 'message')
-  return isRecord(message) ? message[key] : undefined
-}
-
-function debugFieldPreview(value: unknown, max = 180): string {
-  if (value === undefined || value === null) return '—'
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return shortText(String(value), max)
-  return debugDataPreview(value, max)
-}
-
-function rawTimestampParts(value: unknown): { date: string; time: string } {
-  const timestamp = rawStringField(value, 'timestamp')
-  if (timestamp === '—') return { date: '—', time: '—' }
-  const [date, timeWithZone] = timestamp.split('T')
-  return { date: date || timestamp, time: timeWithZone ?? '—' }
-}
-
-function rawStopReason(value: unknown): string | null {
-  const stopReason = rawMessageField(value, 'stop_reason')
-  return typeof stopReason === 'string' && stopReason ? stopReason : null
-}
-
-function isPrimaryUserMessage(value: unknown): boolean {
-  return isPrimaryTimelineUserMessage(value)
-}
-
-function sourceEventLabel(ids: string[]): string {
-  if (ids.length === 0) return '—'
-  if (ids.length <= 2) return ids.join(', ')
-  return `${ids.slice(0, 2).join(', ')} +${ids.length - 2}`
-}
-
-function debugContentClassName(type: string | undefined): string {
-  if (type === 'text') return 'debug-content-block-text'
-  if (type === 'tool_use') return 'debug-content-block-tool-use'
-  if (type === 'tool_result') return 'debug-content-block-tool-result'
-  return 'debug-content-block-unknown'
-}
-
-function DebugContentField({ label, value, json = false, max = 260 }: { label: string; value: unknown; json?: boolean; max?: number }) {
-  if (value === undefined || value === null) return null
-  return (
-    <div className="debug-content-field">
-      <span className="debug-content-label">{label}</span>
-      <div className="debug-content-value">
-        {json ? <pre className="debug-content-pre">{dataPreview(value)}</pre> : debugFieldPreview(value, max)}
-      </div>
-    </div>
-  )
-}
-
-function DebugContentBlock({ block, index }: { block: unknown; index: number }) {
-  if (!isRecord(block)) {
-    return (
-      <div className="debug-content-block debug-content-block-unknown">
-        <div className="debug-content-block-header">#{index + 1} value</div>
-        <DebugContentField label="value" value={block} />
-      </div>
-    )
-  }
-
-  const type = typeof block.type === 'string' ? block.type : undefined
-  const isJsonContent = isRecord(block.content) || Array.isArray(block.content)
-  return (
-    <div className={`debug-content-block ${debugContentClassName(type)}`}>
-      <div className="debug-content-block-header">#{index + 1} {type ?? 'unknown'}</div>
-      {type === 'text' ? <DebugContentField label="text" value={block.text} max={520} /> : null}
-      {type === 'tool_use' ? (
-        <>
-          <DebugContentField label="id" value={block.id} />
-          <DebugContentField label="name" value={block.name} />
-          <DebugContentField label="input" value={block.input} json />
-        </>
-      ) : null}
-      {type === 'tool_result' ? (
-        <>
-          <DebugContentField label="tool_use_id" value={block.tool_use_id} />
-          <DebugContentField label="is_error" value={block.is_error} />
-          <DebugContentField label="content" value={block.content} json={isJsonContent} max={520} />
-        </>
-      ) : null}
-      {!type || (type !== 'text' && type !== 'tool_use' && type !== 'tool_result') ? <DebugContentField label="data" value={block} json /> : null}
-    </div>
-  )
-}
-
-function debugContentRows(content: unknown): unknown[] {
-  if (Array.isArray(content)) return content.length > 0 ? content : [undefined]
-  if (typeof content === 'string') return [{ type: 'text', text: content }]
-  if (content === undefined || content === null) return [undefined]
-  return [content]
-}
-
-function contentBlockType(block: unknown): string {
-  if (block === undefined || block === null) return '—'
-  if (!isRecord(block)) return 'value'
-  return typeof block.type === 'string' ? block.type : 'unknown'
-}
-
-function contentBlockId(block: unknown): unknown {
-  if (!isRecord(block)) return undefined
-  return block.id ?? block.tool_use_id
-}
-
-function contentBlockName(block: unknown): unknown {
-  return isRecord(block) ? block.name : undefined
-}
-
-function contentBlockIsErr(block: unknown): unknown {
-  if (!isRecord(block)) return undefined
-  return block.is_err ?? block.is_error
-}
-
-const contentBlockMetadataKeys = new Set(['type', 'id', 'tool_use_id', 'name', 'is_err', 'is_error'])
-
-function contentBlockValue(block: unknown): unknown {
-  if (!isRecord(block)) return block
-  const entries = Object.entries(block).filter(([key]) => !contentBlockMetadataKeys.has(key))
-  if (entries.length === 0) return undefined
-  if (entries.length === 1) return entries[0]?.[1]
-  return Object.fromEntries(entries)
-}
-
-function shouldRenderBlockValueMarkdown(block: unknown, value: unknown): boolean {
-  if (typeof value !== 'string') return false
-  if (!isRecord(block)) return false
-  return (block.type === 'text' && typeof block.text === 'string')
-    || (block.type === 'tool_result' && typeof block.content === 'string')
-}
-
-function DebugMarkdownValue({ value }: { value: string }) {
-  return (
-    <div className="debug-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
-    </div>
-  )
-}
-
-function DebugContentCellValue({ value, json = false, max = 260, markdown = false }: { value: unknown; json?: boolean; max?: number; markdown?: boolean }) {
-  if (value === undefined || value === null) return <span className="debug-content-empty">—</span>
-  if (json || isRecord(value) || Array.isArray(value)) return <pre className="debug-content-code">{dataPreview(value)}</pre>
-  if (markdown && typeof value === 'string') return <DebugMarkdownValue value={value} />
-  return <>{debugFieldPreview(value, max)}</>
-}
-
-function DebugContentStackCell({ blocks, valueForBlock, max = 260, markdownForBlock }: { blocks: unknown[]; valueForBlock: (block: unknown) => unknown; max?: number; markdownForBlock?: (block: unknown, value: unknown) => boolean }) {
-  return (
-    <div className="debug-content-stack">
-      {blocks.map((block, index) => {
-        const value = valueForBlock(block)
-        return (
-          <div key={index}>
-            <DebugContentCellValue value={value} max={max} markdown={markdownForBlock?.(block, value) ?? false} />
-            {index < blocks.length - 1 ? <div className="debug-content-separator">---</div> : null}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function SessionDebugView({ rawMessages }: { rawMessages: unknown[] }) {
-  return (
-    <section className="debug-view" aria-label="Session debug">
-      <section className="debug-table-section" aria-label="Raw messages">
-        <h4>Raw messages</h4>
-        {rawMessages.length === 0 ? <p className="debug-empty">No raw messages loaded.</p> : (
-          <div className="debug-table-wrap">
-            <table className="debug-table">
-              <thead><tr><th>Timestamp</th><th>Type</th><th>block.type</th><th>block.id</th><th>block.name</th><th>block.is_err</th><th>block.value</th><th>raw message</th><th>message.model</th><th>message.usage</th></tr></thead>
-              <tbody>
-                {rawMessages.map((message, index) => {
-                  const timestamp = rawTimestampParts(message)
-                  const stopReason = rawStopReason(message)
-                  const contentRows = debugContentRows(rawMessageField(message, 'content'))
-                  const rowClassName = isPrimaryUserMessage(message) ? 'debug-row-user' : undefined
-                  return (
-                    <tr className={rowClassName} key={`${rawStringField(message, 'uuid')}:${index}`}>
-                      <td className="debug-mono debug-timestamp-cell"><div>{timestamp.date}</div><div className="debug-muted">{timestamp.time}</div></td>
-                      <td className="debug-type-cell"><strong>{rawStringField(message, 'type')}</strong>{stopReason ? <div className="debug-muted">(stop_reason: {stopReason})</div> : null}</td>
-                      <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockType} /></td>
-                      <td className="debug-mono debug-block-id-cell"><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockId} /></td>
-                      <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockName} /></td>
-                      <td><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockIsErr} /></td>
-                      <td className="debug-content-cell"><DebugContentStackCell blocks={contentRows} valueForBlock={contentBlockValue} markdownForBlock={shouldRenderBlockValueMarkdown} max={520} /></td>
-                      <td className="debug-content-cell debug-raw-message-cell"><DebugContentCellValue value={message} json /></td>
-                      <td>{debugFieldPreview(rawMessageField(message, 'model'))}</td>
-                      <td className="debug-usage-cell"><pre className="debug-inline-json">{dataPreview(rawMessageField(message, 'usage'), 0)}</pre></td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-    </section>
-  )
-}
-
-function LiveEventsDebugView({ events }: { events: PersistedLiveEvent[] }) {
-  return (
-    <section className="debug-table-section" aria-label="Captured live events">
-      <h4>Captured live events</h4>
-      {events.length === 0 ? <p className="debug-empty">No captured live events yet.</p> : (
-        <div className="debug-table-wrap">
-          <table className="debug-table">
-            <thead><tr><th>ID</th><th>Recorded</th><th>Event</th><th>Preview</th><th>Payload</th></tr></thead>
-            <tbody>
-              {events.map((event) => (
-                <tr key={event.id}>
-                  <td className="debug-mono">{event.id}</td>
-                  <td className="debug-mono debug-timestamp-cell">{new Date(event.recordedAtMs).toISOString()}</td>
-                  <td className="debug-type-cell"><strong>{event.eventType}</strong></td>
-                  <td className="debug-content-cell">{debugDataPreview(event.payload, 220)}</td>
-                  <td className="debug-content-cell debug-raw-message-cell"><DebugContentCellValue value={event.payload} json /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
-  )
-}
-
-function useSessionRawMessages(projectId: string | null, sessionId: string | null) {
-  return useQuery({
-    queryKey: ['session-raw-messages', projectId, sessionId],
-    queryFn: () => fetchSessionRawMessages(projectId!, sessionId!),
-    enabled: Boolean(projectId && sessionId),
-    retry: false,
-  })
-}
-
-function useSessionLiveEvents(projectId: string | null, sessionId: string | null) {
-  return useQuery({
-    queryKey: ['session-live-events', projectId, sessionId],
-    queryFn: () => fetchSessionLiveEvents(projectId!, sessionId!),
-    enabled: Boolean(projectId && sessionId),
-    retry: false,
-    refetchInterval: 4000,
-    refetchIntervalInBackground: false,
-  })
-}
-
-function pendingUserTurn(text: string, sessionId: string | null, userMessageUuid: string): TurnSummary {
+function pendingUserTurn(text: string, sessionId: string, userMessageUuid: string): TurnSummary {
   const startedAt = Date.now()
   return {
     id: userMessageUuid,
-    sessionId: sessionId ?? 'pending',
+    sessionId,
     title: text.length > 80 ? `${text.slice(0, 77)}…` : text,
     startedAt,
     rawStatus: 'running',
@@ -575,22 +280,24 @@ function TurnComposer({
       return
     }
     const userMessageUuid = createUserMessageUuid()
+    const existingSessionId = targetProjectId === projectId ? selectedSessionId : null
+    const targetSessionId = existingSessionId ?? createUserMessageUuid()
     setSubmitting(true)
     setSubmitError(null)
+    if (!existingSessionId && targetProjectId === projectId) setSelectedSessionId(targetSessionId)
     try {
-      const targetSessionId = targetProjectId === projectId ? selectedSessionId : null
       setPendingTurn(pendingUserTurn(text, targetSessionId, userMessageUuid))
       setInputText('')
-      const response = await createTurn(targetProjectId, targetSessionId, text, userMessageUuid, permissionMode, model, selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION)
+      const response = await createTurn(targetProjectId, existingSessionId, targetSessionId, text, userMessageUuid, permissionMode, model, selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION)
       if (targetProjectId !== projectId) onSessionCreated(response.projectId, response.sessionId)
       else setSelectedSessionId(response.sessionId)
-      setPendingTurn((turn) => turn ? { ...turn, sessionId: response.sessionId } : turn)
       await refreshProjects(response.projectId)
       refreshSessionLists(response.projectId)
     } catch (error) {
       if (error instanceof CreateTurnHttpError) {
         setPendingTurn(null)
         setInputText(text)
+        if (!existingSessionId && targetProjectId === projectId) setSelectedSessionId(null)
         if (targetProjectId !== projectId) setRetryProjectId(targetProjectId)
         setSubmitError(error.message)
       } else {
@@ -841,6 +548,7 @@ function WorkspacePanel({
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
+  const projectName = detail?.project.name
 
   useEffect(() => { setLiveUserMessageUuid(null) }, [projectId, selectedSessionId])
   useEffect(() => { setPendingTurn(null) }, [projectId])
@@ -853,12 +561,14 @@ function WorkspacePanel({
     setLiveUserMessageUuid(userMessageUuid)
   }
 
+  const selectedPendingTurn = pendingTurn?.sessionId === selectedSessionId ? pendingTurn : null
+
   return (
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
-        {projectId && (selectedSessionId || pendingTurn)
-          ? <SessionTimeline projectId={projectId} sessionId={selectedSessionId} pendingTurn={pendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
-          : null}
+        {projectId && selectedSessionId
+          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={selectedSessionId} pendingTurn={selectedPendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
+          : <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div>}
       </div>
 
       <TurnComposer
@@ -1184,23 +894,95 @@ function PlaceholderPage({ title }: { title: string }) {
   )
 }
 
-function DebugWorkspacePanel({ projectId, sessionId }: { projectId: string | null; sessionId: string | null }) {
-  const liveEvents = useSessionLiveEvents(projectId, sessionId)
-  const rawMessages = useSessionRawMessages(projectId, sessionId)
+const DEBUG_TABS = ['Session observations', 'Runtime', 'Events', 'Diagnostics'] as const
+type ObservationColumnKey = SessionObservationSort | 'updatedDelta'
+const OBSERVATION_COLUMNS: Array<{ key: ObservationColumnKey; label: string; value: (row: SessionObservation, previous?: SessionObservation) => unknown }> = [
+  { key: 'fileMtimeMs', label: 'File mtime', value: (row) => row.fileMtimeMs },
+  { key: 'payloadPid', label: 'Payload PID', value: (row) => row.payloadPid },
+  { key: 'sessionId', label: 'Session', value: (row) => row.sessionId }, { key: 'cwd', label: 'CWD', value: (row) => row.cwd },
+  { key: 'startedAtMs', label: 'Started', value: (row) => row.startedAtMs }, { key: 'updatedAtMs', label: 'Updated', value: (row) => row.updatedAtMs },
+  { key: 'updatedDelta', label: 'Delta', value: (row, next) => next ? row.updatedAtMs !== null && next.updatedAtMs !== null ? next.updatedAtMs - row.updatedAtMs : null : null },
+  { key: 'statusUpdatedAtMs', label: 'Status updated', value: (row) => row.statusUpdatedAtMs }, { key: 'version', label: 'Version', value: (row) => row.version },
+  { key: 'peerProtocol', label: 'Peer protocol', value: (row) => row.peerProtocol }, { key: 'kind', label: 'Kind', value: (row) => row.kind },
+  { key: 'entrypoint', label: 'Entrypoint', value: (row) => row.entrypoint }, { key: 'name', label: 'Name', value: (row) => row.name },
+  { key: 'nameSource', label: 'Name source', value: (row) => row.nameSource }, { key: 'status', label: 'Status', value: (row) => row.status },
+  { key: 'waitingFor', label: 'Waiting for', value: (row) => row.waitingFor }, { key: 'tempo', label: 'Tempo', value: (row) => row.tempo },
+  { key: 'state', label: 'State', value: (row) => row.state }, { key: 'detail', label: 'Detail', value: (row) => row.detail },
+  { key: 'needs', label: 'Needs', value: (row) => row.needs }, { key: 'agent', label: 'Agent', value: (row) => row.agent },
+  { key: 'messagingSocketPath', label: 'Socket', value: (row) => row.messagingSocketPath }, { key: 'jobId', label: 'Job', value: (row) => row.jobId },
+  { key: 'parkedJobId', label: 'Parked job', value: (row) => row.parkedJobId }, { key: 'bridgeSessionId', label: 'Bridge session', value: (row) => row.bridgeSessionId },
+  { key: 'logPath', label: 'Log path', value: (row) => row.logPath }, { key: 'tmux', label: 'tmux', value: (row) => row.tmux },
+  { key: 'pidAlive', label: 'PID alive', value: (row) => row.pidAlive }, { key: 'procStartMatches', label: 'Proc matches', value: (row) => row.procStartMatches },
+  { key: 'parseError', label: 'Parse error', value: (row) => row.parseError }, { key: 'rawJson', label: 'Raw JSON', value: (row) => row.rawJson },
+]
+const OBSERVATION_TIME_FIELDS = new Set<SessionObservationSort>(['observedAtMs', 'fileMtimeMs', 'startedAtMs', 'updatedAtMs', 'statusUpdatedAtMs'])
+const BEIJING_TIME_FORMAT = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+})
 
-  if (!projectId) return <div className="panel muted">Select a project to inspect captured live events.</div>
+function observationValue(key: ObservationColumnKey, value: unknown) {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (key === 'updatedDelta' && typeof value === 'number') return `${value >= 0 ? '+' : '-'}${(Math.abs(value) / 1000).toFixed(3)}s`
+  if (OBSERVATION_TIME_FIELDS.has(key as SessionObservationSort) && typeof value === 'number') return `${BEIJING_TIME_FORMAT.format(value)} CST`
+  if (key === 'cwd' && typeof value === 'string') return value.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || value
+  if (key === 'rawJson' && typeof value === 'string') return <details><summary>View JSON</summary><pre>{value}</pre></details>
+  return String(value)
+}
+
+function DebugWorkspacePanel() {
+  const [tab, setTab] = useState(0)
+  const sessionSort: SessionObservationSort = 'fileMtimeMs'
+  const sessionDirection: 'asc' | 'desc' = 'asc'
+  const [sessionFilter, setSessionFilter] = useState<string | null | undefined>(undefined)
+  const [limit, setLimit] = useState(100)
+  const [offset, setOffset] = useState(0)
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const observations = useQuery({ queryKey: ['session-observations', sessionFilter, sessionSort, sessionDirection, limit, offset], queryFn: () => fetchSessionObservations({ sessionId: sessionFilter, sort: sessionSort, direction: sessionDirection, limit, offset }), retry: false })
+
+  function selectTab(next: number, focus = false) {
+    setTab(next)
+    if (focus) requestAnimationFrame(() => tabRefs.current[next]?.focus())
+  }
+  function handleTabKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const next = event.key === 'ArrowRight' ? (tab + 1) % DEBUG_TABS.length : event.key === 'ArrowLeft' ? (tab - 1 + DEBUG_TABS.length) % DEBUG_TABS.length : event.key === 'Home' ? 0 : event.key === 'End' ? DEBUG_TABS.length - 1 : null
+    if (next === null) return
+    event.preventDefault()
+    selectTab(next, true)
+  }
+  useEffect(() => {
+    if (sessionFilter !== undefined) return
+    const firstSession = observations.data?.sessionIds.find((sessionId) => sessionId !== null) ?? observations.data?.sessionIds[0]
+    if (firstSession !== undefined) setSessionFilter(firstSession)
+  }, [observations.data?.sessionIds, sessionFilter])
 
   return (
-    <section className="detail-panel debug-page-panel debug-page-single" aria-label="Debug workspace">
-      <div className="debug-page-content debug-workspace-content">
-        {!sessionId ? <div className="panel muted">Select a session to inspect captured live events.</div> : null}
-        {sessionId && liveEvents.isLoading ? <div className="panel muted">Loading captured live events…</div> : null}
-        {sessionId && liveEvents.isError ? <div className="panel error">Failed to load captured live events: {liveEvents.error instanceof Error ? liveEvents.error.message : 'unknown error'}</div> : null}
-        {sessionId && liveEvents.data ? <LiveEventsDebugView events={liveEvents.data.events} /> : null}
-        {sessionId && rawMessages.isLoading ? <div className="panel muted">Loading raw messages…</div> : null}
-        {sessionId && rawMessages.isError ? <div className="panel error">Failed to load raw messages: {rawMessages.error instanceof Error ? rawMessages.error.message : 'unknown error'}</div> : null}
-        {sessionId && rawMessages.data ? <SessionDebugView rawMessages={rawMessages.data.messages} /> : null}
+    <section className="detail-panel debug-page-panel debug-tabs-page" aria-label="Debug workspace">
+      <div className="debug-tab-list" role="tablist" aria-label="Debug datasets">
+        {DEBUG_TABS.map((label, index) => <button key={label} ref={(node) => { tabRefs.current[index] = node }} id={`debug-tab-${index}`} role="tab" aria-selected={tab === index} aria-controls={`debug-panel-${index}`} tabIndex={tab === index ? 0 : -1} onClick={() => selectTab(index)} onKeyDown={handleTabKey}>{label}</button>)}
       </div>
+      {DEBUG_TABS.map((label, index) => (
+        <div key={label} id={`debug-panel-${index}`} role="tabpanel" aria-labelledby={`debug-tab-${index}`} hidden={tab !== index} className="debug-tab-panel">
+          {index === 0 ? (
+            <>
+              <div className="debug-observation-toolbar">
+                <div><strong>Session registry observations</strong><span className="muted">Append-only snapshots from ~/.claude/sessions</span></div>
+                <div className="debug-observation-actions">
+                  <label>Session <select value={sessionFilter === undefined ? '' : sessionFilter ?? '__null__'} onChange={(event) => { setSessionFilter(event.target.value === '__null__' ? null : event.target.value); setOffset(0) }}>{observations.data?.sessionIds.map((sessionId) => <option key={sessionId ?? '__null__'} value={sessionId ?? '__null__'}>{sessionId ?? 'No session ID'}</option>)}</select></label>
+                  <label>Rows <select value={limit} onChange={(event) => { setLimit(Number(event.target.value)); setOffset(0) }}><option>50</option><option>100</option><option>250</option></select></label>
+                  <button type="button" disabled={observations.isFetching} onClick={() => void observations.refetch()}>{observations.isFetching ? 'Refreshing…' : 'Refresh'}</button>
+                </div>
+              </div>
+              {observations.isLoading ? <div className="panel muted">Loading session observations…</div> : null}
+              {observations.isError ? <div className="panel error">Failed to load session observations: {observations.error instanceof Error ? observations.error.message : 'unknown error'}</div> : null}
+              {observations.data?.observations.length === 0 ? <p className="debug-empty">No session observations recorded.</p> : null}
+              {observations.data?.observations.length ? <div className="debug-table-wrap debug-observations-wrap"><table className="debug-table debug-observations-table"><thead><tr>{OBSERVATION_COLUMNS.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead><tbody>{observations.data.observations.map((row, rowIndex, rows) => <tr key={row.id} className={row.status === 'idle' ? 'debug-row-idle' : row.status === 'busy' ? 'debug-row-busy' : row.status === 'waiting' ? 'debug-row-waiting' : undefined}>{OBSERVATION_COLUMNS.map((column) => <td key={column.key} className={`debug-observation-cell debug-observation-${column.key}${column.key === 'entrypoint' && row.entrypoint === 'cli' ? ' debug-entrypoint-cli' : column.key === 'entrypoint' && row.entrypoint?.includes('ts') ? ' debug-entrypoint-ts' : ''}`}>{observationValue(column.key, column.value(row, rows[rowIndex + 1]))}</td>)}</tr>)}</tbody></table></div> : null}
+              <div className="debug-pagination"><button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>Previous</button><span>{offset + 1}–{offset + (observations.data?.observations.length ?? 0)}</span><button type="button" disabled={!observations.data?.hasMore} onClick={() => setOffset(offset + limit)}>Next</button></div>
+            </>
+          ) : null}
+        </div>
+      ))}
     </section>
   )
 }
@@ -1216,7 +998,7 @@ function ProjectsDashboard() {
   const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
   const settings = settingsQuery.data?.settings ?? {}
   const navItems = settings.showDebugNav === false ? DASHBOARD_NAV_ITEMS.filter((item) => item.key !== 'debug') : DASHBOARD_NAV_ITEMS
-  const workspaceNavActive = activeNav === 'chat' || (settings.showDebugNav !== false && activeNav === 'debug')
+  const workspaceNavActive = activeNav === 'chat'
   const selection = useProjectSessionSelection({ selectInitialProject: false, enabled: workspaceNavActive })
   const {
     selectedProjectId,
@@ -1382,6 +1164,7 @@ function ProjectsDashboard() {
       document.removeEventListener('keydown', closeOnEscape)
     }
   }, [newConversationMenuOpen])
+
 
   useEffect(() => {
     if (!selectedProjectId || !selectedSessionId) {
@@ -1595,7 +1378,7 @@ function ProjectsDashboard() {
     ?? queryClient.getQueryData<{ pages: Array<{ sessions: ProjectSessionsResponse['sessions'] }> }>(sessionQueryKeys.projectSessionsRail(selectedProjectId ?? ''))?.pages
       .flatMap((page) => page.sessions)
       .find((session) => session.id === selectedSessionId)
-  const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : 'New conversation')
+  const workspaceTitle = detail?.project.name ?? (selection.projectSessions.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : '')
   const headerSessionInfo = selectedSessionInfo?.projectId === selectedProjectId && selectedSessionInfo.sessionId === selectedSessionId ? selectedSessionInfo : null
   const infoText = (value: string | number | null | undefined) => {
     if (value == null) return '—'
@@ -1836,7 +1619,7 @@ function ProjectsDashboard() {
       </aside>
       {!workspaceNavActive ? (
         <section className="settings-page-shell">
-          {activeNav === 'settings' ? <SettingsPanel projectId={null} settings={settings} /> : <PlaceholderPage title={DASHBOARD_NAV_ITEMS.find((item) => item.key === activeNav)?.label ?? 'Page'} />}
+          {activeNav === 'settings' ? <SettingsPanel projectId={null} settings={settings} /> : activeNav === 'debug' ? <DebugWorkspacePanel /> : <PlaceholderPage title={DASHBOARD_NAV_ITEMS.find((item) => item.key === activeNav)?.label ?? 'Page'} />}
         </section>
       ) : (
         <section className="workspace-panel" data-session-rail-collapsed={isSessionRailCollapsed ? 'true' : 'false'}>
@@ -1965,9 +1748,7 @@ function ProjectsDashboard() {
               </div>
             ) : null}
             <div className="workspace-main-content">
-              {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : activeNav === 'debug'
-                  ? <DebugWorkspacePanel projectId={selection.selectedProjectId} sessionId={selection.selectedSessionId} />
-                  : <WorkspacePanel
+              {selection.projectSessions.isError ? <div className="panel error workspace-panel-error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : <WorkspacePanel
                     projectId={selection.selectedProjectId}
                     detail={selection.projectSessions.data}
                     selectedSessionId={selection.selectedSessionId}
@@ -2033,52 +1814,6 @@ function ProjectsDashboard() {
         </dialog>
       ) : null}
     </div>
-  )
-}
-
-function DebugDashboard() {
-  const selection = useProjectSessionSelection({ sessionLimit: 100 })
-  const rawMessages = useSessionRawMessages(selection.selectedProjectId, selection.selectedSessionId)
-  const sessions = selection.projectSessions.data?.sessions ?? []
-
-  if (selection.projects.isLoading) return <div className="panel muted">Loading Claude Code projects…</div>
-  if (selection.projects.isError) return <div className="panel error">Failed to load projects: {selection.projects.error instanceof Error ? selection.projects.error.message : 'unknown error'}</div>
-  if (selection.items.length === 0) return <div className="panel muted">No Claude Code projects were returned by the Agent SDK yet. Run Claude Code in a project first, then refresh this dashboard.</div>
-
-  return (
-    <section className="detail-panel debug-page-panel debug-page-single" aria-label="Debug workspace">
-      <div className="debug-filter-bar" aria-label="Debug filters">
-        <label className="debug-filter-field">
-          <span>Project</span>
-          <select value={selection.selectedProjectId ?? ''} onChange={(event) => selection.selectProject(event.target.value)}>
-            {selection.items.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-          </select>
-        </label>
-        <label className="debug-filter-field">
-          <span>Session</span>
-          <select
-            value={selection.selectedSessionId ?? ''}
-            onChange={(event) => {
-              if (!selection.selectedProjectId || !event.target.value) return
-              selection.selectSession(selection.selectedProjectId, event.target.value)
-            }}
-            disabled={selection.projectSessions.isLoading || sessions.length === 0}
-          >
-            {selection.projectSessions.isLoading ? <option value="">Loading sessions…</option> : null}
-            {!selection.projectSessions.isLoading && sessions.length === 0 ? <option value="">No sessions</option> : null}
-            {sessions.map((session) => <option key={session.id} value={session.id}>{session.id} — {session.title}</option>)}
-          </select>
-        </label>
-      </div>
-      <div className="debug-page-content">
-        {selection.projectSessions.isError ? <div className="panel error">Failed to load project sessions: {selection.projectSessions.error instanceof Error ? selection.projectSessions.error.message : 'unknown error'}</div> : null}
-        {selection.projectSessions.isLoading ? <div className="panel muted">Loading project sessions…</div> : null}
-        {!selection.projectSessions.isLoading && !selection.selectedSessionId ? <div className="panel muted">Select a session to inspect raw messages.</div> : null}
-        {selection.selectedSessionId && rawMessages.isLoading ? <div className="panel muted">Loading raw messages…</div> : null}
-        {selection.selectedSessionId && rawMessages.isError ? <div className="panel error">Failed to load raw messages: {rawMessages.error instanceof Error ? rawMessages.error.message : 'unknown error'}</div> : null}
-        {selection.selectedSessionId && rawMessages.data ? <SessionDebugView rawMessages={rawMessages.data.messages} /> : null}
-      </div>
-    </section>
   )
 }
 

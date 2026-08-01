@@ -176,9 +176,9 @@ export class LiveTurnManager {
     this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
   }
 
-  async startTurn(input: { projectId: string; sessionId?: string; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<{ sessionId: string; userMessageUuid: string }> {
-    const sessionId = input.sessionId ?? randomUUID()
-    let runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: Boolean(input.sessionId), permissionMode: input.permissionMode, model: input.model, effort: input.effort })
+  async startTurn(input: { projectId: string; sessionId: string; resume: boolean; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<{ sessionId: string; userMessageUuid: string }> {
+    const sessionId = input.sessionId
+    let runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: input.resume, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
     if (runtime.currentUserMessageUuid) throw new Error('Session already has a running generation')
     this.clearIdleTimer(runtime)
     if (input.effort === 'max' && runtime.effort !== 'max') {

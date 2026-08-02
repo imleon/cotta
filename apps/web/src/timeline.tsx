@@ -1138,6 +1138,16 @@ export function activeTimelineTurnId(turns: TurnSummary[], runState?: SessionRun
   return cliCookingTurnId(turns, runState)
 }
 
+export function shouldShowAssistantResponseSkeleton(input: { turn: TurnSummary; cooking: boolean; lastAssistantFrameId?: string; runState?: SessionRunState | null; fallbackTurnId?: string | null }): boolean {
+  if (input.lastAssistantFrameId) return false
+  if (input.cooking) return true
+  if (input.turn.durationMs !== undefined) return false
+  return (input.runState?.phase === 'idle'
+    && input.runState.lastTurn?.id === input.turn.id
+    && input.runState.lastTurn.outcome === 'success')
+    || input.fallbackTurnId === input.turn.id
+}
+
 function CliCookingIndicator({ label = 'Cooking…' }: { label?: string }) {
   return <span className="cli-cooking text-[13px] leading-[1.6]" role="status"><span className="cli-cooking-mark" aria-hidden="true" /> {label}</span>
 }
@@ -1824,6 +1834,7 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
   const pendingPrimaryTurnUuid = pendingTurn?.id ?? null
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [rawMessageSelection, setRawMessageSelection] = useState<{ turnId: string } | null>(null)
+  const responseSkeletonTurnIdRef = useRef<string | null>(null)
   const rawMessages = useQuery({
     queryKey: ['session-raw-messages', projectId, sessionId, rawMessageSelection?.turnId],
     queryFn: () => fetchSessionRawMessages(projectId, sessionId!, rawMessageSelection!.turnId),
@@ -1876,6 +1887,7 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
     if (!reset) return
     olderScrollAnchorRef.current = null
     loadingOlderFromScrollRef.current = false
+    responseSkeletonTurnIdRef.current = null
     shouldScrollToBottomRef.current = true
     setShowScrollToBottom(false)
     setRawMessageSelection(null)
@@ -1905,6 +1917,7 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
 
   const cookingTurnId = cliCookingTurnId(visibleTurns, runState)
   const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
+  if (cookingTurnId || activeTurnId) responseSkeletonTurnIdRef.current = cookingTurnId ?? activeTurnId
   const activeTask = tasks.find((task) => task.status === 'in_progress')
   const activeTaskLabel = activeTask ? `${activeTask.activeForm ?? activeTask.subject}...` : undefined
 
@@ -1922,13 +1935,15 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
           const durationLabel = turnDurationLabel(turn)
           const cooking = turn.id === cookingTurnId || turn.id === activeTurnId
           const activeLabel = turn.id === activeTurnId ? activeTaskLabel : undefined
+          const showResponseSkeleton = shouldShowAssistantResponseSkeleton({ turn, cooking, lastAssistantFrameId, runState, fallbackTurnId: responseSkeletonTurnIdRef.current })
+          if (responseSkeletonTurnIdRef.current === turn.id && (lastAssistantFrameId || turn.durationMs !== undefined)) responseSkeletonTurnIdRef.current = null
           return (
             <article className="turn-card" key={turn.id}>
               <div className="timeline-blocks">{displayItems.map((item) => item.type === 'assistant-response-frame'
                 ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} durationLabel={item.id === lastAssistantFrameId ? durationLabel : null} cooking={cooking && item.id === lastAssistantFrameId} activeLabel={activeLabel} source={source} onViewRaw={() => openRawMessages(turn.id)} onForkSession={runState?.phase === 'idle' ? onForkSession : undefined} onNotify={onNotify} key={item.id} />
                 : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.startedAt : undefined} source={source} onViewRaw={() => openRawMessages(turn.id)} key={timelineRenderItemKey(item.item)} />,
               )}</div>
-              {cooking && !lastAssistantFrameId ? <AssistantResponseFrameSkeleton activeLabel={activeLabel} /> : null}
+              {showResponseSkeleton ? <AssistantResponseFrameSkeleton activeLabel={activeLabel} /> : null}
             </article>
           )
         })}

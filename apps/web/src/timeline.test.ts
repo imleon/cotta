@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingTurnId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
+import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingTurnId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
 
 describe('session task list', () => {
   it('hides empty lists and shows task statuses without active form', () => {
@@ -365,6 +365,16 @@ describe('timeline response frame grouping', () => {
     expect(activeTimelineTurnId(turns, { phase: 'cli_busy', activeUserMessageUuid: null })).toBe('turn-2')
     expect(activeTimelineTurnId(turns, { phase: 'idle', activeUserMessageUuid: null })).toBeNull()
     expect(activeTimelineTurnId(turns, { phase: 'running', activeUserMessageUuid: 'missing', lastTurn: null })).toBeNull()
+  })
+
+  it('keeps the assistant skeleton until a just-finished response frame arrives', () => {
+    const turn = userTurn('turn-1')
+    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, runState: { phase: 'cli_busy', activeUserMessageUuid: null } })).toBe(true)
+    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, lastAssistantFrameId: 'frame-1', runState: { phase: 'cli_busy', activeUserMessageUuid: null } })).toBe(false)
+    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'success' } } })).toBe(true)
+    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, fallbackTurnId: 'turn-1', runState: { phase: 'idle', activeUserMessageUuid: null } })).toBe(true)
+    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'error' } } })).toBe(false)
+    expect(shouldShowAssistantResponseSkeleton({ turn: { ...turn, durationMs: 1000 }, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'success' } } })).toBe(false)
   })
 
   it('hides Task management tool cards without leaving empty response frames', () => {

@@ -79,6 +79,30 @@ describe('ClaudeSessionRegistry', () => {
     expect(changes[1]).toEqual({ idleSessionIds: ['session-1'], activeSessionIds: [] })
   })
 
+  it('holds cli_busy briefly after CLI session turns idle', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cotta-session-registry-hold-'))
+    roots.push(root)
+    const sessionsDir = join(root, 'sessions')
+    const dbPath = join(root, 'observations.sqlite')
+    const sessionPath = join(sessionsDir, '999999999.json')
+    await mkdir(sessionsDir)
+
+    const observer = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10, cliBusyHoldMs: 100 })
+    observers.push(observer)
+    const changes: Array<{ idleSessionIds: string[]; activeSessionIds: string[] }> = []
+    observer.subscribe((change) => changes.push(change))
+
+    await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'busy' }))
+    await expect.poll(() => changes.length).toBe(1)
+    expect(observer.cliRunState('session-1')).toEqual({ phase: 'cli_busy', activeUserMessageUuid: null })
+
+    await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'idle' }))
+    await expect.poll(() => changes.length).toBe(2)
+    expect(changes[1]).toEqual({ idleSessionIds: ['session-1'], activeSessionIds: [] })
+    expect(observer.cliRunState('session-1')).toEqual({ phase: 'cli_busy', activeUserMessageUuid: null })
+    await expect.poll(() => observer.cliRunState('session-1')).toBeNull()
+  })
+
   it('appends complete snapshots and every observed file state', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cotta-session-observer-'))
     roots.push(root)

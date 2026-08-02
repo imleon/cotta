@@ -38,7 +38,7 @@ export function createApp(input: {
   const modelCatalogProvider = input.modelCatalogProvider ?? defaultModelCatalogProvider
   const settingsStore = input.settingsStore ?? (process.env.NODE_ENV === 'test' ? undefined : createSettingsStore())
   const auth = input.auth ?? (process.env.NODE_ENV === 'test' ? createAuth({ github: { clientId: '' }, settingsStore }) : createAuth({ settingsStore }))
-  sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId) ?? input.claudeSessionRegistry?.cliRunState(sessionId))
+  sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId) ?? input.claudeSessionRegistry?.cliRunState(sessionId) ?? null)
   void sessionSummaryCache?.ensureReady().catch((error) => console.error('session-summary-cache:ensure-ready failed', error))
   app.use('*', auth.middleware)
   registerHealthRoute(app)
@@ -74,7 +74,7 @@ if (process.env.NODE_ENV !== 'test') {
     for (const sessionId of activeSessionIds) clearIdleRefresh(sessionId)
     for (const sessionId of idleSessionIds) {
       clearIdleRefresh(sessionId)
-      idleRefreshTimers.set(sessionId, [1_000, 4_000].map((delay) => setTimeout(() => {
+      idleRefreshTimers.set(sessionId, [300, 800, 1_500, 3_000].map((delay) => setTimeout(() => {
         void sessionSummaryCache.scheduleRefresh({ reason: 'session-stale' })
       }, delay)))
     }

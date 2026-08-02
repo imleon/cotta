@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createSessionRegistryObserver, type SessionRegistryObserver } from './session-registry-observer.js'
+import { createClaudeSessionRegistry, type ClaudeSessionRegistry } from './claude-session-registry.js'
 
 const roots: string[] = []
-const observers: SessionRegistryObserver[] = []
+const observers: ClaudeSessionRegistry[] = []
 
 afterEach(async () => {
   await Promise.all(observers.splice(0).map((observer) => observer.close()))
@@ -29,7 +29,7 @@ function rows(dbPath: string): Array<Record<string, unknown>> {
   }
 }
 
-describe('SessionRegistryObserver', () => {
+describe('ClaudeSessionRegistry', () => {
   it('removes duplicate content once and preserves the earliest row', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cotta-session-observer-cleanup-'))
     roots.push(root)
@@ -38,7 +38,7 @@ describe('SessionRegistryObserver', () => {
     await mkdir(sessionsDir)
     await writeFile(join(sessionsDir, '999999999.json'), JSON.stringify({ sessionId: 'session-1' }))
 
-    const first = await createSessionRegistryObserver({ sessionsDir, dbPath, debounceMs: 10 })
+    const first = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
     await first.close()
     const db = new DatabaseSync(dbPath)
     const earliestId = Number((db.prepare('SELECT id FROM session_registry_observations').get() as { id: number }).id)
@@ -51,10 +51,32 @@ describe('SessionRegistryObserver', () => {
     `)
     db.close()
 
-    const restarted = await createSessionRegistryObserver({ sessionsDir, dbPath, debounceMs: 10 })
+    const restarted = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
     observers.push(restarted)
     expect(rows(dbPath)).toHaveLength(1)
     expect(rows(dbPath)[0]?.id).toBe(earliestId)
+  })
+
+  it('notifies active and idle CLI session transitions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cotta-session-registry-notify-'))
+    roots.push(root)
+    const sessionsDir = join(root, 'sessions')
+    const dbPath = join(root, 'observations.sqlite')
+    const sessionPath = join(sessionsDir, '999999999.json')
+    await mkdir(sessionsDir)
+
+    const observer = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
+    observers.push(observer)
+    const changes: Array<{ idleSessionIds: string[]; activeSessionIds: string[] }> = []
+    observer.subscribe((change) => changes.push(change))
+
+    await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'busy' }))
+    await expect.poll(() => changes.length).toBe(1)
+    expect(changes[0]).toEqual({ idleSessionIds: [], activeSessionIds: ['session-1'] })
+
+    await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'idle' }))
+    await expect.poll(() => changes.length).toBe(2)
+    expect(changes[1]).toEqual({ idleSessionIds: ['session-1'], activeSessionIds: [] })
   })
 
   it('appends complete snapshots and every observed file state', async () => {
@@ -97,7 +119,7 @@ describe('SessionRegistryObserver', () => {
     const firstRaw = JSON.stringify(initial)
     await writeFile(join(sessionsDir, `${process.pid}.json`), firstRaw)
 
-    const observer = await createSessionRegistryObserver({ sessionsDir, dbPath, debounceMs: 10 })
+    const observer = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
     observers.push(observer)
 
     let observed = rows(dbPath)
@@ -138,7 +160,7 @@ describe('SessionRegistryObserver', () => {
 
     await observer.close()
     observers.splice(observers.indexOf(observer), 1)
-    const restarted = await createSessionRegistryObserver({ sessionsDir, dbPath, debounceMs: 10 })
+    const restarted = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
     observers.push(restarted)
     expect(rows(dbPath)).toHaveLength(1)
 

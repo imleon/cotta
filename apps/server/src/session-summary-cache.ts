@@ -40,9 +40,20 @@ type CacheSnapshot = {
   projectsFullyScanned: boolean
 }
 
+export type SessionSummaryCacheChange = {
+  projectId: string
+  projectPath: string
+  sessionInfo: SDKSessionInfo
+}
+
 type VersionChanges = {
   projectIds: Set<string>
   projectsChanged: boolean
+  changedSessions: Map<string, SessionSummaryCacheChange>
+}
+
+function createVersionChanges(): VersionChanges {
+  return { projectIds: new Set<string>(), projectsChanged: false, changedSessions: new Map() }
 }
 
 type RefreshKind = 'shallow' | 'deep' | 'rebuild'
@@ -190,6 +201,7 @@ export class SessionSummaryCache {
   private readonly epoch = randomUUID()
   private readonly paginationEpoch = randomUUID()
   private readonly listeners = new Set<(event: SummaryVersionEvent) => void>()
+  private changedListener?: (changes: SessionSummaryCacheChange[]) => Promise<void>
   private sessionRunStateReader?: (sessionId: string) => SessionRunState | null
 
   constructor(private readonly pageSize = 100) {}
@@ -202,6 +214,10 @@ export class SessionSummaryCache {
   subscribe(listener: (event: SummaryVersionEvent) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  setChangedListener(listener: ((changes: SessionSummaryCacheChange[]) => Promise<void>) | undefined): void {
+    this.changedListener = listener
   }
 
   get projectsVersion(): number {
@@ -372,7 +388,7 @@ export class SessionSummaryCache {
         includeWorktrees: true,
         includeProgrammatic: true,
       }))
-      const versionChanges: VersionChanges = { projectIds: new Set<string>(), projectsChanged: false }
+      const versionChanges = createVersionChanges()
       const previousSessions = this.sessionInfosByProjectId.get(project.id) ?? []
       const loadedIds = new Set(loaded.map((session) => session.sessionId))
       for (const session of previousSessions) {
@@ -384,6 +400,8 @@ export class SessionSummaryCache {
       for (const session of loaded) {
         this.removeSessionFromPreviousProject(session.sessionId, project.id, versionChanges)
         this.projectIdBySessionId.set(session.sessionId, project.id)
+        const previous = previousSessions.find((candidate) => candidate.sessionId === session.sessionId)
+        if (!previous || !sameSession(previous, session)) this.recordSessionChange(versionChanges, project.id, project.path, session)
       }
       if (!sameSessionList(previousSessions, loaded)) versionChanges.projectIds.add(project.id)
       this.sessionInfosByProjectId.set(project.id, loaded)
@@ -397,8 +415,12 @@ export class SessionSummaryCache {
       } else if (this.updateProjectFromSessions(project.path, loaded)) {
         versionChanges.projectsChanged = true
       }
-      this.publishVersionChanges(versionChanges)
+      await this.publishVersionChanges(versionChanges)
     })
+  }
+
+  private recordSessionChange(versionChanges: VersionChanges, projectId: string, projectPath: string, sessionInfo: SDKSessionInfo): void {
+    versionChanges.changedSessions.set(sessionInfo.sessionId, { projectId, projectPath, sessionInfo })
   }
 
   private refreshSessionRunStates(projectIds?: Iterable<string>): Set<string> {
@@ -497,7 +519,7 @@ export class SessionSummaryCache {
     }
 
     const scannedSessions = pages.flat()
-    const versionChanges: VersionChanges = { projectIds: new Set<string>(), projectsChanged: false }
+    const versionChanges = createVersionChanges()
     for (const page of pages) this.applySessionsPage(page, versionChanges)
     this.reconcileCoveredSessions(scannedSessions, reachedEnd, versionChanges)
     this.projectsFullyScanned = reachedEnd
@@ -508,13 +530,13 @@ export class SessionSummaryCache {
     }
     for (const projectId of this.refreshSessionRunStates()) versionChanges.projectIds.add(projectId)
     this.scannedOffset = Math.max(this.scannedOffset, offset)
-    this.publishVersionChanges(versionChanges)
+    await this.publishVersionChanges(versionChanges)
   }
 
   private async rebuildFromScratch(): Promise<void> {
     const snapshot = await this.buildSnapshotFromGlobalScan()
     const versionChanges = this.replaceSnapshot(snapshot)
-    this.publishVersionChanges(versionChanges)
+    await this.publishVersionChanges(versionChanges)
   }
 
   private async buildSnapshotFromGlobalScan(): Promise<CacheSnapshot> {
@@ -572,7 +594,7 @@ export class SessionSummaryCache {
   }
 
   private replaceSnapshot(snapshot: CacheSnapshot): VersionChanges {
-    const versionChanges: VersionChanges = { projectIds: new Set<string>(), projectsChanged: false }
+    const versionChanges = createVersionChanges()
     const previousProjectIds = new Set(this.projectsById.keys())
     const nextProjectIds = new Set(snapshot.projectsById.keys())
 
@@ -596,6 +618,13 @@ export class SessionSummaryCache {
     for (const [projectId, nextSessions] of snapshot.sessionInfosByProjectId) {
       const currentSessions = this.sessionInfosByProjectId.get(projectId) ?? []
       if (!sameSessionList(currentSessions, nextSessions)) versionChanges.projectIds.add(projectId)
+      const projectPath = snapshot.projectsById.get(projectId)?.path
+      if (projectPath) {
+        for (const session of nextSessions) {
+          const previous = currentSessions.find((candidate) => candidate.sessionId === session.sessionId)
+          if (!previous || !sameSession(previous, session)) this.recordSessionChange(versionChanges, projectId, projectPath, session)
+        }
+      }
       this.sessionInfosByProjectId.set(projectId, nextSessions)
       this.projectSessionsFullyLoadedById.set(projectId, snapshot.projectSessionsFullyLoadedById.get(projectId) ?? snapshot.projectsFullyScanned)
     }
@@ -667,11 +696,13 @@ export class SessionSummaryCache {
           nextSessions.sort((left, right) => compareSessions(this.activity, left, right))
           this.sessionInfosByProjectId.set(projectId, nextSessions)
           versionChanges.projectIds.add(projectId)
+          this.recordSessionChange(versionChanges, projectId, path, session)
         }
       } else {
         const nextSessions = [...currentSessions, session].sort((left, right) => compareSessions(this.activity, left, right))
         this.sessionInfosByProjectId.set(projectId, nextSessions)
         versionChanges.projectIds.add(projectId)
+        this.recordSessionChange(versionChanges, projectId, path, session)
       }
       if (this.updateProjectFromSessions(path, this.sessionInfosByProjectId.get(projectId) ?? [])) {
         versionChanges.projectIds.add(projectId)
@@ -692,7 +723,8 @@ export class SessionSummaryCache {
     return setIfChanged(this.projectsById, projectId, nextProject, sameProject)
   }
 
-  private publishVersionChanges(versionChanges: VersionChanges): void {
+  private async publishVersionChanges(versionChanges: VersionChanges): Promise<void> {
+    if (versionChanges.changedSessions.size > 0) await this.changedListener?.([...versionChanges.changedSessions.values()])
     const projectVersions: Array<{ projectId: string; version: number }> = []
     for (const projectId of versionChanges.projectIds) {
       const nextVersion = (this.projectVersionsById.get(projectId) ?? 0) + 1

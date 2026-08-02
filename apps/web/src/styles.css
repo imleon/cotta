@@ -1372,7 +1372,7 @@ h2 {
 
 .workspace-main-panel {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   min-height: 0;
   row-gap: 0;
   overflow: hidden;
@@ -1404,6 +1404,62 @@ h2 {
   padding-top: 0;
 }
 
+.session-task-list {
+  position: relative;
+  z-index: 0;
+  margin: 0 50px 0 40px;
+  border: 1px solid var(--color-border);
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0;
+  background: var(--color-surface-muted);
+  padding: 9px 11px 10px;
+}
+
+.session-task-list::before {
+  content: '';
+  position: absolute;
+  right: -50px;
+  bottom: calc(100% + 1px);
+  left: -40px;
+  height: 20px;
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0), var(--color-surface));
+  pointer-events: none;
+}
+
+.session-task-list ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-task-list li {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.session-task-status {
+  display: grid;
+  width: 12px;
+  height: 12px;
+  place-items: center;
+  border: 1px solid var(--color-muted);
+  border-radius: 50%;
+}
+
+.session-task-status svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.session-task-status-in_progress { border-color: var(--color-accent); background: var(--color-accent); }
+.session-task-status-completed { border-color: transparent; color: var(--color-success); }
+.session-task-status-completed + .session-task-subject { color: var(--color-muted); text-decoration: line-through; }
+.session-task-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-task-number { color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.session-task-blocked { overflow: hidden; color: var(--color-muted); text-overflow: ellipsis; white-space: nowrap; }
+
 .composer-card-bottom {
   min-width: 0;
   max-width: 100%;
@@ -1414,10 +1470,10 @@ h2 {
 .workspace-main-panel .composer-card-bottom {
   position: relative;
   z-index: 1;
-  padding: 0 24px 24px;
+  padding: 0 34px 24px 24px;
 }
 
-.workspace-main-panel .composer-card-bottom::before {
+.workspace-main-panel .workspace-timeline + .composer-card-bottom::before {
   content: '';
   position: absolute;
   right: 0;
@@ -1569,6 +1625,56 @@ h2 {
   text-transform: uppercase;
 }
 
+.status-badge {
+  position: relative;
+}
+
+.status-badge::before {
+  content: '';
+  position: absolute;
+  inset: -9px;
+}
+
+.status-badge::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  z-index: 20;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  padding: 4px 7px;
+  color: var(--color-muted);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 8%);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  opacity: 0;
+  pointer-events: none;
+  text-transform: none;
+  transform: translate(-50%, 2px);
+  transition: opacity 80ms ease, transform 80ms ease;
+  white-space: nowrap;
+}
+
+.status-badge:hover::after,
+.session-row:focus-visible .status-badge::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.session-list > :first-child .status-badge::after {
+  top: calc(100% + 2px);
+  bottom: auto;
+  transform: translate(-50%, -2px);
+}
+
+.session-list > :first-child .status-badge:hover::after,
+.session-list > :first-child .session-row:focus-visible .status-badge::after {
+  transform: translate(-50%, 0);
+}
+
 .status-dot {
   display: block;
   width: 5px;
@@ -1579,7 +1685,10 @@ h2 {
 
 .status-running .status-dot,
 .status-warning .status-dot,
-.status-danger .status-dot {
+.status-danger .status-dot,
+.status-cli-busy .status-dot,
+.status-cli-shell .status-dot,
+.status-cli-waiting .status-dot {
   animation: status-dot-breathe 1.8s ease-in-out infinite;
 }
 
@@ -1593,6 +1702,9 @@ h2 {
 .status-success { background: #dcfce7; color: #166534; }
 .status-warning { background: rgb(250 204 21 / 9%); color: #d6a300; }
 .status-danger { background: rgb(244 63 94 / 9%); color: #dc4c64; }
+.status-cli-busy { background: rgb(37 99 235 / 10%); color: #2563eb; }
+.status-cli-shell { background: rgb(126 34 206 / 10%); color: #7e22ce; }
+.status-cli-waiting { background: rgb(245 158 11 / 12%); color: #d97706; }
 
 .turn-form {
   display: grid;
@@ -1607,7 +1719,7 @@ h2 {
   min-width: 0;
   max-width: 100%;
   gap: 8px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-strong);
   border-radius: 22px;
   background: var(--color-surface);
   padding: 12px;
@@ -1952,6 +2064,15 @@ h2 {
   height: 10px;
   border-radius: 2px;
   background: currentColor;
+}
+
+.turn-blocked-icon {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
 }
 
 .turn-spinner {
@@ -3302,6 +3423,26 @@ h2 {
   overflow: auto;
 }
 
+@keyframes cli-cooking-pulse {
+  0%, 10.24%, 89.76%, 100% { content: '·'; }
+  10.25%, 18.44%, 81.56%, 89.75% { content: '✢'; }
+  18.45%, 24.99%, 75.01%, 81.55% { content: '*'; }
+  25%, 31.54%, 68.46%, 75% { content: '✶'; }
+  31.55%, 39.74%, 60.26%, 68.45% { content: '✻'; }
+  39.75%, 60.25% { content: '✽'; }
+}
+
+.cli-cooking-mark {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+}
+
+.cli-cooking-mark::before {
+  content: '·';
+  animation: cli-cooking-pulse 2s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -3317,6 +3458,11 @@ h2 {
   .sidebar-motion-exiting .project-card,
   .sidebar-motion-exiting .session-row {
     animation: none !important;
+  }
+
+  .cli-cooking-mark::before {
+    content: '●';
+    animation: none;
   }
 }
 

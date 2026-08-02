@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Hono } from 'hono'
 import {
   listVersionsEventSchema,
   projectResponseSchema,
@@ -13,6 +14,7 @@ import {
   sessionRawMessagesResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  turnMetaTranscriptResponseSchema,
   type ListVersionsEvent,
   type ModelCatalogResponse,
   type PersistedLiveEvent,
@@ -24,6 +26,7 @@ import {
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createApp } from '../index.js'
 import { ListCursorError } from '../list-cursor.js'
+import { registerProjectRoutes } from './projects.js'
 
 const createdRoots: string[] = []
 const originalProjectsRoot = process.env.COTTA_PROJECTS_ROOT
@@ -989,6 +992,73 @@ describe('project routes', () => {
     expect(body.hasMore).toBe(true)
     expect(body.nextCursor).toBe('user-2')
     expect(body.state).toEqual(timelineState)
+  })
+
+  it('lists turn meta transcript debug rows and validates pagination', async () => {
+    const listEntries = vi.fn(() => ({ entries: [], sessionIds: ['session-newest'], limit: 2, offset: 1, hasMore: false }))
+    const app = createApp({ turnMetaTranscriptReader: { listEntries } })
+
+    const response = await app.request('/api/debug/turn-meta-transcript?sessionId=session-newest&limit=2&offset=1')
+    expect(response.status).toBe(200)
+    expect(turnMetaTranscriptResponseSchema.parse(await response.json())).toEqual({ entries: [], sessionIds: ['session-newest'], limit: 2, offset: 1, hasMore: false })
+    expect(listEntries).toHaveBeenCalledWith({ sessionId: 'session-newest', limit: 2, offset: 1 })
+
+    expect((await app.request('/api/debug/turn-meta-transcript?limit=0')).status).toBe(400)
+  })
+
+  it('returns unavailable when turn meta transcript storage is not injected', async () => {
+    const response = await createApp().request('/api/debug/turn-meta-transcript')
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'turn_meta_transcript_unavailable' })
+  })
+
+  it('awaits the injected turn duration reader', async () => {
+    const app = new Hono()
+    const turnDurationReader = vi.fn(async () => new Map([['user-2', 12_345]]))
+    registerProjectRoutes(app, {
+      turnDurationReader,
+      modelCatalogProvider: async () => modelCatalog,
+      liveTurnManager: {
+        ensureRuntime: () => {}, sessionRunState: () => null, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
+        async getProject() { return null }, async listProjectSessions() { return null }, async getSessionInfo() { return null },
+        async deleteSession() { return false }, async renameSession() { return false }, async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState }, async getSessionMessages() { return messages },
+      },
+    })
+
+    const response = await app.request(`/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`)
+    const body = sessionTimelineResponseSchema.parse(await response.json())
+
+    expect(body.turns[0]?.durationMs).toBe(12_345)
+    expect(turnDurationReader).toHaveBeenCalledWith(project.id, 'session-newest')
+  })
+
+  it('keeps timeline available when the turn duration reader fails', async () => {
+    const app = new Hono()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    registerProjectRoutes(app, {
+      turnDurationReader: async () => { throw new Error('sidecar failed') },
+      modelCatalogProvider: async () => modelCatalog,
+      liveTurnManager: {
+        ensureRuntime: () => {}, sessionRunState: () => null, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
+        async getProject() { return null }, async listProjectSessions() { return null }, async getSessionInfo() { return null },
+        async deleteSession() { return false }, async renameSession() { return false }, async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState }, async getSessionMessages() { return messages },
+      },
+    })
+
+    const response = await app.request(`/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`)
+    const body = sessionTimelineResponseSchema.parse(await response.json())
+
+    expect(response.status).toBe(200)
+    expect(body.turns[0]?.durationMs).toBeUndefined()
+    errorSpy.mockRestore()
   })
 
   it('keeps user-authored task-notification wrappers as user messages', async () => {

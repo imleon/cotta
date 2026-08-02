@@ -16,12 +16,14 @@ import {
   type SessionObservation,
   type SessionObservationSort,
   type SessionRuntimeResponse,
+  type SessionTask,
+  type TurnMetaTranscriptRow,
   type TurnSummary,
 } from '@cotta/shared'
-import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, fetchTurnMetaTranscript, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
-import { SessionTimeline } from './timeline'
+import { SessionTaskList, SessionTimeline } from './timeline'
 import './styles.css'
 
 const DASHBOARD_NAV_ITEMS = [
@@ -182,6 +184,7 @@ function ComposerIcon({ name }: { name: PermissionMode | 'add' | 'shield' }) {
 function TurnComposer({
   projectId,
   selectedSessionId,
+  selectedSessionRunState,
   liveUserMessageUuid,
   setSelectedSessionId,
   setPendingTurn,
@@ -196,6 +199,7 @@ function TurnComposer({
 }: {
   projectId: string | null
   selectedSessionId: string | null
+  selectedSessionRunState: ProjectSessionsResponse['sessions'][number]['runState'] | null
   liveUserMessageUuid: string | null
   setSelectedSessionId: (sessionId: string | null) => void
   setPendingTurn: Dispatch<SetStateAction<TurnSummary | null>>
@@ -272,8 +276,11 @@ function TurnComposer({
     }
   }, [permissionMenuOpen, modelMenuOpen])
 
+  const cliSessionActive = selectedSessionRunState?.phase === 'cli_busy' || selectedSessionRunState?.phase === 'cli_shell' || selectedSessionRunState?.phase === 'cli_waiting'
+  const cliSubmitBlocked = Boolean(selectedSessionId && cliSessionActive)
+
   async function submitTurn(targetProjectId = projectId) {
-    if (submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
+    if (submitting || liveUserMessageUuid || interrupting || !inputText.trim() || (targetProjectId === projectId && cliSubmitBlocked)) return
     const text = inputText.trim()
     if (!targetProjectId) {
       onProjectRequired(text)
@@ -381,12 +388,12 @@ function TurnComposer({
             value={inputText}
             onChange={(event) => setInputText(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key !== 'Enter' || event.shiftKey || submitting || liveUserMessageUuid || interrupting || !inputText.trim()) return
+              if (event.key !== 'Enter' || event.shiftKey || submitting || liveUserMessageUuid || interrupting || !inputText.trim() || cliSubmitBlocked) return
               event.preventDefault()
               void submitTurn(retryProjectId ?? projectId)
             }}
             placeholder="Type whatever you like"
-            rows={1}
+            rows={2}
           />
           <div className="turn-composer-footer">
             <div className="turn-composer-left-actions">
@@ -499,10 +506,10 @@ function TurnComposer({
                 type={actionMode === 'submit' ? 'submit' : 'button'}
                 className="turn-action-button"
                 onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
-                disabled={actionMode === 'loading' || (actionMode === 'submit' && !inputText.trim())}
-                aria-label={actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : 'Submit'}
+                disabled={actionMode === 'loading' || (actionMode === 'submit' && (!inputText.trim() || cliSubmitBlocked))}
+                aria-label={interrupting ? 'Interrupting' : actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : cliSubmitBlocked ? 'CLI session is active' : 'Submit'}
               >
-                {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : '↑'}
+                {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : cliSubmitBlocked ? <svg className="turn-blocked-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" /><path d="m5.4 5.4 9.2 9.2" /></svg> : '↑'}
               </button>
             </div>
           </div>
@@ -548,9 +555,10 @@ function WorkspacePanel({
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
+  const [sessionTasks, setSessionTasks] = useState<SessionTask[]>([])
   const projectName = detail?.project.name
 
-  useEffect(() => { setLiveUserMessageUuid(null) }, [projectId, selectedSessionId])
+  useEffect(() => { setLiveUserMessageUuid(null); setSessionTasks([]) }, [projectId, selectedSessionId])
   useEffect(() => { setPendingTurn(null) }, [projectId])
 
   function refreshSessionListsForCurrentProject(targetProjectId = projectId) {
@@ -562,18 +570,21 @@ function WorkspacePanel({
   }
 
   const selectedPendingTurn = pendingTurn?.sessionId === selectedSessionId ? pendingTurn : null
+  const selectedSessionRunState = detail?.sessions.find((session) => session.id === selectedSessionId)?.runState ?? null
 
   return (
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
         {projectId && selectedSessionId
-          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={selectedSessionId} pendingTurn={selectedPendingTurn} onLiveTurnChange={handleLiveTurnChange} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
+          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={selectedSessionId} pendingTurn={selectedPendingTurn} runState={selectedSessionRunState} tasks={sessionTasks} onLiveTurnChange={handleLiveTurnChange} onTasksChange={setSessionTasks} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
           : <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div>}
       </div>
+      <SessionTaskList tasks={sessionTasks} />
 
       <TurnComposer
         projectId={projectId}
         selectedSessionId={selectedSessionId}
+        selectedSessionRunState={selectedSessionRunState}
         liveUserMessageUuid={liveUserMessageUuid}
         setSelectedSessionId={setSelectedSessionId}
         setPendingTurn={setPendingTurn}
@@ -894,7 +905,25 @@ function PlaceholderPage({ title }: { title: string }) {
   )
 }
 
-const DEBUG_TABS = ['Session observations', 'Runtime', 'Events', 'Diagnostics'] as const
+const DEBUG_TABS = ['Session observations', 'Turn meta transcript', 'Events', 'Diagnostics'] as const
+const TURN_META_COLUMNS: Array<keyof TurnMetaTranscriptRow> = [
+  'id', 'projectKey', 'transcriptPath', 'sessionId', 'primaryUserUuid', 'primaryTimestampMs', 'primaryByteOffset', 'primaryEntrypoint',
+  'durationUuid', 'durationParentUuid', 'durationTimestampMs', 'durationMs', 'durationMessageCount', 'durationLineNo', 'durationByteOffset', 'durationByteLength',
+  'durationIsSidechain', 'durationIsMeta', 'durationUserType', 'durationEntrypoint', 'durationCwd', 'durationVersion', 'durationGitBranch', 'durationSlug',
+  'durationPendingBackgroundAgentCount', 'durationSessionKind', 'durationForkedFromJson', 'durationPendingWorkflowCount', 'durationPayloadJson',
+  'fileMtimeMs', 'fileSize', 'scanByteOffset', 'scanLineNo', 'createdAtMs', 'updatedAtMs',
+]
+
+function turnMetaValue(key: keyof TurnMetaTranscriptRow, value: TurnMetaTranscriptRow[keyof TurnMetaTranscriptRow]) {
+  if (value === null) return '—'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if ((key === 'durationForkedFromJson' || key === 'durationPayloadJson') && typeof value === 'string') {
+    let formatted = value
+    try { formatted = JSON.stringify(JSON.parse(value), null, 2) } catch {}
+    return <details><summary>View JSON</summary><pre>{formatted}</pre></details>
+  }
+  return String(value)
+}
 type ObservationColumnKey = SessionObservationSort | 'updatedDelta'
 const OBSERVATION_COLUMNS: Array<{ key: ObservationColumnKey; label: string; value: (row: SessionObservation, previous?: SessionObservation) => unknown }> = [
   { key: 'fileMtimeMs', label: 'File mtime', value: (row) => row.fileMtimeMs },
@@ -938,8 +967,12 @@ function DebugWorkspacePanel() {
   const [sessionFilter, setSessionFilter] = useState<string | null | undefined>(undefined)
   const [limit, setLimit] = useState(100)
   const [offset, setOffset] = useState(0)
+  const [turnMetaSession, setTurnMetaSession] = useState('')
+  const [turnMetaLimit, setTurnMetaLimit] = useState(100)
+  const [turnMetaOffset, setTurnMetaOffset] = useState(0)
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
   const observations = useQuery({ queryKey: ['session-observations', sessionFilter, sessionSort, sessionDirection, limit, offset], queryFn: () => fetchSessionObservations({ sessionId: sessionFilter, sort: sessionSort, direction: sessionDirection, limit, offset }), retry: false })
+  const turnMeta = useQuery({ queryKey: ['turn-meta-transcript', turnMetaSession, turnMetaLimit, turnMetaOffset], queryFn: () => fetchTurnMetaTranscript({ sessionId: turnMetaSession || undefined, limit: turnMetaLimit, offset: turnMetaOffset }), retry: false })
 
   function selectTab(next: number, focus = false) {
     setTab(next)
@@ -956,6 +989,13 @@ function DebugWorkspacePanel() {
     const firstSession = observations.data?.sessionIds.find((sessionId) => sessionId !== null) ?? observations.data?.sessionIds[0]
     if (firstSession !== undefined) setSessionFilter(firstSession)
   }, [observations.data?.sessionIds, sessionFilter])
+
+  const entrypointGroups = Array.from((observations.data?.observations ?? []).reduce((groups, row) => {
+    const key = row.entrypoint ?? 'unknown'
+    groups.set(key, [...(groups.get(key) ?? []), row])
+    return groups
+  }, new Map<string, SessionObservation[]>()))
+    .sort(([left], [right]) => (left === 'cli' ? 0 : left === 'sdk-ts' ? 1 : 2) - (right === 'cli' ? 0 : right === 'sdk-ts' ? 1 : 2) || left.localeCompare(right))
 
   return (
     <section className="detail-panel debug-page-panel debug-tabs-page" aria-label="Debug workspace">
@@ -977,8 +1017,24 @@ function DebugWorkspacePanel() {
               {observations.isLoading ? <div className="panel muted">Loading session observations…</div> : null}
               {observations.isError ? <div className="panel error">Failed to load session observations: {observations.error instanceof Error ? observations.error.message : 'unknown error'}</div> : null}
               {observations.data?.observations.length === 0 ? <p className="debug-empty">No session observations recorded.</p> : null}
-              {observations.data?.observations.length ? <div className="debug-table-wrap debug-observations-wrap"><table className="debug-table debug-observations-table"><thead><tr>{OBSERVATION_COLUMNS.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead><tbody>{observations.data.observations.map((row, rowIndex, rows) => <tr key={row.id} className={row.status === 'idle' ? 'debug-row-idle' : row.status === 'busy' ? 'debug-row-busy' : row.status === 'waiting' ? 'debug-row-waiting' : undefined}>{OBSERVATION_COLUMNS.map((column) => <td key={column.key} className={`debug-observation-cell debug-observation-${column.key}${column.key === 'entrypoint' && row.entrypoint === 'cli' ? ' debug-entrypoint-cli' : column.key === 'entrypoint' && row.entrypoint?.includes('ts') ? ' debug-entrypoint-ts' : ''}`}>{observationValue(column.key, column.value(row, rows[rowIndex + 1]))}</td>)}</tr>)}</tbody></table></div> : null}
+              {entrypointGroups.length ? <div className="debug-observations-groups">{entrypointGroups.map(([entrypoint, rows]) => <section className="debug-observation-group" key={entrypoint}><h3>{entrypoint}</h3><div className="debug-table-wrap"><table className="debug-table debug-observations-table"><thead><tr>{OBSERVATION_COLUMNS.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={row.id} className={row.status === 'idle' ? 'debug-row-idle' : row.status === 'busy' ? 'debug-row-busy' : row.status === 'waiting' ? 'debug-row-waiting' : undefined}>{OBSERVATION_COLUMNS.map((column) => <td key={column.key} className={`debug-observation-cell debug-observation-${column.key}${column.key === 'entrypoint' && row.entrypoint === 'cli' ? ' debug-entrypoint-cli' : column.key === 'entrypoint' && row.entrypoint?.includes('ts') ? ' debug-entrypoint-ts' : ''}`}>{observationValue(column.key, column.value(row, rows[rowIndex + 1]))}</td>)}</tr>)}</tbody></table></div></section>)}</div> : null}
               <div className="debug-pagination"><button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>Previous</button><span>{offset + 1}–{offset + (observations.data?.observations.length ?? 0)}</span><button type="button" disabled={!observations.data?.hasMore} onClick={() => setOffset(offset + limit)}>Next</button></div>
+            </>
+          ) : index === 1 ? (
+            <>
+              <div className="debug-observation-toolbar">
+                <div><strong>Turn meta transcript</strong><span className="muted">Persisted primary-message and duration metadata</span></div>
+                <div className="debug-observation-actions">
+                  <label>Session <select value={turnMetaSession} onChange={(event) => { setTurnMetaSession(event.target.value); setTurnMetaOffset(0) }}><option value="">All sessions</option>{turnMeta.data?.sessionIds.map((sessionId) => <option key={sessionId} value={sessionId}>{sessionId}</option>)}</select></label>
+                  <label>Rows <select value={turnMetaLimit} onChange={(event) => { setTurnMetaLimit(Number(event.target.value)); setTurnMetaOffset(0) }}><option>50</option><option>100</option><option>250</option></select></label>
+                  <button type="button" disabled={turnMeta.isFetching} onClick={() => void turnMeta.refetch()}>{turnMeta.isFetching ? 'Refreshing…' : 'Refresh'}</button>
+                </div>
+              </div>
+              {turnMeta.isLoading ? <div className="panel muted">Loading turn meta transcript…</div> : null}
+              {turnMeta.isError ? <div className="panel error">Failed to load turn meta transcript: {turnMeta.error instanceof Error ? turnMeta.error.message : 'unknown error'}</div> : null}
+              {turnMeta.data?.entries.length === 0 ? <p className="debug-empty">No turn metadata recorded.</p> : null}
+              {turnMeta.data?.entries.length ? <div className="debug-table-wrap debug-observations-wrap"><table className="debug-table debug-observations-table"><thead><tr>{TURN_META_COLUMNS.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{turnMeta.data.entries.map((entry) => <tr key={entry.id}>{TURN_META_COLUMNS.map((column) => <td key={column} className={`debug-observation-cell${column === 'durationForkedFromJson' || column === 'durationPayloadJson' ? ' debug-observation-rawJson' : ''}`}>{turnMetaValue(column, entry[column])}</td>)}</tr>)}</tbody></table></div> : null}
+              <div className="debug-pagination"><button type="button" disabled={turnMetaOffset === 0} onClick={() => setTurnMetaOffset(Math.max(0, turnMetaOffset - turnMetaLimit))}>Previous</button><span>{turnMetaOffset + 1}–{turnMetaOffset + (turnMeta.data?.entries.length ?? 0)}</span><button type="button" disabled={!turnMeta.data?.hasMore} onClick={() => setTurnMetaOffset(turnMetaOffset + turnMetaLimit)}>Next</button></div>
             </>
           ) : null}
         </div>

@@ -109,22 +109,22 @@ export function sessionTimelineVersion(session: SDKSessionInfo): string {
   return `timeline-state-v1:${sessionTimelineSignature(session)}`
 }
 
-function toSessionTimelineState(_activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo): SessionTimelineState {
+function toSessionTimelineState(_activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo, version: string): SessionTimelineState {
   return {
     projectId,
     sessionId: session.sessionId,
-    version: sessionTimelineVersion(session),
+    version,
     signature: sessionTimelineSignature(session),
     fileSize: session.fileSize,
     generatedAt: Date.now(),
   }
 }
 
-function toSessionInfo(projectId: string, session: SDKSessionInfo): SessionInfoResponse {
+function toSessionInfo(projectId: string, session: SDKSessionInfo, version: string): SessionInfoResponse {
   return {
     projectId,
     sessionId: session.sessionId,
-    version: sessionTimelineVersion(session),
+    version,
     signature: sessionTimelineSignature(session),
     generatedAt: Date.now(),
     summary: session.summary,
@@ -152,6 +152,12 @@ export type ProjectSessions = {
   nextCursor: string | null
 }
 
+export type TimelineVersionProvider = (projectId: string, sessionId: string, baseVersion: string) => string | Promise<string>
+
+export type ClaudeCodeApiOptions = {
+  timelineVersionProvider?: TimelineVersionProvider
+}
+
 export type ClaudeCodeApi = {
   listProjects(options?: ProjectSessionsOptions): Promise<{ projects: ProjectSummary[]; hasMore: boolean; nextCursor: string | null }>
   getProject(projectId: string): Promise<ProjectSummary | null>
@@ -164,9 +170,18 @@ export type ClaudeCodeApi = {
   getSessionMessages(projectId: string, sessionId: string): Promise<SessionMessage[] | null>
 }
 
-export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi {
+export function createClaudeCodeApi(cache?: SessionSummaryCache, options: ClaudeCodeApiOptions = {}): ClaudeCodeApi {
   const paginationEpoch = randomUUID()
   const activity = cache?.activity ?? new SessionActivityTracker()
+  const timelineVersion = async (projectId: string, session: SDKSessionInfo) => {
+    const baseVersion = sessionTimelineVersion(session)
+    try {
+      return await options.timelineVersionProvider?.(projectId, session.sessionId, baseVersion) ?? baseVersion
+    } catch (error) {
+      console.error('timeline-version-provider failed', error)
+      return baseVersion
+    }
+  }
 
   return {
     async listProjects(options = {}) {
@@ -231,7 +246,7 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
       if (!projectPath) return null
       const session = await getExactProjectSession(projectPath, sessionId)
       if (!session) return null
-      return toSessionInfo(projectId, session)
+      return toSessionInfo(projectId, session, await timelineVersion(projectId, session))
     },
 
     async renameSession(projectId, sessionId, title) {
@@ -266,7 +281,7 @@ export function createClaudeCodeApi(cache?: SessionSummaryCache): ClaudeCodeApi 
       if (!projectPath) return null
       const session = await getExactProjectSession(projectPath, sessionId)
       if (!session) return null
-      return toSessionTimelineState(activity, projectId, session)
+      return toSessionTimelineState(activity, projectId, session, await timelineVersion(projectId, session))
     },
 
     async getSessionMessages(projectId, sessionId) {

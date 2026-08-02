@@ -9,6 +9,7 @@ data/
 *.log
 *.tsbuildinfo
 .dbg/
+.codegraph/
 TODO.md
 NOTES.md
 debug-lark-double-card-p.md

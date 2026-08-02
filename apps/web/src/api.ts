@@ -21,6 +21,7 @@ import {
   sessionRuntimeResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  turnMetaTranscriptResponseSchema,
   type AuthSessionResponse,
   type CreateProjectResponse,
   type DeleteSessionResponse,
@@ -44,6 +45,7 @@ import {
   type SessionRuntimeResponse,
   type SessionTimelineResponse,
   type SessionTimelineStateResponse,
+  type TurnMetaTranscriptResponse,
 } from '@cotta/shared'
 
 export class PaginationCursorStaleError extends Error {}
@@ -152,6 +154,14 @@ export async function fetchSessionObservations(input: { sessionId?: string | nul
   const response = await fetch(`/api/debug/session-observations?${params}`)
   if (!response.ok) throw new Error(`Session observations request failed: ${response.status}`)
   return sessionObservationsResponseSchema.parse(await response.json())
+}
+
+export async function fetchTurnMetaTranscript(input: { sessionId?: string; limit: number; offset: number }): Promise<TurnMetaTranscriptResponse> {
+  const params = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
+  if (input.sessionId) params.set('sessionId', input.sessionId)
+  const response = await fetch(`/api/debug/turn-meta-transcript?${params}`)
+  if (!response.ok) throw new Error(`Turn meta transcript request failed: ${response.status}`)
+  return turnMetaTranscriptResponseSchema.parse(await response.json())
 }
 
 export async function fetchSettings(): Promise<SettingsResponse> {

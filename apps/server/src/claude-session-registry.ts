@@ -3,7 +3,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { SessionObservation, SessionObservationSort, SessionObservationsResponse } from '@cotta/shared'
+import type { SessionObservation, SessionObservationSort, SessionObservationsResponse, SessionRunState } from '@cotta/shared'
 
 const MAX_SANE_EPOCH_MS = 4_000_000_000_000_000
 const SESSION_FILE = /^(\d+)\.json$/
@@ -29,10 +29,15 @@ type Snapshot = {
   parseError: string | null
 }
 
-export type SessionRegistryObserverOptions = {
+export type ClaudeSessionRegistryOptions = {
   sessionsDir?: string
   dbPath?: string
   debounceMs?: number
+}
+
+export type ClaudeSessionRegistryChange = {
+  idleSessionIds: string[]
+  activeSessionIds: string[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,6 +47,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringField(payload: Record<string, unknown> | null, key: string): string | null {
   const value = payload?.[key]
   return typeof value === 'string' ? value : null
+}
+
+function activeSessionId(snapshot: Snapshot | undefined): string | null {
+  if (!snapshot || stringField(snapshot.payload, 'entrypoint') !== 'cli') return null
+  const status = stringField(snapshot.payload, 'status')
+  return status === 'busy' || status === 'shell' || status === 'waiting' ? stringField(snapshot.payload, 'sessionId') : null
 }
 
 function integerField(payload: Record<string, unknown> | null, key: string): number | null {
@@ -112,7 +123,7 @@ function defaultDbPath(): string {
   return resolve(process.cwd(), process.env.COTTA_SESSION_OBSERVATIONS_DB_PATH ?? 'data/cotta-session-observations.sqlite')
 }
 
-export class SessionRegistryObserver {
+export class ClaudeSessionRegistry {
   private readonly db: DatabaseSync
   private readonly insertStatement
   private readonly sessionsDir: string
@@ -121,9 +132,10 @@ export class SessionRegistryObserver {
   private watcher: FSWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private scanChain: Promise<void> = Promise.resolve()
+  private readonly listeners = new Set<(change: ClaudeSessionRegistryChange) => void>()
   private closed = false
 
-  constructor(options: SessionRegistryObserverOptions = {}) {
+  constructor(options: ClaudeSessionRegistryOptions = {}) {
     const dbPath = options.dbPath ?? defaultDbPath()
     this.sessionsDir = options.sessionsDir ?? defaultSessionsDir()
     this.debounceMs = options.debounceMs ?? 100
@@ -143,7 +155,7 @@ export class SessionRegistryObserver {
   async start(): Promise<void> {
     if (this.closed || this.watcher) return
     this.watcher = watch(this.sessionsDir, () => this.scheduleScan())
-    this.watcher.on('error', (error) => console.error('session-registry-observer:watch failed', error))
+    this.watcher.on('error', (error) => console.error('claude-session-registry:watch failed', error))
     const initial = await this.readSnapshots()
     const latestRawByFile = new Map((this.db.prepare(`
       SELECT file_name, raw_json
@@ -163,7 +175,24 @@ export class SessionRegistryObserver {
     this.watcher?.close()
     this.watcher = null
     await this.scanChain
+    this.listeners.clear()
     this.db.close()
+  }
+
+  subscribe(listener: (change: ClaudeSessionRegistryChange) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  cliRunState(sessionId: string): SessionRunState | null {
+    const current = Array.from(this.snapshots.values())
+      .filter((snapshot) => stringField(snapshot.payload, 'sessionId') === sessionId && stringField(snapshot.payload, 'entrypoint') === 'cli')
+      .sort((left, right) => (saneEpochField(right.payload, 'statusUpdatedAt') ?? saneEpochField(right.payload, 'updatedAt') ?? right.fileMtimeMs) - (saneEpochField(left.payload, 'statusUpdatedAt') ?? saneEpochField(left.payload, 'updatedAt') ?? left.fileMtimeMs))[0]
+    const status = stringField(current?.payload ?? null, 'status')
+    if (status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
+    if (status === 'shell') return { phase: 'cli_shell', activeUserMessageUuid: null }
+    if (status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
+    return null
   }
 
   listObservations(input: { sessionId?: string | null; sort: SessionObservationSort; direction: 'asc' | 'desc'; limit: number; offset: number }): SessionObservationsResponse {
@@ -197,7 +226,7 @@ export class SessionRegistryObserver {
     if (this.debounceTimer) clearTimeout(this.debounceTimer)
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null
-      this.scanChain = this.scanChain.then(() => this.scan()).catch((error) => console.error('session-registry-observer:scan failed', error))
+      this.scanChain = this.scanChain.then(() => this.scan()).catch((error) => console.error('claude-session-registry:scan failed', error))
     }, this.debounceMs)
     this.debounceTimer.unref?.()
   }
@@ -224,7 +253,26 @@ export class SessionRegistryObserver {
       await this.appendMany('change', changed)
       await this.appendMany('delete', deleted)
       this.db.exec('COMMIT')
+      const idleSessionIds = new Set<string>()
+      const activeSessionIds = new Set<string>()
+      for (const snapshot of [...created, ...changed]) {
+        const sessionId = stringField(snapshot.payload, 'sessionId')
+        if (!sessionId) continue
+        const previousActiveSessionId = activeSessionId(this.snapshots.get(snapshot.fileName))
+        const nextActiveSessionId = activeSessionId(snapshot)
+        if (previousActiveSessionId && previousActiveSessionId !== nextActiveSessionId) idleSessionIds.add(previousActiveSessionId)
+        if (nextActiveSessionId) activeSessionIds.add(nextActiveSessionId)
+      }
+      for (const snapshot of deleted) {
+        const sessionId = activeSessionId(snapshot)
+        if (sessionId) idleSessionIds.add(sessionId)
+      }
+      for (const sessionId of activeSessionIds) idleSessionIds.delete(sessionId)
       this.snapshots = next
+      if (created.length + changed.length + deleted.length > 0) {
+        const change = { idleSessionIds: [...idleSessionIds], activeSessionIds: [...activeSessionIds] }
+        for (const listener of this.listeners) listener(change)
+      }
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error
@@ -261,7 +309,7 @@ export class SessionRegistryObserver {
       } catch (error) {
         const code = isRecord(error) && typeof error.code === 'string' ? error.code : null
         if (code !== 'ENOENT') {
-          console.error(`session-registry-observer:read failed ${filePath}`, error)
+          console.error(`claude-session-registry:read failed ${filePath}`, error)
           const previous = this.snapshots.get(entry.name)
           if (previous) next.set(entry.name, previous)
         }
@@ -392,8 +440,8 @@ export class SessionRegistryObserver {
   }
 }
 
-export async function createSessionRegistryObserver(options?: SessionRegistryObserverOptions): Promise<SessionRegistryObserver> {
-  const observer = new SessionRegistryObserver(options)
+export async function createClaudeSessionRegistry(options?: ClaudeSessionRegistryOptions): Promise<ClaudeSessionRegistry> {
+  const observer = new ClaudeSessionRegistry(options)
   await observer.start()
   return observer
 }

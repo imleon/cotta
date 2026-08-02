@@ -54,6 +54,9 @@ export const sessionRunStateSchema = z.discriminatedUnion('phase', [
     activeUserMessageUuid: z.string(),
     lastTurn: z.null().optional(),
   }),
+  z.object({ phase: z.literal('cli_busy'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
+  z.object({ phase: z.literal('cli_shell'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
+  z.object({ phase: z.literal('cli_waiting'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
 ])
 
 export type SessionRunState = z.infer<typeof sessionRunStateSchema>
@@ -183,6 +186,7 @@ export const turnSummarySchema = z.object({
   title: z.string().optional(),
   startedAt: z.number().optional(),
   completedAt: z.number().optional(),
+  durationMs: z.number().optional(),
   rawStatus: z.string().optional(),
   displayStatus: z.string().optional(),
   blocks: z.array(timelineBlockSchema),
@@ -207,9 +211,21 @@ export const sessionTimelineStateResponseSchema = z.object({
 
 export type SessionTimelineStateResponse = z.infer<typeof sessionTimelineStateResponseSchema>
 
+export const sessionTaskSchema = z.object({
+  key: z.string(),
+  taskId: z.string(),
+  subject: z.string(),
+  activeForm: z.string().optional(),
+  status: z.enum(['pending', 'in_progress', 'completed']),
+  blockedBy: z.array(z.string()),
+})
+
+export type SessionTask = z.infer<typeof sessionTaskSchema>
+
 export const sessionTimelineResponseSchema = z.object({
   sessionId: z.string(),
   turns: z.array(turnSummarySchema),
+  tasks: z.array(sessionTaskSchema),
   hasMore: z.boolean(),
   nextCursor: z.string().nullable(),
   state: sessionTimelineStateSchema,
@@ -393,6 +409,54 @@ export const sessionObservationsResponseSchema = z.object({
   direction: z.enum(['asc', 'desc']),
 })
 export type SessionObservationsResponse = z.infer<typeof sessionObservationsResponseSchema>
+
+export const turnMetaTranscriptRowSchema = z.object({
+  id: z.number().int(),
+  projectKey: z.string(),
+  transcriptPath: z.string(),
+  sessionId: z.string(),
+  primaryUserUuid: z.string(),
+  primaryTimestampMs: z.number().int(),
+  primaryByteOffset: z.number().int(),
+  primaryEntrypoint: z.string().nullable(),
+  durationUuid: z.string().nullable(),
+  durationParentUuid: z.string().nullable(),
+  durationTimestampMs: z.number().int().nullable(),
+  durationMs: z.number().int().nullable(),
+  durationMessageCount: z.number().int().nullable(),
+  durationLineNo: z.number().int().nullable(),
+  durationByteOffset: z.number().int().nullable(),
+  durationByteLength: z.number().int().nullable(),
+  durationIsSidechain: z.boolean().nullable(),
+  durationIsMeta: z.boolean().nullable(),
+  durationUserType: z.string().nullable(),
+  durationEntrypoint: z.string().nullable(),
+  durationCwd: z.string().nullable(),
+  durationVersion: z.string().nullable(),
+  durationGitBranch: z.string().nullable(),
+  durationSlug: z.string().nullable(),
+  durationPendingBackgroundAgentCount: z.number().int().nullable(),
+  durationSessionKind: z.string().nullable(),
+  durationForkedFromJson: z.string().nullable(),
+  durationPendingWorkflowCount: z.number().int().nullable(),
+  durationPayloadJson: z.string().nullable(),
+  fileMtimeMs: z.number().int(),
+  fileSize: z.number().int(),
+  scanByteOffset: z.number().int(),
+  scanLineNo: z.number().int(),
+  createdAtMs: z.number().int(),
+  updatedAtMs: z.number().int(),
+})
+export type TurnMetaTranscriptRow = z.infer<typeof turnMetaTranscriptRowSchema>
+
+export const turnMetaTranscriptResponseSchema = z.object({
+  entries: z.array(turnMetaTranscriptRowSchema),
+  sessionIds: z.array(z.string()),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  hasMore: z.boolean(),
+})
+export type TurnMetaTranscriptResponse = z.infer<typeof turnMetaTranscriptResponseSchema>
 
 export const sessionInfoResponseSchema = z.object({
   projectId: z.string(),

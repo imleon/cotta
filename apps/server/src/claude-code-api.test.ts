@@ -129,6 +129,37 @@ describe('createClaudeCodeApi', () => {
     })
   })
 
+  it('uses one optional timeline version provider for info and state', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 200, fileSize: 10 }))
+    const timelineVersionProvider = vi.fn(async (_projectId: string, _sessionId: string, baseVersion: string) => `${baseVersion};metadata=3`)
+    const api = createClaudeCodeApi(undefined, { timelineVersionProvider })
+
+    const [info, state] = await Promise.all([
+      api.getSessionInfo(projectId('/repo/cotta'), 'old'),
+      api.getSessionTimelineState(projectId('/repo/cotta'), 'old'),
+    ])
+
+    expect(info?.version).toBe('timeline-state-v1:mtime=200;size=10;metadata=3')
+    expect(state?.version).toBe(info?.version)
+    expect(timelineVersionProvider).toHaveBeenCalledTimes(2)
+    expect(timelineVersionProvider).toHaveBeenCalledWith(projectId('/repo/cotta'), 'old', 'timeline-state-v1:mtime=200;size=10')
+  })
+
+  it('falls back to the base timeline version when the provider fails', async () => {
+    getSessionInfoMock.mockResolvedValue(session({ sessionId: 'old', cwd: '/repo/cotta', lastModified: 200, fileSize: 10 }))
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const api = createClaudeCodeApi(undefined, { timelineVersionProvider: async () => { throw new Error('sidecar failed') } })
+
+    const [info, state] = await Promise.all([
+      api.getSessionInfo(projectId('/repo/cotta'), 'old'),
+      api.getSessionTimelineState(projectId('/repo/cotta'), 'old'),
+    ])
+
+    expect(info?.version).toBe('timeline-state-v1:mtime=200;size=10')
+    expect(state?.version).toBe(info?.version)
+    errorSpy.mockRestore()
+  })
+
   it('returns null timeline state for a session that belongs to a sibling worktree path', async () => {
     getSessionInfoMock.mockResolvedValue(session({ sessionId: 'other', cwd: '/repo/cotta-v2', lastModified: 10, fileSize: 99 }))
 

@@ -349,6 +349,28 @@ describe('SessionSummaryCache', () => {
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 2, cursor: firstPage?.nextCursor })).rejects.toMatchObject({ code: 'stale' })
   })
 
+  it('awaits changed sessions before publishing their versions', async () => {
+    const cache = new SessionSummaryCache(10)
+    const order: string[] = []
+    let release: (() => void) | undefined
+    cache.setChangedListener(async (changes) => {
+      order.push('changed')
+      expect(changes).toEqual([{ projectId: projectId('/repo/a'), projectPath: '/repo/a', sessionInfo: expect.objectContaining({ sessionId: 's1' }) }])
+      await new Promise<void>((resolve) => { release = resolve })
+    })
+    cache.subscribe(() => order.push('version'))
+    listSessionsMock.mockResolvedValueOnce([session({ sessionId: 's1', cwd: '/repo/a', lastModified: 5 })])
+
+    const refresh = cache.scheduleRefresh()
+    await vi.waitFor(() => expect(order).toEqual(['changed']))
+    expect(cache.getProjectVersion(projectId('/repo/a'))).toBe(0)
+    release?.()
+    await refresh
+
+    expect(order).toEqual(['changed', 'version'])
+    expect(cache.getProjectVersion(projectId('/repo/a'))).toBe(1)
+  })
+
   it('does not bump versions on no-op refresh', async () => {
     const cache = new SessionSummaryCache(10)
     const events: Array<{ projectsVersion: number; projectVersions: Array<{ projectId: string; version: number }> }> = []

@@ -2,7 +2,24 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { applySdkMessage, assistantResponseFrameForkMessageId, belongsToTimelineSession, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, shouldRefetchTimelineVersion, shouldResetSessionTimeline, TimelineBlockView, timelineTurnIndex } from './timeline'
+import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingTurnId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
+
+describe('session task list', () => {
+  it('hides empty lists and shows task statuses without active form', () => {
+    expect(renderToStaticMarkup(createElement(SessionTaskList, { tasks: [] }))).toBe('')
+    const html = renderToStaticMarkup(createElement(SessionTaskList, { tasks: [
+      { key: 'one', taskId: '1', subject: 'Inspect history', activeForm: 'Inspecting history', status: 'in_progress', blockedBy: ['6'] },
+      { key: 'two', taskId: '2', subject: 'Write summary', status: 'completed', blockedBy: [] },
+    ] }))
+
+    expect(html).not.toContain('Inspecting history')
+    expect(html).toContain('Inspect history')
+    expect(html).toContain('aria-label="In progress"')
+    expect(html).toContain('aria-label="Completed"')
+    expect(html).toContain('› blocked by #6')
+    expect(html).not.toContain('session-task-label')
+  })
+})
 
 function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
   return {
@@ -15,6 +32,17 @@ function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
     blocks: blocks.length > 0 ? blocks : [{ id: `${id}:user`, kind: 'user.message', sourceEventIds: [id], data: { text: id, status: 'pending', primaryTimelineUserMessage: true } }],
   }
 }
+
+describe('assistant response skeleton', () => {
+  it('uses the response frame shape while a primary-only turn is cooking', () => {
+    const html = renderToStaticMarkup(createElement(AssistantResponseFrameSkeleton, { activeLabel: 'Cooking...' }))
+
+    expect(html).toContain('assistant-response')
+    expect(html).toContain('aria-busy="true"')
+    expect(html).toContain('timeline-skeleton-line')
+    expect(html).toContain('Cooking...')
+  })
+})
 
 describe('timeline version refresh', () => {
   it('refetches only idle mismatched timeline versions', () => {
@@ -303,14 +331,56 @@ describe('persisted live events debug view', () => {
 })
 
 describe('timeline response frame grouping', () => {
-  it('renders and clears the assistant streaming indicator', () => {
-    const block = (streaming: boolean): TimelineBlock => ({ id: 'assistant-1', kind: 'assistant.text', sourceEventIds: ['stream-1'], data: { type: 'text', text: 'hello', ...(streaming ? { streaming: true } : {}) } })
-    const streaming = renderToStaticMarkup(createElement(TimelineBlockView, { block: block(true) }))
-    const final = renderToStaticMarkup(createElement(TimelineBlockView, { block: block(false) }))
+  it('renders streaming assistant text without the trailing dot animation', () => {
+    const block: TimelineBlock = { id: 'assistant-1', kind: 'assistant.text', sourceEventIds: ['stream-1'], data: { type: 'text', text: 'hello', streaming: true } }
+    const html = renderToStaticMarkup(createElement(TimelineBlockView, { block }))
 
-    expect(streaming).toContain('aria-busy="true"')
-    expect(streaming).toContain('Assistant is streaming')
-    expect(final).not.toContain('Assistant is streaming')
+    expect(html).toContain('hello')
+    expect(html).not.toContain('loading-dots')
+    expect(html).not.toContain('Assistant is streaming')
+  })
+
+  it('formats stable Claude Code-style turn duration labels', () => {
+    expect(turnDurationLabel({ id: 'turn-1', durationMs: 21_000 })).toMatch(/^(Thought|Baked|Brewed|Churned|Cogitated|Cooked|Crunched|Sauted|Worked) for 21s$/)
+    expect(turnDurationLabel({ id: 'turn-1', durationMs: 415_000 })).toBe(`${turnDurationLabel({ id: 'turn-1', durationMs: 21_000 })?.split(' for ')[0]} for 6m 55s`)
+    expect(turnDurationLabel({ id: 'turn-1' })).toBeNull()
+  })
+
+  it('selects the latest unfinished primary turn for active CLI phases', () => {
+    const turns = [userTurn('turn-1'), userTurn('turn-2')]
+    for (const phase of ['cli_busy', 'cli_shell', 'cli_waiting'] as const) {
+      expect(cliCookingTurnId(turns, { phase, activeUserMessageUuid: null })).toBe('turn-2')
+    }
+    expect(cliCookingTurnId(turns, { phase: 'idle', activeUserMessageUuid: null })).toBeNull()
+    expect(cliCookingTurnId(turns, { phase: 'running', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBeNull()
+    expect(cliCookingTurnId([{ ...turns[1]!, durationMs: 1000 }], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
+    expect(cliCookingTurnId([{ ...turns[1]!, blocks: [{ id: 'assistant-only', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'hello' } }] }], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
+    expect(cliCookingTurnId([], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
+  })
+
+  it('selects only the active turn for task progress text', () => {
+    const turns = [userTurn('turn-1'), userTurn('turn-2')]
+    expect(activeTimelineTurnId(turns, { phase: 'running', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBe('turn-2')
+    expect(activeTimelineTurnId(turns, { phase: 'requires_action', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBe('turn-2')
+    expect(activeTimelineTurnId(turns, { phase: 'cli_busy', activeUserMessageUuid: null })).toBe('turn-2')
+    expect(activeTimelineTurnId(turns, { phase: 'idle', activeUserMessageUuid: null })).toBeNull()
+    expect(activeTimelineTurnId(turns, { phase: 'running', activeUserMessageUuid: 'missing', lastTurn: null })).toBeNull()
+  })
+
+  it('hides Task management tool cards without leaving empty response frames', () => {
+    const taskOnly = groupAssistantResponseFrames(groupTimelineBlocks([
+      { id: 'task-create', kind: 'assistant.tool_use', sourceEventIds: ['assistant'], toolUseId: 'call-task', data: { name: 'TaskCreate', input: { subject: 'Task' } } },
+      { id: 'task-result', kind: 'tool.result', sourceEventIds: ['result'], toolUseId: 'call-task', data: { content: 'Task #1 created successfully' } },
+    ]))
+    const mixed = groupAssistantResponseFrames(groupTimelineBlocks([
+      { id: 'assistant:text', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'Working' } },
+      { id: 'task-update', kind: 'assistant.tool_use', sourceEventIds: ['assistant'], toolUseId: 'call-update', data: { name: 'TaskUpdate', input: { taskId: '1' } } },
+      { id: 'task-update-result', kind: 'tool.result', sourceEventIds: ['result'], toolUseId: 'call-update', data: { content: 'Updated' } },
+    ]))
+
+    expect(taskOnly).toEqual([])
+    expect(mixed).toHaveLength(1)
+    expect(mixed[0]).toMatchObject({ type: 'assistant-response-frame', items: [{ type: 'block', block: { id: 'assistant:text' } }] })
   })
 
   it('keeps marked primary input separate and frames response-side blocks', () => {
@@ -367,10 +437,10 @@ describe('timeline reconciliation', () => {
     expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([history.blocks[0], live.blocks[1], live.blocks[2]])
   })
 
-  it('ignores late live assistant blocks represented by history apiMessageId without removing the visible draft', () => {
+  it('ignores late live assistant blocks represented by the same history message uuid without removing the visible draft', () => {
     const live = userTurn('user-1', [{ id: 'assistant-draft', kind: 'assistant.text', sourceEventIds: ['stream-1'], apiMessageId: 'msg-1', data: { text: 'visible draft', streaming: true } }])
-    const history = userTurn('user-1', [{ id: 'assistant-history', kind: 'assistant.text', sourceEventIds: ['assistant-event-1'], apiMessageId: 'msg-1', data: { text: 'final' } }])
-    const raw = { type: 'assistant', uuid: 'assistant-event-2', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'late' }] } }
+    const history = userTurn('user-1', [{ id: 'assistant-event-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-event-1'], apiMessageId: 'msg-1', data: { text: 'final' } }])
+    const raw = { type: 'assistant', uuid: 'assistant-event-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'late' }] } }
 
     expect(applySdkMessage([live], raw, timelineTurnIndex([history]), 'user-1', null).turns).toEqual([live])
   })
@@ -389,11 +459,11 @@ describe('timeline reconciliation', () => {
   it('does not duplicate live assistant blocks already represented by incoming history', () => {
     const live = userTurn('user-1', [
       { id: 'user-1:user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello' } },
-      { id: 'user-1:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['assistant-live'], apiMessageId: 'msg-1', data: { type: 'text', text: 'final' } },
+      { id: 'user-1:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { type: 'text', text: 'final' } },
     ])
     const history = userTurn('user-1', [
       { id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello' } },
-      { id: 'history-assistant', kind: 'assistant.text', sourceEventIds: ['assistant-history'], apiMessageId: 'msg-1', data: { type: 'text', text: 'final' } },
+      { id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { type: 'text', text: 'final' } },
     ])
 
     expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual(history.blocks)
@@ -427,6 +497,82 @@ describe('timeline reconciliation', () => {
       expect.objectContaining({ kind: 'assistant.future_block', data: expect.objectContaining({ stream_deltas: [{ type: 'future_delta', value: 2 }] }) }),
     ]))
     expect(blocks[0]).toMatchObject({ kind: 'assistant.future_block', data: { type: 'future_block', value: 1, streaming: true, stream_deltas: [{ type: 'future_delta', value: 2 }] } })
+  })
+
+  it('removes a stream draft when history already contains its final assistant message', () => {
+    const accumulator = new LiveAssistantStreamAccumulator('user-1')
+    const emptyHistory = timelineTurnIndex([])
+    let turns = [userTurn('user-1')]
+    turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'stream-start', event: { type: 'message_start', message: { id: 'msg-1' } } }, emptyHistory, 'user-1', accumulator).turns
+    turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'stream-text', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'final' } } }, emptyHistory, 'user-1', accumulator).turns
+    const history = userTurn('user-1', [{ id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'final' } }])
+    turns = reconcileTimelineTurns(turns, [history])
+
+    turns = applySdkMessage(turns, { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'final' }] } }, timelineTurnIndex([history]), 'user-1', accumulator).turns
+
+    expect(turns[0]!.blocks).toEqual(history.blocks)
+  })
+
+  it('keeps distinct assistant messages that share an api message id', () => {
+    let turns = [userTurn('user-1')]
+    const accumulator = new LiveAssistantStreamAccumulator('user-1')
+    const historyIndex = timelineTurnIndex([])
+    const text = { type: 'assistant', uuid: 'assistant-text', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'working' }] } }
+    const tool = { type: 'assistant', uuid: 'assistant-tool', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'tool_use', id: 'call-1', name: 'Read', input: { file_path: 'a.ts' } }] } }
+
+    turns = applySdkMessage(turns, text, historyIndex, 'user-1', accumulator).turns
+    turns = applySdkMessage(turns, tool, historyIndex, 'user-1', accumulator).turns
+    turns = applySdkMessage(turns, tool, historyIndex, 'user-1', accumulator).turns
+
+    expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.text')).toHaveLength(1)
+    expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.tool_use')).toHaveLength(1)
+    expect(turns[0]!.blocks.filter((block) => block.apiMessageId === 'msg-1').map((block) => block.sourceEventIds)).toEqual([
+      ['assistant-text'],
+      ['assistant-tool'],
+    ])
+  })
+
+  it('keeps blocks missing from a partial history assistant message', () => {
+    const live = userTurn('user-1', [
+      { id: 'user-1:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'working' } },
+      { id: 'user-1:assistant:0:1', kind: 'assistant.tool_use', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', contentBlockId: 'call-1', toolUseId: 'call-1', data: { name: 'Read' } },
+    ])
+    const history = userTurn('user-1', [
+      { id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'working' } },
+    ])
+
+    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([history.blocks[0], live.blocks[1]])
+  })
+
+  it('reconciles assistant messages by uuid instead of shared api message id', () => {
+    const live = userTurn('user-1', [
+      { id: 'live-text', kind: 'assistant.text', sourceEventIds: ['assistant-text'], apiMessageId: 'msg-1', data: { text: 'working' } },
+      { id: 'live-tool', kind: 'assistant.tool_use', sourceEventIds: ['assistant-tool'], apiMessageId: 'msg-1', toolUseId: 'call-1', data: { name: 'Read' } },
+    ])
+    const history = userTurn('user-1', [
+      { id: 'history-text', kind: 'assistant.text', sourceEventIds: ['assistant-text'], apiMessageId: 'msg-1', data: { text: 'working' } },
+    ])
+
+    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([history.blocks[0], live.blocks[1]])
+  })
+
+  it('ignores a full stream replay after its assistant message was finalized', () => {
+    let turns = [userTurn('user-1')]
+    const accumulator = new LiveAssistantStreamAccumulator('user-1')
+    const historyIndex = timelineTurnIndex([])
+    const messages = [
+      { type: 'stream_event', uuid: 'start-1', event: { type: 'message_start', message: { id: 'msg-1' } } },
+      { type: 'stream_event', uuid: 'block-1', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'hello' } } },
+      { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'hello' }] } },
+      { type: 'stream_event', uuid: 'start-replay', event: { type: 'message_start', message: { id: 'msg-1' } } },
+      { type: 'stream_event', uuid: 'block-replay', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'hello' } } },
+      { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'hello' }] } },
+    ]
+
+    for (const message of messages) turns = applySdkMessage(turns, message, historyIndex, 'user-1', accumulator).turns
+
+    expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.text')).toHaveLength(1)
+    expect(turns[0]!.blocks.find((block) => block.kind === 'assistant.text')?.id).toBe('user-1:assistant:0:0')
   })
 
   it('reuses the same assistant draft when message_start is replayed', () => {
@@ -501,7 +647,7 @@ describe('timeline reconciliation', () => {
     const second = userTurn('user-2', [{ id: 'stable-block', kind: 'system.message', sourceEventIds: ['same-event'], data: {} }])
     const index = timelineTurnIndex([first, second])
 
-    expect(index).toEqual({ userMessageUuids: new Set(['user-1', 'user-2']), apiMessageIds: new Set(['msg-1']), blockIds: new Set(['assistant-text', 'assistant-tool', 'stable-block']) })
+    expect(index).toEqual({ userMessageUuids: new Set(['user-1', 'user-2']), apiMessageIds: new Set(['msg-1']), assistantBlockIds: new Set(['msg-1:same-event:assistant.text:', 'msg-1:same-event:assistant.tool_use:']), blockIds: new Set(['assistant-text', 'assistant-tool', 'stable-block']) })
     expect(reconcileTimelineTurns([userTurn('other', [{ id: 'other-block', kind: 'system.message', sourceEventIds: ['same-event'], data: {} }])], [second])).toHaveLength(2)
   })
 

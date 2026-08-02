@@ -22,13 +22,19 @@ function formatAge(value?: number): string {
 function statusTone(runState: SessionSummary['runState']): string {
   if (runState.phase === 'running') return 'running'
   if (runState.phase === 'requires_action') return 'warning'
+  if (runState.phase === 'cli_busy') return 'cli-busy'
+  if (runState.phase === 'cli_shell') return 'cli-shell'
+  if (runState.phase === 'cli_waiting') return 'cli-waiting'
   if (runState.lastTurn?.outcome === 'error') return 'danger'
   return 'neutral'
 }
 
 function statusLabel(runState: SessionSummary['runState']): string {
-  if (runState.phase === 'running') return 'Thinking'
+  if (runState.phase === 'running') return 'Running'
   if (runState.phase === 'requires_action') return 'Waiting'
+  if (runState.phase === 'cli_busy') return 'Busy (CLI)'
+  if (runState.phase === 'cli_shell') return 'Shell (CLI)'
+  if (runState.phase === 'cli_waiting') return 'Waiting (CLI)'
   if (runState.lastTurn?.outcome === 'error') return 'Error'
   return 'Idle'
 }
@@ -232,7 +238,8 @@ function ProjectCard({
 
 function StatusBadge({ runState }: { runState: SessionSummary['runState'] }) {
   const tone = statusTone(runState)
-  return <span className={`status-badge status-${tone}`} title={statusLabel(runState)}>{statusIcon(runState)}</span>
+  const label = statusLabel(runState)
+  return <span className={`status-badge status-${tone}`} data-tooltip={label} title={label} aria-label={label}>{statusIcon(runState)}</span>
 }
 
 function SessionListSkeleton() {

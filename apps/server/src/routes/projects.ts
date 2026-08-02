@@ -22,6 +22,7 @@ import {
   sessionObservationSortSchema,
   sessionObservationsResponseSchema,
   settingsResponseSchema,
+  turnMetaTranscriptResponseSchema,
   settingsUpdateRequestSchema,
   type AppSettings,
   type CreateTurnRequest,
@@ -47,7 +48,7 @@ import {
 import { projectIdFromPath, projectPathFromId, type ClaudeCodeApi } from '../claude-code-api.js'
 import { ListCursorError } from '../list-cursor.js'
 import type { SessionSummaryCache } from '../session-summary-cache.js'
-import type { SessionRegistryObserver } from '../session-registry-observer.js'
+import type { ClaudeSessionRegistry } from '../claude-session-registry.js'
 import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import type { ModelCatalogProvider } from '../model-catalog.js'
@@ -56,7 +57,9 @@ import { projectSessionTimeline, sessionMessagesForTurn } from '../timeline-proj
 
 export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionRunState' | 'startTurn' | 'subscribe'>
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
-export type ProjectRoutesSessionObservationReader = Pick<SessionRegistryObserver, 'listObservations'>
+export type ProjectRoutesSessionObservationReader = Pick<ClaudeSessionRegistry, 'listObservations'>
+export type ProjectRoutesTurnDurationReader = (projectId: string, sessionId: string) => ReadonlyMap<string, number> | Promise<ReadonlyMap<string, number>>
+export type ProjectRoutesTurnMetaTranscriptReader = { listEntries(input: { sessionId?: string; limit: number; offset: number }): unknown }
 
 function parseLimit(value: string | undefined, fallback: number, max = 10_000): number {
   const parsed = Number(value)
@@ -83,6 +86,11 @@ function listCursorErrorResponse(error: unknown) {
   return error.code === 'stale'
     ? { status: 409 as const, body: { error: 'pagination_cursor_stale' } }
     : { status: 400 as const, body: { error: 'invalid_cursor' } }
+}
+
+function applyTurnDurations<T extends { turns: Array<{ id: string; durationMs?: number }> }>(timeline: T, durations: ReadonlyMap<string, number>): T {
+  if (durations.size === 0) return timeline
+  return { ...timeline, turns: timeline.turns.map((turn) => durations.has(turn.id) ? { ...turn, durationMs: durations.get(turn.id) } : turn) }
 }
 
 function isPathInside(root: string, target: string): boolean {
@@ -218,8 +226,19 @@ function validateTurnOptions(options: ResolvedTurnOptions, settingsStore?: Setti
 
 export function registerProjectRoutes(
   app: Hono,
-  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; modelCatalogProvider: ModelCatalogProvider; settingsStore?: SettingsStore; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache; sessionObservationReader?: ProjectRoutesSessionObservationReader },
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; modelCatalogProvider: ModelCatalogProvider; settingsStore?: SettingsStore; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache; sessionObservationReader?: ProjectRoutesSessionObservationReader; turnDurationReader?: ProjectRoutesTurnDurationReader; turnMetaTranscriptReader?: ProjectRoutesTurnMetaTranscriptReader },
 ): void {
+  app.get('/api/debug/turn-meta-transcript', (c) => {
+    if (!input.turnMetaTranscriptReader) return c.json({ error: 'turn_meta_transcript_unavailable' }, 503)
+    const sessionId = c.req.query('sessionId')
+    const limit = Number(c.req.query('limit') ?? 100)
+    const offset = Number(c.req.query('offset') ?? 0)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 250 || !Number.isInteger(offset) || offset < 0) {
+      return c.json({ error: 'invalid_turn_meta_transcript_query' }, 400)
+    }
+    return c.json(turnMetaTranscriptResponseSchema.parse(input.turnMetaTranscriptReader.listEntries({ sessionId, limit, offset })))
+  })
+
   app.get('/api/debug/session-observations', (c) => {
     if (!input.sessionObservationReader) return c.json({ error: 'session_observations_unavailable' }, 503)
     const encodedSessionId = c.req.query('sessionId')
@@ -650,11 +669,19 @@ export function registerProjectRoutes(
       if (!messages) {
         return c.json({ error: 'session_not_found' }, 404)
       }
+      const sessionId = c.req.param('sessionId')
+      const timeline = projectSessionTimeline(sessionId, messages, {
+        limitTurns: parseLimit(c.req.query('limitTurns'), 10, 100),
+        cursor: parseCursor(c.req.query('cursor')),
+      })
+      let durations: ReadonlyMap<string, number> | undefined
+      try {
+        durations = await input.turnDurationReader?.(c.req.param('projectId'), sessionId)
+      } catch (error) {
+        console.error('turn-duration-reader failed', error)
+      }
       const response: SessionTimelineResponse = {
-        ...projectSessionTimeline(c.req.param('sessionId'), messages, {
-          limitTurns: parseLimit(c.req.query('limitTurns'), 10, 100),
-          cursor: parseCursor(c.req.query('cursor')),
-        }),
+        ...applyTurnDurations(timeline, durations ?? new Map()),
         state,
       }
       return c.json(response)

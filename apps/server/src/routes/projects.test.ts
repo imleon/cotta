@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Hono } from 'hono'
 import {
   listVersionsEventSchema,
   projectResponseSchema,
@@ -13,6 +14,7 @@ import {
   sessionRawMessagesResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
+  turnMetaTranscriptResponseSchema,
   type ListVersionsEvent,
   type ModelCatalogResponse,
   type PersistedLiveEvent,
@@ -24,6 +26,7 @@ import {
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createApp } from '../index.js'
 import { ListCursorError } from '../list-cursor.js'
+import { registerProjectRoutes } from './projects.js'
 
 const createdRoots: string[] = []
 const originalProjectsRoot = process.env.COTTA_PROJECTS_ROOT
@@ -68,7 +71,7 @@ const modelCatalog: ModelCatalogResponse = {
   ],
 }
 
-const idleRunState: SessionRunState = { phase: 'idle', activeTurnId: null }
+const idleRunState: SessionRunState = { phase: 'idle', activeUserMessageUuid: null }
 
 const sessions: SessionSummary[] = [
   {
@@ -483,16 +486,16 @@ describe('project routes', () => {
 
   it('overlays live session runState on project sessions', async () => {
     const response = await createTestApp({
-      'session-newest': { phase: 'running', activeTurnId: 'user-1', lastTurn: null },
-      'session-older': { phase: 'requires_action', activeTurnId: 'user-2', lastTurn: null },
+      'session-newest': { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null },
+      'session-older': { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null },
     }).request(`/api/projects/${project.id}/sessions`)
 
     expect(response.status).toBe(200)
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
       project: { ...project },
       sessions: [
-        { ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } },
-        { ...sessions[1], runState: { phase: 'requires_action', activeTurnId: 'user-2', lastTurn: null } },
+        { ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } },
+        { ...sessions[1], runState: { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null } },
       ],
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -621,7 +624,7 @@ describe('project routes', () => {
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
-        sessionRunState: (sessionId: string) => sessionId === 'session-newest' ? { phase: 'running', activeTurnId: 'user-1', lastTurn: null } : null,
+        sessionRunState: (sessionId: string) => sessionId === 'session-newest' ? { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } : null,
         startTurn: async () => { throw new Error('not implemented') },
         interrupt: async () => false,
         subscribe: () => () => {},
@@ -645,7 +648,7 @@ describe('project routes', () => {
         queryProjectSessions: () => ({
           sessionsByProject: {
             [project.id]: {
-              sessions: [{ ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }, sessions[1]],
+              sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
               hasMore: false,
               nextCursor: null,
             },
@@ -662,7 +665,7 @@ describe('project routes', () => {
     expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({
       sessionsByProject: {
         [project.id]: {
-          sessions: [{ ...sessions[0], runState: { phase: 'running', activeTurnId: 'user-1', lastTurn: null } }, sessions[1]],
+          sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
           hasMore: false,
           nextCursor: null,
         },
@@ -713,7 +716,7 @@ describe('project routes', () => {
       liveTurnManager: {
         ensureRuntime: () => {},
         sessionRunState: () => null,
-        startTurn: async (input) => { received = input; return { sessionId: 'session-new', userMessageUuid: input.userMessageUuid } },
+        startTurn: async (input) => { received = input; return { sessionId: input.sessionId, userMessageUuid: input.userMessageUuid } },
         interrupt: async () => false,
         subscribe: () => () => {},
       },
@@ -732,12 +735,14 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001', permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000001', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001', permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' }),
     })
 
     expect(response.status).toBe(202)
     expect(received).toMatchObject({
       projectId: project.id,
+      sessionId: '10000000-0000-4000-8000-000000000001',
+      resume: false,
       text: 'hello',
       userMessageUuid: '00000000-0000-4000-8000-000000000001',
       permissionMode: 'plan',
@@ -746,7 +751,7 @@ describe('project routes', () => {
     })
     expect(await response.json()).toEqual({
       projectId: project.id,
-      sessionId: 'session-new',
+      sessionId: '10000000-0000-4000-8000-000000000001',
       userMessageUuid: '00000000-0000-4000-8000-000000000001',
     })
   })
@@ -783,12 +788,24 @@ describe('project routes', () => {
     expect(received).toMatchObject({
       projectId: project.id,
       sessionId: 'session-newest',
+      resume: true,
       text: 'hello',
       userMessageUuid: '00000000-0000-4000-8000-000000000002',
       permissionMode: 'default',
     })
     expect(received).not.toHaveProperty('model')
     expect(received).not.toHaveProperty('effort')
+  })
+
+  it('rejects a body session id that differs from the existing-session path', async () => {
+    const response = await createTestApp().request(`/api/projects/${project.id}/sessions/session-newest/turns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000099', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000099' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'session_id_mismatch' })
   })
 
   it('treats explicit default model and effort as SDK omissions', async () => {
@@ -816,7 +833,7 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000006', model: 'default', effort: 'default' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000006', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000006', model: 'default', effort: 'default' }),
     })
 
     expect(response.status).toBe(202)
@@ -854,7 +871,7 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003', model: 'missing-model' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000003', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003', model: 'missing-model' }),
     })
 
     expect(response.status).toBe(400)
@@ -885,7 +902,7 @@ describe('project routes', () => {
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004', model: 'no-effort-model', effort: 'high' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000004', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004', model: 'no-effort-model', effort: 'high' }),
     })
 
     expect(response.status).toBe(400)
@@ -975,6 +992,73 @@ describe('project routes', () => {
     expect(body.hasMore).toBe(true)
     expect(body.nextCursor).toBe('user-2')
     expect(body.state).toEqual(timelineState)
+  })
+
+  it('lists turn meta transcript debug rows and validates pagination', async () => {
+    const listEntries = vi.fn(() => ({ entries: [], sessionIds: ['session-newest'], limit: 2, offset: 1, hasMore: false }))
+    const app = createApp({ turnMetaTranscriptReader: { listEntries } })
+
+    const response = await app.request('/api/debug/turn-meta-transcript?sessionId=session-newest&limit=2&offset=1')
+    expect(response.status).toBe(200)
+    expect(turnMetaTranscriptResponseSchema.parse(await response.json())).toEqual({ entries: [], sessionIds: ['session-newest'], limit: 2, offset: 1, hasMore: false })
+    expect(listEntries).toHaveBeenCalledWith({ sessionId: 'session-newest', limit: 2, offset: 1 })
+
+    expect((await app.request('/api/debug/turn-meta-transcript?limit=0')).status).toBe(400)
+  })
+
+  it('returns unavailable when turn meta transcript storage is not injected', async () => {
+    const response = await createApp().request('/api/debug/turn-meta-transcript')
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'turn_meta_transcript_unavailable' })
+  })
+
+  it('awaits the injected turn duration reader', async () => {
+    const app = new Hono()
+    const turnDurationReader = vi.fn(async () => new Map([['user-2', 12_345]]))
+    registerProjectRoutes(app, {
+      turnDurationReader,
+      modelCatalogProvider: async () => modelCatalog,
+      liveTurnManager: {
+        ensureRuntime: () => {}, sessionRunState: () => null, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
+        async getProject() { return null }, async listProjectSessions() { return null }, async getSessionInfo() { return null },
+        async deleteSession() { return false }, async renameSession() { return false }, async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState }, async getSessionMessages() { return messages },
+      },
+    })
+
+    const response = await app.request(`/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`)
+    const body = sessionTimelineResponseSchema.parse(await response.json())
+
+    expect(body.turns[0]?.durationMs).toBe(12_345)
+    expect(turnDurationReader).toHaveBeenCalledWith(project.id, 'session-newest')
+  })
+
+  it('keeps timeline available when the turn duration reader fails', async () => {
+    const app = new Hono()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    registerProjectRoutes(app, {
+      turnDurationReader: async () => { throw new Error('sidecar failed') },
+      modelCatalogProvider: async () => modelCatalog,
+      liveTurnManager: {
+        ensureRuntime: () => {}, sessionRunState: () => null, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [], hasMore: false, nextCursor: null } },
+        async getProject() { return null }, async listProjectSessions() { return null }, async getSessionInfo() { return null },
+        async deleteSession() { return false }, async renameSession() { return false }, async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState }, async getSessionMessages() { return messages },
+      },
+    })
+
+    const response = await app.request(`/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`)
+    const body = sessionTimelineResponseSchema.parse(await response.json())
+
+    expect(response.status).toBe(200)
+    expect(body.turns[0]?.durationMs).toBeUndefined()
+    errorSpy.mockRestore()
   })
 
   it('keeps user-authored task-notification wrappers as user messages', async () => {
@@ -1224,7 +1308,7 @@ describe('project routes', () => {
   })
 
   it('returns session info for an existing session', async () => {
-    const runningState: SessionRunState = { phase: 'running', activeTurnId: 'turn-1', lastTurn: null }
+    const runningState: SessionRunState = { phase: 'running', activeUserMessageUuid: 'turn-1', lastTurn: null }
     const response = await createApp({
       settingsStore: memorySettingsStore({ modelCatalog }),
       liveTurnManager: {

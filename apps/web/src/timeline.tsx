@@ -1,8 +1,9 @@
-import { memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Children, isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId, type PersistedLiveEvent, type SessionInfoResponse, type TimelineBlock, type TurnSummary } from '@cotta/shared'
+import { codeToHtml } from 'shiki'
+import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId, type PersistedLiveEvent, type SessionInfoResponse, type SessionRunState, type SessionTask, type TimelineBlock, type TurnSummary } from '@cotta/shared'
 import { fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSessionTimeline } from './api'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,10 +43,108 @@ function formatTimestamp(value?: number): string | null {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+function textFromReactNode(value: ReactNode): string {
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  if (Array.isArray(value)) return value.map(textFromReactNode).join('')
+  if (isValidElement<{ children?: ReactNode }>(value)) return textFromReactNode(value.props.children)
+  return ''
+}
+
+function codeLanguage(className?: string): string | null {
+  return className?.match(/language-([\w-]+)/)?.[1] ?? null
+}
+
+function guessCodeLanguage(code: string): string {
+  const trimmed = code.trim()
+  if (/^(export\s+\w+=|(?:npm|pnpm|yarn|curl|git|claude)\b|[\w./-]+\s*\\\n)/m.test(trimmed)) return 'bash'
+  if (/^[\[{]/.test(trimmed)) return 'json'
+  if (/\b(import|export|const|let|function|type|interface)\b/.test(trimmed)) return 'ts'
+  return 'text'
+}
+
+const highlightedCodeCache = new Map<string, string>()
+
+function MarkdownLink({ href, children, ...props }: ComponentPropsWithoutRef<'a'>) {
+  const external = /^https?:\/\//.test(href ?? '')
+  return <a href={href} target={external ? '_blank' : undefined} rel={external ? 'noreferrer' : undefined} {...props}>{children}</a>
+}
+
+function HighlightedCode({ className, children }: { className?: string; children?: ReactNode }) {
+  const code = textFromReactNode(children).replace(/\n$/, '')
+  const explicitLang = codeLanguage(className)
+  const lang = explicitLang ?? guessCodeLanguage(code)
+  const cacheKey = `${lang}\0${code}`
+  const [html, setHtml] = useState<string | null>(() => highlightedCodeCache.get(cacheKey) ?? null)
+  const [wrapped, setWrapped] = useState(true)
+  const [copyStatus, setCopyStatus] = useState<'Copy' | 'Copied' | 'Failed'>('Copy')
+  const copyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (copyStatusTimerRef.current) clearTimeout(copyStatusTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    const cached = highlightedCodeCache.get(cacheKey)
+    if (cached) {
+      setHtml(cached)
+      return
+    }
+    setHtml(null)
+
+    let cancelled = false
+    void codeToHtml(code, { lang, theme: 'github-light' })
+      .then((value) => {
+        highlightedCodeCache.set(cacheKey, value)
+        if (highlightedCodeCache.size > 200) {
+          const oldest = highlightedCodeCache.keys().next().value
+          if (oldest) highlightedCodeCache.delete(oldest)
+        }
+        if (!cancelled) setHtml(value)
+      })
+      .catch(() => { if (!cancelled) setHtml(null) })
+    return () => { cancelled = true }
+  }, [cacheKey, code, lang])
+
+  async function handleCopy() {
+    try {
+      await writeClipboard(code)
+      setCopyStatus('Copied')
+    } catch {
+      setCopyStatus('Failed')
+    }
+    if (copyStatusTimerRef.current) clearTimeout(copyStatusTimerRef.current)
+    copyStatusTimerRef.current = setTimeout(() => setCopyStatus('Copy'), 1400)
+  }
+
+  return (
+    <div className="markdown-code-block" data-wrap={wrapped ? 'true' : 'false'}>
+      <div className="markdown-code-toolbar">
+        {explicitLang ? <span className="markdown-code-language">{explicitLang}</span> : null}
+        <button type="button" aria-label={wrapped ? 'Disable line wrap' : 'Enable line wrap'} title={wrapped ? 'No wrap' : 'Wrap'} onClick={() => setWrapped((value) => !value)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h8a3 3 0 1 1 0 6H9" /><path d="m11 13-2 3 2 3" /></svg></button>
+        <button type="button" aria-label="Copy code" title={copyStatus} onClick={handleCopy}>{copyStatus === 'Copied' ? <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10.5 4 4L16 6" /></svg> : <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M4 13V5a1 1 0 0 1 1-1h8" /></svg>}</button>
+      </div>
+      {html ? <div className="shiki-code" dangerouslySetInnerHTML={{ __html: html }} /> : <pre><code className={className}>{children}</code></pre>}
+    </div>
+  )
+}
+
 const MarkdownValue = memo(function MarkdownValue({ value }: { value: string }) {
   return (
     <div className="debug-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+      <ReactMarkdown
+        components={{
+          a: MarkdownLink,
+          pre({ children }) {
+            return <>{children}</>
+          },
+          code({ className, children }) {
+            const childList = Children.toArray(children)
+            const inline = !className && childList.every((child) => typeof child === 'string' && !child.includes('\n'))
+            return inline ? <code className={className}>{children}</code> : <HighlightedCode className={className}>{children}</HighlightedCode>
+          },
+        }}
+        remarkPlugins={[remarkGfm]}
+      >{value}</ReactMarkdown>
     </div>
   )
 })
@@ -123,8 +222,8 @@ function TimelineTimestamp({
 
   const contents = (
     <>
-      {copyText ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={copyLabel} onClick={handleCopy}>{copyIcon}</button> : null}
-      {onViewRaw ? <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={viewRawLabel} onClick={onViewRaw}><svg viewBox="0 0 24 24" className="h-3.5 w-3.5 max-sm:h-4 max-sm:w-4" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></svg></button> : null}
+      {copyText ? <button className="timeline-action-button inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={copyLabel} data-tooltip={copyStatus === 'Copied' ? 'Copied' : 'Copy' } onClick={handleCopy}>{copyIcon}</button> : null}
+      {onViewRaw ? <button className="timeline-action-button inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)]" style={{ borderRadius: 5 }} type="button" aria-label={viewRawLabel} data-tooltip="Trace" onClick={onViewRaw}><svg viewBox="0 0 24 24" className="h-3.5 w-3.5 max-sm:h-4 max-sm:w-4" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3" /><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" /><circle cx="18" cy="5" r="3" /></svg></button> : null}
       {extraActions}
       {label && value ? <time dateTime={new Date(value).toISOString()}>{label}</time> : null}
       {source ? <span className="rounded-full bg-[var(--tl-surface-soft)] px-1.5 py-px text-[var(--text-xs)] font-bold uppercase tracking-[0.04em] text-[var(--tl-muted)]">{source}</span> : null}
@@ -194,7 +293,7 @@ function assistantResponseText(items: TimelineRenderItem[]): string | null {
 }
 
 const disclosureCardClass = {
-  root: 'group overflow-hidden rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-surface)]',
+  root: 'group mb-0.5 overflow-hidden rounded-[var(--radius-md)] border border-[var(--tl-border-soft)] bg-[var(--tl-surface)]',
   header: 'flex cursor-pointer list-none items-center justify-between gap-[9px] border-b border-transparent bg-[var(--tl-surface-soft)] px-3 py-1.5 [&::-webkit-details-marker]:hidden group-open:border-[var(--tl-border-soft)]',
   heading: 'flex min-w-0 flex-1 items-center gap-2',
   icon: 'inline-grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[var(--tl-surface)] text-[var(--text-xs)] font-black leading-none text-[var(--tl-muted)]',
@@ -205,6 +304,37 @@ const disclosureCardClass = {
   expand: 'inline-grid h-6 w-6 shrink-0 place-items-center rounded-full leading-none text-[var(--tl-muted)]',
   chevron: 'h-[13px] w-[13px] overflow-visible fill-none stroke-current stroke-[1.8] transition-transform duration-[140ms] [stroke-linecap:round] [stroke-linejoin:round] group-open:rotate-90',
   body: 'grid gap-0 bg-[var(--tl-surface-soft)]',
+}
+
+function TimelineDisclosureCard({ ariaLabel, icon, title, summary, badges, bodyClassName, renderBody, deferBody = false }: {
+  ariaLabel: string
+  icon: ReactNode
+  title: ReactNode
+  summary?: ReactNode
+  badges?: ReactNode
+  bodyClassName?: string
+  renderBody: () => ReactNode
+  deferBody?: boolean
+}) {
+  const [hasOpened, setHasOpened] = useState(!deferBody)
+  return (
+    <details className={disclosureCardClass.root} aria-label={ariaLabel} onToggle={deferBody ? (event) => { if (event.currentTarget.open) setHasOpened(true) } : undefined}>
+      <summary className={disclosureCardClass.header}>
+        <div className={disclosureCardClass.heading}>
+          <span className={disclosureCardClass.icon} aria-hidden="true">{icon}</span>
+          <div className={disclosureCardClass.title}>
+            <strong className={disclosureCardClass.name}>{title}</strong>
+            {summary ? <span className={disclosureCardClass.summary}><span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>{summary}</span> : null}
+            {badges}
+          </div>
+        </div>
+        <span className={disclosureCardClass.expand} aria-hidden="true">
+          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false"><path d="M4 2.5 8 6 4 9.5" /></svg>
+        </span>
+      </summary>
+      {hasOpened ? <div className={[disclosureCardClass.body, bodyClassName].filter(Boolean).join(' ')}>{renderBody()}</div> : null}
+    </details>
+  )
 }
 
 const toolTimelineClass = {
@@ -231,7 +361,7 @@ const timelineMessageClass = {
   userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[var(--radius-md)] border border-[var(--tl-user-border)] bg-[var(--tl-user-soft)] px-3.5 py-2.5 text-[15px] leading-[1.6] text-[var(--tl-ink)] shadow-[var(--tl-shadow-soft)]',
   timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-xs leading-4 text-[var(--tl-muted)] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
   timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-within:opacity-100',
-  timestampAssistant: 'block -mt-[5px] px-1 group-hover:opacity-100 focus-within:opacity-100',
+  timestampAssistant: 'block group-hover:opacity-100 focus-within:opacity-100',
   assistantFrame: 'group w-full max-w-none justify-self-stretch [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
   assistantFrameBody: 'grid min-w-0 gap-2.5',
 }
@@ -302,6 +432,12 @@ function shouldFrameTimelineItem(item: TimelineRenderItem): boolean {
   return item.type === 'tool-call' || !isPrimaryInputBlock(item.block)
 }
 
+const hiddenTaskTools = new Set(['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'])
+
+function isHiddenTaskTool(item: TimelineRenderItem): boolean {
+  return item.type === 'tool-call' && hiddenTaskTools.has(toolDataString(item.toolUse, 'name') ?? '')
+}
+
 export function groupAssistantResponseFrames(items: TimelineRenderItem[]): TimelineDisplayItem[] {
   const grouped: TimelineDisplayItem[] = []
   let frameItems: TimelineRenderItem[] = []
@@ -318,6 +454,7 @@ export function groupAssistantResponseFrames(items: TimelineRenderItem[]): Timel
   }
 
   for (const item of items) {
+    if (isHiddenTaskTool(item)) continue
     if (shouldFrameTimelineItem(item)) {
       frameItems.push(item)
       continue
@@ -432,30 +569,13 @@ function ToolCallBlockView({ toolUse, results }: { toolUse: TimelineBlock | null
   const summary = toolInputSummary(toolInput)
   const hasError = results.some(toolResultIsError)
   return (
-    <details className={disclosureCardClass.root} aria-label={`Tool call ${toolName}`}>
-      <summary className={disclosureCardClass.header}>
-        <div className={disclosureCardClass.heading}>
-          <span className={disclosureCardClass.icon} aria-hidden="true">{toolIcon(toolName)}</span>
-          <div className={disclosureCardClass.title}>
-            <strong className={disclosureCardClass.name}>{toolName}</strong>
-            {summary ? (
-              <span className={disclosureCardClass.summary}>
-                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
-                {summary}
-              </span>
-            ) : null}
-            {!toolUse ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Unmatched</span> : null}
-            {results.length === 0 ? <span className={toolTimelineClass.state}>Pending</span> : null}
-            {hasError ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Error</span> : null}
-          </div>
-        </div>
-        <span className={disclosureCardClass.expand} aria-hidden="true">
-          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
-            <path d="M4 2.5 8 6 4 9.5" />
-          </svg>
-        </span>
-      </summary>
-      <div className={disclosureCardClass.body}>
+    <TimelineDisclosureCard
+      ariaLabel={`Tool call ${toolName}`}
+      icon={toolIcon(toolName)}
+      title={toolName}
+      summary={summary}
+      badges={<>{!toolUse ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Unmatched</span> : null}{results.length === 0 ? <span className={toolTimelineClass.state}>Pending</span> : null}{hasError ? <span className={[toolTimelineClass.state, toolTimelineClass.stateError].join(' ')}>Error</span> : null}</>}
+      renderBody={() => <>
         {toolUse ? (
           <section className={toolTimelineClass.section}>
             <div className={toolTimelineClass.sectionLabel}>Input</div>
@@ -470,8 +590,8 @@ function ToolCallBlockView({ toolUse, results }: { toolUse: TimelineBlock | null
             </article>
           ))}
         </section>
-      </div>
-    </details>
+      </>}
+    />
   )
 }
 
@@ -484,30 +604,14 @@ function ThinkingBlockView({ block }: { block: TimelineBlock }) {
   const value = thinkingValue(block)
   const summary = thinkingSummary(value)
   return (
-    <details className={disclosureCardClass.root} aria-label="Assistant thinking">
-      <summary className={disclosureCardClass.header}>
-        <div className={disclosureCardClass.heading}>
-          <span className={disclosureCardClass.icon} aria-hidden="true">✦</span>
-          <div className={disclosureCardClass.title}>
-            <strong className={disclosureCardClass.name}>Thinking</strong>
-            {summary ? (
-              <span className={disclosureCardClass.summary}>
-                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
-                {summary}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <span className={disclosureCardClass.expand} aria-hidden="true">
-          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
-            <path d="M4 2.5 8 6 4 9.5" />
-          </svg>
-        </span>
-      </summary>
-      <div className={[disclosureCardClass.body, thinkingTimelineClass.body].join(' ')}>
-        {typeof value === 'string' ? <MarkdownValue value={value} /> : <pre className={thinkingTimelineClass.code}>{dataPreview(value)}</pre>}
-      </div>
-    </details>
+    <TimelineDisclosureCard
+      ariaLabel="Assistant thinking"
+      icon="✦"
+      title="Thinking"
+      summary={summary}
+      bodyClassName={thinkingTimelineClass.body}
+      renderBody={() => typeof value === 'string' ? <MarkdownValue value={value} /> : <pre className={thinkingTimelineClass.code}>{dataPreview(value)}</pre>}
+    />
   )
 }
 
@@ -562,6 +666,23 @@ function AttachmentBlockView({ block }: { block: TimelineBlock }) {
   )
 }
 
+function UserMessageCardView({ block }: { block: TimelineBlock }) {
+  return (
+    <TimelineDisclosureCard
+      ariaLabel="User message"
+      icon="U"
+      title="User message"
+      deferBody
+      renderBody={() => (
+        <section className={toolTimelineClass.section}>
+          <div className={toolTimelineClass.sectionLabel}>Payload</div>
+          <pre className={toolTimelineClass.outputText}>{dataPreview(block.data)}</pre>
+        </section>
+      )}
+    />
+  )
+}
+
 function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
   const summary = taskNotificationField(block, 'summary')
   const status = taskNotificationField(block, 'status')
@@ -572,28 +693,13 @@ function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
   const originalToolInput = originalToolUse?.input
 
   return (
-    <details className={disclosureCardClass.root} aria-label="Task notification">
-      <summary className={disclosureCardClass.header}>
-        <div className={disclosureCardClass.heading}>
-          <span className={disclosureCardClass.icon} aria-hidden="true">↯</span>
-          <div className={disclosureCardClass.title}>
-            <strong className={disclosureCardClass.name}>{originalToolName && status ? `${originalToolName} ${status}` : originalToolName ? originalToolName : 'Task Notification'}</strong>
-            {summary ? (
-              <span className={disclosureCardClass.summary}>
-                <span aria-hidden="true" className={disclosureCardClass.summaryDot}>·</span>
-                {summary}
-              </span>
-            ) : null}
-            {status ? <span className={toolTimelineClass.state}>{status}</span> : null}
-          </div>
-        </div>
-        <span className={disclosureCardClass.expand} aria-hidden="true">
-          <svg viewBox="0 0 12 12" className={disclosureCardClass.chevron} focusable="false">
-            <path d="M4 2.5 8 6 4 9.5" />
-          </svg>
-        </span>
-      </summary>
-      <div className={disclosureCardClass.body}>
+    <TimelineDisclosureCard
+      ariaLabel="Task notification"
+      icon="↯"
+      title={originalToolName && status ? `${originalToolName} ${status}` : originalToolName ? originalToolName : 'Task Notification'}
+      summary={summary}
+      badges={status ? <span className={toolTimelineClass.state}>{status}</span> : null}
+      renderBody={() => <>
         {originalToolUse ? (
           <section className={toolTimelineClass.section}>
             <div className={toolTimelineClass.sectionLabel}>Input</div>
@@ -613,8 +719,8 @@ function TaskNotificationBlockView({ block }: { block: TimelineBlock }) {
             <pre className={toolTimelineClass.outputText}>{text ?? dataPreview(block.data)}</pre>
           </section>
         )}
-      </div>
-    </details>
+      </>}
+    />
   )
 }
 
@@ -622,12 +728,12 @@ export function TimelineBlockView({ block, timestamp, source, onViewRaw }: { blo
   const text = textFromData(block.data)
 
   if (block.kind === 'assistant.thinking') return <ThinkingBlockView block={block} />
+  if (block.kind === 'assistant.user_message') return <UserMessageCardView block={block} />
   if (block.kind === 'assistant.task_notification') return <TaskNotificationBlockView block={block} />
   if (block.kind === 'user.image' || block.kind === 'user.file') return <AttachmentBlockView block={block} />
 
   if (block.kind === 'assistant.text' || block.kind === 'assistant.message') {
-    const streaming = isRecord(block.data) && block.data.streaming === true
-    return <div className="timeline-assistant-text" aria-busy={streaming || undefined}><MarkdownValue value={text ?? dataPreview(block.data)} />{streaming ? <span className="loading-dots" aria-label="Assistant is streaming"><span /><span /><span /></span> : null}</div>
+    return <div className="timeline-assistant-text"><MarkdownValue value={text ?? dataPreview(block.data)} /></div>
   }
 
   if (block.kind === 'user.message' && isPrimaryInputBlock(block)) {
@@ -669,7 +775,24 @@ const TimelineRenderItemView = memo(function TimelineRenderItemView({ item, time
 
 type ToastNotification = { message: string; tone: 'success' | 'error' }
 
-const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, source, onViewRaw, onForkSession, onNotify }: { item: AssistantResponseFrameItem; timestamp?: number; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void; onForkSession?: (upToMessageId: string) => Promise<unknown>; onNotify?: (toast: ToastNotification) => void }) {
+export function AssistantResponseFrameSkeleton({ activeLabel }: { activeLabel?: string }) {
+  return (
+    <div className="assistant-response group">
+      <section className={timelineMessageClass.assistantFrame} aria-label="Turn response" aria-busy="true">
+        <div className={timelineMessageClass.assistantFrameBody}>
+          <div className="timeline-skeleton-line timeline-skeleton-line-mid" />
+          <div className="timeline-skeleton-line" />
+          <div className="timeline-skeleton-line timeline-skeleton-line-short" />
+        </div>
+      </section>
+      <div className="flex items-center px-1 text-[var(--tl-muted)]">
+        <CliCookingIndicator label={activeLabel} />
+      </div>
+    </div>
+  )
+}
+
+const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, durationLabel, cooking, activeLabel, source, onViewRaw, onForkSession, onNotify }: { item: AssistantResponseFrameItem; timestamp?: number; durationLabel?: string | null; cooking?: boolean; activeLabel?: string; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void; onForkSession?: (upToMessageId: string) => Promise<unknown>; onNotify?: (toast: ToastNotification) => void }) {
   const copyText = assistantResponseText(item.items)
   const forkMessageId = assistantResponseFrameForkMessageId(item)
   const [forking, setForking] = useState(false)
@@ -690,7 +813,7 @@ const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ it
   }
 
   const forkAction = source === 'history' && forkMessageId && onForkSession ? (
-    <button className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)] disabled:cursor-default disabled:opacity-50" style={{ borderRadius: 5 }} type="button" aria-label="Fork session from this response" onClick={handleFork} disabled={forking}>
+    <button className="timeline-action-button inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)] disabled:cursor-default disabled:opacity-50" style={{ borderRadius: 5 }} type="button" aria-label="Fork session from this response" data-tooltip="Fork" onClick={handleFork} disabled={forking}>
       {forking ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 max-sm:h-4 max-sm:w-4" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.9 10h5.4c1.1 0 1.6-.2 2.3-.9l6.2-6.2" /><path d="M10.8 2.8h5v5" /><path d="m10.8 12.9 5 5" /><path d="M10.8 17.2h5v-5" /></svg>}
     </button>
   ) : null
@@ -702,13 +825,16 @@ const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ it
           {item.items.map((child) => <TimelineRenderItemView item={child} key={timelineRenderItemKey(child)} />)}
         </div>
       </section>
-      <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" onViewRaw={onViewRaw ? () => onViewRaw(item.items.flatMap(timelineRenderItemBlocks)) : undefined} viewRawLabel="View raw assistant response" extraActions={forkAction} source={source} />
+      <div className="flex items-center px-1 text-[var(--tl-muted)]">
+        {cooking ? <><CliCookingIndicator label={activeLabel} /><span className="mx-2 h-3 w-px bg-[var(--tl-border-soft)] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" /></> : durationLabel ? <><span className="text-[13px] leading-[1.6]" aria-label="Turn duration"><span aria-hidden="true">✻ </span>{durationLabel}</span><span className="mx-2 h-3 w-px bg-[var(--tl-border-soft)] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" /></> : null}
+        <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" onViewRaw={onViewRaw ? () => onViewRaw(item.items.flatMap(timelineRenderItemBlocks)) : undefined} viewRawLabel="View raw assistant response" extraActions={forkAction} source={source} />
+      </div>
       {forkError ? <div className="panel error">Failed to fork session: {forkError}</div> : null}
     </div>
   )
 })
 
-export type TimelineTurnIndex = { userMessageUuids: Set<string>; apiMessageIds: Set<string>; blockIds: Set<string> }
+export type TimelineTurnIndex = { userMessageUuids: Set<string>; apiMessageIds: Set<string>; assistantBlockIds: Set<string>; blockIds: Set<string> }
 
 type LiveAssistantBlockDraft = {
   id: string
@@ -721,6 +847,7 @@ type LiveAssistantBlockDraft = {
 type LiveAssistantMessageDraft = {
   ordinal: number
   apiMessageId?: string
+  assistantMessageUuid?: string
   blocks: Map<number, LiveAssistantBlockDraft>
   finalized?: boolean
   invalid?: boolean
@@ -741,7 +868,8 @@ export class LiveAssistantStreamAccumulator {
     const sourceEventId = sdkMessageUuid(message)
     if (eventType === 'message_start') {
       const apiMessageId = isRecord(event.message) && typeof event.message.id === 'string' ? event.message.id : undefined
-      this.current = apiMessageId && this.byApiMessageId.get(apiMessageId) ? this.byApiMessageId.get(apiMessageId)! : this.createDraft(apiMessageId, !apiMessageId)
+      const existing = apiMessageId ? this.byApiMessageId.get(apiMessageId) : undefined
+      this.current = existing && !existing.finalized ? existing : this.createDraft(apiMessageId, !apiMessageId || Boolean(existing?.finalized))
       return []
     }
 
@@ -797,7 +925,8 @@ export class LiveAssistantStreamAccumulator {
     const uuid = sdkMessageUuid(message)
     const apiMessageId = isRecord(message.message) && typeof message.message.id === 'string' ? message.message.id : undefined
     if (!uuid || !apiMessageId) return []
-    const draft = this.findDraft(apiMessageId)
+    const draft = this.findDraft(apiMessageId, uuid)
+    draft.assistantMessageUuid = uuid
     draft.finalized = true
     if (this.current === draft) this.current = null
     return assistantBlocksFromMessage(message, uuid, apiMessageId, `${this.userMessageUuid}:assistant:${draft.ordinal}`)
@@ -815,8 +944,10 @@ export class LiveAssistantStreamAccumulator {
     return this.current
   }
 
-  private findDraft(apiMessageId: string): LiveAssistantMessageDraft {
-    return this.byApiMessageId.get(apiMessageId) ?? this.drafts.find((draft) => !draft.finalized) ?? this.createDraft(apiMessageId)
+  private findDraft(apiMessageId: string, assistantMessageUuid: string): LiveAssistantMessageDraft {
+    return this.drafts.find((draft) => draft.assistantMessageUuid === assistantMessageUuid)
+      ?? this.drafts.find((draft) => draft.apiMessageId === apiMessageId && !draft.finalized && !draft.invalid)
+      ?? this.createDraft(apiMessageId)
   }
 
   private ensureBlock(draft: LiveAssistantMessageDraft, index: number, blockType: string, data: Record<string, unknown>): LiveAssistantBlockDraft {
@@ -936,22 +1067,31 @@ function resultFailureMessage(value: unknown): string | null {
   return Array.isArray(value.errors) && typeof value.errors[0] === 'string' ? value.errors[0] : 'Turn failed'
 }
 
+function assistantBlockIdentity(block: TimelineBlock, sourceEventId: string): string {
+  const position = block.id.match(/:assistant:(?:\d+:)?(\d+)$/)?.[1] ?? ''
+  return `${block.apiMessageId}:${sourceEventId}:${block.kind}:${block.contentBlockId ?? position}`
+}
+
 export function timelineTurnIndex(turns: TurnSummary[]): TimelineTurnIndex {
   const userMessageUuids = new Set<string>()
   const apiMessageIds = new Set<string>()
+  const assistantBlockIds = new Set<string>()
   const blockIds = new Set<string>()
   for (const turn of turns) {
     userMessageUuids.add(turn.id)
     for (const block of turn.blocks) {
       blockIds.add(block.id)
-      if (block.apiMessageId) apiMessageIds.add(block.apiMessageId)
+      if (block.apiMessageId) {
+        apiMessageIds.add(block.apiMessageId)
+        for (const sourceEventId of block.sourceEventIds) assistantBlockIds.add(assistantBlockIdentity(block, sourceEventId))
+      }
     }
   }
-  return { userMessageUuids, apiMessageIds, blockIds }
+  return { userMessageUuids, apiMessageIds, assistantBlockIds, blockIds }
 }
 
 function blockIsRepresentedBy(block: TimelineBlock, index: TimelineTurnIndex): boolean {
-  return block.apiMessageId ? index.apiMessageIds.has(block.apiMessageId) : index.blockIds.has(block.id)
+  return index.blockIds.has(block.id) || Boolean(block.apiMessageId && block.sourceEventIds.some((sourceEventId) => index.assistantBlockIds.has(assistantBlockIdentity(block, sourceEventId))))
 }
 
 function turnIsRepresentedBy(turn: TurnSummary, index: TimelineTurnIndex): boolean {
@@ -964,6 +1104,42 @@ function turnOrderValue(turn: TurnSummary): number | null {
 
 function isLiveTurn(turn: TurnSummary): boolean {
   return turn.id.startsWith('pending:') || turn.rawStatus === 'running'
+}
+
+const TURN_DONE_VERBS = ['Thought', 'Baked', 'Brewed', 'Churned', 'Cogitated', 'Cooked', 'Crunched', 'Sautéed', 'Worked'] as const
+
+function stableTurnVerb(turnId: string): string {
+  let hash = 0
+  for (const char of turnId) hash = (hash * 31 + char.charCodeAt(0)) | 0
+  return TURN_DONE_VERBS[Math.abs(hash) % TURN_DONE_VERBS.length]!
+}
+
+function formatTurnDuration(durationMs: number): string {
+  const seconds = Math.max(0, Math.round(durationMs / 1000))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainder = seconds % 60
+  return hours > 0 ? `${hours}h ${minutes}m ${remainder}s` : minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`
+}
+
+export function turnDurationLabel(turn: Pick<TurnSummary, 'id' | 'durationMs'>): string | null {
+  return turn.durationMs === undefined ? null : `${stableTurnVerb(turn.id)} for ${formatTurnDuration(turn.durationMs)}`
+}
+
+export function cliCookingTurnId(turns: TurnSummary[], runState?: SessionRunState | null): string | null {
+  if (!runState || !['cli_busy', 'cli_shell', 'cli_waiting'].includes(runState.phase)) return null
+  const turn = turns.at(-1)
+  return turn && turn.durationMs === undefined && turn.blocks.some(isPrimaryInputBlock) ? turn.id : null
+}
+
+export function activeTimelineTurnId(turns: TurnSummary[], runState?: SessionRunState | null): string | null {
+  if (!runState || runState.phase === 'idle') return null
+  if (runState.phase === 'running' || runState.phase === 'requires_action') return turns.some((turn) => turn.id === runState.activeUserMessageUuid) ? runState.activeUserMessageUuid : null
+  return cliCookingTurnId(turns, runState)
+}
+
+function CliCookingIndicator({ label = 'Cooking…' }: { label?: string }) {
+  return <span className="cli-cooking text-[13px] leading-[1.6]" role="status"><span className="cli-cooking-mark" aria-hidden="true" /> {label}</span>
 }
 
 function upsertBlock(blocks: TimelineBlock[], block: TimelineBlock): TimelineBlock[] {
@@ -983,6 +1159,10 @@ type ApplySdkMessageResult = { turns: TurnSummary[]; currentUserMessageUuid: str
 function rawMessageBlock(message: Record<string, unknown>): TimelineBlock {
   const uuid = sdkMessageUuid(message) ?? String(message.type)
   return { id: `${uuid}:raw`, kind: `raw.${String(message.type)}`, sourceEventIds: sdkMessageUuid(message) ? [uuid] : [], data: message }
+}
+
+function userMessageCardBlock(message: Record<string, unknown>, uuid: string): TimelineBlock {
+  return { id: `${uuid}:user_message`, kind: 'assistant.user_message', sourceEventIds: [uuid], data: message }
 }
 
 function appendBlocksToTurn(turns: TurnSummary[], turnId: string | null, raw: Record<string, unknown>, blocks: TimelineBlock[], historyIndex: TimelineTurnIndex, occurredAt: number): TurnSummary[] {
@@ -1047,7 +1227,8 @@ export function applySdkMessage(
       }
       const blocks = taskData
         ? [{ id: `${uuid}:task_notification`, kind: 'assistant.task_notification', sourceEventIds: [uuid], data: taskData }]
-        : userBlocks.some((block) => block.kind === 'tool.result') ? userBlocks.filter((block) => block.kind === 'tool.result') : [rawMessageBlock(raw)]
+        : userBlocks.some((block) => block.kind === 'tool.result') ? userBlocks.filter((block) => block.kind === 'tool.result') : raw.isSynthetic === true ? [] : [userMessageCardBlock(raw, uuid)]
+      if (raw.isSynthetic === true) return { turns, currentUserMessageUuid, terminal: false }
       return { turns: appendReplyBlocks(turns, responseFrameId, raw, blocks, historyIndex, occurredAt), currentUserMessageUuid: responseFrameId, terminal: false }
     }
     const blocks = userBlocksFromMessage(raw, uuid, true)
@@ -1074,11 +1255,11 @@ export function applySdkMessage(
     const blocks = currentUserMessageUuid && accumulator
       ? accumulator.finalAssistantBlocks(raw)
       : uuid && apiMessageId ? assistantBlocksFromMessage(raw, uuid, apiMessageId) : [rawMessageBlock(raw)]
-    if (apiMessageId && historyIndex.apiMessageIds.has(apiMessageId)) return { turns, currentUserMessageUuid: responseFrameId, terminal: false }
-    const withoutDrafts = apiMessageId
-      ? turns.map((turn) => turn.id === responseFrameId ? { ...turn, blocks: turn.blocks.filter((block) => block.apiMessageId !== apiMessageId) } : turn)
+    const representedBlockIds = new Set(blocks.filter((block) => blockIsRepresentedBy(block, historyIndex)).map((block) => block.id))
+    const withoutRepresentedDrafts = representedBlockIds.size > 0
+      ? turns.map((turn) => turn.id === responseFrameId ? { ...turn, blocks: turn.blocks.filter((block) => !representedBlockIds.has(block.id)) } : turn)
       : turns
-    return { turns: appendReplyBlocks(withoutDrafts, responseFrameId, raw, blocks, historyIndex, occurredAt), currentUserMessageUuid: responseFrameId, terminal: false }
+    return { turns: appendReplyBlocks(withoutRepresentedDrafts, responseFrameId, raw, blocks, historyIndex, occurredAt), currentUserMessageUuid: responseFrameId, terminal: false }
   }
 
   if (raw.type === 'result') {
@@ -1167,6 +1348,10 @@ export function shouldRefetchTimelineVersion(input: { appliedVersion: string | n
 }
 
 export type SessionTimelineScope = { projectId: string | null; sessionId: string | null; pendingPrimaryTurnUuid: string | null }
+
+export function belongsToTimelineSession(sessionId: string | null, candidateSessionId: string): boolean {
+  return sessionId !== null && candidateSessionId === sessionId
+}
 
 export function shouldResetSessionTimeline(previous: SessionTimelineScope | null, next: SessionTimelineScope): boolean {
   if (!previous || previous.projectId !== next.projectId) return true
@@ -1349,7 +1534,7 @@ export function RawMessagesDialog({ messages, loading, error, liveEvents, liveEv
           <RawMessagesWaterfall messages={messages} />
           <div className="debug-table-wrap">
           <table className="debug-table raw-messages-table">
-            <thead><tr><th>Timestamp</th><th>Type</th><th>Stop reason</th><th>Block type</th><th>Content</th></tr></thead>
+            <thead><tr><th>Timestamp</th><th>UUID</th><th>Type</th><th>Stop reason</th><th>Block type</th><th>Content</th></tr></thead>
             <tbody>{messages.flatMap((message, messageIndex) => {
               const contentRows = rawMessageContentRows(message)
               const timestamp = beijingTimestamp(isRecord(message) ? message.timestamp : undefined)
@@ -1357,6 +1542,7 @@ export function RawMessagesDialog({ messages, loading, error, liveEvents, liveEv
               return contentRows.map((content, contentIndex) => (
                 <tr className={type === 'assistant' ? 'raw-message-assistant' : type === 'user' ? 'raw-message-user' : undefined} key={`${rawStringField(message, 'uuid')}:${messageIndex}:${contentIndex}`}>
                   {contentIndex === 0 ? <td className="debug-mono debug-timestamp-cell" rowSpan={contentRows.length}><div>{timestamp.date}</div><div className="debug-muted">{timestamp.time}</div></td> : null}
+                  {contentIndex === 0 ? <td className="debug-mono" rowSpan={contentRows.length}>{rawStringField(message, 'uuid')}</td> : null}
                   {contentIndex === 0 ? <td className="debug-type-cell" rowSpan={contentRows.length}>{type}</td> : null}
                   {contentIndex === 0 ? <td rowSpan={contentRows.length}>{isRecord(message) && isRecord(message.message) ? rawStringField(message.message, 'stop_reason') : '—'}</td> : null}
                   <td>{contentBlockType(content)}</td>
@@ -1378,6 +1564,7 @@ function useSessionTimelineData(
   sessionId: string | null,
   pendingTurn?: TurnSummary | null,
   onLiveTurnChange?: (userMessageUuid: string | null) => void,
+  onTasksChange?: (tasks: SessionTask[]) => void,
   onSessionListStale?: () => void,
   onSessionInfoChange?: (info: SessionInfoResponse) => void,
   isTimelineAtBottom?: () => boolean,
@@ -1392,6 +1579,7 @@ function useSessionTimelineData(
   const shouldScrollToBottomRef = useRef(false)
   const lastAppliedTimelineVersionRef = useRef<string | null>(null)
   const historyIndexRef = useRef<TimelineTurnIndex>(timelineTurnIndex([]))
+  const turnsRef = useRef<TurnSummary[]>([])
   const liveUserMessageUuidRef = useRef<string | null>(null)
   const liveAccumulatorRef = useRef<LiveAssistantStreamAccumulator | null>(null)
   const loadOlderRequestRef = useRef(0)
@@ -1429,12 +1617,13 @@ function useSessionTimelineData(
     refetchSessionInfoRef.current = sessionInfo.refetch
   })
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nextScope = { projectId, sessionId, pendingPrimaryTurnUuid }
     const reset = shouldResetSessionTimeline(previousScopeRef.current, nextScope)
     previousScopeRef.current = nextScope
     if (!reset) return
     loadOlderRequestRef.current += 1
+    turnsRef.current = []
     setTurns([])
     setNextCursor(null)
     setHasMore(false)
@@ -1449,8 +1638,7 @@ function useSessionTimelineData(
   }, [pendingPrimaryTurnUuid, projectId, sessionId])
 
   useEffect(() => {
-    if (!pendingTurn) return
-    if (sessionId && pendingTurn.sessionId !== 'pending' && pendingTurn.sessionId !== sessionId) return
+    if (!pendingTurn || !belongsToTimelineSession(sessionId, pendingTurn.sessionId)) return
     if (liveUserMessageUuidRef.current !== pendingTurn.id) {
       shouldScrollToBottomRef.current = true
       liveUserMessageUuidRef.current = pendingTurn.id
@@ -1459,8 +1647,11 @@ function useSessionTimelineData(
       onLiveTurnChangeRef.current?.(pendingTurn.id)
     }
     setTurns((current) => {
-      if (current.some((turn) => turn.id === pendingTurn.id)) return current
-      return [...current.filter((turn) => !turn.id.startsWith('pending:')), pendingTurn]
+      const next = current.some((turn) => turn.id === pendingTurn.id)
+        ? current
+        : [...current.filter((turn) => !turn.id.startsWith('pending:')), pendingTurn]
+      turnsRef.current = next
+      return next
     })
   }, [pendingTurn, sessionId])
 
@@ -1469,9 +1660,14 @@ function useSessionTimelineData(
     const nextVersion = timeline.data.state.version
     shouldScrollToBottomRef.current ||= isTimelineAtBottomRef.current?.() ?? true
     historyIndexRef.current = timelineTurnIndex(timeline.data.turns)
-    setTurns((current) => reconcileTimelineTurns(current, timeline.data.turns))
+    setTurns((current) => {
+      const next = reconcileTimelineTurns(current, timeline.data.turns)
+      turnsRef.current = next
+      return next
+    })
     setNextCursor(timeline.data.nextCursor)
     setHasMore(timeline.data.hasMore)
+    onTasksChange?.(timeline.data.tasks)
     setOlderError(null)
     lastAppliedTimelineVersionRef.current = nextVersion
   }, [timeline.data])
@@ -1484,8 +1680,10 @@ function useSessionTimelineData(
 
   useEffect(() => {
     if (!projectId || !sessionId) return
+    let active = true
     const events = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`)
     events.onmessage = (message) => {
+      if (!active) return
       let raw: unknown
       try {
         raw = JSON.parse(message.data)
@@ -1496,6 +1694,7 @@ function useSessionTimelineData(
         void refetchTimelineRef.current()
         return
       }
+      if (isRecord(raw) && typeof raw.session_id === 'string' && !belongsToTimelineSession(sessionId, raw.session_id)) return
       const failure = resultFailureMessage(raw)
       setLiveConnectionError(failure ? `Turn failed: ${failure}` : null)
       if (isRecord(raw) && raw.type === 'user' && isPrimaryUserMessage(raw)) {
@@ -1508,11 +1707,10 @@ function useSessionTimelineData(
         }
       }
       const terminal = isRecord(raw) && raw.type === 'result'
-      setTurns((current) => {
-        const result = applySdkMessage(current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current)
-        liveUserMessageUuidRef.current = result.currentUserMessageUuid
-        return result.turns
-      })
+      const result = applySdkMessage(turnsRef.current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current)
+      liveUserMessageUuidRef.current = result.currentUserMessageUuid
+      turnsRef.current = result.turns
+      setTurns(result.turns)
       if (terminal) {
         liveAccumulatorRef.current = null
         setLiveActive(false)
@@ -1522,13 +1720,17 @@ function useSessionTimelineData(
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottomRef.current?.() ?? true
     }
-    events.onopen = () => setLiveConnectionError(null)
+    events.onopen = () => { if (active) setLiveConnectionError(null) }
     events.onerror = () => {
+      if (!active) return
       setLiveConnectionError('Live connection interrupted; waiting for history…')
       setLiveActive(false)
       void refetchTimelineRef.current()
     }
-    return () => events.close()
+    return () => {
+      active = false
+      events.close()
+    }
   }, [projectId, sessionId])
 
   const loadOlder = useCallback(async (): Promise<boolean> => {
@@ -1540,7 +1742,11 @@ function useSessionTimelineData(
     try {
       const page = await fetchSessionTimeline(projectId, sessionId, nextCursor)
       if (loadOlderRequestRef.current !== requestId) return false
-      setTurns((current) => prependOlderTimelineTurns(current, page.turns))
+      setTurns((current) => {
+        const next = prependOlderTimelineTurns(current, page.turns)
+        turnsRef.current = next
+        return next
+      })
       setNextCursor(page.nextCursor)
       setHasMore(page.hasMore)
       return true
@@ -1581,11 +1787,31 @@ function SessionTimelineSkeleton() {
   )
 }
 
-export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange, onForkSession, onNotify }: {
+export function SessionTaskList({ tasks }: { tasks: SessionTask[] }) {
+  if (tasks.length === 0) return null
+  const statusLabel = { pending: 'Pending', in_progress: 'In progress', completed: 'Completed' }
+  return (
+    <section className="session-task-list" aria-label="Session tasks">
+      <ul>
+        {tasks.map((task) => <li key={task.key}>
+          <span className={`session-task-status session-task-status-${task.status}`} role="img" aria-label={statusLabel[task.status]}>{task.status === 'completed' ? <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-5" /></svg> : null}</span>
+          <span className="session-task-subject"><span className="session-task-number">#{task.taskId}</span> {task.subject}</span>
+          {task.blockedBy.length > 0 ? <span className="session-task-blocked">› blocked by {task.blockedBy.map((taskId) => `#${taskId}`).join(', ')}</span> : null}
+        </li>)}
+      </ul>
+    </section>
+  )
+}
+
+export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn, runState, tasks = [], onLiveTurnChange, onTasksChange, onSessionListStale, onSessionInfoChange, onForkSession, onNotify }: {
   projectId: string
+  projectName?: string | null
   sessionId: string | null
   pendingTurn?: TurnSummary | null
+  runState?: SessionRunState | null
+  tasks?: SessionTask[]
   onLiveTurnChange?: (userMessageUuid: string | null) => void
+  onTasksChange?: (tasks: SessionTask[]) => void
   onSessionListStale?: () => void
   onSessionInfoChange?: (info: SessionInfoResponse) => void
   onForkSession?: (upToMessageId: string) => Promise<unknown>
@@ -1616,7 +1842,7 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
     if (!panel) return true
     return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
   }, [])
-  const { turns, hasMore, olderError, loadingOlder, liveConnectionError, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onSessionListStale, onSessionInfoChange, isTimelineAtBottom)
+  const { turns, hasMore, olderError, loadingOlder, liveConnectionError, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onTasksChange, onSessionListStale, onSessionInfoChange, isTimelineAtBottom)
   const visibleTurns = turns
   const matchingLiveEvents = rawMessageSelection && liveEvents.data
     ? liveEventsForTurn(liveEvents.data.events, rawMessageSelection.turnId)
@@ -1677,22 +1903,32 @@ export function SessionTimeline({ projectId, sessionId, pendingTurn, onLiveTurnC
   if (timeline.isLoading && visibleTurns.length === 0) return <SessionTimelineSkeleton />
   if (timeline.isError && visibleTurns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
 
+  const cookingTurnId = cliCookingTurnId(visibleTurns, runState)
+  const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
+  const activeTask = tasks.find((task) => task.status === 'in_progress')
+  const activeTaskLabel = activeTask ? `${activeTask.activeForm ?? activeTask.subject}...` : undefined
+
   return (
     <section className="session-workspace-view" aria-label="Session workspace">
       <section className="timeline-panel" aria-label="Session timeline" ref={timelinePanelRef} onScroll={handleTimelineScroll}>
         {hasMore ? <div className="section-heading"><button className="load-older" type="button" onClick={loadOlderKeepingAnchor} disabled={loadingOlder} aria-label={loadingOlder ? 'Loading older turns' : undefined}>{loadingOlder ? <span className="loading-dots" aria-hidden="true"><span /><span /><span /></span> : 'Load older'}</button></div> : null}
         {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
         {liveConnectionError ? <div className="panel muted">{liveConnectionError}</div> : null}
-        {visibleTurns.length === 0 ? <div className="panel muted">This session has no projected turns yet.</div> : visibleTurns.map((turn) => {
+        {visibleTurns.length === 0 && !olderError && !liveConnectionError ? <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div> : null}
+        {visibleTurns.map((turn) => {
           const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
           const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
           const source = isLiveTurn(turn) ? 'live' : 'history'
+          const durationLabel = turnDurationLabel(turn)
+          const cooking = turn.id === cookingTurnId || turn.id === activeTurnId
+          const activeLabel = turn.id === activeTurnId ? activeTaskLabel : undefined
           return (
             <article className="turn-card" key={turn.id}>
               <div className="timeline-blocks">{displayItems.map((item) => item.type === 'assistant-response-frame'
-                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} source={source} onViewRaw={() => openRawMessages(turn.id)} onForkSession={onForkSession} onNotify={onNotify} key={item.id} />
+                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId ? turn.completedAt : undefined} durationLabel={item.id === lastAssistantFrameId ? durationLabel : null} cooking={cooking && item.id === lastAssistantFrameId} activeLabel={activeLabel} source={source} onViewRaw={() => openRawMessages(turn.id)} onForkSession={runState?.phase === 'idle' ? onForkSession : undefined} onNotify={onNotify} key={item.id} />
                 : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.startedAt : undefined} source={source} onViewRaw={() => openRawMessages(turn.id)} key={timelineRenderItemKey(item.item)} />,
               )}</div>
+              {cooking && !lastAssistantFrameId ? <AssistantResponseFrameSkeleton activeLabel={activeLabel} /> : null}
             </article>
           )
         })}

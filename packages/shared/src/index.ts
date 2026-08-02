@@ -38,7 +38,7 @@ export type ListVersionsEvent = z.infer<typeof listVersionsEventSchema>
 export const sessionRunStateSchema = z.discriminatedUnion('phase', [
   z.object({
     phase: z.literal('idle'),
-    activeTurnId: z.null(),
+    activeUserMessageUuid: z.null(),
     lastTurn: z.object({
       id: z.string(),
       outcome: z.enum(['success', 'error']),
@@ -46,14 +46,17 @@ export const sessionRunStateSchema = z.discriminatedUnion('phase', [
   }),
   z.object({
     phase: z.literal('running'),
-    activeTurnId: z.string(),
+    activeUserMessageUuid: z.string(),
     lastTurn: z.null().optional(),
   }),
   z.object({
     phase: z.literal('requires_action'),
-    activeTurnId: z.string(),
+    activeUserMessageUuid: z.string(),
     lastTurn: z.null().optional(),
   }),
+  z.object({ phase: z.literal('cli_busy'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
+  z.object({ phase: z.literal('cli_shell'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
+  z.object({ phase: z.literal('cli_waiting'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
 ])
 
 export type SessionRunState = z.infer<typeof sessionRunStateSchema>
@@ -183,6 +186,7 @@ export const turnSummarySchema = z.object({
   title: z.string().optional(),
   startedAt: z.number().optional(),
   completedAt: z.number().optional(),
+  durationMs: z.number().optional(),
   rawStatus: z.string().optional(),
   displayStatus: z.string().optional(),
   blocks: z.array(timelineBlockSchema),
@@ -207,9 +211,21 @@ export const sessionTimelineStateResponseSchema = z.object({
 
 export type SessionTimelineStateResponse = z.infer<typeof sessionTimelineStateResponseSchema>
 
+export const sessionTaskSchema = z.object({
+  key: z.string(),
+  taskId: z.string(),
+  subject: z.string(),
+  activeForm: z.string().optional(),
+  status: z.enum(['pending', 'in_progress', 'completed']),
+  blockedBy: z.array(z.string()),
+})
+
+export type SessionTask = z.infer<typeof sessionTaskSchema>
+
 export const sessionTimelineResponseSchema = z.object({
   sessionId: z.string(),
   turns: z.array(turnSummarySchema),
+  tasks: z.array(sessionTaskSchema),
   hasMore: z.boolean(),
   nextCursor: z.string().nullable(),
   state: sessionTimelineStateSchema,
@@ -332,6 +348,116 @@ export const modelCatalogResponseSchema = z.object({
 })
 export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>
 
+export const sessionObservationEventKindSchema = z.enum(['snapshot', 'create', 'change', 'delete'])
+export const sessionObservationSortSchema = z.enum([
+  'id', 'eventKind', 'observedAtMs', 'fileName', 'filePath', 'filePid', 'fileMtimeMs', 'fileSizeBytes', 'rawJson', 'parseError',
+  'payloadPid', 'procStart', 'sessionId', 'cwd', 'startedAtMs', 'updatedAtMs', 'statusUpdatedAtMs', 'version', 'peerProtocol',
+  'kind', 'entrypoint', 'name', 'nameSource', 'status', 'waitingFor', 'tempo', 'state', 'detail', 'needs', 'agent',
+  'messagingSocketPath', 'jobId', 'parkedJobId', 'bridgeSessionId', 'logPath', 'tmux', 'pidAlive', 'procStartMatches',
+])
+export type SessionObservationSort = z.infer<typeof sessionObservationSortSchema>
+
+export const sessionObservationSchema = z.object({
+  id: z.number().int(),
+  eventKind: sessionObservationEventKindSchema,
+  observedAtMs: z.number(),
+  fileName: z.string(),
+  filePath: z.string(),
+  filePid: z.number().int().nullable(),
+  fileMtimeMs: z.number().nullable(),
+  fileSizeBytes: z.number().int().nullable(),
+  rawJson: z.string(),
+  parseError: z.string().nullable(),
+  payloadPid: z.number().int().nullable(),
+  procStart: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  cwd: z.string().nullable(),
+  startedAtMs: z.number().nullable(),
+  updatedAtMs: z.number().nullable(),
+  statusUpdatedAtMs: z.number().nullable(),
+  version: z.string().nullable(),
+  peerProtocol: z.number().int().nullable(),
+  kind: z.string().nullable(),
+  entrypoint: z.string().nullable(),
+  name: z.string().nullable(),
+  nameSource: z.string().nullable(),
+  status: z.string().nullable(),
+  waitingFor: z.string().nullable(),
+  tempo: z.string().nullable(),
+  state: z.string().nullable(),
+  detail: z.string().nullable(),
+  needs: z.string().nullable(),
+  agent: z.string().nullable(),
+  messagingSocketPath: z.string().nullable(),
+  jobId: z.string().nullable(),
+  parkedJobId: z.string().nullable(),
+  bridgeSessionId: z.string().nullable(),
+  logPath: z.string().nullable(),
+  tmux: z.string().nullable(),
+  pidAlive: z.boolean().nullable(),
+  procStartMatches: z.boolean().nullable(),
+})
+export type SessionObservation = z.infer<typeof sessionObservationSchema>
+
+export const sessionObservationsResponseSchema = z.object({
+  observations: z.array(sessionObservationSchema),
+  sessionIds: z.array(z.string().nullable()),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  hasMore: z.boolean(),
+  sort: sessionObservationSortSchema,
+  direction: z.enum(['asc', 'desc']),
+})
+export type SessionObservationsResponse = z.infer<typeof sessionObservationsResponseSchema>
+
+export const turnMetaTranscriptRowSchema = z.object({
+  id: z.number().int(),
+  projectKey: z.string(),
+  transcriptPath: z.string(),
+  sessionId: z.string(),
+  primaryUserUuid: z.string(),
+  primaryTimestampMs: z.number().int(),
+  primaryByteOffset: z.number().int(),
+  primaryEntrypoint: z.string().nullable(),
+  durationUuid: z.string().nullable(),
+  durationParentUuid: z.string().nullable(),
+  durationTimestampMs: z.number().int().nullable(),
+  durationMs: z.number().int().nullable(),
+  durationMessageCount: z.number().int().nullable(),
+  durationLineNo: z.number().int().nullable(),
+  durationByteOffset: z.number().int().nullable(),
+  durationByteLength: z.number().int().nullable(),
+  durationIsSidechain: z.boolean().nullable(),
+  durationIsMeta: z.boolean().nullable(),
+  durationUserType: z.string().nullable(),
+  durationEntrypoint: z.string().nullable(),
+  durationCwd: z.string().nullable(),
+  durationVersion: z.string().nullable(),
+  durationGitBranch: z.string().nullable(),
+  durationSlug: z.string().nullable(),
+  durationPendingBackgroundAgentCount: z.number().int().nullable(),
+  durationSessionKind: z.string().nullable(),
+  durationForkedFromJson: z.string().nullable(),
+  durationPendingWorkflowCount: z.number().int().nullable(),
+  durationPayloadJson: z.string().nullable(),
+  fileMtimeMs: z.number().int(),
+  fileSize: z.number().int(),
+  scanByteOffset: z.number().int(),
+  scanLineNo: z.number().int(),
+  createdAtMs: z.number().int(),
+  updatedAtMs: z.number().int(),
+})
+export type TurnMetaTranscriptRow = z.infer<typeof turnMetaTranscriptRowSchema>
+
+export const turnMetaTranscriptResponseSchema = z.object({
+  entries: z.array(turnMetaTranscriptRowSchema),
+  sessionIds: z.array(z.string()),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  hasMore: z.boolean(),
+})
+export type TurnMetaTranscriptResponse = z.infer<typeof turnMetaTranscriptResponseSchema>
+
 export const sessionInfoResponseSchema = z.object({
   projectId: z.string(),
   sessionId: z.string(),
@@ -409,6 +535,7 @@ export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>
 
 export const createTurnRequestSchema = z.object({
+  sessionId: z.string().uuid().optional(),
   text: z.string().trim().min(1),
   userMessageUuid: z.string().uuid(),
   permissionMode: permissionModeSchema.optional(),

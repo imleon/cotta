@@ -1,6 +1,6 @@
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId } from '@cotta/shared'
-import type { SessionTimelineResponse, TimelineBlock, TurnSummary } from '@cotta/shared'
+import type { SessionTask, SessionTimelineResponse, TimelineBlock, TurnSummary } from '@cotta/shared'
 
 type ProjectedSessionTimeline = Omit<SessionTimelineResponse, 'state'>
 
@@ -46,6 +46,10 @@ type TaskNotificationMetadata = {
 function isToolResultMessage(message: SessionMessage): boolean {
   const content = messageContent(message)
   return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
+}
+
+function isSyntheticUserMessage(message: SessionMessage): boolean {
+  return message.type === 'user' && 'isSynthetic' in message && message.isSynthetic === true
 }
 
 function tagText(content: string, tagName: string): string | null {
@@ -170,10 +174,16 @@ function primaryInputData(message: SessionMessage, data: unknown): unknown {
   return isRecord(data) ? { ...data, primaryTimelineUserMessage: true } : data
 }
 
+function timelineBlocksForUserMessageCard(message: SessionMessage): TimelineBlock[] {
+  return [{ id: `${message.uuid}:user_message`, kind: 'assistant.user_message', sourceEventIds: [message.uuid], data: jsonData(message) }]
+}
+
 function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
   if (message.type === 'user') {
     if (isToolResultMessage(message)) return timelineBlocksForToolResultMessage(message)
     if (isTaskNotificationMessage(message)) return timelineBlocksForTaskNotificationMessage(message)
+    if (isSyntheticUserMessage(message)) return []
+    if (!isPrimaryTimelineUserMessage(message)) return timelineBlocksForUserMessageCard(message)
     const content = messageContent(message)
     if (Array.isArray(content)) {
       return content.flatMap((block, index): TimelineBlock[] => {
@@ -235,6 +245,91 @@ function turnTitleFromMessage(message: SessionMessage): string {
   return text.length > 80 ? `${text.slice(0, 77)}…` : text
 }
 
+function toolResultText(block: Record<string, unknown>): string {
+  const content = block.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.map((item) => isRecord(item) && typeof item.text === 'string' ? item.text : '').filter(Boolean).join('\n')
+}
+
+function projectSessionTasks(messages: SessionMessage[], latestProjectedTurnId?: string): SessionTask[] {
+  type PendingTask = Omit<SessionTask, 'taskId'> & { taskId: string | null; completedTurnId?: string }
+  type PendingUpdate = { task: PendingTask; input: Record<string, unknown>; turnId?: string }
+  const tasks: PendingTask[] = []
+  const createsByToolUseId = new Map<string, PendingTask>()
+  const updatesByToolUseId = new Map<string, PendingUpdate>()
+  const latestByTaskId = new Map<string, PendingTask>()
+  let currentTurnId: string | undefined
+
+  for (const message of messages) {
+    if (isPrimaryTimelineUserMessage(message)) currentTurnId = message.uuid
+    const content = messageContent(message)
+    if (!Array.isArray(content)) continue
+
+    for (const block of content) {
+      if (!isRecord(block)) continue
+      if (message.type === 'assistant' && block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string' && isRecord(block.input)) {
+        if (block.name === 'TaskCreate' && typeof block.input.subject === 'string') {
+          const task = {
+            key: block.id,
+            taskId: null,
+            subject: block.input.subject,
+            ...(typeof block.input.activeForm === 'string' ? { activeForm: block.input.activeForm } : {}),
+            status: 'pending' as const,
+            blockedBy: [],
+          }
+          tasks.push(task)
+          createsByToolUseId.set(block.id, task)
+        } else if (block.name === 'TaskUpdate' && typeof block.input.taskId === 'string') {
+          const task = latestByTaskId.get(block.input.taskId)
+          if (task) updatesByToolUseId.set(block.id, { task, input: block.input, turnId: currentTurnId })
+        }
+        continue
+      }
+
+      if (message.type !== 'user' || block.type !== 'tool_result' || block.is_error === true) continue
+      const toolUseId = timelineToolUseId(message, block)
+      if (!toolUseId) continue
+      const createdTask = createsByToolUseId.get(toolUseId)
+      if (createdTask) {
+        const taskId = toolResultText(block).match(/^Task #(\S+) created successfully:/)?.[1]
+        if (!taskId) continue
+        createdTask.taskId = taskId
+        latestByTaskId.set(taskId, createdTask)
+        continue
+      }
+      const update = updatesByToolUseId.get(toolUseId)
+      if (!update || !toolResultText(block).startsWith(`Updated task #${update.input.taskId} `)) continue
+      if (update.input.status === 'deleted') {
+        const index = tasks.indexOf(update.task)
+        if (index >= 0) tasks.splice(index, 1)
+        latestByTaskId.delete(update.input.taskId)
+        continue
+      }
+      if (update.input.status === 'pending' || update.input.status === 'in_progress' || update.input.status === 'completed') {
+        update.task.status = update.input.status
+        update.task.completedTurnId = update.input.status === 'completed' ? update.turnId : undefined
+      }
+      if (typeof update.input.subject === 'string') update.task.subject = update.input.subject
+      if (typeof update.input.activeForm === 'string') update.task.activeForm = update.input.activeForm
+      if (Array.isArray(update.input.addBlockedBy)) {
+        for (const taskId of update.input.addBlockedBy) if (typeof taskId === 'string' && !update.task.blockedBy.includes(taskId)) update.task.blockedBy.push(taskId)
+      }
+      if (Array.isArray(update.input.addBlocks) && typeof update.input.taskId === 'string') {
+        for (const taskId of update.input.addBlocks) {
+          const blocked = typeof taskId === 'string' ? latestByTaskId.get(taskId) : undefined
+          if (blocked && !blocked.blockedBy.includes(update.input.taskId)) blocked.blockedBy.push(update.input.taskId)
+        }
+      }
+    }
+  }
+
+  return tasks
+    .filter((task): task is PendingTask & { taskId: string } => task.taskId !== null)
+    .filter((task) => task.status !== 'completed' || task.completedTurnId === latestProjectedTurnId)
+    .map(({ completedTurnId: _, ...task }) => ({ ...task, blockedBy: task.blockedBy.filter((taskId) => latestByTaskId.get(taskId)?.status !== 'completed') }))
+}
+
 function projectTurns(messages: SessionMessage[]): TurnSummary[] {
   const turns: TurnSummary[] = []
   const turnsByToolUseId = new Map<string, TurnSummary>()
@@ -243,6 +338,7 @@ function projectTurns(messages: SessionMessage[]): TurnSummary[] {
 
   for (const message of messages) {
     const blocks = timelineBlocksForMessage(message)
+    if (message.type === 'user' && isSyntheticUserMessage(message)) continue
     const isPrimary = isPrimaryTimelineUserMessage(message)
     const timestamp = messageTimestampMs(message)
     const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
@@ -286,6 +382,7 @@ export function sessionMessagesForTurn(messages: SessionMessage[], turnId: strin
   let foundTurn = false
 
   const selected = messages.filter((message) => {
+    if (isSyntheticUserMessage(message)) return false
     const blocks = timelineBlocksForMessage(message)
     const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
     const taskToolUseId = hasTaskNotification ? timelineTaskNotificationToolUseId(message) : undefined
@@ -314,6 +411,7 @@ export function projectSessionTimeline(
   options: { limitTurns: number; cursor: string | null },
 ): ProjectedSessionTimeline {
   const allTurns = projectTurns(messages)
+  const tasks = projectSessionTasks(messages, allTurns.at(-1)?.id)
   const endExclusive = options.cursor
     ? Math.max(0, allTurns.findIndex((turn) => turn.id === options.cursor))
     : allTurns.length
@@ -322,6 +420,7 @@ export function projectSessionTimeline(
   return {
     sessionId,
     turns,
+    tasks,
     hasMore: start > 0,
     nextCursor: start > 0 ? allTurns[start]?.id ?? null : null,
   }

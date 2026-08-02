@@ -58,7 +58,7 @@ describe('LiveTurnManager', () => {
     queryMock.mockReset()
   })
 
-  it('persists the user turn before SDK output without publishing it', async () => {
+  it('creates a new SDK session with the client-provided session id', async () => {
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => resultOnlyQuery(prompt))
     const persisted: unknown[] = []
     const manager = new LiveTurnManager(recordingStore(persisted))
@@ -68,11 +68,16 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: false,
       text: 'hello',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
     })
 
+    expect(queryMock).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ sessionId: 'session-1' }),
+    }))
+    expect(queryMock.mock.calls[0]?.[0].options).not.toHaveProperty('resume')
     await vi.waitFor(() => expect(persisted).toHaveLength(2))
 
     expect(persisted[0]).toMatchObject({
@@ -96,6 +101,7 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'hello',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
@@ -107,7 +113,7 @@ describe('LiveTurnManager', () => {
 
     expect(events[0]).toMatchObject({ type: 'user', uuid: 'user-1' })
     expect(events[1]).toMatchObject({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['SDK stream failed'], session_id: 'session-1' })
-    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'error' } })
+    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
   })
 
   it('passes model and effort to new SDK runtimes', async () => {
@@ -117,6 +123,7 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'first',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
@@ -136,6 +143,7 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'first',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
@@ -156,16 +164,18 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'first',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
       model: 'claude-opus-5',
       effort: 'high',
     })
-    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'second',
       userMessageUuid: 'user-2',
       permissionMode: 'plan',
@@ -219,16 +229,18 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'first',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
       effort: 'high',
     })
-    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeTurnId: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'success' } }))
 
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'second',
       userMessageUuid: 'user-2',
       permissionMode: 'default',
@@ -265,6 +277,7 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'hello',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
@@ -291,6 +304,7 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({
       projectId: Buffer.from('/repo/a').toString('base64url'),
       sessionId: 'session-1',
+      resume: true,
       text: 'hello',
       userMessageUuid: 'user-1',
       permissionMode: 'default',

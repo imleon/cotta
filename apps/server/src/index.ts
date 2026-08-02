@@ -4,13 +4,16 @@ import { Hono } from 'hono'
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici'
 import { createAuth, type CottaAuth } from './auth.js'
 import { createClaudeCodeApi, type ClaudeCodeApi } from './claude-code-api.js'
+import { createCottaDatabase } from './database.js'
 import { createLiveEventStore, type LiveEventStore } from './live-event-store.js'
 import { LiveTurnManager } from './live-turn-manager.js'
 import { defaultModelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
 import { registerHealthRoute } from './routes/health.js'
-import { registerProjectRoutes, type ProjectRoutesLiveTurnManager } from './routes/projects.js'
+import { registerProjectRoutes, type ProjectRoutesLiveTurnManager, type ProjectRoutesSessionObservationReader } from './routes/projects.js'
+import { createClaudeSessionRegistry } from './claude-session-registry.js'
 import { SessionSummaryCache } from './session-summary-cache.js'
 import { createSettingsStore, type SettingsStore } from './settings-store.js'
+import { TurnMetaTranscriptStore } from './turn-meta-transcript.js'
 
 setGlobalDispatcher(new EnvHttpProxyAgent())
 
@@ -21,6 +24,10 @@ export function createApp(input: {
   sessionSummaryCache?: SessionSummaryCache
   modelCatalogProvider?: ModelCatalogProvider
   settingsStore?: SettingsStore
+  sessionObservationReader?: ProjectRoutesSessionObservationReader
+  claudeSessionRegistry?: Pick<Awaited<ReturnType<typeof createClaudeSessionRegistry>>, 'cliRunState'>
+  turnDurationReader?: (projectId: string, sessionId: string) => ReadonlyMap<string, number> | Promise<ReadonlyMap<string, number>>
+  turnMetaTranscriptReader?: Pick<TurnMetaTranscriptStore, 'listEntries'>
   auth?: CottaAuth
 } = {}): Hono {
   const app = new Hono()
@@ -31,12 +38,12 @@ export function createApp(input: {
   const modelCatalogProvider = input.modelCatalogProvider ?? defaultModelCatalogProvider
   const settingsStore = input.settingsStore ?? (process.env.NODE_ENV === 'test' ? undefined : createSettingsStore())
   const auth = input.auth ?? (process.env.NODE_ENV === 'test' ? createAuth({ github: { clientId: '' }, settingsStore }) : createAuth({ settingsStore }))
-  sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId))
+  sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId) ?? input.claudeSessionRegistry?.cliRunState(sessionId))
   void sessionSummaryCache?.ensureReady().catch((error) => console.error('session-summary-cache:ensure-ready failed', error))
   app.use('*', auth.middleware)
   registerHealthRoute(app)
   auth.registerRoutes(app)
-  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore })
+  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionObservationReader: input.sessionObservationReader, turnDurationReader: input.turnDurationReader, turnMetaTranscriptReader: input.turnMetaTranscriptReader })
   return app
 }
 
@@ -46,9 +53,42 @@ const port = Number(process.env.PORT ?? 3000)
 if (process.env.NODE_ENV !== 'test') {
   const liveEventStore = createLiveEventStore()
   const sessionSummaryCache = new SessionSummaryCache()
-  const claudeCodeApi = createClaudeCodeApi(sessionSummaryCache)
+  const turnMetaStore = new TurnMetaTranscriptStore(createCottaDatabase())
+  await turnMetaStore.repairIncompleteTranscripts()
+  sessionSummaryCache.setChangedListener((changes) => turnMetaStore.syncSessions(changes))
+  const claudeCodeApi = createClaudeCodeApi(sessionSummaryCache, {
+    timelineVersionProvider: (projectId, sessionId, baseVersion) => turnMetaStore.timelineVersion(projectId, sessionId, baseVersion),
+  })
   const liveTurnManager = new LiveTurnManager(liveEventStore, sessionSummaryCache)
-  const app = createApp({ claudeCodeApi, liveEventStore, liveTurnManager, sessionSummaryCache })
+  const claudeSessionRegistry = await createClaudeSessionRegistry().catch((error) => {
+    console.error('claude-session-registry:start failed', error)
+    return null
+  })
+  const idleRefreshTimers = new Map<string, Array<ReturnType<typeof setTimeout>>>()
+  const clearIdleRefresh = (sessionId: string) => {
+    for (const timer of idleRefreshTimers.get(sessionId) ?? []) clearTimeout(timer)
+    idleRefreshTimers.delete(sessionId)
+  }
+  const unsubscribeRegistry = claudeSessionRegistry?.subscribe(({ idleSessionIds, activeSessionIds }) => {
+    void sessionSummaryCache.scheduleRefresh({ reason: 'session-stale' })
+    for (const sessionId of activeSessionIds) clearIdleRefresh(sessionId)
+    for (const sessionId of idleSessionIds) {
+      clearIdleRefresh(sessionId)
+      idleRefreshTimers.set(sessionId, [1_000, 4_000].map((delay) => setTimeout(() => {
+        void sessionSummaryCache.scheduleRefresh({ reason: 'session-stale' })
+      }, delay)))
+    }
+  })
+  const app = createApp({
+    claudeCodeApi,
+    liveEventStore,
+    liveTurnManager,
+    sessionSummaryCache,
+    sessionObservationReader: claudeSessionRegistry ?? undefined,
+    claudeSessionRegistry: claudeSessionRegistry ?? undefined,
+    turnDurationReader: (projectId, sessionId) => turnMetaStore.loadDurations(projectId, sessionId),
+    turnMetaTranscriptReader: turnMetaStore,
+  })
 
   const server = serve(
     {
@@ -63,6 +103,10 @@ if (process.env.NODE_ENV !== 'test') {
 
   const shutdown = () => {
     liveTurnManager.closeAll()
+    unsubscribeRegistry?.()
+    for (const sessionId of idleRefreshTimers.keys()) clearIdleRefresh(sessionId)
+    void claudeSessionRegistry?.close()
+    turnMetaStore.close()
     server.close(() => process.exit(0))
     setTimeout(() => process.exit(0), 1000).unref()
   }
@@ -74,6 +118,10 @@ if (process.env.NODE_ENV !== 'test') {
       console.error(`Cotta server failed to start: http://${host}:${port} is already in use.`)
       console.error('Stop the process using that port, or start Cotta with a different PORT.')
       liveTurnManager.closeAll()
+      unsubscribeRegistry?.()
+      for (const sessionId of idleRefreshTimers.keys()) clearIdleRefresh(sessionId)
+      void claudeSessionRegistry?.close()
+      turnMetaStore.close()
       process.exitCode = 1
       return
     }

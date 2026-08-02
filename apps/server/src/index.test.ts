@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { healthResponseSchema } from '@cotta/shared'
+import { healthResponseSchema, type SessionRunState } from '@cotta/shared'
 import { createAuth } from './auth.js'
 import { createApp } from './index.js'
 
@@ -15,6 +15,12 @@ function emptyClaudeCodeApi() {
     async getSessionTimelineState() { return null },
     async getSessionMessages() { return null },
   }
+}
+
+class RunStateCacheStub {
+  reader: ((sessionId: string) => SessionRunState | null) | undefined
+  setSessionRunStateReader(reader: ((sessionId: string) => SessionRunState | null) | undefined) { this.reader = reader }
+  async ensureReady() {}
 }
 
 function memorySettingsStore() {
@@ -133,6 +139,22 @@ describe('server routes', () => {
     expect(logout.status).toBe(200)
     expect(await logout.json()).toEqual({ ok: true })
     expect((await app.request('/api/projects', { headers: { cookie } })).status).toBe(401)
+  })
+
+  it('prefers precise live run state over coarse CLI registry state', async () => {
+    const liveRunState: SessionRunState = { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null }
+    const cache = new RunStateCacheStub()
+
+    createApp({
+      claudeCodeApi: emptyClaudeCodeApi(),
+      sessionSummaryCache: cache as never,
+      liveTurnManager: {
+        ensureRuntime: () => {}, sessionRunState: () => liveRunState, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
+      },
+      claudeSessionRegistry: { cliRunState: () => ({ phase: 'cli_busy', activeUserMessageUuid: null }) },
+    })
+
+    expect(cache.reader?.('session-1')).toBe(liveRunState)
   })
 
   it('leaves protected API requests open when GitHub auth is not configured', async () => {

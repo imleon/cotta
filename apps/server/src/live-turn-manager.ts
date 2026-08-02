@@ -167,7 +167,7 @@ export class LiveTurnManager {
   private finishTurn(sessionId: string, userMessageUuid: string, outcome: 'success' | 'error'): void {
     this.setRunState(sessionId, {
       phase: 'idle',
-      activeTurnId: null,
+      activeUserMessageUuid: null,
       lastTurn: { id: userMessageUuid, outcome },
     }, 'session-stale')
   }
@@ -176,9 +176,9 @@ export class LiveTurnManager {
     this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
   }
 
-  async startTurn(input: { projectId: string; sessionId?: string; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<{ sessionId: string; userMessageUuid: string }> {
-    const sessionId = input.sessionId ?? randomUUID()
-    let runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: Boolean(input.sessionId), permissionMode: input.permissionMode, model: input.model, effort: input.effort })
+  async startTurn(input: { projectId: string; sessionId: string; resume: boolean; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<{ sessionId: string; userMessageUuid: string }> {
+    const sessionId = input.sessionId
+    let runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: input.resume, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
     if (runtime.currentUserMessageUuid) throw new Error('Session already has a running generation')
     this.clearIdleTimer(runtime)
     if (input.effort === 'max' && runtime.effort !== 'max') {
@@ -202,7 +202,7 @@ export class LiveTurnManager {
     const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
     const userMessage = sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() })
     runtime.currentUserMessageUuid = userMessageUuid
-    this.setRunState(sessionId, { phase: 'running', activeTurnId: userMessageUuid, lastTurn: null }, 'session-created')
+    this.setRunState(sessionId, { phase: 'running', activeUserMessageUuid: userMessageUuid, lastTurn: null }, 'session-created')
     this.persist(runtime, userMessage)
     runtime.input.push(userMessage)
 
@@ -260,7 +260,7 @@ export class LiveTurnManager {
       for await (const message of runtime.query) {
         const liveState = liveSessionStateFromSdkMessage(message)
         if (liveState && liveState !== 'idle' && runtime.currentUserMessageUuid) {
-          this.setRunState(runtime.sessionId, { phase: liveState, activeTurnId: runtime.currentUserMessageUuid, lastTurn: null }, 'session-stale')
+          this.setRunState(runtime.sessionId, { phase: liveState, activeUserMessageUuid: runtime.currentUserMessageUuid, lastTurn: null }, 'session-stale')
         }
 
         if (!runtime.currentUserMessageUuid) continue

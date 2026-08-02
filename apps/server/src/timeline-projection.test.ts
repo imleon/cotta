@@ -230,6 +230,20 @@ describe('projectSessionTimeline', () => {
     ], { limitTurns: 10, cursor: null })
 
     expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
+    if ('isSynthetic' in entryMetadata) expect(timeline.turns[0]?.blocks.map((block) => block.kind)).toEqual(['user.message'])
+    else expect(timeline.turns[0]?.blocks.at(-1)).toMatchObject({ id: 'filtered-user:user_message', kind: 'assistant.user_message' })
+  })
+
+  it('ignores a leading synthetic user message without creating a session-events turn', () => {
+    const synthetic = {
+      type: 'user',
+      uuid: 'synthetic',
+      session_id: 'session-1',
+      isSynthetic: true,
+      message: { role: 'user', content: 'Internal note' },
+    } as unknown as TimestampedSessionMessage
+
+    expect(projectSessionTimeline('session-1', [synthetic], { limitTurns: 10, cursor: null }).turns).toEqual([])
   })
 
   it.each([
@@ -347,6 +361,153 @@ describe('projectSessionTimeline', () => {
       kind: 'assistant.task_notification',
       data: expect.objectContaining({ taskId: 'task_123', toolUseId: 'call_123', outputFile: '/tmp/task.output', status: 'completed', summary: 'Agent finished', result: 'Done' }),
     }))
+  })
+
+  it('projects the current task list from full history before turn pagination', () => {
+    const taskMessages = [
+      messages[0]!,
+      {
+        type: 'assistant', uuid: 'task-create', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+        message: { id: 'msg-task-create', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-create', name: 'TaskCreate', input: { subject: 'Inspect history', description: 'Inspect it', activeForm: 'Inspecting history' } }] },
+      },
+      {
+        type: 'user', uuid: 'task-created', session_id: 'session-1', parent_tool_use_id: 'call-create', parent_agent_id: null,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-create', content: 'Task #1 created successfully: Inspect history' }] },
+      },
+      messages[2]!,
+      {
+        type: 'assistant', uuid: 'task-update', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+        message: { id: 'msg-task-update', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-update', name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress', activeForm: 'Deeply inspecting history' } }] },
+      },
+      {
+        type: 'user', uuid: 'task-updated', session_id: 'session-1', parent_tool_use_id: 'call-update', parent_agent_id: null,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-update', content: 'Updated task #1 status' }] },
+      },
+    ] as unknown as TimestampedSessionMessage[]
+
+    const timeline = projectSessionTimeline('session-1', taskMessages, { limitTurns: 1, cursor: null })
+
+    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-2'])
+    expect(timeline.tasks).toEqual([{ key: 'call-create', taskId: '1', subject: 'Inspect history', activeForm: 'Deeply inspecting history', status: 'in_progress', blockedBy: [] }])
+  })
+
+  it('projects task results linked by message-level parent tool use id', () => {
+    const taskMessages = [
+      messages[0]!,
+      {
+        type: 'assistant', uuid: 'task-create', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+        message: { id: 'msg-task-create', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-create', name: 'TaskCreate', input: { subject: 'Inspect history', description: 'Inspect it' } }] },
+      },
+      {
+        type: 'user', uuid: 'task-created', session_id: 'session-1', parent_tool_use_id: 'call-create', parent_agent_id: null,
+        message: { role: 'user', content: [{ type: 'tool_result', content: 'Task #1 created successfully: Inspect history' }] },
+      },
+      {
+        type: 'assistant', uuid: 'task-update', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+        message: { id: 'msg-task-update', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-update', name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } }] },
+      },
+      {
+        type: 'user', uuid: 'task-updated', session_id: 'session-1', parent_tool_use_id: 'call-update', parent_agent_id: null,
+        message: { role: 'user', content: [{ type: 'tool_result', content: 'Updated task #1 status' }] },
+      },
+    ] as unknown as TimestampedSessionMessage[]
+
+    expect(projectSessionTimeline('session-1', taskMessages, { limitTurns: 10, cursor: null }).tasks).toEqual([
+      { key: 'call-create', taskId: '1', subject: 'Inspect history', status: 'in_progress', blockedBy: [] },
+    ])
+  })
+
+  it('keeps only current-turn completed tasks while retaining unfinished tasks', () => {
+    const create = (uuid: string, id: string, taskId: string, subject: string) => [
+      {
+        type: 'assistant', uuid, session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+        message: { id: `msg-${uuid}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id, name: 'TaskCreate', input: { subject, description: subject, activeForm: `Doing ${subject}` } }] },
+      },
+      {
+        type: 'user', uuid: `${uuid}-result`, session_id: 'session-1', parent_tool_use_id: id, parent_agent_id: null,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: `Task #${taskId} created successfully: ${subject}` }] },
+      },
+    ] as unknown as TimestampedSessionMessage[]
+    const update = (uuid: string, taskId: string, status: string) => [{
+      type: 'assistant', uuid, session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+      message: { id: `msg-${uuid}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: `call-${uuid}`, name: 'TaskUpdate', input: { taskId, status } }] },
+    }, {
+      type: 'user', uuid: `${uuid}-result`, session_id: 'session-1', parent_tool_use_id: `call-${uuid}`, parent_agent_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `call-${uuid}`, content: `Updated task #${taskId} status` }] },
+    }] as unknown as TimestampedSessionMessage[]
+    const nextTurn = { ...messages[2]!, uuid: 'user-next' }
+    const history = [messages[0]!, ...create('create-old', 'call-old', '1', 'Old done'), ...update('complete-old', '1', 'completed'), nextTurn, ...create('create-current', 'call-current', '2', 'Current done'), ...update('complete-current', '2', 'completed'), ...create('create-pending', 'call-pending', '3', 'Still pending')]
+
+    expect(projectSessionTimeline('session-1', history, { limitTurns: 10, cursor: null }).tasks).toEqual([
+      { key: 'call-current', taskId: '2', subject: 'Current done', activeForm: 'Doing Current done', status: 'completed', blockedBy: [] },
+      { key: 'call-pending', taskId: '3', subject: 'Still pending', activeForm: 'Doing Still pending', status: 'pending', blockedBy: [] },
+    ])
+  })
+
+  it('projects unresolved blockedBy dependencies from addBlockedBy and addBlocks', () => {
+    const create = (uuid: string, id: string, taskId: string, subject: string) => [
+      { type: 'assistant', uuid, session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null, message: { id: `msg-${uuid}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id, name: 'TaskCreate', input: { subject, description: subject } }] } },
+      { type: 'user', uuid: `${uuid}-result`, session_id: 'session-1', parent_tool_use_id: id, parent_agent_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: `Task #${taskId} created successfully: ${subject}` }] } },
+    ] as unknown as TimestampedSessionMessage[]
+    const update = (uuid: string, input: Record<string, unknown>) => [{ type: 'assistant', uuid, session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null, message: { id: `msg-${uuid}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: `call-${uuid}`, name: 'TaskUpdate', input }] } }, { type: 'user', uuid: `${uuid}-result`, session_id: 'session-1', parent_tool_use_id: `call-${uuid}`, parent_agent_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `call-${uuid}`, content: `Updated task #${input.taskId} status` }] } }] as unknown as TimestampedSessionMessage[]
+    const history = [messages[0]!, ...create('blocker', 'call-blocker', '6', 'Blocker'), ...create('blocked', 'call-blocked', '8', 'Blocked'), ...update('depends-one', { taskId: '8', addBlockedBy: ['6'] }), ...update('depends-again', { taskId: '8', addBlockedBy: ['6'] })]
+
+    expect(projectSessionTimeline('session-1', history, { limitTurns: 10, cursor: null }).tasks.find((task) => task.taskId === '8')?.blockedBy).toEqual(['6'])
+    history.push(...create('blocked-by-add-blocks', 'call-blocked-by-add-blocks', '9', 'Blocked by addBlocks'), ...update('blocks-nine', { taskId: '6', addBlocks: ['9'] }))
+    expect(projectSessionTimeline('session-1', history, { limitTurns: 10, cursor: null }).tasks.find((task) => task.taskId === '9')?.blockedBy).toEqual(['6'])
+    history.push(...update('complete-blocker', { taskId: '6', status: 'completed' }))
+    expect(projectSessionTimeline('session-1', history, { limitTurns: 10, cursor: null }).tasks.find((task) => task.taskId === '8')?.blockedBy).toEqual([])
+  })
+
+  it('applies task updates only after successful tool results', () => {
+    const history = [messages[0]!, {
+      type: 'assistant', uuid: 'task-create', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+      message: { id: 'msg-task-create', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-create', name: 'TaskCreate', input: { subject: 'Pending task', description: 'Pending task' } }] },
+    }, {
+      type: 'user', uuid: 'task-created', session_id: 'session-1', parent_tool_use_id: 'call-create', parent_agent_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-create', content: 'Task #1 created successfully: Pending task' }] },
+    }, {
+      type: 'assistant', uuid: 'task-update-failed', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+      message: { id: 'msg-task-update-failed', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-update-failed', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } }] },
+    }, {
+      type: 'user', uuid: 'task-update-failed-result', session_id: 'session-1', parent_tool_use_id: 'call-update-failed', parent_agent_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-update-failed', content: 'Task not found' }] },
+    }, {
+      type: 'assistant', uuid: 'task-update-ok', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+      message: { id: 'msg-task-update-ok', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-update-ok', name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } }] },
+    }, {
+      type: 'user', uuid: 'task-update-ok-result', session_id: 'session-1', parent_tool_use_id: 'call-update-ok', parent_agent_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-update-ok', content: 'Updated task #1 status' }] },
+    }] as unknown as TimestampedSessionMessage[]
+
+    expect(projectSessionTimeline('session-1', history, { limitTurns: 10, cursor: null }).tasks).toEqual([
+      { key: 'call-create', taskId: '1', subject: 'Pending task', status: 'in_progress', blockedBy: [] },
+    ])
+  })
+
+  it('keeps reused task ids separate and updates the most recent task', () => {
+    const taskCall = (uuid: string, id: string, subject: string) => ({
+      type: 'assistant', uuid, session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+      message: { id: `msg-${uuid}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id, name: 'TaskCreate', input: { subject, description: subject, activeForm: `Doing ${subject}` } }] },
+    }) as unknown as TimestampedSessionMessage
+    const taskResult = (uuid: string, id: string) => ({
+      type: 'user', uuid, session_id: 'session-1', parent_tool_use_id: id, parent_agent_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'Task #1 created successfully: task' }] },
+    }) as unknown as TimestampedSessionMessage
+    const update = [{
+      type: 'assistant', uuid: 'update-second', session_id: 'session-1', parent_tool_use_id: null, parent_agent_id: null,
+      message: { id: 'msg-update-second', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'call-update-second', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } }] },
+    }, {
+      type: 'user', uuid: 'update-second-result', session_id: 'session-1', parent_tool_use_id: 'call-update-second', parent_agent_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-update-second', content: 'Updated task #1 status' }] },
+    }] as unknown as TimestampedSessionMessage[]
+
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, taskCall('create-first', 'call-first', 'First'), taskResult('result-first', 'call-first'), taskCall('create-second', 'call-second', 'Second'), taskResult('result-second', 'call-second'), ...update], { limitTurns: 10, cursor: null })
+
+    expect(timeline.tasks).toEqual([
+      { key: 'call-first', taskId: '1', subject: 'First', activeForm: 'Doing First', status: 'pending', blockedBy: [] },
+      { key: 'call-second', taskId: '1', subject: 'Second', activeForm: 'Doing Second', status: 'completed', blockedBy: [] },
+    ])
   })
 
   it('uses message-level parent_tool_use_id for tool results and reattaches late results', () => {

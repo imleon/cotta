@@ -479,8 +479,21 @@ describe('timeline reconciliation', () => {
     expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual(history.blocks)
   })
 
+  it('keeps live primary user message while same-turn history is still partial', () => {
+    const live = userTurn('4f15e43d-6647-440b-b39c-f001a94899b7', [
+      { id: '4f15e43d-6647-440b-b39c-f001a94899b7:user', kind: 'user.message', sourceEventIds: ['4f15e43d-6647-440b-b39c-f001a94899b7'], data: { text: '前端都有啥依赖？', primaryTimelineUserMessage: true } },
+      { id: '4f15e43d-6647-440b-b39c-f001a94899b7:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['aad8de70-b999-4661-ab03-4ed7bc381f5c'], apiMessageId: 'msg_c377ef0651ba4f8b91748186f25bddc2', data: { text: '前端 @cotta/web 依赖很少' } },
+    ])
+    const partialHistory = userTurn('4f15e43d-6647-440b-b39c-f001a94899b7', [
+      { id: 'aad8de70-b999-4661-ab03-4ed7bc381f5c:assistant:0', kind: 'assistant.text', sourceEventIds: ['aad8de70-b999-4661-ab03-4ed7bc381f5c'], apiMessageId: 'msg_c377ef0651ba4f8b91748186f25bddc2', data: { text: '前端 @cotta/web 依赖很少' } },
+    ])
 
+    const blocks = reconcileTimelineTurns([live], [partialHistory])[0]!.blocks
+    const display = groupAssistantResponseFrames(groupTimelineBlocks(blocks))
 
+    expect(blocks.some((block) => block.kind === 'user.message' && typeof block.data === 'object' && block.data !== null && 'primaryTimelineUserMessage' in block.data && block.data.primaryTimelineUserMessage === true)).toBe(true)
+    expect(display.some((item) => item.type === 'assistant-response-frame')).toBe(true)
+  })
 
   it('streams generic content blocks and merges known deltas', () => {
     const accumulator = new LiveAssistantStreamAccumulator('user-1')
@@ -515,7 +528,10 @@ describe('timeline reconciliation', () => {
     let turns = [userTurn('user-1')]
     turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'stream-start', event: { type: 'message_start', message: { id: 'msg-1' } } }, emptyHistory, 'user-1', accumulator).turns
     turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'stream-text', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'final' } } }, emptyHistory, 'user-1', accumulator).turns
-    const history = userTurn('user-1', [{ id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'final' } }])
+    const history = userTurn('user-1', [
+      { id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'user-1', primaryTimelineUserMessage: true } },
+      { id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'final' } },
+    ])
     turns = reconcileTimelineTurns(turns, [history])
 
     turns = applySdkMessage(turns, { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'final' }] } }, timelineTurnIndex([history]), 'user-1', accumulator).turns

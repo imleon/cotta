@@ -428,6 +428,10 @@ function isPrimaryInputBlock(block: TimelineBlock): boolean {
   return block.kind.startsWith('user.') && isRecord(block.data) && block.data.primaryTimelineUserMessage === true
 }
 
+function isUserMessageBlock(block: TimelineBlock): boolean {
+  return ['user.message', 'user.image', 'user.file'].includes(block.kind)
+}
+
 function shouldFrameTimelineItem(item: TimelineRenderItem): boolean {
   return item.type === 'tool-call' || !isPrimaryInputBlock(item.block)
 }
@@ -1331,9 +1335,15 @@ export function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSum
   const mergedIncoming = incoming.map((turn) => {
     const liveTurn = current.find((item) => item.id === turn.id)
     if (!liveTurn) return turn
-    const liveBlocks = liveTurn.blocks.filter((block) => !['user.message', 'user.image', 'user.file'].includes(block.kind) && !blockIsRepresentedBy(block, incomingIndex))
+    const incomingHasUserMessage = turn.blocks.some(isUserMessageBlock)
+    const liveBlocks = liveTurn.blocks.filter((block) => {
+      if (isUserMessageBlock(block)) return !incomingHasUserMessage
+      return !blockIsRepresentedBy(block, incomingIndex)
+    })
     if (liveBlocks.length === 0) return turn
-    return { ...turn, rawStatus: 'running', displayStatus: 'running', blocks: [...turn.blocks, ...liveBlocks] }
+    const liveUserBlocks = liveBlocks.filter(isUserMessageBlock)
+    const liveReplyBlocks = liveBlocks.filter((block) => !isUserMessageBlock(block))
+    return { ...turn, rawStatus: 'running', displayStatus: 'running', blocks: [...liveUserBlocks, ...turn.blocks, ...liveReplyBlocks] }
   })
   const unreconciled = current.filter((turn) => !turnIsRepresentedBy(turn, incomingIndex))
   const firstIncomingOrder = mergedIncoming[0] ? turnOrderValue(mergedIncoming[0]) : null
@@ -1893,6 +1903,16 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
     setRawMessageSelection(null)
   }, [pendingPrimaryTurnUuid, projectId, sessionId, shouldScrollToBottomRef])
 
+  const cookingTurnId = cliCookingTurnId(visibleTurns, runState)
+  const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
+  if (cookingTurnId || activeTurnId) responseSkeletonTurnIdRef.current = cookingTurnId ?? activeTurnId
+  const responseSkeletonScrollKey = visibleTurns.flatMap((turn) => {
+    const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
+    const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
+    const cooking = turn.id === cookingTurnId || turn.id === activeTurnId
+    return shouldShowAssistantResponseSkeleton({ turn, cooking, lastAssistantFrameId, runState, fallbackTurnId: responseSkeletonTurnIdRef.current }) ? [turn.id] : []
+  }).join('|')
+
   useLayoutEffect(() => {
     const anchor = olderScrollAnchorRef.current
     if (!anchor) return
@@ -1912,12 +1932,15 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
     setShowScrollToBottom(!isTimelineAtBottom())
   }, [isTimelineAtBottom, visibleTurns])
 
+  useLayoutEffect(() => {
+    if (!responseSkeletonScrollKey || showScrollToBottom) return
+    const panel = timelinePanelRef.current
+    if (panel) panel.scrollTop = panel.scrollHeight
+  }, [responseSkeletonScrollKey, showScrollToBottom])
+
   if (timeline.isLoading && visibleTurns.length === 0) return <SessionTimelineSkeleton />
   if (timeline.isError && visibleTurns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
 
-  const cookingTurnId = cliCookingTurnId(visibleTurns, runState)
-  const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
-  if (cookingTurnId || activeTurnId) responseSkeletonTurnIdRef.current = cookingTurnId ?? activeTurnId
   const activeTask = tasks.find((task) => task.status === 'in_progress')
   const activeTaskLabel = activeTask ? `${activeTask.activeForm ?? activeTask.subject}...` : undefined
 

@@ -53,15 +53,19 @@ type VersionChanges = {
 }
 
 function createVersionChanges(): VersionChanges {
-  return { projectIds: new Set<string>(), projectsChanged: false, changedSessions: new Map() }
+  return {
+    projectIds: new Set<string>(),
+    projectsChanged: false,
+    changedSessions: new Map(),
+  }
 }
 
-type RefreshKind = 'shallow' | 'deep' | 'rebuild'
+export type SessionSummaryScanTarget = 'global' | { projectId: string }
 
-const refreshPriority: Record<RefreshKind, number> = { shallow: 1, deep: 2, rebuild: 3 }
-
-function strongerRefresh(left: RefreshKind | null, right: RefreshKind): RefreshKind {
-  return !left || refreshPriority[right] > refreshPriority[left] ? right : left
+type ObservationTimers = {
+  projectId?: string
+  debounce?: ReturnType<typeof setTimeout>
+  maxWait?: ReturnType<typeof setTimeout>
 }
 
 function projectIdFromPath(path: string): string {
@@ -95,10 +99,7 @@ function compareSessions(activity: SessionActivityTracker, left: SDKSessionInfo,
 }
 
 function sameProject(left: SummaryCacheProject, right: SummaryCacheProject): boolean {
-  return left.id === right.id
-    && left.name === right.name
-    && left.path === right.path
-    && left.lastActivityAt === right.lastActivityAt
+  return left.id === right.id && left.name === right.name && left.path === right.path && left.lastActivityAt === right.lastActivityAt
 }
 
 function defaultRunState(): SessionRunState {
@@ -108,13 +109,20 @@ function defaultRunState(): SessionRunState {
 function sameRunState(left: SessionRunState | null | undefined, right: SessionRunState | null | undefined): boolean {
   const leftState = left ?? defaultRunState()
   const rightState = right ?? defaultRunState()
-  return leftState.phase === rightState.phase
-    && leftState.activeUserMessageUuid === rightState.activeUserMessageUuid
-    && leftState.lastTurn?.id === rightState.lastTurn?.id
-    && leftState.lastTurn?.outcome === rightState.lastTurn?.outcome
+  return (
+    leftState.phase === rightState.phase &&
+    leftState.activeUserMessageUuid === rightState.activeUserMessageUuid &&
+    leftState.lastTurn?.id === rightState.lastTurn?.id &&
+    leftState.lastTurn?.outcome === rightState.lastTurn?.outcome
+  )
 }
 
-function toSessionSummary(activity: SessionActivityTracker, projectId: string, session: SDKSessionInfo, sessionRunStatesById?: Map<string, SessionRunState | null>): SessionSummary {
+function toSessionSummary(
+  activity: SessionActivityTracker,
+  projectId: string,
+  session: SDKSessionInfo,
+  sessionRunStatesById?: Map<string, SessionRunState | null>,
+): SessionSummary {
   return {
     id: session.sessionId,
     title: titleFromSession(session),
@@ -126,9 +134,7 @@ function toSessionSummary(activity: SessionActivityTracker, projectId: string, s
 
 function exactProjectSessions(activity: SessionActivityTracker, projectPath: string, sessions: SDKSessionInfo[]): SDKSessionInfo[] {
   const normalized = normalizeProjectPath(projectPath)
-  return sessions
-    .filter((session) => normalizeProjectPath(session.cwd ?? '') === normalized)
-    .sort((left, right) => compareSessions(activity, left, right))
+  return sessions.filter((session) => normalizeProjectPath(session.cwd ?? '') === normalized).sort((left, right) => compareSessions(activity, left, right))
 }
 
 function buildProjectSessionsWindow(
@@ -143,7 +149,13 @@ function buildProjectSessionsWindow(
   const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
   const ids = sessions.map((session) => session.sessionId)
   const start = input.cursor
-    ? resolveListCursor({ cursor: input.cursor, kind: 'project-sessions', epoch: paginationEpoch, ids, projectId })
+    ? resolveListCursor({
+        cursor: input.cursor,
+        kind: 'project-sessions',
+        epoch: paginationEpoch,
+        ids,
+        projectId,
+      })
     : 0
   const page = sessions.slice(start, start + limit)
   const hasMore = start + limit < sessions.length || !projectSessionsFullyLoaded
@@ -151,18 +163,27 @@ function buildProjectSessionsWindow(
   return {
     sessions: page.map((session) => toSessionSummary(activity, projectId, session, sessionRunStatesById)),
     hasMore,
-    nextCursor: hasMore && page.length > 0
-      ? createListCursor({ kind: 'project-sessions', epoch: paginationEpoch, ids, offset, projectId })
-      : null,
+    nextCursor:
+      hasMore && page.length > 0
+        ? createListCursor({
+            kind: 'project-sessions',
+            epoch: paginationEpoch,
+            ids,
+            offset,
+            projectId,
+          })
+        : null,
   }
 }
 
 function sameSession(left: SDKSessionInfo, right: SDKSessionInfo): boolean {
-  return left.sessionId === right.sessionId
-    && left.lastModified === right.lastModified
-    && left.fileSize === right.fileSize
-    && left.cwd === right.cwd
-    && titleFromSession(left) === titleFromSession(right)
+  return (
+    left.sessionId === right.sessionId &&
+    left.lastModified === right.lastModified &&
+    left.fileSize === right.fileSize &&
+    left.cwd === right.cwd &&
+    titleFromSession(left) === titleFromSession(right)
+  )
 }
 
 function sameSessionList(left: SDKSessionInfo[], right: SDKSessionInfo[]): boolean {
@@ -192,11 +213,13 @@ export class SessionSummaryCache {
   private readonly projectIdBySessionId = new Map<string, string>()
   readonly activity = new SessionActivityTracker()
   private mutationQueue: Promise<void> | null = null
-  private refreshPromise: Promise<void> | null = null
-  private pendingRefreshKind: RefreshKind | null = null
-  private scannedOffset = 0
+  private scanPromise: Promise<void> | null = null
+  private pendingGlobalScan = false
+  private readonly pendingProjectScans = new Set<string>()
+  private readonly observationTimers = new Map<string, ObservationTimers>()
+  private backgroundRefreshTimer?: ReturnType<typeof setInterval>
   private projectsFullyScanned = false
-  private backgroundRefreshStarted = false
+  private closed = false
   private projectsVersionValue = 0
   private readonly epoch = randomUUID()
   private readonly paginationEpoch = randomUUID()
@@ -237,55 +260,145 @@ export class SessionSummaryCache {
   }
 
   async ensureReady(): Promise<void> {
-    if (this.projectsById.size > 0 || this.refreshPromise) {
-      await (this.refreshPromise ?? Promise.resolve())
-      return
-    }
     try {
-      while (this.projectsById.size < 20 && !this.projectsFullyScanned) {
-        await this.runRefreshTask('deep')
-      }
+      await this.requestScan('global')
     } finally {
       this.startBackgroundRefreshLoop()
     }
   }
 
-  async scheduleRefresh(_input: RefreshInput = {}): Promise<void> {
-    await this.runRefreshTask('shallow')
+  async requestScan(target: SessionSummaryScanTarget): Promise<void> {
+    if (this.closed) return
+    if (target === 'global' || !this.projectsById.has(target.projectId)) {
+      this.pendingGlobalScan = true
+      this.pendingProjectScans.clear()
+    } else if (!this.pendingGlobalScan) {
+      this.pendingProjectScans.add(target.projectId)
+    }
+    if (!this.scanPromise) {
+      const scanPromise = (async () => {
+        let firstError: unknown
+        while (this.pendingGlobalScan || this.pendingProjectScans.size > 0) {
+          const global = this.pendingGlobalScan
+          const projectIds = global ? [] : [...this.pendingProjectScans]
+          this.pendingGlobalScan = false
+          this.pendingProjectScans.clear()
+          try {
+            await this.enqueueMutation(async () => {
+              if (global) return this.rebuildFromScratch()
+              for (const projectId of projectIds) await this.scanProject(projectId)
+            })
+          } catch (error) {
+            firstError ??= error
+          }
+        }
+        if (firstError) throw firstError
+      })()
+      this.scanPromise = scanPromise
+      void scanPromise
+        .finally(() => {
+          if (this.scanPromise === scanPromise) this.scanPromise = null
+        })
+        .catch(() => undefined)
+    }
+    await this.scanPromise
   }
 
-  async listProjects(input: { limit?: number; cursor?: string | null }): Promise<{ projects: ProjectSummary[]; hasMore: boolean; nextCursor: string | null }> {
+  async scheduleRefresh(_input: RefreshInput = {}): Promise<void> {
+    await this.requestScan('global')
+  }
+
+  observeSession(input: { sessionId: string; projectId?: string }): void {
+    if (this.closed) return
+    const timers = this.observationTimers.get(input.sessionId) ?? {}
+    if (input.projectId) timers.projectId = input.projectId
+    const scan = () => {
+      if (timers.debounce) clearTimeout(timers.debounce)
+      if (timers.maxWait) clearTimeout(timers.maxWait)
+      this.observationTimers.delete(input.sessionId)
+      const projectId = timers.projectId ?? this.projectIdBySessionId.get(input.sessionId)
+      void this.requestScan(projectId ? { projectId } : 'global').catch((error) => {
+        console.error('session-summary-cache:observation failed', error)
+      })
+    }
+    if (timers.debounce) clearTimeout(timers.debounce)
+    timers.debounce = setTimeout(scan, 800)
+    timers.debounce.unref?.()
+    if (!timers.maxWait) {
+      timers.maxWait = setTimeout(scan, 2_500)
+      timers.maxWait.unref?.()
+    }
+    this.observationTimers.set(input.sessionId, timers)
+  }
+
+  async notifySessionRunStateActive(sessionId: string): Promise<void> {
+    // Product rule: entering non-idle should mark an already-listed session immediately;
+    // returning to idle waits for listSessions so the list state changes with transcript visibility.
+    await this.enqueueMutation(async () => {
+      const projectId = this.projectIdBySessionId.get(sessionId)
+      if (!projectId) return
+      const nextRunState = this.sessionRunStateReader?.(sessionId) ?? null
+      if ((nextRunState ?? defaultRunState()).phase === 'idle') return
+      if (sameRunState(this.sessionRunStatesById.get(sessionId), nextRunState)) return
+      this.sessionRunStatesById.set(sessionId, nextRunState)
+      const versionChanges = createVersionChanges()
+      versionChanges.projectIds.add(projectId)
+      await this.publishVersionChanges(versionChanges)
+    })
+  }
+
+  close(): void {
+    this.closed = true
+    if (this.backgroundRefreshTimer) clearInterval(this.backgroundRefreshTimer)
+    for (const timers of this.observationTimers.values()) {
+      if (timers.debounce) clearTimeout(timers.debounce)
+      if (timers.maxWait) clearTimeout(timers.maxWait)
+    }
+    this.observationTimers.clear()
+  }
+
+  async listProjects(input: { limit?: number; cursor?: string | null }): Promise<{
+    projects: ProjectSummary[]
+    hasMore: boolean
+    nextCursor: string | null
+  }> {
     const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 20)))
     await this.ensureProjectWindow(input, limit)
     const ordered = [...this.projectsById.values()].sort(compareProjects)
     const ids = ordered.map((project) => project.id)
     const start = input.cursor
-      ? resolveListCursor({ cursor: input.cursor, kind: 'projects', epoch: this.paginationEpoch, ids })
+      ? resolveListCursor({
+          cursor: input.cursor,
+          kind: 'projects',
+          epoch: this.paginationEpoch,
+          ids,
+        })
       : 0
     const page = ordered.slice(start, start + limit)
     const hasMore = start + limit < ordered.length || !this.projectsFullyScanned
     const offset = start + page.length
     return {
-      projects: page.map(({ id, name, path, lastActivityAt }) => ({ id, name, path, lastActivityAt })),
+      projects: page.map(({ id, name, path, lastActivityAt }) => ({
+        id,
+        name,
+        path,
+        lastActivityAt,
+      })),
       hasMore,
-      nextCursor: hasMore && page.length > 0
-        ? createListCursor({ kind: 'projects', epoch: this.paginationEpoch, ids, offset })
-        : null,
+      nextCursor:
+        hasMore && page.length > 0
+          ? createListCursor({
+              kind: 'projects',
+              epoch: this.paginationEpoch,
+              ids,
+              offset,
+            })
+          : null,
     }
   }
 
-  private async ensureProjectWindow(input: { cursor?: string | null }, limit: number): Promise<void> {
-    while (!this.projectsFullyScanned) {
-      const ordered = [...this.projectsById.values()].sort(compareProjects)
-      const ids = ordered.map((project) => project.id)
-      const start = input.cursor
-        ? resolveListCursor({ cursor: input.cursor, kind: 'projects', epoch: this.paginationEpoch, ids })
-        : 0
-      if (start + limit <= ordered.length) return
-      const beforeOffset = this.scannedOffset
-      await this.runRefreshTask('deep')
-      if (this.scannedOffset === beforeOffset) return
-    }
+  private async ensureProjectWindow(_input: { cursor?: string | null }, _limit: number): Promise<void> {
+    if (!this.projectsFullyScanned) await this.requestScan('global')
   }
 
   async getProject(projectId: string): Promise<ProjectSummary | null> {
@@ -301,11 +414,17 @@ export class SessionSummaryCache {
   }
 
   private async discoverProjects(projectIds: string[]): Promise<void> {
-    if (this.projectsFullyScanned || projectIds.every((projectId) => this.projectsById.has(projectId))) return
-    await this.runRefreshTask('rebuild')
+    if (projectIds.every((projectId) => this.projectsById.has(projectId))) return
+    await this.requestScan('global')
   }
 
-  async queryProjectSessions(input: { projects: Array<{ projectId: string; limit?: number; selectedSessionId?: string }> }): Promise<{ sessionsByProject: Record<string, ProjectSessionsWindow> }> {
+  async queryProjectSessions(input: {
+    projects: Array<{
+      projectId: string
+      limit?: number
+      selectedSessionId?: string
+    }>
+  }): Promise<{ sessionsByProject: Record<string, ProjectSessionsWindow> }> {
     await this.discoverProjects(input.projects.map((project) => project.projectId))
     const sessionsByProject: Record<string, ProjectSessionsWindow> = {}
     for (const { projectId, limit, selectedSessionId } of input.projects) {
@@ -333,7 +452,10 @@ export class SessionSummaryCache {
     return { sessionsByProject }
   }
 
-  async listProjectSessions(projectId: string, input: { limit?: number; cursor?: string | null }): Promise<{
+  async listProjectSessions(
+    projectId: string,
+    input: { limit?: number; cursor?: string | null },
+  ): Promise<{
     project: ProjectSummary
     sessions: SessionSummary[]
     defaultSessionId: string | null
@@ -371,56 +493,70 @@ export class SessionSummaryCache {
   }
 
   private async maybeBackfillProjectSessions(project: SummaryCacheProject, input: { limit?: number; cursor?: string | null }): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const currentProject = this.projectsById.get(project.id)
-      if (!currentProject) return
-      const sessions = this.sessionInfosByProjectId.get(currentProject.id) ?? []
-      const ids = sessions.map((session) => session.sessionId)
-      const start = input.cursor
-        ? resolveListCursor({ cursor: input.cursor, kind: 'project-sessions', epoch: this.paginationEpoch, ids, projectId: currentProject.id })
-        : 0
-      const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
-      const needsMoreFromCache = start + limit > sessions.length
-      if (!needsMoreFromCache || (this.projectSessionsFullyLoadedById.get(currentProject.id) ?? this.projectsFullyScanned)) return
+    const sessions = this.sessionInfosByProjectId.get(project.id) ?? []
+    const ids = sessions.map((session) => session.sessionId)
+    const start = input.cursor
+      ? resolveListCursor({
+          cursor: input.cursor,
+          kind: 'project-sessions',
+          epoch: this.paginationEpoch,
+          ids,
+          projectId: project.id,
+        })
+      : 0
+    const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
+    if (start + limit <= sessions.length || (this.projectSessionsFullyLoadedById.get(project.id) ?? this.projectsFullyScanned)) return
+    await this.requestScan({ projectId: project.id })
+  }
 
-      const loaded = exactProjectSessions(this.activity, currentProject.path, await listSessions({
+  private async scanProject(projectId: string): Promise<void> {
+    const currentProject = this.projectsById.get(projectId)
+    if (!currentProject) return
+    const loaded = exactProjectSessions(
+      this.activity,
+      currentProject.path,
+      await listSessions({
         dir: currentProject.path,
         includeWorktrees: true,
         includeProgrammatic: true,
-      }))
-      const versionChanges = createVersionChanges()
-      const previousSessions = this.sessionInfosByProjectId.get(project.id) ?? []
-      const loadedIds = new Set(loaded.map((session) => session.sessionId))
-      for (const session of previousSessions) {
-        if (loadedIds.has(session.sessionId)) continue
-        this.sessionRunStatesById.delete(session.sessionId)
-        this.projectIdBySessionId.delete(session.sessionId)
-        versionChanges.projectIds.add(project.id)
-      }
-      for (const session of loaded) {
-        this.removeSessionFromPreviousProject(session.sessionId, project.id, versionChanges)
-        this.projectIdBySessionId.set(session.sessionId, project.id)
-        const previous = previousSessions.find((candidate) => candidate.sessionId === session.sessionId)
-        if (!previous || !sameSession(previous, session)) this.recordSessionChange(versionChanges, project.id, project.path, session)
-      }
-      if (!sameSessionList(previousSessions, loaded)) versionChanges.projectIds.add(project.id)
-      this.sessionInfosByProjectId.set(project.id, loaded)
-      if (setBooleanIfChanged(this.projectSessionsFullyLoadedById, project.id, true)) versionChanges.projectIds.add(project.id)
-      for (const projectId of this.refreshSessionRunStates([project.id])) versionChanges.projectIds.add(projectId)
-      if (loaded.length === 0) {
-        this.projectsById.delete(project.id)
-        this.sessionInfosByProjectId.delete(project.id)
-        this.projectSessionsFullyLoadedById.delete(project.id)
-        versionChanges.projectsChanged = true
-      } else if (this.updateProjectFromSessions(project.path, loaded)) {
-        versionChanges.projectsChanged = true
-      }
-      await this.publishVersionChanges(versionChanges)
-    })
+      }),
+    )
+    const versionChanges = createVersionChanges()
+    const previousSessions = this.sessionInfosByProjectId.get(currentProject.id) ?? []
+    const loadedIds = new Set(loaded.map((session) => session.sessionId))
+    for (const session of previousSessions) {
+      if (loadedIds.has(session.sessionId)) continue
+      this.sessionRunStatesById.delete(session.sessionId)
+      this.projectIdBySessionId.delete(session.sessionId)
+      versionChanges.projectIds.add(currentProject.id)
+    }
+    for (const session of loaded) {
+      this.removeSessionFromPreviousProject(session.sessionId, currentProject.id, versionChanges)
+      this.projectIdBySessionId.set(session.sessionId, currentProject.id)
+      const previous = previousSessions.find((candidate) => candidate.sessionId === session.sessionId)
+      if (!previous || !sameSession(previous, session)) this.recordSessionChange(versionChanges, currentProject.id, currentProject.path, session)
+    }
+    if (!sameSessionList(previousSessions, loaded)) versionChanges.projectIds.add(currentProject.id)
+    this.sessionInfosByProjectId.set(currentProject.id, loaded)
+    if (setBooleanIfChanged(this.projectSessionsFullyLoadedById, currentProject.id, true)) versionChanges.projectIds.add(currentProject.id)
+    for (const projectId of this.refreshSessionRunStates([currentProject.id])) versionChanges.projectIds.add(projectId)
+    if (loaded.length === 0) {
+      this.projectsById.delete(currentProject.id)
+      this.sessionInfosByProjectId.delete(currentProject.id)
+      this.projectSessionsFullyLoadedById.delete(currentProject.id)
+      versionChanges.projectsChanged = true
+    } else if (this.updateProjectFromSessions(currentProject.path, loaded)) {
+      versionChanges.projectsChanged = true
+    }
+    await this.publishVersionChanges(versionChanges)
   }
 
   private recordSessionChange(versionChanges: VersionChanges, projectId: string, projectPath: string, sessionInfo: SDKSessionInfo): void {
-    versionChanges.changedSessions.set(sessionInfo.sessionId, { projectId, projectPath, sessionInfo })
+    versionChanges.changedSessions.set(sessionInfo.sessionId, {
+      projectId,
+      projectPath,
+      sessionInfo,
+    })
   }
 
   private refreshSessionRunStates(projectIds?: Iterable<string>): Set<string> {
@@ -437,17 +573,11 @@ export class SessionSummaryCache {
   }
 
   private startBackgroundRefreshLoop(): void {
-    if (this.backgroundRefreshStarted) return
-    this.backgroundRefreshStarted = true
-    setInterval(() => {
-      void this.runRefreshTask('shallow').catch((error) => console.error('session-summary-cache:shallow-refresh failed', error))
-    }, 15_000)
-    setInterval(() => {
-      void this.runRefreshTask('deep').catch((error) => console.error('session-summary-cache:deep-refresh failed', error))
-    }, 60_000)
-    setInterval(() => {
-      void this.runRefreshTask('rebuild').catch((error) => console.error('session-summary-cache:rebuild failed', error))
+    if (this.backgroundRefreshTimer || this.closed) return
+    this.backgroundRefreshTimer = setInterval(() => {
+      void this.requestScan('global').catch((error) => console.error('session-summary-cache:background-scan failed', error))
     }, 30 * 60_000)
+    this.backgroundRefreshTimer.unref?.()
   }
 
   private enqueueMutation<T>(task: () => Promise<T>): Promise<T> {
@@ -457,80 +587,15 @@ export class SessionSummaryCache {
     } catch (error) {
       next = Promise.reject(error)
     }
-    const settled = next.then(() => undefined, () => undefined)
+    const settled = next.then(
+      () => undefined,
+      () => undefined,
+    )
     this.mutationQueue = settled
     void settled.finally(() => {
       if (this.mutationQueue === settled) this.mutationQueue = null
     })
     return next
-  }
-
-  private async runRefreshTask(kind: RefreshKind): Promise<void> {
-    if (this.refreshPromise) {
-      this.pendingRefreshKind = strongerRefresh(this.pendingRefreshKind, kind)
-      await this.refreshPromise
-      return
-    }
-    this.refreshPromise = (async () => {
-      let current: RefreshKind | null = kind
-      let firstError: unknown
-      while (current) {
-        try {
-          await this.enqueueMutation(() => this.executeRefresh(current!))
-        } catch (error) {
-          firstError ??= error
-        }
-        current = this.pendingRefreshKind
-        this.pendingRefreshKind = null
-      }
-      if (firstError) throw firstError
-    })()
-    try {
-      await this.refreshPromise
-    } finally {
-      this.refreshPromise = null
-    }
-  }
-
-  private async executeRefresh(kind: RefreshKind): Promise<void> {
-    if (kind === 'rebuild') return this.rebuildFromScratch()
-    const coveredPages = Math.max(1, Math.ceil(this.scannedOffset / this.pageSize))
-    const maxPages = kind === 'shallow' ? 2 : Math.max(coveredPages + 4, 4)
-    return this.runRefreshWindow(0, maxPages)
-  }
-
-  private async runRefreshWindow(startOffset: number, maxPages: number): Promise<void> {
-    let offset = startOffset
-    let reachedEnd = false
-    const pages: SDKSessionInfo[][] = []
-    for (let pagesRead = 0; pagesRead < maxPages; pagesRead += 1) {
-      const page = await listSessions({
-        limit: this.pageSize,
-        offset,
-        includeWorktrees: true,
-        includeProgrammatic: true,
-      })
-      pages.push(page)
-      offset += page.length
-      if (page.length < this.pageSize) {
-        reachedEnd = true
-        break
-      }
-    }
-
-    const scannedSessions = pages.flat()
-    const versionChanges = createVersionChanges()
-    for (const page of pages) this.applySessionsPage(page, versionChanges)
-    this.reconcileCoveredSessions(scannedSessions, reachedEnd, versionChanges)
-    this.projectsFullyScanned = reachedEnd
-    for (const projectId of this.projectsById.keys()) {
-      if (setBooleanIfChanged(this.projectSessionsFullyLoadedById, projectId, reachedEnd)) {
-        versionChanges.projectIds.add(projectId)
-      }
-    }
-    for (const projectId of this.refreshSessionRunStates()) versionChanges.projectIds.add(projectId)
-    this.scannedOffset = Math.max(this.scannedOffset, offset)
-    await this.publishVersionChanges(versionChanges)
   }
 
   private async rebuildFromScratch(): Promise<void> {
@@ -561,8 +626,16 @@ export class SessionSummaryCache {
         const currentProject = projectsById.get(projectId)
         const lastActivityAt = this.activity.get(session)
         const nextProject: SummaryCacheProject = currentProject
-          ? { ...currentProject, lastActivityAt: Math.max(currentProject.lastActivityAt, lastActivityAt) }
-          : { id: projectId, name: projectNameFromPath(path), path, lastActivityAt }
+          ? {
+              ...currentProject,
+              lastActivityAt: Math.max(currentProject.lastActivityAt, lastActivityAt),
+            }
+          : {
+              id: projectId,
+              name: projectNameFromPath(path),
+              path,
+              lastActivityAt,
+            }
         projectsById.set(projectId, nextProject)
       }
       offset += page.length
@@ -634,7 +707,6 @@ export class SessionSummaryCache {
     for (const [sessionId, projectId] of snapshot.projectIdBySessionId) this.projectIdBySessionId.set(sessionId, projectId)
 
     this.projectsFullyScanned = snapshot.projectsFullyScanned
-    this.scannedOffset = snapshot.scannedSessionCount
     return versionChanges
   }
 
@@ -733,7 +805,11 @@ export class SessionSummaryCache {
     }
     if (!versionChanges.projectsChanged && projectVersions.length === 0) return
     if (versionChanges.projectsChanged) this.projectsVersionValue += 1
-    const event: SummaryVersionEvent = { epoch: this.epoch, projectsVersion: this.projectsVersionValue, projectVersions }
+    const event: SummaryVersionEvent = {
+      epoch: this.epoch,
+      projectsVersion: this.projectsVersionValue,
+      projectVersions,
+    }
     for (const listener of this.listeners) listener(event)
   }
 }

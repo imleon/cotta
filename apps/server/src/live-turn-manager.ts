@@ -3,9 +3,13 @@ import { query, type Query, type SDKMessage, type SDKResultError, type SDKUserMe
 import type { EffortLevel, ModelSelection, PermissionMode, SessionRunState } from '@cotta/shared'
 import { projectPathFromId } from './claude-code-api.js'
 import type { LiveEventStore } from './live-event-store.js'
-import type { SessionSummaryCache } from './session-summary-cache.js'
 
 const IDLE_RUNTIME_TTL_MS = 10 * 60 * 1000
+
+type SessionSummaryObserver = {
+  observeSession(input: { sessionId: string; projectId?: string }): unknown
+  notifySessionRunStateActive?(sessionId: string): unknown
+}
 
 function sdkUserMessage(input: { uuid: SDKUserMessage['uuid']; text: string; sessionId: string; startedAt: number }): SDKUserMessage {
   return {
@@ -100,7 +104,7 @@ export class LiveTurnManager {
 
   constructor(
     private readonly liveEventStore?: LiveEventStore,
-    private readonly sessionSummaryCache?: SessionSummaryCache,
+    private readonly sessionSummaryCache?: SessionSummaryObserver,
   ) {}
 
   sessionRunState(sessionId: string): SessionRunState | null {
@@ -128,13 +132,14 @@ export class LiveTurnManager {
     }
   }
 
-  private scheduleSummaryRefresh(reason: 'session-created' | 'session-stale'): void {
-    void this.sessionSummaryCache?.scheduleRefresh({ reason }).catch((error) => console.error('session-summary-cache:live-refresh failed', error))
-  }
-
-  private setRunState(sessionId: string, state: SessionRunState, reason: 'session-created' | 'session-stale'): void {
-    this.runStateBySession.set(sessionId, state)
-    this.scheduleSummaryRefresh(reason)
+  private setRunState(runtime: SessionRuntime, state: SessionRunState): void {
+    this.runStateBySession.set(runtime.sessionId, state)
+    if (state.phase !== 'idle') {
+      Promise.resolve(this.sessionSummaryCache?.notifySessionRunStateActive?.(runtime.sessionId)).catch((error) => {
+        console.error('session-summary-cache:run-state-active failed', error)
+      })
+    }
+    this.sessionSummaryCache?.observeSession({ sessionId: runtime.sessionId, projectId: runtime.projectId })
   }
 
   private clearIdleTimer(runtime: SessionRuntime): void {
@@ -164,12 +169,12 @@ export class LiveTurnManager {
     }
   }
 
-  private finishTurn(sessionId: string, userMessageUuid: string, outcome: 'success' | 'error'): void {
-    this.setRunState(sessionId, {
+  private finishTurn(runtime: SessionRuntime, userMessageUuid: string, outcome: 'success' | 'error'): void {
+    this.setRunState(runtime, {
       phase: 'idle',
       activeUserMessageUuid: null,
       lastTurn: { id: userMessageUuid, outcome },
-    }, 'session-stale')
+    })
   }
 
   ensureRuntime(input: { projectId: string; sessionId: string; permissionMode?: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): void {
@@ -202,7 +207,7 @@ export class LiveTurnManager {
     const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
     const userMessage = sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() })
     runtime.currentUserMessageUuid = userMessageUuid
-    this.setRunState(sessionId, { phase: 'running', activeUserMessageUuid: userMessageUuid, lastTurn: null }, 'session-created')
+    this.setRunState(runtime, { phase: 'running', activeUserMessageUuid: userMessageUuid, lastTurn: null })
     this.persist(runtime, userMessage)
     runtime.input.push(userMessage)
 
@@ -260,14 +265,14 @@ export class LiveTurnManager {
       for await (const message of runtime.query) {
         const liveState = liveSessionStateFromSdkMessage(message)
         if (liveState && liveState !== 'idle' && runtime.currentUserMessageUuid) {
-          this.setRunState(runtime.sessionId, { phase: liveState, activeUserMessageUuid: runtime.currentUserMessageUuid, lastTurn: null }, 'session-stale')
+          this.setRunState(runtime, { phase: liveState, activeUserMessageUuid: runtime.currentUserMessageUuid, lastTurn: null })
         }
 
         if (!runtime.currentUserMessageUuid) continue
         this.publish(runtime, message)
 
         if (message.type === 'result') {
-          this.finishTurn(runtime.sessionId, runtime.currentUserMessageUuid, message.subtype === 'success' ? 'success' : 'error')
+          this.finishTurn(runtime, runtime.currentUserMessageUuid, message.subtype === 'success' ? 'success' : 'error')
           runtime.currentUserMessageUuid = null
           this.scheduleIdleClose(runtime)
         }
@@ -280,7 +285,7 @@ export class LiveTurnManager {
           error: error instanceof Error ? error.message : String(error),
           sessionId: runtime.sessionId,
         }))
-        this.finishTurn(runtime.sessionId, userMessageUuid, 'error')
+        this.finishTurn(runtime, userMessageUuid, 'error')
       }
     } finally {
       runtime.currentUserMessageUuid = null

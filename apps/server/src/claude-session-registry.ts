@@ -6,7 +6,6 @@ import { DatabaseSync } from 'node:sqlite'
 import type { SessionObservation, SessionObservationSort, SessionObservationsResponse, SessionRunState } from '@cotta/shared'
 
 const MAX_SANE_EPOCH_MS = 4_000_000_000_000_000
-const CLI_BUSY_HOLD_MS = 3_000
 const SESSION_FILE = /^(\d+)\.json$/
 const SORT_COLUMNS: Record<SessionObservationSort, string> = {
   id: 'id', eventKind: 'event_kind', observedAtMs: 'observed_at_ms', fileName: 'file_name', filePath: 'file_path', filePid: 'file_pid',
@@ -34,10 +33,15 @@ export type ClaudeSessionRegistryOptions = {
   sessionsDir?: string
   dbPath?: string
   debounceMs?: number
-  cliBusyHoldMs?: number
+}
+
+export type ClaudeSessionRegistryChangedSession = {
+  sessionId: string
+  cwd: string | null
 }
 
 export type ClaudeSessionRegistryChange = {
+  changedSessions: ClaudeSessionRegistryChangedSession[]
   idleSessionIds: string[]
   activeSessionIds: string[]
 }
@@ -130,8 +134,6 @@ export class ClaudeSessionRegistry {
   private readonly insertStatement
   private readonly sessionsDir: string
   private readonly debounceMs: number
-  private readonly cliBusyHoldMs: number
-  private readonly cliBusyHoldUntilBySessionId = new Map<string, number>()
   private snapshots = new Map<string, Snapshot>()
   private watcher: FSWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -143,7 +145,6 @@ export class ClaudeSessionRegistry {
     const dbPath = options.dbPath ?? defaultDbPath()
     this.sessionsDir = options.sessionsDir ?? defaultSessionsDir()
     this.debounceMs = options.debounceMs ?? 100
-    this.cliBusyHoldMs = options.cliBusyHoldMs ?? CLI_BUSY_HOLD_MS
     mkdirSync(dirname(dbPath), { recursive: true })
     this.db = new DatabaseSync(dbPath)
     this.migrate()
@@ -197,9 +198,6 @@ export class ClaudeSessionRegistry {
     if (status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
     if (status === 'shell') return { phase: 'cli_shell', activeUserMessageUuid: null }
     if (status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
-    const holdUntil = this.cliBusyHoldUntilBySessionId.get(sessionId)
-    if (holdUntil && holdUntil > Date.now()) return { phase: 'cli_busy', activeUserMessageUuid: null }
-    this.cliBusyHoldUntilBySessionId.delete(sessionId)
     return null
   }
 
@@ -263,31 +261,29 @@ export class ClaudeSessionRegistry {
       this.db.exec('COMMIT')
       const idleSessionIds = new Set<string>()
       const activeSessionIds = new Set<string>()
-      for (const snapshot of [...created, ...changed]) {
+      const changedSessionsById = new Map<string, ClaudeSessionRegistryChangedSession>()
+      const addChangedSession = (snapshot: Snapshot) => {
         const sessionId = stringField(snapshot.payload, 'sessionId')
+        if (sessionId) changedSessionsById.set(sessionId, { sessionId, cwd: stringField(snapshot.payload, 'cwd') })
+        return sessionId
+      }
+      for (const snapshot of [...created, ...changed]) {
+        const sessionId = addChangedSession(snapshot)
         if (!sessionId) continue
         const previousActiveSessionId = activeSessionId(this.snapshots.get(snapshot.fileName))
         const nextActiveSessionId = activeSessionId(snapshot)
-        if (previousActiveSessionId && previousActiveSessionId !== nextActiveSessionId) {
-          idleSessionIds.add(previousActiveSessionId)
-          this.cliBusyHoldUntilBySessionId.set(previousActiveSessionId, Date.now() + this.cliBusyHoldMs)
-        }
-        if (nextActiveSessionId) {
-          activeSessionIds.add(nextActiveSessionId)
-          this.cliBusyHoldUntilBySessionId.delete(nextActiveSessionId)
-        }
+        if (previousActiveSessionId && previousActiveSessionId !== nextActiveSessionId) idleSessionIds.add(previousActiveSessionId)
+        if (nextActiveSessionId) activeSessionIds.add(nextActiveSessionId)
       }
       for (const snapshot of deleted) {
+        addChangedSession(snapshot)
         const sessionId = activeSessionId(snapshot)
-        if (sessionId) {
-          idleSessionIds.add(sessionId)
-          this.cliBusyHoldUntilBySessionId.set(sessionId, Date.now() + this.cliBusyHoldMs)
-        }
+        if (sessionId) idleSessionIds.add(sessionId)
       }
       for (const sessionId of activeSessionIds) idleSessionIds.delete(sessionId)
       this.snapshots = next
       if (created.length + changed.length + deleted.length > 0) {
-        const change = { idleSessionIds: [...idleSessionIds], activeSessionIds: [...activeSessionIds] }
+        const change = { changedSessions: [...changedSessionsById.values()], idleSessionIds: [...idleSessionIds], activeSessionIds: [...activeSessionIds] }
         for (const listener of this.listeners) listener(change)
       }
     } catch (error) {

@@ -363,7 +363,7 @@ const timelineMessageClass = {
   timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-within:opacity-100',
   timestampAssistant: 'block group-hover:opacity-100 focus-within:opacity-100',
   assistantFrame: 'group w-full max-w-none justify-self-stretch [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
-  assistantFrameBody: 'grid min-w-0 gap-2.5',
+  assistantFrameBody: 'grid min-w-0 gap-2.5 [&>.timeline-tool-call:last-child]:mb-2',
 }
 
 function thinkingTextFromBlock(block: TimelineBlock): string | null {
@@ -774,7 +774,7 @@ export function TimelineBlockView({ block, timestamp, source, onViewRaw }: { blo
 
 const TimelineRenderItemView = memo(function TimelineRenderItemView({ item, timestamp, source, onViewRaw }: { item: TimelineRenderItem; timestamp?: number; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void }) {
   if (item.type === 'block') return <TimelineBlockView block={item.block} timestamp={timestamp} source={source} onViewRaw={onViewRaw} />
-  return <ToolCallBlockView toolUse={item.toolUse} results={item.results} />
+  return <div className="timeline-tool-call"><ToolCallBlockView toolUse={item.toolUse} results={item.results} /></div>
 })
 
 type ToastNotification = { message: string; tone: 'success' | 'error' }
@@ -1154,7 +1154,8 @@ export function shouldShowAssistantResponseSkeleton(input: { turn: TurnSummary; 
 }
 
 function CliCookingIndicator({ label = 'Cooking…' }: { label?: string }) {
-  return <span className="cli-cooking text-[13px] leading-[1.6]" role="status"><span className="cli-cooking-mark" aria-hidden="true" /> {label}</span>
+  const paceClass = useRef(Math.random() < 0.5 ? 'cli-cooking-medium' : 'cli-cooking-slow').current
+  return <span className={`cli-cooking ${paceClass} text-[13px] leading-[1.6]`} role="status"><span className="cli-cooking-mark" aria-hidden="true" /> {label}</span>
 }
 
 function upsertBlock(blocks: TimelineBlock[], block: TimelineBlock): TimelineBlock[] {
@@ -1736,8 +1737,6 @@ function useSessionTimelineData(
         liveAccumulatorRef.current = null
         setLiveActive(false)
         onLiveTurnChangeRef.current?.(null)
-        void refetchSessionInfoRef.current()
-        onSessionListStaleRef.current?.()
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottomRef.current?.() ?? true
     }

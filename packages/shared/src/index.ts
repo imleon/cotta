@@ -31,6 +31,11 @@ export const listVersionsEventSchema = z.object({
     projectId: z.string(),
     version: z.number().int().nonnegative(),
   })),
+  sessionChanges: z.array(z.object({
+    projectId: z.string(),
+    sessionId: z.string(),
+    kind: z.enum(['changed', 'removed']),
+  })),
 })
 
 export type ListVersionsEvent = z.infer<typeof listVersionsEventSchema>

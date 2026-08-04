@@ -198,6 +198,69 @@ describe('SessionSummaryCache', () => {
     error.mockRestore()
   })
 
+  it('keeps manual refresh immediate when no session target is provided', async () => {
+    vi.useFakeTimers()
+    const cache = new SessionSummaryCache(10)
+
+    await cache.scheduleRefresh({ reason: 'manual' })
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    expect(listSessionsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('schedules a targeted fallback scan after refreshing a session target', async () => {
+    vi.useFakeTimers()
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock.mockResolvedValue([session('s1')])
+
+    await cache.scheduleRefresh({ reason: 'manual', projectId: projectId('/repo/a'), sessionId: 's1' })
+    expect(listSessionsMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(799)
+    expect(listSessionsMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(listSessionsMock).toHaveBeenCalledTimes(2)
+    expect(listSessionsMock).toHaveBeenLastCalledWith(expect.objectContaining({ dir: '/repo/a' }))
+  })
+
+  it('debounces targeted fallback scans from repeated manual refreshes', async () => {
+    vi.useFakeTimers()
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock.mockResolvedValue([session('s1')])
+
+    await cache.scheduleRefresh({ reason: 'manual', projectId: projectId('/repo/a'), sessionId: 's1' })
+    await vi.advanceTimersByTimeAsync(400)
+    await cache.scheduleRefresh({ reason: 'manual', projectId: projectId('/repo/a'), sessionId: 's1' })
+    expect(listSessionsMock).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(799)
+    expect(listSessionsMock).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(listSessionsMock).toHaveBeenCalledTimes(3)
+    expect(listSessionsMock).toHaveBeenLastCalledWith(expect.objectContaining({ dir: '/repo/a' }))
+  })
+
+  it('publishes session changes for changed, removed, and moved sessions', async () => {
+    const cache = new SessionSummaryCache(10)
+    const events: unknown[] = []
+    cache.subscribe((event) => events.push(event))
+    listSessionsMock.mockResolvedValueOnce([session('s1', '/repo/a', 1), session('moved', '/repo/a', 1), session('deleted', '/repo/a', 1)])
+    await cache.requestScan('global')
+    events.length = 0
+
+    listSessionsMock.mockResolvedValueOnce([session('s1', '/repo/a', 2), session('moved', '/repo/b', 2)])
+    await cache.requestScan('global')
+
+    expect(events.at(-1)).toMatchObject({
+      sessionChanges: expect.arrayContaining([
+        { projectId: projectId('/repo/a'), sessionId: 's1', kind: 'changed' },
+        { projectId: projectId('/repo/a'), sessionId: 'deleted', kind: 'removed' },
+        { projectId: projectId('/repo/a'), sessionId: 'moved', kind: 'removed' },
+        { projectId: projectId('/repo/b'), sessionId: 'moved', kind: 'changed' },
+      ]),
+    })
+  })
+
   it('publishes non-idle runState immediately for known sessions only', async () => {
     const cache = new SessionSummaryCache(10)
     let runState: SessionRunState = { phase: 'idle', activeUserMessageUuid: null }

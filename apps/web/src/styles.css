@@ -3472,6 +3472,28 @@ h2 {
   39.75%, 60.25% { content: '✽'; }
 }
 
+@keyframes cli-cooking-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+.cli-cooking {
+  background: linear-gradient(90deg, var(--tl-muted) 0%, var(--tl-muted) 35%, color-mix(in srgb, var(--tl-muted) 35%, white) 50%, var(--tl-muted) 65%, var(--tl-muted) 100%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: cli-cooking-shimmer 2.8s linear infinite;
+}
+
+.cli-cooking-medium {
+  animation-duration: 2.8s;
+}
+
+.cli-cooking-slow {
+  animation-duration: 4.2s;
+}
+
 .cli-cooking-mark {
   display: inline-block;
   width: 1em;
@@ -3498,6 +3520,13 @@ h2 {
   .sidebar-motion-exiting .project-card,
   .sidebar-motion-exiting .session-row {
     animation: none !important;
+  }
+
+  .cli-cooking {
+    background: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+    animation: none;
   }
 
   .cli-cooking-mark::before {

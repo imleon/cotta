@@ -495,6 +495,13 @@ describe('timeline reconciliation', () => {
     expect(display.some((item) => item.type === 'assistant-response-frame')).toBe(true)
   })
 
+  it('does not pin an older user turn last because of a late completedAt', () => {
+    const staleOlderTurn = { ...userTurn('sqlite-options'), rawStatus: 'complete', displayStatus: 'complete', startedAt: undefined, completedAt: 10_000 }
+    const newerHistory = { ...userTurn('newer-history'), rawStatus: 'complete', displayStatus: 'complete', startedAt: 300, completedAt: 310 }
+
+    expect(reconcileTimelineTurns([staleOlderTurn], [newerHistory]).map((turn) => turn.id)).toEqual(['sqlite-options', 'newer-history'])
+  })
+
   it('streams generic content blocks and merges known deltas', () => {
     const accumulator = new LiveAssistantStreamAccumulator('user-1')
     const events = [

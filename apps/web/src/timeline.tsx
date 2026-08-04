@@ -120,8 +120,8 @@ function HighlightedCode({ className, children }: { className?: string; children
     <div className="markdown-code-block" data-wrap={wrapped ? 'true' : 'false'}>
       <div className="markdown-code-toolbar">
         {explicitLang ? <span className="markdown-code-language">{explicitLang}</span> : null}
-        <button type="button" aria-label={wrapped ? 'Disable line wrap' : 'Enable line wrap'} title={wrapped ? 'No wrap' : 'Wrap'} onClick={() => setWrapped((value) => !value)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h8a3 3 0 1 1 0 6H9" /><path d="m11 13-2 3 2 3" /></svg></button>
-        <button type="button" aria-label="Copy code" title={copyStatus} onClick={handleCopy}>{copyStatus === 'Copied' ? <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10.5 4 4L16 6" /></svg> : <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M4 13V5a1 1 0 0 1 1-1h8" /></svg>}</button>
+        <button type="button" aria-label={wrapped ? 'Disable line wrap' : 'Enable line wrap'} data-tooltip={wrapped ? 'No wrap' : 'Wrap'} onClick={() => setWrapped((value) => !value)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h8a3 3 0 1 1 0 6H9" /><path d="m11 13-2 3 2 3" /></svg></button>
+        <button type="button" aria-label="Copy code" data-tooltip={copyStatus} onClick={handleCopy}>{copyStatus === 'Copied' ? <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10.5 4 4L16 6" /></svg> : <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M4 13V5a1 1 0 0 1 1-1h8" /></svg>}</button>
       </div>
       {html ? <div className="shiki-code" dangerouslySetInnerHTML={{ __html: html }} /> : <pre><code className={className}>{children}</code></pre>}
     </div>
@@ -1103,7 +1103,8 @@ function turnIsRepresentedBy(turn: TurnSummary, index: TimelineTurnIndex): boole
 }
 
 function turnOrderValue(turn: TurnSummary): number | null {
-  return turn.startedAt ?? turn.completedAt ?? null
+  if (turn.startedAt !== undefined) return turn.startedAt
+  return turn.blocks.some(isUserMessageBlock) ? null : turn.completedAt ?? null
 }
 
 function isLiveTurn(turn: TurnSummary): boolean {
@@ -1813,9 +1814,11 @@ export function SessionTaskList({ tasks }: { tasks: SessionTask[] }) {
   return (
     <section className="session-task-list" aria-label="Session tasks">
       <ul>
-        {tasks.map((task) => <li key={task.key}>
+        {tasks.map((task) => <li className={`session-task-row session-task-row-${task.status}`} key={task.key}>
           <span className={`session-task-status session-task-status-${task.status}`} role="img" aria-label={statusLabel[task.status]}>{task.status === 'completed' ? <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-5" /></svg> : null}</span>
-          <span className="session-task-subject"><span className="session-task-number">#{task.taskId}</span> {task.subject}</span>
+          <span className="session-task-state">{statusLabel[task.status]}</span>
+          <span className="session-task-number">#{task.taskId}</span>
+          <span className="session-task-subject">{task.subject}</span>
           {task.blockedBy.length > 0 ? <span className="session-task-blocked">› blocked by {task.blockedBy.map((taskId) => `#${taskId}`).join(', ')}</span> : null}
         </li>)}
       </ul>

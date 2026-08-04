@@ -1586,6 +1586,10 @@ function ProjectsDashboard() {
         desiredProjectVersionsRef.current.set(projectId, Math.max(desiredProjectVersionsRef.current.get(projectId) ?? 0, version))
       }
       if (epochChanged || desiredProjectsVersionRef.current > acknowledgedProjectsVersionRef.current) void refreshProjectsOnly()
+      if (selectedProjectId && selectedSessionId && event.sessionChanges.some((change) => change.kind === 'changed' && change.projectId === selectedProjectId && change.sessionId === selectedSessionId)) {
+        void queryClient.refetchQueries({ queryKey: ['session-info', selectedProjectId, selectedSessionId], exact: true })
+        void queryClient.refetchQueries({ queryKey: ['session-timeline', selectedProjectId, selectedSessionId], exact: true })
+      }
       const projectIds = visibleProjectIds.filter((projectId) => epochChanged || (desiredProjectVersionsRef.current.get(projectId) ?? 0) > (acknowledgedProjectVersionsRef.current.get(projectId) ?? -1))
       if (projectIds.length === 0) return
       void refreshVisibleWindows(projectIds).then((outcomes) => {
@@ -1597,7 +1601,7 @@ function ProjectsDashboard() {
       })
     })
     return () => events.close()
-  }, [refreshProjectsOnly, refreshVisibleWindows, visibleProjectIds])
+  }, [queryClient, refreshProjectsOnly, refreshVisibleWindows, selectedProjectId, selectedSessionId, visibleProjectIds])
 
   useEffect(() => {
     if (visibleProjectIds.length === 0) return

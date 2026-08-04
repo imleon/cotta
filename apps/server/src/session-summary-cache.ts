@@ -15,12 +15,21 @@ type RefreshReason = 'background' | 'manual' | 'session-created' | 'session-stal
 
 type RefreshInput = {
   reason?: RefreshReason
+  projectId?: string
+  sessionId?: string
+}
+
+type SessionChangeEvent = {
+  projectId: string
+  sessionId: string
+  kind: 'changed' | 'removed'
 }
 
 type SummaryVersionEvent = {
   epoch: string
   projectsVersion: number
   projectVersions: Array<{ projectId: string; version: number }>
+  sessionChanges: SessionChangeEvent[]
 }
 
 type ProjectSessionsWindow = {
@@ -50,6 +59,7 @@ type VersionChanges = {
   projectIds: Set<string>
   projectsChanged: boolean
   changedSessions: Map<string, SessionSummaryCacheChange>
+  sessionChanges: Map<string, SessionChangeEvent>
 }
 
 function createVersionChanges(): VersionChanges {
@@ -57,6 +67,7 @@ function createVersionChanges(): VersionChanges {
     projectIds: new Set<string>(),
     projectsChanged: false,
     changedSessions: new Map(),
+    sessionChanges: new Map(),
   }
 }
 
@@ -256,6 +267,7 @@ export class SessionSummaryCache {
       epoch: this.epoch,
       projectsVersion: this.projectsVersionValue,
       projectVersions: [...this.projectVersionsById].map(([projectId, version]) => ({ projectId, version })),
+      sessionChanges: [],
     }
   }
 
@@ -304,8 +316,9 @@ export class SessionSummaryCache {
     await this.scanPromise
   }
 
-  async scheduleRefresh(_input: RefreshInput = {}): Promise<void> {
+  async scheduleRefresh(input: RefreshInput = {}): Promise<void> {
     await this.requestScan('global')
+    if (input.sessionId) this.observeSession({ sessionId: input.sessionId, ...(input.projectId ? { projectId: input.projectId } : {}) })
   }
 
   observeSession(input: { sessionId: string; projectId?: string }): void {
@@ -529,6 +542,7 @@ export class SessionSummaryCache {
       this.sessionRunStatesById.delete(session.sessionId)
       this.projectIdBySessionId.delete(session.sessionId)
       versionChanges.projectIds.add(currentProject.id)
+      this.recordSessionVersionChange(versionChanges, currentProject.id, session.sessionId, 'removed')
     }
     for (const session of loaded) {
       this.removeSessionFromPreviousProject(session.sessionId, currentProject.id, versionChanges)
@@ -557,6 +571,11 @@ export class SessionSummaryCache {
       projectPath,
       sessionInfo,
     })
+    this.recordSessionVersionChange(versionChanges, projectId, sessionInfo.sessionId, 'changed')
+  }
+
+  private recordSessionVersionChange(versionChanges: VersionChanges, projectId: string, sessionId: string, kind: SessionChangeEvent['kind']): void {
+    versionChanges.sessionChanges.set(`${projectId}\0${sessionId}\0${kind}`, { projectId, sessionId, kind })
   }
 
   private refreshSessionRunStates(projectIds?: Iterable<string>): Set<string> {
@@ -683,6 +702,7 @@ export class SessionSummaryCache {
       if (nextProjectIds.has(projectId)) continue
       versionChanges.projectIds.add(projectId)
       versionChanges.projectsChanged = true
+      for (const session of this.sessionInfosByProjectId.get(projectId) ?? []) this.recordSessionVersionChange(versionChanges, projectId, session.sessionId, 'removed')
       this.projectsById.delete(projectId)
       this.sessionInfosByProjectId.delete(projectId)
       this.projectSessionsFullyLoadedById.delete(projectId)
@@ -691,6 +711,10 @@ export class SessionSummaryCache {
     for (const [projectId, nextSessions] of snapshot.sessionInfosByProjectId) {
       const currentSessions = this.sessionInfosByProjectId.get(projectId) ?? []
       if (!sameSessionList(currentSessions, nextSessions)) versionChanges.projectIds.add(projectId)
+      const nextSessionIds = new Set(nextSessions.map((session) => session.sessionId))
+      for (const session of currentSessions) {
+        if (!nextSessionIds.has(session.sessionId)) this.recordSessionVersionChange(versionChanges, projectId, session.sessionId, 'removed')
+      }
       const projectPath = snapshot.projectsById.get(projectId)?.path
       if (projectPath) {
         for (const session of nextSessions) {
@@ -721,6 +745,7 @@ export class SessionSummaryCache {
         if (nextSessions.includes(session)) continue
         this.sessionRunStatesById.delete(session.sessionId)
         this.projectIdBySessionId.delete(session.sessionId)
+        this.recordSessionVersionChange(versionChanges, projectId, session.sessionId, 'removed')
       }
       versionChanges.projectIds.add(projectId)
       const project = this.projectsById.get(projectId)
@@ -742,6 +767,7 @@ export class SessionSummaryCache {
     this.sessionInfosByProjectId.set(previousProjectId, nextSessions)
     this.sessionRunStatesById.delete(sessionId)
     versionChanges.projectIds.add(previousProjectId)
+    this.recordSessionVersionChange(versionChanges, previousProjectId, sessionId, 'removed')
     const previousProject = this.projectsById.get(previousProjectId)
     if (nextSessions.length === 0) {
       this.projectsById.delete(previousProjectId)
@@ -809,6 +835,7 @@ export class SessionSummaryCache {
       epoch: this.epoch,
       projectsVersion: this.projectsVersionValue,
       projectVersions,
+      sessionChanges: [...versionChanges.sessionChanges.values()],
     }
     for (const listener of this.listeners) listener(event)
   }

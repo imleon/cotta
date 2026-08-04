@@ -507,7 +507,7 @@ export function registerProjectRoutes(
       if (!parsed.success) return c.json({ error: 'invalid_session_title' }, 400)
       const renamed = await input.claudeCodeApi.renameSession(projectId, sessionId, parsed.data.title)
       if (!renamed) return c.json({ error: 'session_not_found' }, 404)
-      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual' })
+      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual', projectId, sessionId })
       return c.json(renameSessionResponseSchema.parse({ ok: true }))
     } catch (error) {
       console.error('session:rename failed', error)
@@ -523,7 +523,7 @@ export function registerProjectRoutes(
       if (!parsed.success) return c.json({ error: 'invalid_fork_target' }, 400)
       const sessionId = await input.claudeCodeApi.forkSession(projectId, sourceSessionId, parsed.data.upToMessageId)
       if (!sessionId) return c.json({ error: 'session_not_found' }, 404)
-      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual' })
+      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual', projectId, sessionId })
       return c.json(forkSessionResponseSchema.parse({ projectId, sessionId }), 201)
     } catch (error) {
       console.error('session:fork failed', error)
@@ -539,7 +539,7 @@ export function registerProjectRoutes(
       if (!parsed.success || parsed.data.confirmationSessionId !== sessionId) return c.json({ error: 'invalid_session_delete_confirmation' }, 400)
       const deleted = await input.claudeCodeApi.deleteSession(projectId, sessionId)
       if (!deleted) return c.json({ error: 'session_not_found' }, 404)
-      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual' })
+      await input.sessionSummaryCache?.scheduleRefresh({ reason: 'manual', projectId, sessionId })
       return c.json(deleteSessionResponseSchema.parse({ ok: true }))
     } catch (error) {
       console.error('session:delete failed', error)

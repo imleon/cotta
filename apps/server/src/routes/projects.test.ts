@@ -538,7 +538,7 @@ describe('project routes', () => {
 
   it('streams the current list version snapshot', async () => {
     let listener: ((event: ListVersionsEvent) => void) | undefined
-    const snapshot = { epoch: '123e4567-e89b-12d3-a456-426614174000', projectsVersion: 2, projectVersions: [{ projectId: project.id, version: 3 }] }
+    const snapshot = { epoch: '123e4567-e89b-12d3-a456-426614174000', projectsVersion: 2, projectVersions: [{ projectId: project.id, version: 3 }], sessionChanges: [] }
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
@@ -1106,6 +1106,7 @@ describe('project routes', () => {
 
   it('deletes an existing session after confirming the session id', async () => {
     const remove = vi.fn(async () => true)
+    const scheduleRefresh = vi.fn(async () => {})
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
@@ -1125,6 +1126,13 @@ describe('project routes', () => {
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return messages },
       },
+      sessionSummaryCache: {
+        ensureReady: async () => {},
+        setSessionRunStateReader: () => {},
+        subscribe: () => () => {},
+        scheduleRefresh,
+        queryProjectSessions: () => ({ sessionsByProject: {} }),
+      } as never,
     }).request(`/api/projects/${project.id}/sessions/session-newest/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1134,6 +1142,7 @@ describe('project routes', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ ok: true })
     expect(remove).toHaveBeenCalledWith(project.id, 'session-newest')
+    expect(scheduleRefresh).toHaveBeenCalledWith({ reason: 'manual', projectId: project.id, sessionId: 'session-newest' })
   })
 
   it('rejects a mismatched session delete confirmation', async () => {
@@ -1160,6 +1169,7 @@ describe('project routes', () => {
 
   it('renames an existing session', async () => {
     const rename = vi.fn(async () => true)
+    const scheduleRefresh = vi.fn(async () => {})
     const response = await createApp({
       liveTurnManager: {
         ensureRuntime: () => {},
@@ -1179,6 +1189,13 @@ describe('project routes', () => {
         async getSessionTimelineState() { return null },
         async getSessionMessages() { return messages },
       },
+      sessionSummaryCache: {
+        ensureReady: async () => {},
+        setSessionRunStateReader: () => {},
+        subscribe: () => () => {},
+        scheduleRefresh,
+        queryProjectSessions: () => ({ sessionsByProject: {} }),
+      } as never,
     }).request(`/api/projects/${project.id}/sessions/session-newest/rename`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1188,6 +1205,7 @@ describe('project routes', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ ok: true })
     expect(rename).toHaveBeenCalledWith(project.id, 'session-newest', 'New title')
+    expect(scheduleRefresh).toHaveBeenCalledWith({ reason: 'manual', projectId: project.id, sessionId: 'session-newest' })
   })
 
   it('rejects an empty session title', async () => {
@@ -1250,7 +1268,7 @@ describe('project routes', () => {
     expect(response.status).toBe(201)
     expect(await response.json()).toEqual({ projectId: project.id, sessionId: 'fork-session' })
     expect(fork).toHaveBeenCalledWith(project.id, 'session-newest', '123e4567-e89b-12d3-a456-426614174000')
-    expect(scheduleRefresh).toHaveBeenCalledWith({ reason: 'manual' })
+    expect(scheduleRefresh).toHaveBeenCalledWith({ reason: 'manual', projectId: project.id, sessionId: 'fork-session' })
   })
 
   it('forks a whole session when no fork target is provided', async () => {

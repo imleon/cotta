@@ -40,6 +40,15 @@ function resultOnlyQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
   })())
 }
 
+function requiresActionQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
+  return queryFromGenerator((async function* () {
+    for await (const _message of prompt) {
+      yield { type: 'system', subtype: 'session_state_changed', state: 'requires_action' } as SDKMessage
+      yield { type: 'result', subtype: 'success' } as SDKMessage
+    }
+  })())
+}
+
 function pendingQuery(prompt: AsyncIterable<SDKUserMessage>, overrides: Partial<Query> = {}): Query {
   return queryFromGenerator((async function* () {
     for await (const message of prompt) yield message
@@ -94,7 +103,8 @@ describe('LiveTurnManager', () => {
 
   it('publishes a failure terminal event when the SDK stream rejects', async () => {
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => failingQuery(prompt))
-    const manager = new LiveTurnManager()
+    const observeSession = vi.fn()
+    const manager = new LiveTurnManager(undefined, { observeSession })
     const events: LiveTurnEvent[] = []
     manager.subscribe('session-1', (event) => events.push(event))
 
@@ -114,6 +124,31 @@ describe('LiveTurnManager', () => {
     expect(events[0]).toMatchObject({ type: 'user', uuid: 'user-1' })
     expect(events[1]).toMatchObject({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['SDK stream failed'], session_id: 'session-1' })
     expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
+    expect(observeSession).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'session-1' }))
+  })
+
+  it('observes key runtime states without publishing run-state versions immediately', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => requiresActionQuery(prompt))
+    const observeSession = vi.fn()
+    const manager = new LiveTurnManager(undefined, { observeSession })
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.startTurn({
+      projectId,
+      sessionId: 'session-1',
+      resume: true,
+      text: 'hello',
+      userMessageUuid: 'user-1',
+      permissionMode: 'default',
+    })
+
+    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null })
+    await vi.waitFor(() => expect(observeSession).toHaveBeenCalledTimes(3))
+    expect(observeSession.mock.calls).toEqual([
+      [{ sessionId: 'session-1', projectId }],
+      [{ sessionId: 'session-1', projectId }],
+      [{ sessionId: 'session-1', projectId }],
+    ])
   })
 
   it('passes model and effort to new SDK runtimes', async () => {

@@ -3,7 +3,7 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici'
 import { createAuth, type CottaAuth } from './auth.js'
-import { createClaudeCodeApi, type ClaudeCodeApi } from './claude-code-api.js'
+import { createClaudeCodeApi, projectIdFromPath, type ClaudeCodeApi } from './claude-code-api.js'
 import { createCottaDatabase } from './database.js'
 import { createLiveEventStore, type LiveEventStore } from './live-event-store.js'
 import { LiveTurnManager } from './live-turn-manager.js'
@@ -64,19 +64,9 @@ if (process.env.NODE_ENV !== 'test') {
     console.error('claude-session-registry:start failed', error)
     return null
   })
-  const idleRefreshTimers = new Map<string, Array<ReturnType<typeof setTimeout>>>()
-  const clearIdleRefresh = (sessionId: string) => {
-    for (const timer of idleRefreshTimers.get(sessionId) ?? []) clearTimeout(timer)
-    idleRefreshTimers.delete(sessionId)
-  }
-  const unsubscribeRegistry = claudeSessionRegistry?.subscribe(({ idleSessionIds, activeSessionIds }) => {
-    void sessionSummaryCache.scheduleRefresh({ reason: 'session-stale' })
-    for (const sessionId of activeSessionIds) clearIdleRefresh(sessionId)
-    for (const sessionId of idleSessionIds) {
-      clearIdleRefresh(sessionId)
-      idleRefreshTimers.set(sessionId, [300, 800, 1_500, 3_000].map((delay) => setTimeout(() => {
-        void sessionSummaryCache.scheduleRefresh({ reason: 'session-stale' })
-      }, delay)))
+  const unsubscribeRegistry = claudeSessionRegistry?.subscribe(({ changedSessions }) => {
+    for (const { sessionId, cwd } of changedSessions) {
+      sessionSummaryCache.observeSession({ sessionId, ...(cwd ? { projectId: projectIdFromPath(cwd) } : {}) })
     }
   })
   const app = createApp({
@@ -104,7 +94,7 @@ if (process.env.NODE_ENV !== 'test') {
   const shutdown = () => {
     liveTurnManager.closeAll()
     unsubscribeRegistry?.()
-    for (const sessionId of idleRefreshTimers.keys()) clearIdleRefresh(sessionId)
+    sessionSummaryCache.close()
     void claudeSessionRegistry?.close()
     turnMetaStore.close()
     server.close(() => process.exit(0))
@@ -119,7 +109,7 @@ if (process.env.NODE_ENV !== 'test') {
       console.error('Stop the process using that port, or start Cotta with a different PORT.')
       liveTurnManager.closeAll()
       unsubscribeRegistry?.()
-      for (const sessionId of idleRefreshTimers.keys()) clearIdleRefresh(sessionId)
+      sessionSummaryCache.close()
       void claudeSessionRegistry?.close()
       turnMetaStore.close()
       process.exitCode = 1

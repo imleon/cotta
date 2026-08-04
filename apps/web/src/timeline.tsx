@@ -120,8 +120,8 @@ function HighlightedCode({ className, children }: { className?: string; children
     <div className="markdown-code-block" data-wrap={wrapped ? 'true' : 'false'}>
       <div className="markdown-code-toolbar">
         {explicitLang ? <span className="markdown-code-language">{explicitLang}</span> : null}
-        <button type="button" aria-label={wrapped ? 'Disable line wrap' : 'Enable line wrap'} title={wrapped ? 'No wrap' : 'Wrap'} onClick={() => setWrapped((value) => !value)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h8a3 3 0 1 1 0 6H9" /><path d="m11 13-2 3 2 3" /></svg></button>
-        <button type="button" aria-label="Copy code" title={copyStatus} onClick={handleCopy}>{copyStatus === 'Copied' ? <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10.5 4 4L16 6" /></svg> : <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M4 13V5a1 1 0 0 1 1-1h8" /></svg>}</button>
+        <button type="button" aria-label={wrapped ? 'Disable line wrap' : 'Enable line wrap'} data-tooltip={wrapped ? 'No wrap' : 'Wrap'} onClick={() => setWrapped((value) => !value)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h8a3 3 0 1 1 0 6H9" /><path d="m11 13-2 3 2 3" /></svg></button>
+        <button type="button" aria-label="Copy code" data-tooltip={copyStatus} onClick={handleCopy}>{copyStatus === 'Copied' ? <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10.5 4 4L16 6" /></svg> : <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M4 13V5a1 1 0 0 1 1-1h8" /></svg>}</button>
       </div>
       {html ? <div className="shiki-code" dangerouslySetInnerHTML={{ __html: html }} /> : <pre><code className={className}>{children}</code></pre>}
     </div>
@@ -426,6 +426,10 @@ function timelineRenderItemKey(item: TimelineRenderItem): string {
 
 function isPrimaryInputBlock(block: TimelineBlock): boolean {
   return block.kind.startsWith('user.') && isRecord(block.data) && block.data.primaryTimelineUserMessage === true
+}
+
+function isUserMessageBlock(block: TimelineBlock): boolean {
+  return ['user.message', 'user.image', 'user.file'].includes(block.kind)
 }
 
 function shouldFrameTimelineItem(item: TimelineRenderItem): boolean {
@@ -1099,7 +1103,8 @@ function turnIsRepresentedBy(turn: TurnSummary, index: TimelineTurnIndex): boole
 }
 
 function turnOrderValue(turn: TurnSummary): number | null {
-  return turn.startedAt ?? turn.completedAt ?? null
+  if (turn.startedAt !== undefined) return turn.startedAt
+  return turn.blocks.some(isUserMessageBlock) ? null : turn.completedAt ?? null
 }
 
 function isLiveTurn(turn: TurnSummary): boolean {
@@ -1331,9 +1336,15 @@ export function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSum
   const mergedIncoming = incoming.map((turn) => {
     const liveTurn = current.find((item) => item.id === turn.id)
     if (!liveTurn) return turn
-    const liveBlocks = liveTurn.blocks.filter((block) => !['user.message', 'user.image', 'user.file'].includes(block.kind) && !blockIsRepresentedBy(block, incomingIndex))
+    const incomingHasUserMessage = turn.blocks.some(isUserMessageBlock)
+    const liveBlocks = liveTurn.blocks.filter((block) => {
+      if (isUserMessageBlock(block)) return !incomingHasUserMessage
+      return !blockIsRepresentedBy(block, incomingIndex)
+    })
     if (liveBlocks.length === 0) return turn
-    return { ...turn, rawStatus: 'running', displayStatus: 'running', blocks: [...turn.blocks, ...liveBlocks] }
+    const liveUserBlocks = liveBlocks.filter(isUserMessageBlock)
+    const liveReplyBlocks = liveBlocks.filter((block) => !isUserMessageBlock(block))
+    return { ...turn, rawStatus: 'running', displayStatus: 'running', blocks: [...liveUserBlocks, ...turn.blocks, ...liveReplyBlocks] }
   })
   const unreconciled = current.filter((turn) => !turnIsRepresentedBy(turn, incomingIndex))
   const firstIncomingOrder = mergedIncoming[0] ? turnOrderValue(mergedIncoming[0]) : null
@@ -1803,9 +1814,11 @@ export function SessionTaskList({ tasks }: { tasks: SessionTask[] }) {
   return (
     <section className="session-task-list" aria-label="Session tasks">
       <ul>
-        {tasks.map((task) => <li key={task.key}>
+        {tasks.map((task) => <li className={`session-task-row session-task-row-${task.status}`} key={task.key}>
           <span className={`session-task-status session-task-status-${task.status}`} role="img" aria-label={statusLabel[task.status]}>{task.status === 'completed' ? <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-5" /></svg> : null}</span>
-          <span className="session-task-subject"><span className="session-task-number">#{task.taskId}</span> {task.subject}</span>
+          <span className="session-task-state">{statusLabel[task.status]}</span>
+          <span className="session-task-number">#{task.taskId}</span>
+          <span className="session-task-subject">{task.subject}</span>
           {task.blockedBy.length > 0 ? <span className="session-task-blocked">› blocked by {task.blockedBy.map((taskId) => `#${taskId}`).join(', ')}</span> : null}
         </li>)}
       </ul>
@@ -1893,6 +1906,16 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
     setRawMessageSelection(null)
   }, [pendingPrimaryTurnUuid, projectId, sessionId, shouldScrollToBottomRef])
 
+  const cookingTurnId = cliCookingTurnId(visibleTurns, runState)
+  const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
+  if (cookingTurnId || activeTurnId) responseSkeletonTurnIdRef.current = cookingTurnId ?? activeTurnId
+  const responseSkeletonScrollKey = visibleTurns.flatMap((turn) => {
+    const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
+    const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
+    const cooking = turn.id === cookingTurnId || turn.id === activeTurnId
+    return shouldShowAssistantResponseSkeleton({ turn, cooking, lastAssistantFrameId, runState, fallbackTurnId: responseSkeletonTurnIdRef.current }) ? [turn.id] : []
+  }).join('|')
+
   useLayoutEffect(() => {
     const anchor = olderScrollAnchorRef.current
     if (!anchor) return
@@ -1912,12 +1935,15 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
     setShowScrollToBottom(!isTimelineAtBottom())
   }, [isTimelineAtBottom, visibleTurns])
 
+  useLayoutEffect(() => {
+    if (!responseSkeletonScrollKey || showScrollToBottom) return
+    const panel = timelinePanelRef.current
+    if (panel) panel.scrollTop = panel.scrollHeight
+  }, [responseSkeletonScrollKey, showScrollToBottom])
+
   if (timeline.isLoading && visibleTurns.length === 0) return <SessionTimelineSkeleton />
   if (timeline.isError && visibleTurns.length === 0) return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
 
-  const cookingTurnId = cliCookingTurnId(visibleTurns, runState)
-  const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
-  if (cookingTurnId || activeTurnId) responseSkeletonTurnIdRef.current = cookingTurnId ?? activeTurnId
   const activeTask = tasks.find((task) => task.status === 'in_progress')
   const activeTaskLabel = activeTask ? `${activeTask.activeForm ?? activeTask.subject}...` : undefined
 

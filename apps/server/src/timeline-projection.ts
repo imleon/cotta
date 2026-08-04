@@ -254,7 +254,7 @@ function toolResultText(block: Record<string, unknown>): string {
 
 function projectSessionTasks(messages: SessionMessage[], latestProjectedTurnId?: string): SessionTask[] {
   type PendingTask = Omit<SessionTask, 'taskId'> & { taskId: string | null; completedTurnId?: string }
-  type PendingUpdate = { task: PendingTask; input: Record<string, unknown>; turnId?: string }
+  type PendingUpdate = { task: PendingTask; input: Record<string, unknown>; taskId: string; turnId?: string }
   const tasks: PendingTask[] = []
   const createsByToolUseId = new Map<string, PendingTask>()
   const updatesByToolUseId = new Map<string, PendingUpdate>()
@@ -282,7 +282,7 @@ function projectSessionTasks(messages: SessionMessage[], latestProjectedTurnId?:
           createsByToolUseId.set(block.id, task)
         } else if (block.name === 'TaskUpdate' && typeof block.input.taskId === 'string') {
           const task = latestByTaskId.get(block.input.taskId)
-          if (task) updatesByToolUseId.set(block.id, { task, input: block.input, turnId: currentTurnId })
+          if (task) updatesByToolUseId.set(block.id, { task, input: block.input, taskId: block.input.taskId, turnId: currentTurnId })
         }
         continue
       }
@@ -299,11 +299,11 @@ function projectSessionTasks(messages: SessionMessage[], latestProjectedTurnId?:
         continue
       }
       const update = updatesByToolUseId.get(toolUseId)
-      if (!update || !toolResultText(block).startsWith(`Updated task #${update.input.taskId} `)) continue
+      if (!update || !toolResultText(block).startsWith(`Updated task #${update.taskId} `)) continue
       if (update.input.status === 'deleted') {
         const index = tasks.indexOf(update.task)
         if (index >= 0) tasks.splice(index, 1)
-        latestByTaskId.delete(update.input.taskId)
+        latestByTaskId.delete(update.taskId)
         continue
       }
       if (update.input.status === 'pending' || update.input.status === 'in_progress' || update.input.status === 'completed') {

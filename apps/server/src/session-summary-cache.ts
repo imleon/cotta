@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { listSessions, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
-import type { ProjectSummary, SessionRunState, SessionSummary } from '@cotta/shared'
+import type { ProjectSummary, SessionRunState, SessionStatus, SessionSummary } from '@cotta/shared'
 import { createListCursor, resolveListCursor } from './list-cursor.js'
 import { SessionActivityTracker } from './session-activity.js'
 
@@ -39,10 +39,17 @@ type ProjectSessionsWindow = {
   selectedSessionExists?: boolean
 }
 
+export type SessionMetadata = {
+  status: SessionStatus
+  kind: string | null
+  entrypoint: 'cli'
+}
+
 type CacheSnapshot = {
   projectsById: Map<string, SummaryCacheProject>
   sessionInfosByProjectId: Map<string, SDKSessionInfo[]>
   sessionRunStatesById: Map<string, SessionRunState | null>
+  sessionMetadataById: Map<string, SessionMetadata | null>
   projectIdBySessionId: Map<string, string>
   projectSessionsFullyLoadedById: Map<string, boolean>
   scannedSessionCount: number
@@ -128,18 +135,39 @@ function sameRunState(left: SessionRunState | null | undefined, right: SessionRu
   )
 }
 
+function sameSessionMetadata(left: SessionMetadata | null | undefined, right: SessionMetadata | null | undefined): boolean {
+  return (left?.status ?? 'idle') === (right?.status ?? 'idle') && (left?.kind ?? null) === (right?.kind ?? null) && (left?.entrypoint ?? null) === (right?.entrypoint ?? null)
+}
+
+function statusFromRunState(runState: SessionRunState | null | undefined): SessionStatus {
+  const state = runState ?? defaultRunState()
+  if (state.phase === 'running' || state.phase === 'cli_busy') return 'busy'
+  if (state.phase === 'requires_action' || state.phase === 'cli_waiting') return 'waiting'
+  if (state.phase === 'cli_shell') return 'shell'
+  return 'idle'
+}
+
 function toSessionSummary(
   activity: SessionActivityTracker,
   projectId: string,
   session: SDKSessionInfo,
   sessionRunStatesById?: Map<string, SessionRunState | null>,
+  sessionMetadataById?: Map<string, SessionMetadata | null>,
 ): SessionSummary {
+  const runState = sessionRunStatesById?.get(session.sessionId) ?? defaultRunState()
+  const metadata = sessionMetadataById?.get(session.sessionId) ?? null
   return {
     id: session.sessionId,
     title: titleFromSession(session),
     projectId,
     lastActivityAt: activity.get(session),
-    runState: sessionRunStatesById?.get(session.sessionId) ?? defaultRunState(),
+    // Cotta live-runtime and Claude session JSON arrive independently and can race.
+    // Keep ownership separate: live-runtime only updates normalized status, while
+    // CLI session JSON is the only source allowed to populate kind/entrypoint.
+    status: runState.phase === 'idle' ? metadata?.status ?? 'idle' : statusFromRunState(runState),
+    kind: metadata?.kind ?? null,
+    entrypoint: metadata?.entrypoint ?? null,
+    runState,
   }
 }
 
@@ -155,6 +183,7 @@ function buildProjectSessionsWindow(
   projectSessionsFullyLoaded: boolean,
   input: { limit?: number; cursor?: string | null },
   sessionRunStatesById: Map<string, SessionRunState | null> | undefined,
+  sessionMetadataById: Map<string, SessionMetadata | null> | undefined,
   paginationEpoch: string,
 ): ProjectSessionsWindow {
   const limit = Math.max(1, Math.min(10_000, Math.trunc(input.limit ?? 10)))
@@ -172,7 +201,7 @@ function buildProjectSessionsWindow(
   const hasMore = start + limit < sessions.length || !projectSessionsFullyLoaded
   const offset = start + page.length
   return {
-    sessions: page.map((session) => toSessionSummary(activity, projectId, session, sessionRunStatesById)),
+    sessions: page.map((session) => toSessionSummary(activity, projectId, session, sessionRunStatesById, sessionMetadataById)),
     hasMore,
     nextCursor:
       hasMore && page.length > 0
@@ -221,6 +250,7 @@ export class SessionSummaryCache {
   private readonly projectSessionsFullyLoadedById = new Map<string, boolean>()
   private readonly projectVersionsById = new Map<string, number>()
   private readonly sessionRunStatesById = new Map<string, SessionRunState | null>()
+  private readonly sessionMetadataById = new Map<string, SessionMetadata | null>()
   private readonly projectIdBySessionId = new Map<string, string>()
   readonly activity = new SessionActivityTracker()
   private mutationQueue: Promise<void> | null = null
@@ -237,12 +267,18 @@ export class SessionSummaryCache {
   private readonly listeners = new Set<(event: SummaryVersionEvent) => void>()
   private changedListener?: (changes: SessionSummaryCacheChange[]) => Promise<void>
   private sessionRunStateReader?: (sessionId: string) => SessionRunState | null
+  private sessionMetadataReader?: (sessionId: string) => SessionMetadata | null
 
   constructor(private readonly pageSize = 100) {}
 
   setSessionRunStateReader(reader: ((sessionId: string) => SessionRunState | null) | undefined): void {
     this.sessionRunStateReader = reader
     this.refreshSessionRunStates()
+  }
+
+  setSessionMetadataReader(reader: ((sessionId: string) => SessionMetadata | null) | undefined): void {
+    this.sessionMetadataReader = reader
+    this.refreshSessionMetadata()
   }
 
   subscribe(listener: (event: SummaryVersionEvent) => void): () => void {
@@ -454,6 +490,7 @@ export class SessionSummaryCache {
         fullyLoaded,
         { limit, cursor: null },
         this.sessionRunStatesById,
+        this.sessionMetadataById,
         this.paginationEpoch,
       )
       if (selectedSessionId) {
@@ -489,6 +526,7 @@ export class SessionSummaryCache {
       this.projectSessionsFullyLoadedById.get(projectId) ?? this.projectsFullyScanned,
       input,
       this.sessionRunStatesById,
+      this.sessionMetadataById,
       this.paginationEpoch,
     )
     return {
@@ -540,6 +578,7 @@ export class SessionSummaryCache {
     for (const session of previousSessions) {
       if (loadedIds.has(session.sessionId)) continue
       this.sessionRunStatesById.delete(session.sessionId)
+      this.sessionMetadataById.delete(session.sessionId)
       this.projectIdBySessionId.delete(session.sessionId)
       versionChanges.projectIds.add(currentProject.id)
       this.recordSessionVersionChange(versionChanges, currentProject.id, session.sessionId, 'removed')
@@ -554,6 +593,7 @@ export class SessionSummaryCache {
     this.sessionInfosByProjectId.set(currentProject.id, loaded)
     if (setBooleanIfChanged(this.projectSessionsFullyLoadedById, currentProject.id, true)) versionChanges.projectIds.add(currentProject.id)
     for (const projectId of this.refreshSessionRunStates([currentProject.id])) versionChanges.projectIds.add(projectId)
+    for (const projectId of this.refreshSessionMetadata([currentProject.id])) versionChanges.projectIds.add(projectId)
     if (loaded.length === 0) {
       this.projectsById.delete(currentProject.id)
       this.sessionInfosByProjectId.delete(currentProject.id)
@@ -586,6 +626,19 @@ export class SessionSummaryCache {
         const nextRunState = this.sessionRunStateReader?.(session.sessionId) ?? null
         if (!sameRunState(this.sessionRunStatesById.get(session.sessionId), nextRunState)) changedProjectIds.add(projectId)
         this.sessionRunStatesById.set(session.sessionId, nextRunState)
+      }
+    }
+    return changedProjectIds
+  }
+
+  private refreshSessionMetadata(projectIds?: Iterable<string>): Set<string> {
+    const changedProjectIds = new Set<string>()
+    const targetProjectIds = projectIds ? [...projectIds] : [...this.sessionInfosByProjectId.keys()]
+    for (const projectId of targetProjectIds) {
+      for (const session of this.sessionInfosByProjectId.get(projectId) ?? []) {
+        const nextMetadata = this.sessionMetadataReader?.(session.sessionId) ?? null
+        if (!sameSessionMetadata(this.sessionMetadataById.get(session.sessionId), nextMetadata)) changedProjectIds.add(projectId)
+        this.sessionMetadataById.set(session.sessionId, nextMetadata)
       }
     }
     return changedProjectIds
@@ -667,10 +720,12 @@ export class SessionSummaryCache {
     const projectSessionsFullyLoadedById = new Map<string, boolean>()
     for (const projectId of projectsById.keys()) projectSessionsFullyLoadedById.set(projectId, true)
     const sessionRunStatesById = new Map<string, SessionRunState | null>()
+    const sessionMetadataById = new Map<string, SessionMetadata | null>()
     const projectIdBySessionId = new Map<string, string>()
     for (const [projectId, sessions] of sessionInfosByProjectId) {
       for (const session of sessions) {
         sessionRunStatesById.set(session.sessionId, this.sessionRunStateReader?.(session.sessionId) ?? null)
+        sessionMetadataById.set(session.sessionId, this.sessionMetadataReader?.(session.sessionId) ?? null)
         projectIdBySessionId.set(session.sessionId, projectId)
       }
     }
@@ -678,6 +733,7 @@ export class SessionSummaryCache {
       projectsById,
       sessionInfosByProjectId,
       sessionRunStatesById,
+      sessionMetadataById,
       projectIdBySessionId,
       projectSessionsFullyLoadedById,
       scannedSessionCount: offset,
@@ -727,6 +783,8 @@ export class SessionSummaryCache {
     }
     this.sessionRunStatesById.clear()
     for (const [sessionId, status] of snapshot.sessionRunStatesById) this.sessionRunStatesById.set(sessionId, status)
+    this.sessionMetadataById.clear()
+    for (const [sessionId, metadata] of snapshot.sessionMetadataById) this.sessionMetadataById.set(sessionId, metadata)
     this.projectIdBySessionId.clear()
     for (const [sessionId, projectId] of snapshot.projectIdBySessionId) this.projectIdBySessionId.set(sessionId, projectId)
 
@@ -744,6 +802,7 @@ export class SessionSummaryCache {
       for (const session of sessions) {
         if (nextSessions.includes(session)) continue
         this.sessionRunStatesById.delete(session.sessionId)
+        this.sessionMetadataById.delete(session.sessionId)
         this.projectIdBySessionId.delete(session.sessionId)
         this.recordSessionVersionChange(versionChanges, projectId, session.sessionId, 'removed')
       }
@@ -766,6 +825,7 @@ export class SessionSummaryCache {
     if (nextSessions.length === previousSessions.length) return
     this.sessionInfosByProjectId.set(previousProjectId, nextSessions)
     this.sessionRunStatesById.delete(sessionId)
+    this.sessionMetadataById.delete(sessionId)
     versionChanges.projectIds.add(previousProjectId)
     this.recordSessionVersionChange(versionChanges, previousProjectId, sessionId, 'removed')
     const previousProject = this.projectsById.get(previousProjectId)

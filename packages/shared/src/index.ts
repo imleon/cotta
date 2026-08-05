@@ -66,11 +66,17 @@ export const sessionRunStateSchema = z.discriminatedUnion('phase', [
 
 export type SessionRunState = z.infer<typeof sessionRunStateSchema>
 
+export const sessionStatusSchema = z.enum(['idle', 'busy', 'shell', 'waiting'])
+export type SessionStatus = z.infer<typeof sessionStatusSchema>
+
 export const sessionSummarySchema = z.object({
   id: z.string(),
   title: z.string(),
   projectId: z.string(),
   lastActivityAt: z.number().optional(),
+  status: sessionStatusSchema,
+  kind: z.string().nullable(),
+  entrypoint: z.string().nullable(),
   runState: sessionRunStateSchema,
 })
 

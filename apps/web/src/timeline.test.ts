@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingTurnId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, projectTimelineTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionAwaySummary, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
+import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingLabel, cliCookingTurnId, CLI_COOKING_VERBS, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, projectTimelineTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionAwaySummary, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
 
 describe('session task list', () => {
   it('hides empty lists and shows task statuses without active form', () => {
@@ -64,6 +64,14 @@ describe('assistant response skeleton', () => {
     expect(html).toContain('aria-busy="true"')
     expect(html).toContain('timeline-skeleton-line')
     expect(html).toContain('Cooking...')
+  })
+
+  it('keeps Claude Code cooking verb spelling', () => {
+    expect(CLI_COOKING_VERBS).toContain('Dilly-dallying')
+    expect(CLI_COOKING_VERBS).toContain('Flambéing')
+    expect(CLI_COOKING_VERBS).toContain('Sautéing')
+    expect(CLI_COOKING_VERBS).toContain('Sock-hopping')
+    expect(cliCookingLabel('turn-1')).toMatch(/…$/)
   })
 })
 

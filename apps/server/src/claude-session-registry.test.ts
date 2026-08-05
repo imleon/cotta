@@ -97,6 +97,36 @@ describe('ClaudeSessionRegistry', () => {
     expect(changes[0]).toEqual({ changedSessions: [{ sessionId: 'session-1', cwd: '/repo/a' }], idleSessionIds: [], activeSessionIds: [] })
   })
 
+  it('treats background daemon kinds as active even when idle', async () => {
+    for (const kind of ['daemon', 'daemon-worker']) {
+      const root = await mkdtemp(join(tmpdir(), `cotta-session-registry-${kind}-`))
+      roots.push(root)
+      const sessionsDir = join(root, 'sessions')
+      const dbPath = join(root, 'observations.sqlite')
+      await mkdir(sessionsDir)
+      const observer = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
+      observers.push(observer)
+      await writeFile(join(sessionsDir, '999999999.json'), JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', kind, status: 'idle' }))
+      await expect.poll(() => observer.cliSessionMetadata('session-1')?.kind).toBe(kind)
+      expect(observer.cliRunState('session-1')).toBeNull()
+    }
+  })
+
+  it('reports CLI background metadata even when idle', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cotta-session-registry-bg-'))
+    roots.push(root)
+    const sessionsDir = join(root, 'sessions')
+    const dbPath = join(root, 'observations.sqlite')
+    const sessionPath = join(sessionsDir, '999999999.json')
+    await mkdir(sessionsDir)
+
+    const observer = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
+    observers.push(observer)
+    await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', kind: 'bg', status: 'idle' }))
+    await expect.poll(() => observer.cliSessionMetadata('session-1')).toEqual({ status: 'idle', kind: 'bg', entrypoint: 'cli' })
+    expect(observer.cliRunState('session-1')).toBeNull()
+  })
+
   it('reports CLI idle immediately after active status clears', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cotta-session-registry-idle-'))
     roots.push(root)

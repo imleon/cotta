@@ -122,6 +122,31 @@ export class LiveTurnManager {
     return true
   }
 
+  async closeForExternalOwner(sessionId: string): Promise<boolean> {
+    const runtime = this.runtimes.get(sessionId)
+    if (!runtime) return false
+    if (runtime.currentUserMessageUuid !== null) {
+      const userMessageUuid = runtime.currentUserMessageUuid
+      try {
+        await runtime.query.interrupt()
+      } catch (error) {
+        console.error('live-runtime:external-owner interrupt failed', error)
+      }
+      if (runtime.currentUserMessageUuid === userMessageUuid) {
+        this.publish(runtime, sdkFailureResult({
+          error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.',
+          sessionId: runtime.sessionId,
+        }))
+        this.finishTurn(runtime, userMessageUuid, 'error')
+        runtime.currentUserMessageUuid = null
+      }
+    }
+    runtime.startingTurnToken = null
+    runtime.stale = true
+    this.closeRuntime(runtime)
+    return true
+  }
+
   closeAll(): void {
     for (const runtime of Array.from(this.runtimes.values())) this.closeRuntime(runtime)
   }

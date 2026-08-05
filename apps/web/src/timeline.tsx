@@ -359,7 +359,7 @@ const timelineMessageClass = {
   rowUser: 'group flex min-w-0 items-end justify-end gap-[9px]',
   userStack: 'grid max-w-[min(76%,720px)] justify-items-end gap-1 max-[720px]:max-w-full max-[560px]:max-w-[min(86%,720px)]',
   userBubble: 'max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[var(--radius-md)] border border-[var(--tl-user-border)] bg-[var(--tl-user-soft)] px-3.5 py-2.5 text-[15px] leading-[1.6] text-[var(--tl-ink)] shadow-[var(--tl-shadow-soft)]',
-  timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-xs leading-4 text-[var(--tl-muted)] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
+  timestamp: 'inline-flex items-center gap-1 whitespace-nowrap border-0 bg-transparent p-0 text-[13px] leading-[1.6] text-[var(--tl-muted)] opacity-0 transition-opacity duration-150 [&_svg]:fill-none [&_svg]:stroke-current [&_svg]:stroke-[1.4]',
   timestampUser: 'pr-1 text-right group-hover:opacity-100 focus-within:opacity-100',
   timestampAssistant: 'block group-hover:opacity-100 focus-within:opacity-100',
   assistantFrame: 'group w-full max-w-none justify-self-stretch [&_.timeline-assistant-text]:px-1 [&_.timeline-assistant-text]:py-0.5 [&_.timeline-block]:shadow-none',
@@ -1175,12 +1175,23 @@ export function projectTimelineTurn(turn: TurnSummary): TimelineBlock[] {
   return blocks
 }
 
+export const CLI_COOKING_VERBS = [
+  'Accomplishing', 'Actioning', 'Actualizing', 'Architecting', 'Baking', 'Beaming', "Beboppin'", 'Befuddling', 'Billowing', 'Blanching', 'Bloviating', 'Boogieing', 'Boondoggling', 'Booping', 'Bootstrapping', 'Brewing', 'Bunning', 'Burrowing', 'Calculating', 'Canoodling', 'Caramelizing', 'Cascading', 'Catapulting', 'Cerebrating', 'Channeling', 'Channelling', 'Choreographing', 'Churning', 'Clauding', 'Coalescing', 'Cogitating', 'Combobulating', 'Composing', 'Computing', 'Concocting', 'Considering', 'Contemplating', 'Cooking', 'Crafting', 'Creating', 'Crunching', 'Crystallizing', 'Cultivating', 'Deciphering', 'Deliberating', 'Determining', 'Dilly-dallying', 'Discombobulating', 'Doing', 'Doodling', 'Drizzling', 'Ebbing', 'Effecting', 'Elucidating', 'Embellishing', 'Enchanting', 'Envisioning', 'Fermenting', 'Fiddle-faddling', 'Finagling', 'Flambéing', 'Flibbertigibbeting', 'Flowing', 'Flummoxing', 'Fluttering', 'Forging', 'Forming', 'Frolicking', 'Frosting', 'Gallivanting', 'Galloping', 'Garnishing', 'Generating', 'Gesticulating', 'Germinating', 'Gitifying', 'Grooving', 'Gusting', 'Harmonizing', 'Hashing', 'Hatching', 'Herding', 'Honking', 'Hullaballooing', 'Hyperspacing', 'Ideating', 'Imagining', 'Improvising', 'Incubating', 'Inferring', 'Infusing', 'Ionizing', 'Jitterbugging', 'Julienning', 'Kneading', 'Leavening', 'Levitating', 'Lollygagging', 'Manifesting', 'Marinating', 'Meandering', 'Metamorphosing', 'Misting', 'Moonwalking', 'Moseying', 'Mulling', 'Mustering', 'Musing', 'Nebulizing', 'Nesting', 'Newspapering', 'Noodling', 'Nucleating', 'Orbiting', 'Orchestrating', 'Osmosing', 'Perambulating', 'Percolating', 'Perusing', 'Philosophising', 'Photosynthesizing', 'Pollinating', 'Pondering', 'Pontificating', 'Pouncing', 'Precipitating', 'Prestidigitating', 'Processing', 'Proofing', 'Propagating', 'Puttering', 'Puzzling', 'Quantumizing', 'Razzle-dazzling', 'Razzmatazzing', 'Recombobulating', 'Reticulating', 'Roosting', 'Ruminating', 'Sautéing', 'Scampering', 'Schlepping', 'Scurrying', 'Seasoning', 'Shenaniganing', 'Shimmying', 'Simmering', 'Skedaddling', 'Sketching', 'Slithering', 'Smooshing', 'Sock-hopping', 'Spelunking', 'Spinning', 'Sprouting', 'Stewing', 'Sublimating', 'Swirling', 'Swooping', 'Symbioting', 'Synthesizing', 'Tempering', 'Thinking', 'Thundering', 'Tinkering', 'Tomfoolering', 'Topsy-turvying', 'Transfiguring', 'Transmuting', 'Twisting', 'Undulating', 'Unfurling', 'Unravelling', 'Vibing', 'Waddling', 'Wandering', 'Warping', 'Whatchamacalliting', 'Whirlpooling', 'Whirring', 'Whisking', 'Wibbling', 'Working', 'Wrangling', 'Zesting', 'Zigzagging',
+] as const
 const TURN_DONE_VERBS = ['Thought', 'Baked', 'Brewed', 'Churned', 'Cogitated', 'Cooked', 'Crunched', 'Sautéed', 'Worked'] as const
 
-function stableTurnVerb(turnId: string): string {
+function stableVerb<T extends readonly string[]>(turnId: string, verbs: T): T[number] {
   let hash = 0
   for (const char of turnId) hash = (hash * 31 + char.charCodeAt(0)) | 0
-  return TURN_DONE_VERBS[Math.abs(hash) % TURN_DONE_VERBS.length]!
+  return verbs[Math.abs(hash) % verbs.length]!
+}
+
+function stableTurnVerb(turnId: string): string {
+  return stableVerb(turnId, TURN_DONE_VERBS)
+}
+
+export function cliCookingLabel(turnId: string): string {
+  return `${stableVerb(turnId, CLI_COOKING_VERBS)}…`
 }
 
 function formatTurnDuration(durationMs: number): string {
@@ -1806,12 +1817,7 @@ function SessionTimelineSkeleton() {
 }
 
 export function SessionAwaySummary({ value }: { value: string }) {
-  return (
-    <section className="session-away-summary" aria-label="Away recap">
-      <div className="timeline-kind">Recap</div>
-      <div className="timeline-assistant-text"><MarkdownValue value={value} /></div>
-    </section>
-  )
+  return <p className="session-away-summary" aria-label="Away recap">※ <strong>Recap:</strong> <ReactMarkdown components={{ p: ({ children }) => <>{children}</> }}>{value}</ReactMarkdown></p>
 }
 
 export function SessionTaskList({ tasks }: { tasks: SessionTask[] }) {
@@ -1967,7 +1973,7 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
           const source = turn.primaryUserUuid === liveTurnId ? 'live' : 'history'
           const durationLabel = turnDurationLabel(turn)
           const cooking = turn.primaryUserUuid === cookingTurnId || turn.primaryUserUuid === activeTurnId
-          const activeLabel = turn.primaryUserUuid === activeTurnId ? activeTaskLabel : undefined
+          const activeLabel = turn.primaryUserUuid === activeTurnId && activeTaskLabel ? activeTaskLabel : turn.primaryUserUuid === cookingTurnId ? cliCookingLabel(turn.primaryUserUuid) : undefined
           const showResponseSkeleton = shouldShowAssistantResponseSkeleton({ turn, cooking, lastAssistantFrameId, runState, fallbackTurnId: responseSkeletonTurnIdRef.current })
           if (responseSkeletonTurnIdRef.current === turn.primaryUserUuid && (lastAssistantFrameId || turn.durationMs !== undefined)) responseSkeletonTurnIdRef.current = null
           return (

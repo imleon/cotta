@@ -19,28 +19,34 @@ function formatAge(value?: number): string {
   return `${Math.floor(elapsedMonths / 12)}Y`
 }
 
-function statusTone(runState: SessionSummary['runState']): string {
-  if (runState.phase === 'running') return 'running'
-  if (runState.phase === 'requires_action') return 'warning'
-  if (runState.phase === 'cli_busy') return 'cli-busy'
-  if (runState.phase === 'cli_shell') return 'cli-shell'
-  if (runState.phase === 'cli_waiting') return 'cli-waiting'
-  if (runState.lastTurn?.outcome === 'error') return 'danger'
+function statusTone(session: SessionSummary): string {
+  if (session.runState.lastTurn?.outcome === 'error') return 'danger'
+  if (session.status === 'busy') return 'running'
+  if (session.status === 'shell') return 'shell'
+  if (session.status === 'waiting') return 'warning'
   return 'neutral'
 }
 
-function statusLabel(runState: SessionSummary['runState']): string {
-  if (runState.phase === 'running') return 'Running'
-  if (runState.phase === 'requires_action') return 'Waiting'
-  if (runState.phase === 'cli_busy') return 'Busy (CLI)'
-  if (runState.phase === 'cli_shell') return 'Shell (CLI)'
-  if (runState.phase === 'cli_waiting') return 'Waiting (CLI)'
-  if (runState.lastTurn?.outcome === 'error') return 'Error'
+function statusLabel(session: SessionSummary): string {
+  if (session.runState.lastTurn?.outcome === 'error') return 'Error'
+  if (session.status === 'busy') return 'Busy'
+  if (session.status === 'shell') return 'Shell'
+  if (session.status === 'waiting') return 'Waiting'
   return 'Idle'
 }
 
-function statusIcon(_runState: SessionSummary['runState']) {
+function statusIcon(_session: SessionSummary) {
   return <span className="status-dot" aria-hidden="true" />
+}
+
+function isBackgroundKind(kind: string | null): boolean {
+  return kind === 'bg' || kind === 'daemon' || kind === 'daemon-worker'
+}
+
+function sessionKindTag(session: SessionSummary): string | null {
+  if (isBackgroundKind(session.kind)) return 'BG'
+  if (session.entrypoint === 'cli' && session.status !== 'idle') return 'CLI'
+  return null
 }
 
 function projectSessionsRegionId(projectId: string): string {
@@ -236,10 +242,10 @@ function ProjectCard({
   )
 }
 
-function StatusBadge({ runState }: { runState: SessionSummary['runState'] }) {
-  const tone = statusTone(runState)
-  const label = statusLabel(runState)
-  return <span className={`status-badge status-${tone}`} data-tooltip={label} title={label} aria-label={label}>{statusIcon(runState)}</span>
+function StatusBadge({ session }: { session: SessionSummary }) {
+  const tone = statusTone(session)
+  const label = statusLabel(session)
+  return <span className={`status-badge status-${tone}`} data-tooltip={label} title={label} aria-label={label}>{statusIcon(session)}</span>
 }
 
 function SessionListSkeleton() {
@@ -274,13 +280,15 @@ function SessionRow({
   onOpenMenu: (button: HTMLButtonElement) => void
   motionState?: SidebarMotionState
 }) {
+  const tag = sessionKindTag(session)
   return (
     <li className={`sidebar-motion-item session-row-wrap${motionStateClass(motionState)}`}>
       <button className={`session-row ${selected ? 'selected' : ''} ${highlighted ? 'highlighted' : ''} ${menuOpen ? 'menu-open' : ''}`} type="button" onClick={onSelect} aria-current={selected ? 'true' : undefined}>
         <div className="session-content">
           <div className="session-main">
-            <StatusBadge runState={session.runState} />
+            <StatusBadge session={session} />
             <strong>{session.title}</strong>
+            {tag ? <span className={`session-kind-tag session-kind-${tag.toLowerCase()}`}>{tag}</span> : null}
           </div>
         </div>
         <span className="session-age">{pending ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : formatAge(session.lastActivityAt)}</span>

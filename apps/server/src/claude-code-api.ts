@@ -97,6 +97,9 @@ function toSessionSummary(activity: SessionActivityTracker, projectId: string, s
     title: titleFromSession(session),
     projectId,
     lastActivityAt: activity.get(session),
+    status: 'idle',
+    kind: null,
+    entrypoint: null,
     runState: defaultRunState(),
   }
 }

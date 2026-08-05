@@ -155,6 +155,21 @@ function effortLabel(value: EffortLevel | DefaultTurnOption): string {
   return value
 }
 
+function isBackgroundKind(kind: string | null): boolean {
+  return kind === 'bg' || kind === 'daemon' || kind === 'daemon-worker'
+}
+
+function sessionControlTag(session: ProjectSessionsResponse['sessions'][number] | null | undefined): 'BG' | 'CLI' | null {
+  if (!session) return null
+  if (isBackgroundKind(session.kind)) return 'BG'
+  if (session.entrypoint === 'cli' && session.status !== 'idle') return 'CLI'
+  return null
+}
+
+function sessionExternallyOwned(session: ProjectSessionsResponse['sessions'][number] | null | undefined): boolean {
+  return sessionControlTag(session) !== null
+}
+
 const EFFORT_ORDER: EffortLevel[] = ['max', 'xhigh', 'high', 'medium', 'low']
 const DEFAULT_TURN_OPTION: DefaultTurnOption = 'default'
 const DEFAULT_EFFORT: EffortLevel = 'medium'
@@ -186,6 +201,7 @@ function ComposerIcon({ name }: { name: PermissionMode | 'add' | 'shield' }) {
 function TurnComposer({
   projectId,
   selectedSessionId,
+  selectedSession,
   selectedSessionRunState,
   liveUserMessageUuid,
   setSelectedSessionId,
@@ -202,6 +218,7 @@ function TurnComposer({
 }: {
   projectId: string | null
   selectedSessionId: string | null
+  selectedSession: ProjectSessionsResponse['sessions'][number] | null | undefined
   selectedSessionRunState: ProjectSessionsResponse['sessions'][number]['runState'] | null
   liveUserMessageUuid: string | null
   setSelectedSessionId: (sessionId: string | null) => void
@@ -290,8 +307,7 @@ function TurnComposer({
     }
   }, [permissionMenuOpen, modelMenuOpen])
 
-  const cliSessionActive = selectedSessionRunState?.phase === 'cli_busy' || selectedSessionRunState?.phase === 'cli_shell' || selectedSessionRunState?.phase === 'cli_waiting'
-  const cliSubmitBlocked = Boolean(selectedSessionId && cliSessionActive)
+  const cliSubmitBlocked = Boolean(selectedSessionId && sessionExternallyOwned(selectedSession))
 
   async function submitTurn(targetProjectId = projectId) {
     if (submitting || liveUserMessageUuid || interrupting || !inputText.trim() || (targetProjectId === projectId && cliSubmitBlocked)) return
@@ -394,14 +410,16 @@ function TurnComposer({
   }
 
   const actionMode = submitting || interrupting ? 'loading' : liveUserMessageUuid ? 'stop' : 'submit'
+  const controlTag = sessionControlTag(selectedSession)
+  const controlLabel = controlTag === 'BG' ? 'Controlled by Claude Code in the background' : controlTag === 'CLI' ? 'Controlled by Claude Code CLI' : null
 
   return (
     <section className="composer-card composer-card-bottom">
       <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn(retryProjectId ?? projectId) }}>
         <div
-          className="turn-composer"
+          className={`turn-composer${cliSubmitBlocked ? ' turn-composer-disabled' : ''}`}
           onClick={(event) => {
-            if ((event.target as HTMLElement).closest('button, textarea, select, .permission-mode-menu, .model-effort-menu')) return
+            if (cliSubmitBlocked || (event.target as HTMLElement).closest('button, textarea, select, .permission-mode-menu, .model-effort-menu')) return
             inputRef.current?.focus()
           }}
         >
@@ -414,7 +432,8 @@ function TurnComposer({
               event.preventDefault()
               void submitTurn(retryProjectId ?? projectId)
             }}
-            placeholder="Type whatever you like"
+            placeholder={controlLabel ?? 'Type whatever you like'}
+            disabled={cliSubmitBlocked}
             rows={2}
           />
           <div className="turn-composer-footer">
@@ -429,7 +448,8 @@ function TurnComposer({
                   aria-haspopup="menu"
                   aria-expanded={permissionMenuOpen}
                   aria-label={`Permission mode: ${permissionMode}`}
-                  onClick={() => setPermissionMenuOpen((open) => !open)}
+                  onClick={() => { if (!cliSubmitBlocked) setPermissionMenuOpen((open) => !open) }}
+                  disabled={cliSubmitBlocked}
                 >
                   <ComposerIcon name="shield" />
                   <span>{permissionMode}</span>
@@ -466,6 +486,7 @@ function TurnComposer({
                   aria-label={`Model ${triggerModelLabel}${triggerEffortLabel ? `, effort ${triggerEffortLabel}` : ''}`}
                   title={`${triggerModelLabel}${triggerEffortLabel ? ` / ${triggerEffortLabel}` : ''}`}
                   onClick={toggleModelMenu}
+                  disabled={cliSubmitBlocked}
                 >
                   <span className="model-effort-trigger-icon" aria-hidden="true">◉</span>
                   <span className="model-effort-trigger-copy">
@@ -529,7 +550,8 @@ function TurnComposer({
                 className="turn-action-button"
                 onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
                 disabled={actionMode === 'loading' || (actionMode === 'submit' && (!inputText.trim() || cliSubmitBlocked))}
-                aria-label={interrupting ? 'Interrupting' : actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : cliSubmitBlocked ? 'CLI session is active' : 'Submit'}
+                aria-label={interrupting ? 'Interrupting' : actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : controlLabel ?? 'Submit'}
+                title={controlLabel ?? undefined}
               >
                 {actionMode === 'loading' ? <span className="turn-spinner" aria-hidden="true" /> : actionMode === 'stop' ? <span className="turn-stop-icon" aria-hidden="true" /> : cliSubmitBlocked ? <svg className="turn-blocked-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" /><path d="m5.4 5.4 9.2 9.2" /></svg> : '↑'}
               </button>
@@ -593,7 +615,8 @@ function WorkspacePanel({
   }
 
   const selectedPendingTurn = pendingTurn?.sessionId === selectedSessionId ? pendingTurn.turn : null
-  const selectedSessionRunState = detail?.sessions.find((session) => session.id === selectedSessionId)?.runState ?? null
+  const selectedSession = detail?.sessions.find((session) => session.id === selectedSessionId)
+  const selectedSessionRunState = selectedSession?.runState ?? null
   const selectedSessionMeta = sessionMeta?.projectId === projectId && sessionMeta.sessionId === selectedSessionId ? sessionMeta.meta : null
 
   return (
@@ -608,6 +631,7 @@ function WorkspacePanel({
       <TurnComposer
         projectId={projectId}
         selectedSessionId={selectedSessionId}
+        selectedSession={selectedSession}
         selectedSessionRunState={selectedSessionRunState}
         liveUserMessageUuid={liveUserMessageUuid}
         setSelectedSessionId={setSelectedSessionId}
@@ -1613,6 +1637,10 @@ function ProjectsDashboard() {
     const requestId = beginSelectionIntent()
     setSelectedSessionRuntime(null)
     if (projectId !== selectedProjectId || sessionId !== selectedSessionId) selection.selectSession(projectId, sessionId)
+    const session = projectId === selectedProjectId && sessionId === selectedSessionId ? selectedSession : queryClient.getQueryData<{ pages: Array<{ sessions: ProjectSessionsResponse['sessions'] }> }>(sessionQueryKeys.projectSessionsRail(projectId))?.pages
+      .flatMap((page) => page.sessions)
+      .find((session) => session.id === sessionId)
+    if (sessionExternallyOwned(session)) return
     void ensureSessionRuntime(projectId, sessionId).then((runtime) => {
       if (pendingSessionRequestRef.current === requestId) setSelectedSessionRuntime(runtime)
     }).catch(() => {})

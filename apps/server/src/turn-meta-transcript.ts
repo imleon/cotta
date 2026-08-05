@@ -14,6 +14,8 @@ export type ChangedTranscriptSession = {
 type JsonRecord = Record<string, unknown>
 type Checkpoint = { scan_byte_offset: number | null; scan_line_no: number | null; file_size: number | null; file_mtime_ms: number | null }
 
+const AWAY_SUMMARY_CONFIG_HINT = /\s*\(disable recaps in \/config\)\s*$/
+
 function record(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null
 }
@@ -56,7 +58,9 @@ function assistantModel(value: JsonRecord): string | null {
 }
 
 function awaySummary(value: JsonRecord): string | null {
-  return value.type === 'system' && value.subtype === 'away_summary' && typeof value.content === 'string' ? value.content : null
+  return value.type === 'system' && value.subtype === 'away_summary' && typeof value.content === 'string'
+    ? value.content.replace(AWAY_SUMMARY_CONFIG_HINT, '')
+    : null
 }
 
 export class TurnMetaTranscriptStore {
@@ -402,14 +406,15 @@ export class TurnMetaTranscriptStore {
         `).run(now, transcriptPath, value.uuid, owner)
         this.db.prepare(`
           UPDATE turn_meta_transcript SET
-            duration_uuid = ?, duration_parent_uuid = ?, duration_timestamp_ms = ?, duration_ms = ?,
+            duration_uuid = ?, duration_parent_uuid = ?, duration_timestamp_ms = ?,
+            duration_ms = CASE WHEN duration_uuid = ? THEN duration_ms ELSE COALESCE(duration_ms, 0) + ? END,
             duration_message_count = ?, duration_line_no = ?, duration_byte_offset = ?, duration_byte_length = ?,
             duration_is_sidechain = ?, duration_is_meta = ?, duration_user_type = ?, duration_entrypoint = ?,
             duration_cwd = ?, duration_version = ?, duration_git_branch = ?, duration_slug = ?,
             duration_pending_background_agent_count = ?, duration_session_kind = ?, duration_forked_from_json = ?,
             duration_pending_workflow_count = ?, duration_payload_json = ?, updated_at_ms = ?
-          WHERE transcript_path = ? AND primary_user_uuid = ? AND duration_uuid IS NULL
-        `).run(value.uuid, value.parentUuid, durationTimestamp, value.durationMs, value.messageCount, lineNo,
+          WHERE transcript_path = ? AND primary_user_uuid = ?
+        `).run(value.uuid, value.parentUuid, durationTimestamp, value.uuid, value.durationMs, value.messageCount, lineNo,
           byteOffset, line.length + 1, 0, value.isMeta === true ? 1 : 0,
           typeof value.userType === 'string' ? value.userType : null, typeof value.entrypoint === 'string' ? value.entrypoint : null,
           typeof value.cwd === 'string' ? value.cwd : projectPath, typeof value.version === 'string' ? value.version : null,

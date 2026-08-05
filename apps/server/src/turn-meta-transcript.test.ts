@@ -124,7 +124,7 @@ describe('TurnMetaTranscriptStore', () => {
     await writeFile(join(projectDir, 'session.jsonl'), jsonl(
       primary('session', 'user'),
       child('session', 'assistant', 'user'),
-      away('session', 'away-summary', 'assistant'),
+      away('session', 'away-summary', 'assistant', '※ recap: done (disable recaps in /config)  '),
       duration('session', 'duration', 'assistant'),
     ))
 
@@ -230,7 +230,20 @@ describe('TurnMetaTranscriptStore', () => {
     expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['a', 10], ['b', 20], ['c', 30]]))
   })
 
-  it('rejects sidechain, cross-session, parentless, and duplicate duration ownership', async () => {
+  it('sums multiple duration records for one turn', async () => {
+    const { projectDir, store } = await setup()
+    await writeFile(join(projectDir, 'session.jsonl'), jsonl(
+      primary('session', 'user'),
+      child('session', 'assistant', 'user'),
+      duration('session', 'duration-1', 'assistant', 10),
+      duration('session', 'duration-2', 'assistant', 15),
+    ))
+
+    await store.syncSessions([changed('session')])
+    expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 25]]))
+  })
+
+  it('rejects sidechain, cross-session, and parentless duration ownership', async () => {
     const { projectDir, store, db } = await setup()
     await writeFile(join(projectDir, 'session.jsonl'), jsonl(
       primary('session', 'user'),
@@ -244,8 +257,8 @@ describe('TurnMetaTranscriptStore', () => {
     ))
 
     await store.syncSessions([changed('session')])
-    expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 4]]))
-    expect(db.prepare('SELECT duration_uuid FROM turn_meta_transcript').get()).toEqual({ duration_uuid: 'accepted' })
+    expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 9]]))
+    expect(db.prepare('SELECT duration_uuid FROM turn_meta_transcript').get()).toEqual({ duration_uuid: 'duplicate' })
   })
 
   it('self-heals ownership from the file prefix while replaying only the latest incomplete turn', async () => {

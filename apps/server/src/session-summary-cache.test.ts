@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 import type { SessionRunState } from '@cotta/shared'
+import type { SessionMetadata } from './session-summary-cache.js'
 
 const { listSessionsMock } = vi.hoisted(() => ({
   listSessionsMock: vi.fn<typeof import('@anthropic-ai/claude-agent-sdk').listSessions>(),
@@ -258,6 +259,37 @@ describe('SessionSummaryCache', () => {
         { projectId: projectId('/repo/a'), sessionId: 'moved', kind: 'removed' },
         { projectId: projectId('/repo/b'), sessionId: 'moved', kind: 'changed' },
       ]),
+    })
+  })
+
+  it('keeps Cotta-only metadata empty while exposing normalized status', async () => {
+    const cache = new SessionSummaryCache(10)
+    let runState: SessionRunState = { phase: 'running', activeUserMessageUuid: 'u', lastTurn: null }
+    cache.setSessionRunStateReader(() => runState)
+    listSessionsMock.mockResolvedValueOnce([session('s1')])
+
+    await cache.requestScan('global')
+    await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
+      sessions: [{ status: 'busy', kind: null, entrypoint: null }],
+    })
+
+    runState = { phase: 'requires_action', activeUserMessageUuid: 'u', lastTurn: null }
+    listSessionsMock.mockResolvedValueOnce([session('s1')])
+    await cache.requestScan({ projectId: projectId('/repo/a') })
+    await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
+      sessions: [{ status: 'waiting', kind: null, entrypoint: null }],
+    })
+  })
+
+  it('exposes CLI background metadata separately from status', async () => {
+    const cache = new SessionSummaryCache(10)
+    const metadata: SessionMetadata = { status: 'idle', kind: 'bg', entrypoint: 'cli' }
+    cache.setSessionMetadataReader(() => metadata)
+    listSessionsMock.mockResolvedValueOnce([session('s1')])
+
+    await cache.requestScan('global')
+    await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
+      sessions: [{ status: 'idle', kind: 'bg', entrypoint: 'cli' }],
     })
   })
 

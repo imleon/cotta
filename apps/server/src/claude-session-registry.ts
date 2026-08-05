@@ -3,7 +3,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { SessionObservation, SessionObservationSort, SessionObservationsResponse, SessionRunState } from '@cotta/shared'
+import type { SessionObservation, SessionObservationSort, SessionObservationsResponse, SessionRunState, SessionStatus } from '@cotta/shared'
 
 const MAX_SANE_EPOCH_MS = 4_000_000_000_000_000
 const SESSION_FILE = /^(\d+)\.json$/
@@ -27,6 +27,12 @@ type Snapshot = {
   rawJson: string
   payload: Record<string, unknown> | null
   parseError: string | null
+}
+
+export type CliSessionMetadata = {
+  status: SessionStatus
+  kind: string | null
+  entrypoint: 'cli'
 }
 
 export type ClaudeSessionRegistryOptions = {
@@ -55,10 +61,26 @@ function stringField(payload: Record<string, unknown> | null, key: string): stri
   return typeof value === 'string' ? value : null
 }
 
+function isBackgroundKind(kind: string | null): boolean {
+  return kind === 'bg' || kind === 'daemon' || kind === 'daemon-worker'
+}
+
 function activeSessionId(snapshot: Snapshot | undefined): string | null {
   if (!snapshot || stringField(snapshot.payload, 'entrypoint') !== 'cli') return null
   const status = stringField(snapshot.payload, 'status')
+  if (isBackgroundKind(stringField(snapshot.payload, 'kind'))) return stringField(snapshot.payload, 'sessionId')
   return status === 'busy' || status === 'shell' || status === 'waiting' ? stringField(snapshot.payload, 'sessionId') : null
+}
+
+function sessionStatusFromSnapshot(snapshot: Snapshot | undefined): SessionStatus {
+  const status = stringField(snapshot?.payload ?? null, 'status')
+  return status === 'busy' || status === 'shell' || status === 'waiting' ? status : 'idle'
+}
+
+function latestCliSnapshot(snapshots: Iterable<Snapshot>, sessionId: string): Snapshot | undefined {
+  return Array.from(snapshots)
+    .filter((snapshot) => stringField(snapshot.payload, 'sessionId') === sessionId && stringField(snapshot.payload, 'entrypoint') === 'cli')
+    .sort((left, right) => (saneEpochField(right.payload, 'statusUpdatedAt') ?? saneEpochField(right.payload, 'updatedAt') ?? right.fileMtimeMs) - (saneEpochField(left.payload, 'statusUpdatedAt') ?? saneEpochField(left.payload, 'updatedAt') ?? left.fileMtimeMs))[0]
 }
 
 function integerField(payload: Record<string, unknown> | null, key: string): number | null {
@@ -191,14 +213,21 @@ export class ClaudeSessionRegistry {
   }
 
   cliRunState(sessionId: string): SessionRunState | null {
-    const current = Array.from(this.snapshots.values())
-      .filter((snapshot) => stringField(snapshot.payload, 'sessionId') === sessionId && stringField(snapshot.payload, 'entrypoint') === 'cli')
-      .sort((left, right) => (saneEpochField(right.payload, 'statusUpdatedAt') ?? saneEpochField(right.payload, 'updatedAt') ?? right.fileMtimeMs) - (saneEpochField(left.payload, 'statusUpdatedAt') ?? saneEpochField(left.payload, 'updatedAt') ?? left.fileMtimeMs))[0]
-    const status = stringField(current?.payload ?? null, 'status')
+    const status = sessionStatusFromSnapshot(latestCliSnapshot(this.snapshots.values(), sessionId))
     if (status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
     if (status === 'shell') return { phase: 'cli_shell', activeUserMessageUuid: null }
     if (status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
     return null
+  }
+
+  cliSessionMetadata(sessionId: string): CliSessionMetadata | null {
+    const current = latestCliSnapshot(this.snapshots.values(), sessionId)
+    if (!current) return null
+    return {
+      status: sessionStatusFromSnapshot(current),
+      kind: stringField(current.payload, 'kind'),
+      entrypoint: 'cli',
+    }
   }
 
   listObservations(input: { sessionId?: string | null; sort: SessionObservationSort; direction: 'asc' | 'desc'; limit: number; offset: number }): SessionObservationsResponse {

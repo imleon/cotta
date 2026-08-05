@@ -304,6 +304,44 @@ describe('LiveTurnManager', () => {
     manager.closeAll()
   })
 
+  it('interrupts active frontend turns before closing for external ownership', async () => {
+    const close = vi.fn()
+    const interrupt = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close, interrupt }))
+    const persisted: unknown[] = []
+    const manager = new LiveTurnManager(recordingStore(persisted))
+    const events: LiveTurnEvent[] = []
+    manager.subscribe('session-1', (event) => events.push(event))
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
+    await expect(manager.closeForExternalOwner('session-1')).resolves.toBe(true)
+
+    expect(interrupt).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['Session was interrupted because it was taken over by Claude Code CLI/background agent.'] }),
+    ])
+    expect(persisted).toEqual([
+      expect.objectContaining({ type: 'user', uuid: 'user-1' }),
+      expect.objectContaining({ type: 'result', subtype: 'error_during_execution' }),
+    ])
+    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
+  })
+
+  it('closes idle runtimes for external ownership without interrupting', async () => {
+    const close = vi.fn()
+    const interrupt = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close, interrupt }))
+    const manager = new LiveTurnManager()
+    await manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-1' })
+
+    await expect(manager.closeForExternalOwner('session-1')).resolves.toBe(true)
+
+    expect(interrupt).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
   it('closes a session runtime explicitly once', async () => {
     const close = vi.fn()
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { close }))

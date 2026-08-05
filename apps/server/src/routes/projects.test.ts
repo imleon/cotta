@@ -79,6 +79,9 @@ const sessions: SessionSummary[] = [
     projectId: project.id,
     title: 'Newest session',
     lastActivityAt: 123,
+    status: 'idle',
+    kind: null,
+    entrypoint: null,
     runState: idleRunState,
   },
   {
@@ -86,6 +89,9 @@ const sessions: SessionSummary[] = [
     projectId: project.id,
     title: 'Older session',
     lastActivityAt: 100,
+    status: 'idle',
+    kind: null,
+    entrypoint: null,
     runState: idleRunState,
   },
 ]
@@ -494,8 +500,8 @@ describe('project routes', () => {
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
       project: { ...project },
       sessions: [
-        { ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } },
-        { ...sessions[1], runState: { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null } },
+        { ...sessions[0], status: 'busy', runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } },
+        { ...sessions[1], status: 'waiting', runState: { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null } },
       ],
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -1369,6 +1375,40 @@ describe('project routes', () => {
     expect(ensured).not.toHaveProperty('model')
     expect(ensured).not.toHaveProperty('effort')
     expect(await response.json()).toEqual({ ok: true, projectId: project.id, sessionId: 'session-newest', settings: { permissionMode: 'default', model: null, effort: null } })
+  })
+
+  it('skips runtime ensure for background CLI sessions', async () => {
+    let ensured = false
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => { ensured = true },
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        async deleteSession() { return true },
+        async renameSession() { return true },
+        async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState },
+        async getSessionMessages() { return messages },
+      },
+      claudeSessionRegistry: {
+        cliRunState: () => null,
+        cliSessionMetadata: () => ({ status: 'idle', kind: 'bg', entrypoint: 'cli' }),
+      },
+    }).request(
+      `/api/projects/${project.id}/sessions/session-newest/runtime`,
+      { method: 'POST' },
+    )
+
+    expect(response.status).toBe(200)
+    expect(ensured).toBe(false)
   })
 
   it('returns 404 when ensuring runtime for an unknown session', async () => {

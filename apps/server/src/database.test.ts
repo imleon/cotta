@@ -31,8 +31,8 @@ describe('Cotta database', () => {
     db.close()
     const reopened = createCottaDatabase(path.file)
 
-    expect((reopened.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
-    expect(reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()).toEqual([{ name: 'turn_meta_transcript' }])
+    expect((reopened.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
+    expect(reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()).toEqual([{ name: 'session_meta' }, { name: 'turn_meta_transcript' }])
     expect(reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'turn_meta_transcript' AND sql IS NOT NULL ORDER BY name").all()).toEqual([
       { name: 'turn_meta_transcript_by_duration_uuid' },
       { name: 'turn_meta_transcript_by_path_offset' },
@@ -55,7 +55,7 @@ describe('Cotta database', () => {
     db.close()
 
     const migrated = createCottaDatabase(path)
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
     expect(migrated.prepare(`
       SELECT transcript_path, primary_user_uuid, scan_byte_offset, scan_line_no
       FROM turn_meta_transcript ORDER BY transcript_path, primary_user_uuid
@@ -68,16 +68,44 @@ describe('Cotta database', () => {
     migrated.close()
   })
 
-  it('adds away_summary to existing v5 databases that missed the column', async () => {
+  it('repairs v7 session_meta tables that required permission_mode', async () => {
     const db = await database()
     const path = (db.prepare('PRAGMA database_list').get() as { file: string }).file
-    db.exec('ALTER TABLE turn_meta_transcript DROP COLUMN away_summary; PRAGMA user_version = 5;')
+    db.exec(`
+      DROP TABLE session_meta;
+      CREATE TABLE session_meta (
+        project_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        permission_mode TEXT NOT NULL,
+        model TEXT,
+        effort TEXT,
+        observed_at_ms INTEGER NOT NULL CHECK (observed_at_ms >= 0),
+        updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+        PRIMARY KEY (project_id, session_id)
+      );
+      INSERT INTO session_meta VALUES ('project', 'session', 'default', NULL, NULL, 1, 1);
+      PRAGMA user_version = 7;
+    `)
     db.close()
 
     const migrated = createCottaDatabase(path)
 
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+    expect(migrated.prepare("SELECT name, \"notnull\" FROM pragma_table_info('session_meta') WHERE name = 'permission_mode'").all()).toEqual([{ name: 'permission_mode', notnull: 0 }])
+    migrated.prepare("INSERT INTO session_meta (project_id, session_id, permission_mode, model, effort, observed_at_ms, updated_at_ms) VALUES ('project', 'model-only', NULL, 'claude-opus-5', NULL, 2, 2)").run()
+    migrated.close()
+  })
+
+  it('adds away_summary and session_meta to existing v5 databases that missed them', async () => {
+    const db = await database()
+    const path = (db.prepare('PRAGMA database_list').get() as { file: string }).file
+    db.exec('ALTER TABLE turn_meta_transcript DROP COLUMN away_summary; DROP TABLE session_meta; PRAGMA user_version = 5;')
+    db.close()
+
+    const migrated = createCottaDatabase(path)
+
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
     expect(migrated.prepare("SELECT name FROM pragma_table_info('turn_meta_transcript') WHERE name = 'away_summary'").all()).toEqual([{ name: 'away_summary' }])
+    expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_meta'").all()).toEqual([{ name: 'session_meta' }])
     migrated.close()
   })
 

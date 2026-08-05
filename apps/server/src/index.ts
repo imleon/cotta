@@ -13,6 +13,7 @@ import { registerProjectRoutes, type ProjectRoutesLiveTurnManager, type ProjectR
 import { createClaudeSessionRegistry } from './claude-session-registry.js'
 import { SessionSummaryCache } from './session-summary-cache.js'
 import { createSettingsStore, type SettingsStore } from './settings-store.js'
+import { SessionMetaStore } from './session-meta-store.js'
 import { TurnMetaTranscriptStore } from './turn-meta-transcript.js'
 import { resolveTurnOptions, sdkEffort, sdkModel } from './turn-options.js'
 
@@ -25,6 +26,7 @@ export function createApp(input: {
   sessionSummaryCache?: SessionSummaryCache
   modelCatalogProvider?: ModelCatalogProvider
   settingsStore?: SettingsStore
+  sessionMetaStore?: SessionMetaStore
   sessionObservationReader?: ProjectRoutesSessionObservationReader
   claudeSessionRegistry?: Pick<Awaited<ReturnType<typeof createClaudeSessionRegistry>>, 'cliRunState' | 'cliSessionMetadata'>
   timelineMetadataReader?: ProjectRoutesTimelineMetadataReader
@@ -45,7 +47,7 @@ export function createApp(input: {
   app.use('*', auth.middleware)
   registerHealthRoute(app)
   auth.registerRoutes(app)
-  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionObservationReader: input.sessionObservationReader, sessionMetadataReader: (sessionId) => input.claudeSessionRegistry?.cliSessionMetadata(sessionId) ?? null, timelineMetadataReader: input.timelineMetadataReader, turnMetaTranscriptReader: input.turnMetaTranscriptReader })
+  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionMetaStore: input.sessionMetaStore, sessionObservationReader: input.sessionObservationReader, sessionMetadataReader: (sessionId) => input.claudeSessionRegistry?.cliSessionMetadata(sessionId) ?? null, timelineMetadataReader: input.timelineMetadataReader, turnMetaTranscriptReader: input.turnMetaTranscriptReader })
   return app
 }
 
@@ -56,7 +58,9 @@ if (process.env.NODE_ENV !== 'test') {
   const liveEventStore = createLiveEventStore()
   const sessionSummaryCache = new SessionSummaryCache()
   const settingsStore = createSettingsStore()
-  const turnMetaStore = new TurnMetaTranscriptStore(createCottaDatabase())
+  const cottaDb = createCottaDatabase()
+  const sessionMetaStore = new SessionMetaStore(cottaDb)
+  const turnMetaStore = new TurnMetaTranscriptStore(cottaDb)
   await turnMetaStore.repairIncompleteTranscripts()
   sessionSummaryCache.setChangedListener((changes) => turnMetaStore.syncSessions(changes))
   const claudeCodeApi = createClaudeCodeApi(sessionSummaryCache, {
@@ -80,12 +84,10 @@ if (process.env.NODE_ENV !== 'test') {
     for (const sessionId of idleSessionIds) {
       const projectId = projectIdsBySessionId.get(sessionId)
       if (!projectId) continue
-      const options = resolveTurnOptions({ projectId, sessionId, settingsStore })
+      const options = resolveTurnOptions({ projectId, sessionId, settingsStore, sessionMetaStore })
       const model = sdkModel(options.model)
       const effort = sdkEffort(options.effort)
-      void liveTurnManager.ensureRuntime({
-        projectId,
-        sessionId,
+      void liveTurnManager.rebuildRuntimeAfterCliIdle(sessionId, {
         permissionMode: options.permissionMode,
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
@@ -98,6 +100,7 @@ if (process.env.NODE_ENV !== 'test') {
     liveTurnManager,
     sessionSummaryCache,
     settingsStore,
+    sessionMetaStore,
     sessionObservationReader: claudeSessionRegistry ?? undefined,
     claudeSessionRegistry: claudeSessionRegistry ?? undefined,
     timelineMetadataReader: (projectId, sessionId) => turnMetaStore.loadTimelineMetadata(projectId, sessionId),

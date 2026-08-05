@@ -1,7 +1,6 @@
 import {
   appSettingsSchema,
   type AppSettings,
-  type CreateTurnRequest,
   type DefaultTurnOption,
   type EffortLevel,
   type ModelCatalogItem,
@@ -9,6 +8,7 @@ import {
   type PermissionMode,
 } from '@cotta/shared'
 import type { SettingsStore } from './settings-store.js'
+import type { SessionMetaStore } from './session-meta-store.js'
 
 function matchingCatalogModel(models: ModelCatalogItem[], model: string): ModelCatalogItem | undefined {
   return models.find((item) => item.value === model || item.resolvedModel === model)
@@ -24,13 +24,15 @@ export type ResolvedTurnOptions = {
   effort: EffortLevel | DefaultTurnOption | null
 }
 
-export function resolveTurnOptions(input: { body?: Pick<CreateTurnRequest, 'permissionMode' | 'model' | 'effort'>; projectId: string; sessionId?: string; settingsStore?: SettingsStore }): ResolvedTurnOptions {
+export type TurnOptionsSessionMetaStore = Pick<SessionMetaStore, 'getSessionMeta'>
+
+export function resolveTurnOptions(input: { projectId: string; sessionId?: string; settingsStore?: SettingsStore; sessionMetaStore?: TurnOptionsSessionMetaStore }): ResolvedTurnOptions {
   const globalSettings = readSettings(input.settingsStore)
-  const sessionSettings = input.sessionId ? input.settingsStore?.getSessionSettings(input.projectId, input.sessionId) : null
+  const sessionMeta = input.sessionId ? input.sessionMetaStore?.getSessionMeta(input.projectId, input.sessionId) : null
   return {
-    permissionMode: input.body?.permissionMode ?? sessionSettings?.permissionMode ?? globalSettings.defaultPermissionMode ?? 'default',
-    model: input.body?.model ?? sessionSettings?.model ?? globalSettings.defaultModel ?? null,
-    effort: input.body?.effort ?? sessionSettings?.effort ?? globalSettings.defaultEffort ?? null,
+    permissionMode: sessionMeta?.permissionMode ?? globalSettings.defaultPermissionMode ?? 'default',
+    model: sessionMeta ? sessionMeta.model : globalSettings.defaultModel ?? null,
+    effort: sessionMeta ? sessionMeta.effort : globalSettings.defaultEffort ?? null,
   }
 }
 

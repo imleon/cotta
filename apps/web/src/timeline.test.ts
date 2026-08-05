@@ -468,6 +468,22 @@ describe('timeline raw-message protocol', () => {
     ])
   })
 
+  it('keeps separate assistant records that share an API message id', () => {
+    const turn: TurnSummary = {
+      primaryUserUuid: 'user-1',
+      messages: [
+        userMessage('user-1', 'hello'),
+        { type: 'assistant', uuid: 'assistant-text', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'Need mark task complete.' }] } },
+        { type: 'assistant', uuid: 'assistant-tool', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'tool_use', id: 'call-1', name: 'TaskUpdate', input: { taskId: '5' } }] } },
+      ],
+    }
+
+    expect(projectTimelineTurn(turn)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'assistant.text', sourceEventIds: ['assistant-text'], data: expect.objectContaining({ text: 'Need mark task complete.' }) }),
+      expect.objectContaining({ kind: 'assistant.tool_use', sourceEventIds: ['assistant-tool'], toolUseId: 'call-1' }),
+    ]))
+  })
+
   it('stores SDK messages canonically and confirms a pending raw user message', () => {
     const pending = userTurn('user-1')
     const raw = { type: 'user', uuid: 'user-1', session_id: 'session-1', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hello' } }

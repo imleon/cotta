@@ -210,7 +210,7 @@ export class LiveTurnManager {
     await this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
   }
 
-  async rebuildRuntimeAfterCliIdle(sessionId: string): Promise<boolean> {
+  async rebuildRuntimeAfterCliIdle(sessionId: string, options?: { permissionMode?: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<boolean> {
     const current = this.runtimes.get(sessionId)
     if (!current) return false
     if (current.rebuildingAfterCliIdle) {
@@ -223,9 +223,9 @@ export class LiveTurnManager {
       projectId: current.projectId,
       sessionId,
       resume: true,
-      permissionMode: current.permissionMode,
-      model: current.model,
-      effort: current.effort,
+      permissionMode: options?.permissionMode ?? current.permissionMode,
+      model: options?.model ?? current.model,
+      effort: options?.effort ?? current.effort,
     }
     current.stale = true
     this.closeRuntime(current)

@@ -1141,13 +1141,13 @@ export function projectTimelineTurn(turn: TurnSummary): TimelineBlock[] {
     if (message.type === 'assistant') {
       const uuid = sdkMessageUuid(message)
       const apiMessageId = isRecord(message.message) && typeof message.message.id === 'string' ? message.message.id : undefined
-      const finalized = accumulator && uuid && apiMessageId
+      const replacesStreamPreview = accumulator !== null && Boolean(uuid && apiMessageId)
+      const finalized = accumulator !== null && uuid && apiMessageId
         ? accumulator.finalAssistantBlocks(message)
         : uuid && apiMessageId ? assistantBlocksFromMessage(message, uuid, apiMessageId) : [rawMessageBlock(message)]
-      if (apiMessageId) {
-        for (let index = blocks.length - 1; index >= 0; index -= 1) {
-          if (blocks[index]?.apiMessageId === apiMessageId) blocks.splice(index, 1)
-        }
+      for (let index = blocks.length - 1; index >= 0; index -= 1) {
+        const block = blocks[index]
+        if ((replacesStreamPreview && apiMessageId && block?.apiMessageId === apiMessageId) || (uuid && block?.sourceEventIds.includes(uuid))) blocks.splice(index, 1)
       }
       blocks.push(...finalized)
       continue

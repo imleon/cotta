@@ -15,8 +15,7 @@ vi.mock('./api', () => ({
 
 import { refreshProjectSessionLists, refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
 
-const idleRunState = { phase: 'idle' as const, activeUserMessageUuid: null }
-const session = (id: string, title: string, projectId: string) => ({ id, title, projectId, status: 'idle' as const, kind: null, entrypoint: null, runState: idleRunState })
+const session = (id: string, title: string, projectId: string) => ({ id, title, projectId, status: 'idle' as const, kind: null, entrypoint: null })
 
 describe('refresh helpers', () => {
   let queryClient: QueryClient
@@ -89,8 +88,8 @@ describe('refresh helpers', () => {
         p1: {
           sessions: [
             session('s9', 'S9', 'p1'),
-            { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
-            { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
+            session('s8', 'S8', 'p1'),
+            session('s7', 'S7', 'p1'),
           ],
           hasMore: false,
           nextCursor: null,
@@ -110,8 +109,8 @@ describe('refresh helpers', () => {
       project: { id: 'p1', name: 'P1' },
       sessions: [
         session('s9', 'S9', 'p1'),
-        { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
-        { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
+        session('s8', 'S8', 'p1'),
+        session('s7', 'S7', 'p1'),
       ],
       defaultSessionId: 's9',
       hasMore: false,
@@ -123,8 +122,8 @@ describe('refresh helpers', () => {
         project: { id: 'p1', name: 'P1' },
         sessions: [
           session('s9', 'S9', 'p1'),
-          { id: 's8', title: 'S8', projectId: 'p1', runState: idleRunState },
-          { id: 's7', title: 'S7', projectId: 'p1', runState: idleRunState },
+          session('s8', 'S8', 'p1'),
+          session('s7', 'S7', 'p1'),
         ],
         defaultSessionId: 's9',
         hasMore: false,
@@ -409,7 +408,7 @@ describe('refresh helpers', () => {
     let resolveP1: (value: unknown) => void
     const p1 = new Promise((resolve) => { resolveP1 = resolve })
     queryProjectSessionsMock.mockImplementationOnce(() => p1 as never).mockResolvedValueOnce({
-      sessionsByProject: { p2: { sessions: [{ id: 's2', title: 'S2', projectId: 'p2', runState: idleRunState }], hasMore: false, nextCursor: null } },
+      sessionsByProject: { p2: { sessions: [session('s2', 'S2', 'p2')], hasMore: false, nextCursor: null } },
     })
 
     const first = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })

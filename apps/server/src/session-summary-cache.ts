@@ -167,7 +167,6 @@ function toSessionSummary(
     status: runState.phase === 'idle' ? metadata?.status ?? 'idle' : statusFromRunState(runState),
     kind: metadata?.kind ?? null,
     entrypoint: metadata?.entrypoint ?? null,
-    runState,
   }
 }
 

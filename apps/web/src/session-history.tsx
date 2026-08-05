@@ -20,7 +20,6 @@ function formatAge(value?: number): string {
 }
 
 function statusTone(session: SessionSummary): string {
-  if (session.runState.lastTurn?.outcome === 'error') return 'danger'
   if (session.status === 'busy') return 'running'
   if (session.status === 'shell') return 'shell'
   if (session.status === 'waiting') return 'warning'
@@ -28,7 +27,6 @@ function statusTone(session: SessionSummary): string {
 }
 
 function statusLabel(session: SessionSummary): string {
-  if (session.runState.lastTurn?.outcome === 'error') return 'Error'
   if (session.status === 'busy') return 'Busy'
   if (session.status === 'shell') return 'Shell'
   if (session.status === 'waiting') return 'Waiting'

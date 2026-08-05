@@ -77,7 +77,6 @@ export const sessionSummarySchema = z.object({
   status: sessionStatusSchema,
   kind: z.string().nullable(),
   entrypoint: z.string().nullable(),
-  runState: sessionRunStateSchema,
 })
 
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
@@ -494,10 +493,8 @@ export type SessionInfoResponse = z.infer<typeof sessionInfoResponseSchema>
 
 export const appSettingsSchema = z.object({
   defaultPermissionMode: permissionModeSchema.optional(),
-  defaultModel: modelSelectionSchema.nullable().optional(),
-  defaultEffort: effortLevelSchema.nullable().optional(),
-  resumeUsesLastPermissionMode: z.boolean().optional(),
-  resumeUsesLastModelAndEffort: z.boolean().optional(),
+  defaultModel: modelSelectionSchema.nullable().default(null),
+  defaultEffort: effortLevelSchema.nullable().default(null),
   modelCatalog: modelCatalogResponseSchema.optional(),
   showDebugNav: z.boolean().optional(),
 }).catchall(z.unknown())
@@ -552,13 +549,20 @@ export type GitHubDevicePollResponse = z.infer<typeof githubDevicePollResponseSc
 export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>
 
+export const sessionMetaSchema = z.object({
+  permissionMode: permissionModeSchema,
+  model: modelSelectionSchema.nullable(),
+  effort: effortLevelSchema.nullable(),
+})
+export type SessionMeta = z.infer<typeof sessionMetaSchema>
+
+export const sessionMetaUpdateRequestSchema = sessionMetaSchema
+export type SessionMetaUpdateRequest = z.infer<typeof sessionMetaUpdateRequestSchema>
+
 export const createTurnRequestSchema = z.object({
   sessionId: z.string().uuid().optional(),
   text: z.string().trim().min(1),
   userMessageUuid: z.string().uuid(),
-  permissionMode: permissionModeSchema.optional(),
-  model: z.union([modelSelectionSchema, defaultTurnOptionSchema]).optional(),
-  effort: turnEffortSelectionSchema.optional(),
 })
 
 export type CreateTurnRequest = z.infer<typeof createTurnRequestSchema>

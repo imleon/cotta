@@ -293,7 +293,7 @@ describe('SessionSummaryCache', () => {
     })
   })
 
-  it('publishes non-idle runState immediately for known sessions only', async () => {
+  it('publishes non-idle status immediately for known sessions only', async () => {
     const cache = new SessionSummaryCache(10)
     let runState: SessionRunState = { phase: 'idle', activeUserMessageUuid: null }
     cache.setSessionRunStateReader(() => runState)
@@ -306,7 +306,7 @@ describe('SessionSummaryCache', () => {
 
     expect(listSessionsMock).toHaveBeenCalledTimes(calls)
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
-      sessions: [{ runState: { phase: 'running', activeUserMessageUuid: 'u' } }],
+      sessions: [{ status: 'busy' }],
     })
   })
 
@@ -320,13 +320,13 @@ describe('SessionSummaryCache', () => {
 
     await cache.notifySessionRunStateActive('s1')
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
-      sessions: [{ runState: { phase: 'running', activeUserMessageUuid: 'u' } }],
+      sessions: [{ status: 'busy' }],
     })
 
     listSessionsMock.mockResolvedValueOnce([session('s1')])
     await cache.requestScan({ projectId: projectId('/repo/a') })
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
-      sessions: [{ runState: { phase: 'idle', activeUserMessageUuid: null } }],
+      sessions: [{ status: 'idle' }],
     })
   })
 

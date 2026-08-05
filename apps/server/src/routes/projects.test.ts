@@ -82,7 +82,6 @@ const sessions: SessionSummary[] = [
     status: 'idle',
     kind: null,
     entrypoint: null,
-    runState: idleRunState,
   },
   {
     id: 'session-older',
@@ -92,7 +91,6 @@ const sessions: SessionSummary[] = [
     status: 'idle',
     kind: null,
     entrypoint: null,
-    runState: idleRunState,
   },
 ]
 
@@ -182,6 +180,17 @@ const messages: TimestampedSessionMessage[] = [
     },
   },
 ]
+
+type TestSessionMeta = { permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto' | null; model: string | null; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }
+
+function memorySessionMetaStore(initial: Record<string, TestSessionMeta> = {}) {
+  const sessionData = new Map(Object.entries(initial))
+  return {
+    getSessionMeta: (_projectId: string, sessionId: string) => sessionData.get(sessionId) ?? null,
+    setSessionMeta: (_projectId: string, sessionId: string, meta: TestSessionMeta) => { sessionData.set(sessionId, meta) },
+    timelineVersion: (_projectId: string, sessionId: string) => `session-meta=${sessionData.has(sessionId) ? 1 : 0}`,
+  } as never
+}
 
 function memorySettingsStore(initial: Record<string, unknown> = {}, initialSessions: Record<string, { permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'; model: string | null; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }> = {}) {
   const data = { ...initial }
@@ -302,7 +311,7 @@ describe('project routes', () => {
       },
     })
 
-    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan' } })
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
 
     const saved = await app.request('/api/settings', {
       method: 'PUT',
@@ -312,9 +321,18 @@ describe('project routes', () => {
     expect(saved.status).toBe(200)
     expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'high' } })
 
+    const reset = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultModel: null, defaultEffort: null } }),
+    })
+    expect(reset.status).toBe(200)
+    expect(await reset.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
+
     const refreshed = await app.request('/api/settings/model-catalog/refresh', { method: 'POST' })
     expect(refreshed.status).toBe(200)
-    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'high', modelCatalog } })
+    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null, modelCatalog } })
   })
 
   it('creates a nested project directory inside the configured root', async () => {
@@ -490,7 +508,7 @@ describe('project routes', () => {
     })
   })
 
-  it('overlays live session runState on project sessions', async () => {
+  it('overlays live session status on project sessions', async () => {
     const response = await createTestApp({
       'session-newest': { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null },
       'session-older': { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null },
@@ -500,8 +518,8 @@ describe('project routes', () => {
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
       project: { ...project },
       sessions: [
-        { ...sessions[0], status: 'busy', runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } },
-        { ...sessions[1], status: 'waiting', runState: { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null } },
+        { ...sessions[0], status: 'busy' },
+        { ...sessions[1], status: 'waiting' },
       ],
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -654,7 +672,7 @@ describe('project routes', () => {
         queryProjectSessions: () => ({
           sessionsByProject: {
             [project.id]: {
-              sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
+              sessions: [{ ...sessions[0], status: 'busy' }, sessions[1]],
               hasMore: false,
               nextCursor: null,
             },
@@ -671,7 +689,7 @@ describe('project routes', () => {
     expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({
       sessionsByProject: {
         [project.id]: {
-          sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
+          sessions: [{ ...sessions[0], status: 'busy' }, sessions[1]],
           hasMore: false,
           nextCursor: null,
         },
@@ -738,10 +756,11 @@ describe('project routes', () => {
         async getSessionMessages() { return null },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
+      sessionMetaStore: memorySessionMetaStore({ '10000000-0000-4000-8000-000000000001': { permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' } }),
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000001', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001', permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000001', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001' }),
     })
 
     expect(response.status).toBe(202)
@@ -874,10 +893,11 @@ describe('project routes', () => {
         async getSessionMessages() { return null },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
+      sessionMetaStore: memorySessionMetaStore({ '10000000-0000-4000-8000-000000000003': { permissionMode: 'default', model: 'missing-model', effort: null } }),
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000003', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003', model: 'missing-model' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000003', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003' }),
     })
 
     expect(response.status).toBe(400)
@@ -905,10 +925,11 @@ describe('project routes', () => {
         async getSessionMessages() { return null },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
+      sessionMetaStore: memorySessionMetaStore({ '10000000-0000-4000-8000-000000000004': { permissionMode: 'default', model: 'no-effort-model', effort: 'high' } }),
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000004', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004', model: 'no-effort-model', effort: 'high' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000004', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004' }),
     })
 
     expect(response.status).toBe(400)

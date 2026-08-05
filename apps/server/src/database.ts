@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 7
 
 function databasePath(): string {
   return resolve(process.cwd(), process.env.COTTA_DB_PATH ?? 'data/cotta.sqlite')
@@ -25,9 +25,48 @@ function tableColumns(db: DatabaseSync, table: string): Set<string> {
   return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name))
 }
 
+function createSessionMetaTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_meta (
+      project_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      permission_mode TEXT,
+      model TEXT,
+      effort TEXT,
+      observed_at_ms INTEGER NOT NULL CHECK (observed_at_ms >= 0),
+      updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+      PRIMARY KEY (project_id, session_id)
+    );
+  `)
+}
+
+function ensureSessionMetaAllowsPartialObservations(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(session_meta)').all() as Array<{ name: string; notnull: number }>
+  if (columns.length === 0 || columns.find((column) => column.name === 'permission_mode')?.notnull !== 1) return
+  db.exec(`
+    CREATE TABLE session_meta_next (
+      project_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      permission_mode TEXT,
+      model TEXT,
+      effort TEXT,
+      observed_at_ms INTEGER NOT NULL CHECK (observed_at_ms >= 0),
+      updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+      PRIMARY KEY (project_id, session_id)
+    );
+    INSERT INTO session_meta_next (project_id, session_id, permission_mode, model, effort, observed_at_ms, updated_at_ms)
+      SELECT project_id, session_id, permission_mode, model, effort, observed_at_ms, updated_at_ms FROM session_meta;
+    DROP TABLE session_meta;
+    ALTER TABLE session_meta_next RENAME TO session_meta;
+  `)
+}
+
 function migrate(db: DatabaseSync): void {
   const version = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
-  if (version >= SCHEMA_VERSION) return
+  if (version >= SCHEMA_VERSION) {
+    ensureSessionMetaAllowsPartialObservations(db)
+    return
+  }
   if (version === 1) {
     db.exec(`
       ALTER TABLE turn_meta_transcript ADD COLUMN scan_line_no INTEGER NOT NULL DEFAULT 0 CHECK (scan_line_no >= 0);
@@ -55,6 +94,12 @@ function migrate(db: DatabaseSync): void {
   if (version <= 5 && version > 0) {
     const columns = tableColumns(db, 'turn_meta_transcript')
     if (!columns.has('away_summary')) db.exec('ALTER TABLE turn_meta_transcript ADD COLUMN away_summary TEXT;')
+    createSessionMetaTable(db)
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
+    return
+  }
+  if (version === 6) {
+    createSessionMetaTable(db)
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
     return
   }
@@ -119,7 +164,7 @@ function migrate(db: DatabaseSync): void {
     CREATE UNIQUE INDEX turn_meta_transcript_by_duration_uuid
       ON turn_meta_transcript(transcript_path, duration_uuid)
       WHERE duration_uuid IS NOT NULL;
-
-    PRAGMA user_version = ${SCHEMA_VERSION};
   `)
+  createSessionMetaTable(db)
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
 }

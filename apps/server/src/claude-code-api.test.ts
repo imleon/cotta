@@ -85,8 +85,8 @@ describe('createClaudeCodeApi', () => {
         lastActivityAt: 5,
         },
       sessions: [
-        { id: 'cotta-newer', title: 'cotta-newer', projectId: projectId('/repo/cotta'), lastActivityAt: 5, status: 'idle', kind: null, entrypoint: null, runState: idleRunState },
-        { id: 'cotta-older', title: 'cotta-older', projectId: projectId('/repo/cotta'), lastActivityAt: 1, status: 'idle', kind: null, entrypoint: null, runState: idleRunState },
+        { id: 'cotta-newer', title: 'cotta-newer', projectId: projectId('/repo/cotta'), lastActivityAt: 5, status: 'idle', kind: null, entrypoint: null },
+        { id: 'cotta-older', title: 'cotta-older', projectId: projectId('/repo/cotta'), lastActivityAt: 1, status: 'idle', kind: null, entrypoint: null },
       ],
       defaultSessionId: 'cotta-newer',
       hasMore: false,

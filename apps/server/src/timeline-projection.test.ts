@@ -117,10 +117,11 @@ describe('sessionMessagesForTurn', () => {
     expect(sessionMessagesForTurn(messages, 'assistant-1')).toBeNull()
   })
 
-  it('returns a leading response-only frame', () => {
+  it('drops messages before the first primary user', () => {
     const sequence = [messages[1]!, messages[0]!]
 
-    expect(sessionMessagesForTurn(sequence, 'assistant-1')?.map((message) => message.uuid)).toEqual(['assistant-1'])
+    expect(sessionMessagesForTurn(sequence, 'assistant-1')).toBeNull()
+    expect(sessionMessagesForTurn(sequence, 'user-1')?.map((message) => message.uuid)).toEqual(['user-1'])
   })
 })
 
@@ -128,35 +129,9 @@ describe('projectSessionTimeline', () => {
   it('projects chronological session messages into turn blocks', () => {
     const timeline = projectSessionTimeline('session-1', messages, { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'user-2'])
-    expect(timeline.turns[0]?.blocks.map((block) => block.kind)).toEqual(['user.message', 'assistant.text'])
-    expect(timeline.turns[0]?.blocks[0]?.data).toEqual(expect.objectContaining({ primaryTimelineUserMessage: true }))
-    expect(timeline.turns[1]?.blocks.map((block) => block.kind)).toEqual([
-      'user.message',
-      'assistant.text',
-      'assistant.tool_use',
-      'assistant.task_notification',
-      'tool.result',
-    ])
-    expect(timeline.turns[1]?.blocks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'assistant-2:assistant:1',
-        kind: 'assistant.tool_use',
-        apiMessageId: 'msg_assistant_2',
-        contentBlockId: 'toolu_123',
-        toolUseId: 'toolu_123',
-      }),
-      expect.objectContaining({
-        id: 'task-notification-1:task_notification',
-        kind: 'assistant.task_notification',
-        data: expect.objectContaining({ taskId: 'task_123', status: 'completed' }),
-      }),
-      expect.objectContaining({
-        id: 'tool-result-1:tool_result:0',
-        kind: 'tool.result',
-        toolUseId: 'toolu_123',
-      }),
-    ]))
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1', 'user-2'])
+    expect(timeline.turns[0]?.messages).toEqual(messages.slice(0, 2))
+    expect(timeline.turns[1]?.messages).toEqual(messages.slice(2))
   })
 
   it('projects image user content with stable live-compatible ids', () => {
@@ -176,34 +151,18 @@ describe('projectSessionTimeline', () => {
       },
     } as TimestampedSessionMessage], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns[0]).toMatchObject({
-      id: 'image-user',
-      title: 'Describe this',
-      blocks: [
-        { id: 'image-user:user:0', kind: 'user.message' },
-        { id: 'image-user:image:1', kind: 'user.image' },
-      ],
+    expect(timeline.turns[0]).toEqual({
+      primaryUserUuid: 'image-user',
+      primaryUserTimestampMs: Date.parse('2026-07-14T08:00:00.000Z'),
+      messages: [expect.objectContaining({ uuid: 'image-user' })],
     })
   })
 
-  it('uses an image title for image-only turns', () => {
-    const timeline = projectSessionTimeline('session-1', [{
-      type: 'user',
-      uuid: 'image-user',
-      session_id: 'session-1',
-      parent_tool_use_id: null,
-      parent_agent_id: null,
-      message: { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } }] },
-    } as TimestampedSessionMessage], { limitTurns: 10, cursor: null })
-
-    expect(timeline.turns[0]?.title).toBe('Image')
-  })
-
-  it('projects a leading response-only frame', () => {
+  it('does not project a leading response-only frame', () => {
     const timeline = projectSessionTimeline('session-1', [messages[1]!, messages[0]!], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['assistant-1', 'user-1'])
-    expect(timeline.turns[0]).toMatchObject({ title: 'Session events', blocks: [{ kind: 'assistant.text' }] })
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1'])
+    expect(timeline.turns[0]?.messages.map((message) => (message as { uuid?: string }).uuid)).toEqual(['user-1'])
   })
 
   it.each<[string, Record<string, unknown>, string | null, Record<string, unknown>?]>([
@@ -229,9 +188,9 @@ describe('projectSessionTimeline', () => {
       } as TimestampedSessionMessage,
     ], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
-    if ('isSynthetic' in entryMetadata) expect(timeline.turns[0]?.blocks.map((block) => block.kind)).toEqual(['user.message'])
-    else expect(timeline.turns[0]?.blocks.at(-1)).toMatchObject({ id: 'filtered-user:user_message', kind: 'assistant.user_message' })
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1'])
+    if ('isSynthetic' in entryMetadata) expect(timeline.turns[0]?.messages.map((message) => (message as { uuid?: string }).uuid)).toEqual(['user-1'])
+    else expect(timeline.turns[0]?.messages.at(-1)).toMatchObject({ uuid: 'filtered-user' })
   })
 
   it('ignores a leading synthetic user message without creating a session-events turn', () => {
@@ -260,7 +219,7 @@ describe('projectSessionTimeline', () => {
       message,
     } as unknown as TimestampedSessionMessage], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'scheme-a-user'])
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1', 'scheme-a-user'])
   })
 
   it('keeps complete task notifications on the tool call turn', () => {
@@ -280,20 +239,24 @@ describe('projectSessionTimeline', () => {
     } as unknown as TimestampedSessionMessage
     const timeline = projectSessionTimeline('session-1', [messages[0]!, agentCall, notification], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
-    expect(timeline.turns[0]?.blocks).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'agent-call:assistant:0', kind: 'assistant.tool_use', toolUseId: 'call-agent' }),
-      expect.objectContaining({
-        id: 'agent-done:task_notification',
-        kind: 'assistant.task_notification',
-        data: expect.objectContaining({
-          taskId: 'task-1',
-          toolUseId: 'call-agent',
-          originalToolUse: { id: 'call-agent', name: 'Agent', input: { prompt: 'Investigate' } },
-        }),
-      }),
-    ]))
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1'])
+    expect(timeline.turns[0]?.messages.map((message) => (message as { uuid?: string }).uuid)).toEqual(['user-1', 'agent-call', 'agent-done'])
     expect(sessionMessagesForTurn([messages[0]!, agentCall, notification], 'user-1')?.map((message) => message.uuid)).toEqual(['user-1', 'agent-call', 'agent-done'])
+  })
+
+  it('keeps late task notifications on the turn that started the tool call', () => {
+    const agentCall = {
+      type: 'assistant', uuid: 'agent-call', session_id: 'session-1',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'call-agent', name: 'Agent', input: {} }] },
+    } as unknown as TimestampedSessionMessage
+    const notification = {
+      type: 'user', uuid: 'agent-done', session_id: 'session-1', promptSource: 'sdk', origin: { kind: 'task-notification' },
+      message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-agent</tool-use-id></task-notification>' },
+    } as unknown as TimestampedSessionMessage
+    const timeline = projectSessionTimeline('session-1', [messages[0]!, agentCall, messages[2]!, notification], { limitTurns: 10, cursor: null })
+
+    expect(timeline.turns[0]?.messages.map((message) => (message as { uuid?: string }).uuid)).toEqual(['user-1', 'agent-call', 'agent-done'])
+    expect(timeline.turns[1]?.messages.map((message) => (message as { uuid?: string }).uuid)).toEqual(['user-2'])
   })
 
   it('renders origin task notifications without tool-use ids on the current turn', () => {
@@ -309,13 +272,8 @@ describe('projectSessionTimeline', () => {
     } as unknown as TimestampedSessionMessage
     const timeline = projectSessionTimeline('session-1', [messages[0]!, notification], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1'])
-    expect(timeline.turns[0]?.blocks[1]).toEqual(expect.objectContaining({
-      id: 'agent-stopped:task_notification',
-      kind: 'assistant.task_notification',
-      data: expect.objectContaining({ taskId: 'task-1', status: 'stopped', summary: 'Agent stopped', result: 'Partial result' }),
-    }))
-    expect(timeline.turns[0]?.blocks[1]?.data).not.toEqual(expect.objectContaining({ toolUseId: expect.any(String), originalToolUse: expect.anything() }))
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1'])
+    expect(timeline.turns[0]?.messages[1]).toBe(notification)
   })
 
   it('keeps human pasted task notifications as user messages', () => {
@@ -331,8 +289,8 @@ describe('projectSessionTimeline', () => {
     } as unknown as TimestampedSessionMessage
     const timeline = projectSessionTimeline('session-1', [messages[0]!, pasted], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'pasted-notification'])
-    expect(timeline.turns[1]?.blocks[0]).toEqual(expect.objectContaining({ kind: 'user.message' }))
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1', 'pasted-notification'])
+    expect(timeline.turns[1]?.messages[0]).toBe(pasted)
   })
 
   it('starts turns for scheme A boundary messages, not task notifications', () => {
@@ -356,11 +314,8 @@ describe('projectSessionTimeline', () => {
     } as unknown as TimestampedSessionMessage
     const timeline = projectSessionTimeline('session-1', [messages[0]!, messages[4]!, sdkUser, legacyCommand], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'sdk-user', 'legacy-command'])
-    expect(timeline.turns[0]?.blocks[1]).toEqual(expect.objectContaining({
-      kind: 'assistant.task_notification',
-      data: expect.objectContaining({ taskId: 'task_123', toolUseId: 'call_123', outputFile: '/tmp/task.output', status: 'completed', summary: 'Agent finished', result: 'Done' }),
-    }))
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1', 'sdk-user', 'legacy-command'])
+    expect(timeline.turns[0]?.messages[1]).toBe(messages[4])
   })
 
   it('projects the current task list from full history before turn pagination', () => {
@@ -387,7 +342,7 @@ describe('projectSessionTimeline', () => {
 
     const timeline = projectSessionTimeline('session-1', taskMessages, { limitTurns: 1, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-2'])
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-2'])
     expect(timeline.tasks).toEqual([{ key: 'call-create', taskId: '1', subject: 'Inspect history', activeForm: 'Deeply inspecting history', status: 'in_progress', blockedBy: [] }])
   })
 
@@ -522,8 +477,8 @@ describe('projectSessionTimeline', () => {
     } as TimestampedSessionMessage
     const timeline = projectSessionTimeline('session-1', [messages[0]!, messages[3]!, messages[2]!, lateResult], { limitTurns: 10, cursor: null })
 
-    expect(timeline.turns.map((turn) => turn.id)).toEqual(['user-1', 'user-2'])
-    expect(timeline.turns[0]?.blocks.at(-1)).toEqual(expect.objectContaining({ id: 'late-result:tool_result:0', kind: 'tool.result', toolUseId: 'toolu_123' }))
-    expect(timeline.turns[1]?.blocks.some((block) => block.id === 'late-result:tool_result:0')).toBe(false)
+    expect(timeline.turns.map((turn) => turn.primaryUserUuid)).toEqual(['user-1', 'user-2'])
+    expect(timeline.turns[0]?.messages.at(-1)).toBe(lateResult)
+    expect(timeline.turns[1]?.messages.some((message) => (message as { uuid?: string }).uuid === 'late-result')).toBe(false)
   })
 })

@@ -44,6 +44,7 @@ import {
   type SessionTimelineResponse,
   type SessionRunState,
   type SessionTimelineStateResponse,
+  type TurnSummary,
 } from '@cotta/shared'
 import { projectIdFromPath, projectPathFromId, type ClaudeCodeApi } from '../claude-code-api.js'
 import { ListCursorError } from '../list-cursor.js'
@@ -55,10 +56,14 @@ import type { ModelCatalogProvider } from '../model-catalog.js'
 import type { SettingsStore } from '../settings-store.js'
 import { projectSessionTimeline, sessionMessagesForTurn } from '../timeline-projection.js'
 
-export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'ensureRuntime' | 'interrupt' | 'sessionRunState' | 'startTurn' | 'subscribe'>
+export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'interrupt' | 'sessionRunState' | 'startTurn' | 'subscribe'> & {
+  ensureRuntime(input: Parameters<LiveTurnManager['ensureRuntime']>[0]): void | Promise<void>
+}
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
 export type ProjectRoutesSessionObservationReader = Pick<ClaudeSessionRegistry, 'listObservations'>
-export type ProjectRoutesTurnDurationReader = (projectId: string, sessionId: string) => ReadonlyMap<string, number> | Promise<ReadonlyMap<string, number>>
+type TurnMetadataValue = Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'awaySummary'>
+type TimelineMetadata = { turnMetadata: ReadonlyMap<string, TurnMetadataValue>; sessionMeta: SessionTimelineResponse['sessionMeta'] }
+export type ProjectRoutesTimelineMetadataReader = (projectId: string, sessionId: string) => TimelineMetadata | Promise<TimelineMetadata>
 export type ProjectRoutesTurnMetaTranscriptReader = { listEntries(input: { sessionId?: string; limit: number; offset: number }): unknown }
 
 function parseLimit(value: string | undefined, fallback: number, max = 10_000): number {
@@ -88,9 +93,12 @@ function listCursorErrorResponse(error: unknown) {
     : { status: 400 as const, body: { error: 'invalid_cursor' } }
 }
 
-function applyTurnDurations<T extends { turns: Array<{ id: string; durationMs?: number }> }>(timeline: T, durations: ReadonlyMap<string, number>): T {
-  if (durations.size === 0) return timeline
-  return { ...timeline, turns: timeline.turns.map((turn) => durations.has(turn.id) ? { ...turn, durationMs: durations.get(turn.id) } : turn) }
+function applyTurnMetadata<T extends { turns: Array<{ primaryUserUuid: string }> }>(timeline: T, metadata: ReadonlyMap<string, TurnMetadataValue>): T {
+  if (metadata.size === 0) return timeline
+  return { ...timeline, turns: timeline.turns.map((turn) => {
+    const value = metadata.get(turn.primaryUserUuid)
+    return value ? { ...turn, ...value } : turn
+  }) }
 }
 
 function isPathInside(root: string, target: string): boolean {
@@ -226,7 +234,7 @@ function validateTurnOptions(options: ResolvedTurnOptions, settingsStore?: Setti
 
 export function registerProjectRoutes(
   app: Hono,
-  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; modelCatalogProvider: ModelCatalogProvider; settingsStore?: SettingsStore; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache; sessionObservationReader?: ProjectRoutesSessionObservationReader; turnDurationReader?: ProjectRoutesTurnDurationReader; turnMetaTranscriptReader?: ProjectRoutesTurnMetaTranscriptReader },
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; modelCatalogProvider: ModelCatalogProvider; settingsStore?: SettingsStore; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache; sessionObservationReader?: ProjectRoutesSessionObservationReader; timelineMetadataReader?: ProjectRoutesTimelineMetadataReader; turnMetaTranscriptReader?: ProjectRoutesTurnMetaTranscriptReader },
 ): void {
   app.get('/api/debug/turn-meta-transcript', (c) => {
     if (!input.turnMetaTranscriptReader) return c.json({ error: 'turn_meta_transcript_unavailable' }, 503)
@@ -571,7 +579,7 @@ export function registerProjectRoutes(
       const options = resolveTurnOptions({ projectId, sessionId, settingsStore: input.settingsStore })
       const model = sdkModel(options.model)
       const effort = sdkEffort(options.effort)
-      input.liveTurnManager.ensureRuntime({
+      await input.liveTurnManager.ensureRuntime({
         projectId,
         sessionId,
         permissionMode: options.permissionMode,
@@ -674,14 +682,15 @@ export function registerProjectRoutes(
         limitTurns: parseLimit(c.req.query('limitTurns'), 10, 100),
         cursor: parseCursor(c.req.query('cursor')),
       })
-      let durations: ReadonlyMap<string, number> | undefined
+      let metadata: TimelineMetadata = { turnMetadata: new Map(), sessionMeta: { permissionMode: null, model: null, effort: null } }
       try {
-        durations = await input.turnDurationReader?.(c.req.param('projectId'), sessionId)
+        metadata = await input.timelineMetadataReader?.(c.req.param('projectId'), sessionId) ?? metadata
       } catch (error) {
-        console.error('turn-duration-reader failed', error)
+        console.error('timeline-metadata-reader failed', error)
       }
       const response: SessionTimelineResponse = {
-        ...applyTurnDurations(timeline, durations ?? new Map()),
+        ...applyTurnMetadata(timeline, metadata.turnMetadata),
+        sessionMeta: metadata.sessionMeta,
         state,
       }
       return c.json(response)

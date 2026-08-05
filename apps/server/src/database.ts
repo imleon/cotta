@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 6
 
 function databasePath(): string {
   return resolve(process.cwd(), process.env.COTTA_DB_PATH ?? 'data/cotta.sqlite')
@@ -19,6 +19,10 @@ export function createCottaDatabase(dbPath = databasePath()): DatabaseSync {
   `)
   migrate(db)
   return db
+}
+
+function tableColumns(db: DatabaseSync, table: string): Set<string> {
+  return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name))
 }
 
 function migrate(db: DatabaseSync): void {
@@ -40,6 +44,18 @@ function migrate(db: DatabaseSync): void {
       );
       PRAGMA user_version = 3;
     `)
+  }
+  if (version <= 3 && version > 0) {
+    const columns = tableColumns(db, 'turn_meta_transcript')
+    if (!columns.has('permission_mode')) db.exec('ALTER TABLE turn_meta_transcript ADD COLUMN permission_mode TEXT;')
+    if (!columns.has('model')) db.exec('ALTER TABLE turn_meta_transcript ADD COLUMN model TEXT;')
+    if (!columns.has('effort')) db.exec('ALTER TABLE turn_meta_transcript ADD COLUMN effort TEXT;')
+    db.exec('PRAGMA user_version = 4;')
+  }
+  if (version <= 5 && version > 0) {
+    const columns = tableColumns(db, 'turn_meta_transcript')
+    if (!columns.has('away_summary')) db.exec('ALTER TABLE turn_meta_transcript ADD COLUMN away_summary TEXT;')
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
     return
   }
   db.exec(`
@@ -54,6 +70,11 @@ function migrate(db: DatabaseSync): void {
       primary_timestamp_ms INTEGER NOT NULL,
       primary_byte_offset INTEGER NOT NULL CHECK (primary_byte_offset >= 0),
       primary_entrypoint TEXT,
+
+      permission_mode TEXT,
+      model TEXT,
+      effort TEXT,
+      away_summary TEXT,
 
       duration_uuid TEXT,
       duration_parent_uuid TEXT,

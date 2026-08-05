@@ -946,49 +946,9 @@ describe('project routes', () => {
     const body = sessionTimelineResponseSchema.parse(await response.json())
     expect(body.sessionId).toBe('session-newest')
     expect(body.turns).toHaveLength(1)
-    expect(body.turns[0]?.id).toBe('user-2')
-    expect(body.turns[0]?.startedAt).toBe(Date.parse('2026-07-14T08:01:00.000Z'))
-    expect(body.turns[0]?.completedAt).toBe(Date.parse('2026-07-14T08:01:30.000Z'))
-    expect(body.turns[0]?.blocks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'assistant-2:assistant:0',
-        kind: 'assistant.text',
-        apiMessageId: 'msg_assistant_2',
-        data: expect.objectContaining({ text: 'Checking the file' }),
-      }),
-      expect.objectContaining({
-        id: 'assistant-2:assistant:1',
-        kind: 'assistant.tool_use',
-        apiMessageId: 'msg_assistant_2',
-        contentBlockId: 'toolu_123',
-        toolUseId: 'toolu_123',
-        data: expect.objectContaining({ id: 'toolu_123', name: 'Read' }),
-      }),
-      expect.objectContaining({
-        id: 'task-notification-1:task_notification',
-        kind: 'assistant.task_notification',
-        data: expect.objectContaining({
-          taskId: 'task_123',
-          toolUseId: 'call_123',
-          outputFile: '/tmp/task.output',
-          status: 'completed',
-          summary: 'Agent finished',
-          result: '## Done\n\n- Found issue\n- Fixed issue',
-        }),
-      }),
-      expect.objectContaining({
-        id: 'tool-result-1:tool_result:0',
-        kind: 'tool.result',
-        toolUseId: 'toolu_123',
-        data: expect.objectContaining({ tool_use_id: 'toolu_123', content: 'file contents' }),
-      }),
-    ]))
-    expect(body.turns[0]?.blocks).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'task-notification-1:user',
-        kind: 'user.message',
-      }),
-    ]))
+    expect(body.turns[0]?.primaryUserUuid).toBe('user-2')
+    expect(body.turns[0]?.primaryUserTimestampMs).toBe(Date.parse('2026-07-14T08:01:00.000Z'))
+    expect(body.turns[0]?.messages).toEqual(messages.slice(2))
     expect(body.hasMore).toBe(true)
     expect(body.nextCursor).toBe('user-2')
     expect(body.state).toEqual(timelineState)
@@ -1012,11 +972,14 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'turn_meta_transcript_unavailable' })
   })
 
-  it('awaits the injected turn duration reader', async () => {
+  it('awaits the injected timeline metadata reader', async () => {
     const app = new Hono()
-    const turnDurationReader = vi.fn(async () => new Map([['user-2', 12_345]]))
+    const timelineMetadataReader = vi.fn(async () => ({
+      turnMetadata: new Map([['user-2', { durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, awaySummary: 'Turn recap' }]]),
+      sessionMeta: { permissionMode: 'plan' as const, model: 'claude-opus-5', effort: 'high' as const },
+    }))
     registerProjectRoutes(app, {
-      turnDurationReader,
+      timelineMetadataReader,
       modelCatalogProvider: async () => modelCatalog,
       liveTurnManager: {
         ensureRuntime: () => {}, sessionRunState: () => null, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
@@ -1032,15 +995,16 @@ describe('project routes', () => {
     const response = await app.request(`/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`)
     const body = sessionTimelineResponseSchema.parse(await response.json())
 
-    expect(body.turns[0]?.durationMs).toBe(12_345)
-    expect(turnDurationReader).toHaveBeenCalledWith(project.id, 'session-newest')
+    expect(body.turns[0]).toMatchObject({ durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, awaySummary: 'Turn recap' })
+    expect(body.sessionMeta).toEqual({ permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })
+    expect(timelineMetadataReader).toHaveBeenCalledWith(project.id, 'session-newest')
   })
 
-  it('keeps timeline available when the turn duration reader fails', async () => {
+  it('keeps timeline available when the timeline metadata reader fails', async () => {
     const app = new Hono()
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     registerProjectRoutes(app, {
-      turnDurationReader: async () => { throw new Error('sidecar failed') },
+      timelineMetadataReader: async () => { throw new Error('sidecar failed') },
       modelCatalogProvider: async () => modelCatalog,
       liveTurnManager: {
         ensureRuntime: () => {}, sessionRunState: () => null, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
@@ -1058,6 +1022,7 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(body.turns[0]?.durationMs).toBeUndefined()
+    expect(body.sessionMeta).toEqual({ permissionMode: null, model: null, effort: null })
     errorSpy.mockRestore()
   })
 
@@ -1078,12 +1043,8 @@ describe('project routes', () => {
     expect(response.status).toBe(200)
     const body = sessionTimelineResponseSchema.parse(await response.json())
     expect(body.turns).toHaveLength(1)
-    expect(body.turns[0]?.id).toBe('literal-task-tag-user')
-    expect(body.turns[0]?.blocks).toEqual([expect.objectContaining({
-      id: 'literal-task-tag-user:user',
-      kind: 'user.message',
-      data: expect.objectContaining({ text: '<task-notification>...</task-notification>' }),
-    })])
+    expect(body.turns[0]?.primaryUserUuid).toBe('literal-task-tag-user')
+    expect(body.turns[0]?.messages).toEqual(literalTaskTagMessages)
   })
 
   it('returns timeline state for a session', async () => {
@@ -1518,16 +1479,13 @@ describe('project routes', () => {
     })
   })
 
-  it('returns raw messages for a leading response-only frame', async () => {
+  it('returns 404 for a leading response-only id', async () => {
     const response = await createTestApp({}, [messages[1]!, messages[0]!]).request(
       `/api/projects/${project.id}/sessions/session-newest/raw-messages?turnId=assistant-1`,
     )
 
-    expect(response.status).toBe(200)
-    expect(sessionRawMessagesResponseSchema.parse(await response.json())).toEqual({
-      sessionId: 'session-newest',
-      messages: [messages[1]],
-    })
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'turn_not_found' })
   })
 
   it('returns 404 for an unknown turn', async () => {

@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingTurnId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
+import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingTurnId, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, projectTimelineTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionAwaySummary, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
 
 describe('session task list', () => {
   it('hides empty lists and shows task statuses without active form', () => {
@@ -21,17 +21,40 @@ describe('session task list', () => {
   })
 })
 
+function userMessage(id: string, text = id): unknown {
+  return { type: 'user', uuid: id, timestamp: '1970-01-01T00:00:00.001Z', message: { role: 'user', content: text } }
+}
+
+function messageFromBlock(block: TimelineBlock): unknown {
+  const uuid = block.sourceEventIds[0] ?? block.id
+  if (block.kind === 'user.message') return userMessage(uuid, typeof block.data === 'object' && block.data !== null && 'text' in block.data ? String(block.data.text) : uuid)
+  if (block.kind === 'tool.result') return { type: 'user', uuid, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: block.toolUseId, ...(typeof block.data === 'object' && block.data !== null ? block.data : {}) }] } }
+  if (block.kind.startsWith('assistant.')) return { type: 'assistant', uuid, message: { id: block.apiMessageId ?? `msg:${uuid}`, role: 'assistant', content: [{ type: block.kind.slice('assistant.'.length), ...(typeof block.data === 'object' && block.data !== null ? block.data : {}) }] } }
+  return { type: block.kind.replace(/^raw\./, ''), uuid, ...(typeof block.data === 'object' && block.data !== null ? block.data : {}) }
+}
+
 function userTurn(id: string, blocks: TimelineBlock[] = []): TurnSummary {
   return {
-    id,
-    sessionId: 'session-1',
-    title: id,
-    startedAt: 1,
-    rawStatus: 'running',
-    displayStatus: 'running',
-    blocks: blocks.length > 0 ? blocks : [{ id: `${id}:user`, kind: 'user.message', sourceEventIds: [id], data: { text: id, status: 'pending', primaryTimelineUserMessage: true } }],
+    primaryUserUuid: id,
+    primaryUserTimestampMs: 1,
+    messages: blocks.length > 0 ? blocks.map(messageFromBlock) : [userMessage(id)],
   }
 }
+
+function projected(turn: TurnSummary): TimelineBlock[] {
+  return projectTimelineTurn(turn)
+}
+
+describe('away summary recap', () => {
+  it('renders recap markdown', () => {
+    const html = renderToStaticMarkup(createElement(SessionAwaySummary, { value: '**While away:** done' }))
+
+    expect(html).toContain('aria-label="Away recap"')
+    expect(html).toContain('Recap')
+    expect(html).toContain('<strong>While away:</strong>')
+    expect(html).toContain('session-away-summary')
+  })
+})
 
 describe('assistant response skeleton', () => {
   it('uses the response frame shape while a primary-only turn is cooking', () => {
@@ -113,7 +136,7 @@ describe('raw timeline messages', () => {
 
   it('renders the raw-message action for a live turn', () => {
     const html = renderToStaticMarkup(createElement(TimelineBlockView, {
-      block: userTurn('turn-1').blocks[0],
+      block: projected(userTurn('turn-1'))[0],
       timestamp: 1,
       source: 'live',
       onViewRaw: () => {},
@@ -265,14 +288,14 @@ describe('persisted live events debug view', () => {
     expect(liveEventsForTurn(events, 'turn-2').map(({ id }) => id)).toEqual([6, 7])
   })
 
-  it('selects a leading response-only frame until the first primary', () => {
+  it('drops leading response events until the first primary', () => {
     const events = [
       event(1, { type: 'assistant', uuid: 'leading-assistant', message: { content: [{ type: 'text', text: 'continued' }] } }, 'assistant'),
       event(2, { type: 'status', uuid: 'leading-status', state: 'running' }, 'status'),
       event(3, user('turn-1'), 'user'),
     ]
 
-    expect(liveEventsForTurn(events, 'leading-assistant').map(({ id }) => id)).toEqual([1, 2])
+    expect(liveEventsForTurn(events, 'leading-assistant')).toEqual([])
     expect(liveEventsForTurn(events, 'turn-1').map(({ id }) => id)).toEqual([3])
   })
 
@@ -305,7 +328,7 @@ describe('persisted live events debug view', () => {
     expect(liveEventsForTurn(events, 'turn-2').map(({ id }) => id)).toEqual([7, 8])
   })
 
-  it('keeps scalar payloads after a leading response frame has an id', () => {
+  it('drops scalar payloads before the first primary', () => {
     const events = [
       event(1, 'unscoped scalar', 'unknown'),
       event(2, { type: 'assistant', uuid: 'leading-assistant', message: { content: [] } }, 'assistant'),
@@ -313,7 +336,7 @@ describe('persisted live events debug view', () => {
       event(4, user('turn-1'), 'user'),
     ]
 
-    expect(liveEventsForTurn(events, 'leading-assistant').map(({ id }) => id)).toEqual([2, 3])
+    expect(liveEventsForTurn(events, 'leading-assistant')).toEqual([])
   })
 
   it('renders the captured event as an independent table', () => {
@@ -341,9 +364,9 @@ describe('timeline response frame grouping', () => {
   })
 
   it('formats stable Claude Code-style turn duration labels', () => {
-    expect(turnDurationLabel({ id: 'turn-1', durationMs: 21_000 })).toMatch(/^(Thought|Baked|Brewed|Churned|Cogitated|Cooked|Crunched|Sauted|Worked) for 21s$/)
-    expect(turnDurationLabel({ id: 'turn-1', durationMs: 415_000 })).toBe(`${turnDurationLabel({ id: 'turn-1', durationMs: 21_000 })?.split(' for ')[0]} for 6m 55s`)
-    expect(turnDurationLabel({ id: 'turn-1' })).toBeNull()
+    expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000 })).toMatch(/^(Thought|Baked|Brewed|Churned|Cogitated|Cooked|Crunched|Sauted|Worked) for 21s$/)
+    expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 415_000 })).toBe(`${turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000 })?.split(' for ')[0]} for 6m 55s`)
+    expect(turnDurationLabel({ primaryUserUuid: 'turn-1' })).toBeNull()
   })
 
   it('selects the latest unfinished primary turn for active CLI phases', () => {
@@ -354,7 +377,7 @@ describe('timeline response frame grouping', () => {
     expect(cliCookingTurnId(turns, { phase: 'idle', activeUserMessageUuid: null })).toBeNull()
     expect(cliCookingTurnId(turns, { phase: 'running', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBeNull()
     expect(cliCookingTurnId([{ ...turns[1]!, durationMs: 1000 }], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
-    expect(cliCookingTurnId([{ ...turns[1]!, blocks: [{ id: 'assistant-only', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'hello' } }] }], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
+    expect(cliCookingTurnId([userTurn('turn-2', [{ id: 'assistant-only', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'hello' } }])], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
     expect(cliCookingTurnId([], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
   })
 
@@ -418,394 +441,90 @@ describe('timeline response frame grouping', () => {
   })
 })
 
-describe('timeline reconciliation', () => {
-  it('removes pending/live turns represented by history user uuid', () => {
-    const pending = userTurn('user-1')
-    const history = { ...userTurn('user-1'), rawStatus: 'complete', displayStatus: 'complete', blocks: [{ id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'from history', status: 'confirmed' } }] }
+describe('timeline raw-message protocol', () => {
+  it('projects history and live messages through one block pipeline', () => {
+    const turn: TurnSummary = {
+      primaryUserUuid: 'user-1',
+      primaryUserTimestampMs: 1,
+      messages: [
+        userMessage('user-1', 'hello'),
+        { type: 'stream_event', uuid: 'start', event: { type: 'message_start', message: { id: 'msg-1' } } },
+        { type: 'stream_event', uuid: 'block', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'draft' } } },
+        { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'final' }] } },
+      ],
+    }
 
-    expect(reconcileTimelineTurns([pending], [history])).toEqual([history])
-  })
-
-  it('keeps live assistant blocks while history has only confirmed the user message', () => {
-    const live = { ...userTurn('user-1', [
-      { id: 'user-1:user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello', status: 'pending' } },
-      { id: 'user-1:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['stream-1'], apiMessageId: 'msg-1', data: { type: 'text', text: 'partial', streaming: true } },
-    ]), rawStatus: 'complete', displayStatus: 'complete' }
-    const history = { ...userTurn('user-1'), rawStatus: 'complete', displayStatus: 'complete', blocks: [{ id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello', status: 'confirmed' } }] }
-
-    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([...history.blocks, live.blocks[1]])
-  })
-
-  it('keeps reply-side live tool and raw blocks missing from same-turn history', () => {
-    const live = userTurn('user-1', [
-      { id: 'live-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello', status: 'pending' } },
-      { id: 'live-tool-result', kind: 'tool.result', sourceEventIds: ['tool-result-1'], toolUseId: 'tool-1', data: { content: 'done' } },
-      { id: 'live-status', kind: 'raw.status', sourceEventIds: ['status-1'], data: { state: 'running' } },
+    expect(projectTimelineTurn(turn)).toEqual([
+      expect.objectContaining({ kind: 'user.message', data: expect.objectContaining({ text: 'hello', primaryTimelineUserMessage: true }) }),
+      expect.objectContaining({ kind: 'assistant.text', apiMessageId: 'msg-1', sourceEventIds: ['assistant-1'], data: expect.objectContaining({ text: 'final' }) }),
     ])
-    const history = { ...userTurn('user-1'), rawStatus: 'complete', displayStatus: 'complete', blocks: [{ id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello' } }] }
-
-    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([history.blocks[0], live.blocks[1], live.blocks[2]])
   })
 
-  it('ignores late live assistant blocks represented by the same history message uuid without removing the visible draft', () => {
-    const live = userTurn('user-1', [{ id: 'assistant-draft', kind: 'assistant.text', sourceEventIds: ['stream-1'], apiMessageId: 'msg-1', data: { text: 'visible draft', streaming: true } }])
-    const history = userTurn('user-1', [{ id: 'assistant-event-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-event-1'], apiMessageId: 'msg-1', data: { text: 'final' } }])
-    const raw = { type: 'assistant', uuid: 'assistant-event-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'late' }] } }
-
-    expect(applySdkMessage([live], raw, timelineTurnIndex([history]), 'user-1', null).turns).toEqual([live])
-  })
-
-  it('confirms raw SDK user messages without duplicating the pending turn', () => {
+  it('stores SDK messages canonically and confirms a pending raw user message', () => {
     const pending = userTurn('user-1')
-    const raw = { type: 'user', uuid: 'user-1', session_id: 'session-1', message: { role: 'user', content: 'hello' } }
+    const raw = { type: 'user', uuid: 'user-1', session_id: 'session-1', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hello' } }
 
     const result = applySdkMessage([pending], raw, timelineTurnIndex([]), 'user-1', null)
 
     expect(result.turns).toHaveLength(1)
-    expect(result.turns[0]!.id).toBe('user-1')
-    expect(result.turns[0]!.blocks[0]!.data).toMatchObject({ text: 'hello', status: 'confirmed', primaryTimelineUserMessage: true })
+    expect(result.turns[0]?.messages).toEqual([raw])
+    expect(projectTimelineTurn(result.turns[0]!)[0]?.data).toMatchObject({ text: 'hello', primaryTimelineUserMessage: true })
   })
 
-  it('does not duplicate live assistant blocks already represented by incoming history', () => {
-    const live = userTurn('user-1', [
-      { id: 'user-1:user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello' } },
-      { id: 'user-1:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { type: 'text', text: 'final' } },
-    ])
-    const history = userTurn('user-1', [
-      { id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'hello' } },
-      { id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { type: 'text', text: 'final' } },
-    ])
+  it('reconciles history and live at message identity level', () => {
+    const historyUser = userMessage('user-1', 'hello')
+    const assistant = { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'final' }] } }
+    const live: TurnSummary = { primaryUserUuid: 'user-1', primaryUserTimestampMs: 1, messages: [historyUser, assistant] }
+    const history: TurnSummary = { primaryUserUuid: 'user-1', primaryUserTimestampMs: 1, durationMs: 10, messages: [historyUser] }
 
-    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual(history.blocks)
-  })
+    const [merged] = reconcileTimelineTurns([live], [history])
 
-  it('keeps live primary user message while same-turn history is still partial', () => {
-    const live = userTurn('4f15e43d-6647-440b-b39c-f001a94899b7', [
-      { id: '4f15e43d-6647-440b-b39c-f001a94899b7:user', kind: 'user.message', sourceEventIds: ['4f15e43d-6647-440b-b39c-f001a94899b7'], data: { text: '前端都有啥依赖？', primaryTimelineUserMessage: true } },
-      { id: '4f15e43d-6647-440b-b39c-f001a94899b7:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['aad8de70-b999-4661-ab03-4ed7bc381f5c'], apiMessageId: 'msg_c377ef0651ba4f8b91748186f25bddc2', data: { text: '前端 @cotta/web 依赖很少' } },
-    ])
-    const partialHistory = userTurn('4f15e43d-6647-440b-b39c-f001a94899b7', [
-      { id: 'aad8de70-b999-4661-ab03-4ed7bc381f5c:assistant:0', kind: 'assistant.text', sourceEventIds: ['aad8de70-b999-4661-ab03-4ed7bc381f5c'], apiMessageId: 'msg_c377ef0651ba4f8b91748186f25bddc2', data: { text: '前端 @cotta/web 依赖很少' } },
-    ])
-
-    const blocks = reconcileTimelineTurns([live], [partialHistory])[0]!.blocks
-    const display = groupAssistantResponseFrames(groupTimelineBlocks(blocks))
-
-    expect(blocks.some((block) => block.kind === 'user.message' && typeof block.data === 'object' && block.data !== null && 'primaryTimelineUserMessage' in block.data && block.data.primaryTimelineUserMessage === true)).toBe(true)
-    expect(display.some((item) => item.type === 'assistant-response-frame')).toBe(true)
-  })
-
-  it('does not pin an older user turn last because of a late completedAt', () => {
-    const staleOlderTurn = { ...userTurn('sqlite-options'), rawStatus: 'complete', displayStatus: 'complete', startedAt: undefined, completedAt: 10_000 }
-    const newerHistory = { ...userTurn('newer-history'), rawStatus: 'complete', displayStatus: 'complete', startedAt: 300, completedAt: 310 }
-
-    expect(reconcileTimelineTurns([staleOlderTurn], [newerHistory]).map((turn) => turn.id)).toEqual(['sqlite-options', 'newer-history'])
-  })
-
-  it('streams generic content blocks and merges known deltas', () => {
-    const accumulator = new LiveAssistantStreamAccumulator('user-1')
-    const events = [
-      { type: 'stream_event', uuid: 'start', event: { type: 'message_start', message: { id: 'msg-1' } } },
-      { type: 'stream_event', uuid: 'tool-start', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call-1', name: 'Read', input: {} } } },
-      { type: 'stream_event', uuid: 'json-1', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_' } } },
-      { type: 'stream_event', uuid: 'json-2', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: 'path":"a.ts"}' } } },
-      { type: 'stream_event', uuid: 'text-start', event: { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } } },
-      { type: 'stream_event', uuid: 'text-delta', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello' } } },
-      { type: 'stream_event', uuid: 'citation', event: { type: 'content_block_delta', index: 1, delta: { type: 'citations_delta', citation: { url: 'https://example.com' } } } },
-      { type: 'stream_event', uuid: 'unknown-start', event: { type: 'content_block_start', index: 2, content_block: { type: 'future_block', value: 1 } } },
-      { type: 'stream_event', uuid: 'unknown-delta', event: { type: 'content_block_delta', index: 2, delta: { type: 'future_delta', value: 2 } } },
-    ]
-
-    let blocks: TimelineBlock[] = []
-    for (const event of events) blocks = accumulator.processStreamEvent(event as Record<string, unknown>)
-
-    expect(accumulator.processStreamEvent({ type: 'stream_event', uuid: 'tool-stop', event: { type: 'content_block_stop', index: 0 } })).toEqual([
-      expect.objectContaining({ kind: 'assistant.tool_use', toolUseId: 'call-1', data: expect.objectContaining({ input: { file_path: 'a.ts' }, partial_json: '{"file_path":"a.ts"}' }) }),
-    ])
-    expect(accumulator.processStreamEvent({ type: 'stream_event', uuid: 'message-stop', event: { type: 'message_stop' } })).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'assistant.text', data: expect.objectContaining({ text: 'hello', citations: [{ url: 'https://example.com' }] }) }),
-      expect.objectContaining({ kind: 'assistant.future_block', data: expect.objectContaining({ stream_deltas: [{ type: 'future_delta', value: 2 }] }) }),
+    expect(merged?.durationMs).toBe(10)
+    expect(merged?.messages).toEqual([historyUser, assistant])
+    expect(projectTimelineTurn(merged!)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'user.message' }),
+      expect.objectContaining({ kind: 'assistant.text' }),
     ]))
-    expect(blocks[0]).toMatchObject({ kind: 'assistant.future_block', data: { type: 'future_block', value: 1, streaming: true, stream_deltas: [{ type: 'future_delta', value: 2 }] } })
   })
 
-  it('removes a stream draft when history already contains its final assistant message', () => {
-    const accumulator = new LiveAssistantStreamAccumulator('user-1')
-    const emptyHistory = timelineTurnIndex([])
-    let turns = [userTurn('user-1')]
-    turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'stream-start', event: { type: 'message_start', message: { id: 'msg-1' } } }, emptyHistory, 'user-1', accumulator).turns
-    turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'stream-text', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'final' } } }, emptyHistory, 'user-1', accumulator).turns
-    const history = userTurn('user-1', [
-      { id: 'history-user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'user-1', primaryTimelineUserMessage: true } },
-      { id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'final' } },
-    ])
-    turns = reconcileTimelineTurns(turns, [history])
-
-    turns = applySdkMessage(turns, { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'final' }] } }, timelineTurnIndex([history]), 'user-1', accumulator).turns
-
-    expect(turns[0]!.blocks).toEqual(history.blocks)
-  })
-
-  it('keeps distinct assistant messages that share an api message id', () => {
-    let turns = [userTurn('user-1')]
-    const accumulator = new LiveAssistantStreamAccumulator('user-1')
-    const historyIndex = timelineTurnIndex([])
-    const text = { type: 'assistant', uuid: 'assistant-text', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'working' }] } }
-    const tool = { type: 'assistant', uuid: 'assistant-tool', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'tool_use', id: 'call-1', name: 'Read', input: { file_path: 'a.ts' } }] } }
-
-    turns = applySdkMessage(turns, text, historyIndex, 'user-1', accumulator).turns
-    turns = applySdkMessage(turns, tool, historyIndex, 'user-1', accumulator).turns
-    turns = applySdkMessage(turns, tool, historyIndex, 'user-1', accumulator).turns
-
-    expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.text')).toHaveLength(1)
-    expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.tool_use')).toHaveLength(1)
-    expect(turns[0]!.blocks.filter((block) => block.apiMessageId === 'msg-1').map((block) => block.sourceEventIds)).toEqual([
-      ['assistant-text'],
-      ['assistant-tool'],
-    ])
-  })
-
-  it('keeps blocks missing from a partial history assistant message', () => {
-    const live = userTurn('user-1', [
-      { id: 'user-1:assistant:0:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'working' } },
-      { id: 'user-1:assistant:0:1', kind: 'assistant.tool_use', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', contentBlockId: 'call-1', toolUseId: 'call-1', data: { name: 'Read' } },
-    ])
-    const history = userTurn('user-1', [
-      { id: 'assistant-1:assistant:0', kind: 'assistant.text', sourceEventIds: ['assistant-1'], apiMessageId: 'msg-1', data: { text: 'working' } },
-    ])
-
-    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([history.blocks[0], live.blocks[1]])
-  })
-
-  it('reconciles assistant messages by uuid instead of shared api message id', () => {
-    const live = userTurn('user-1', [
-      { id: 'live-text', kind: 'assistant.text', sourceEventIds: ['assistant-text'], apiMessageId: 'msg-1', data: { text: 'working' } },
-      { id: 'live-tool', kind: 'assistant.tool_use', sourceEventIds: ['assistant-tool'], apiMessageId: 'msg-1', toolUseId: 'call-1', data: { name: 'Read' } },
-    ])
-    const history = userTurn('user-1', [
-      { id: 'history-text', kind: 'assistant.text', sourceEventIds: ['assistant-text'], apiMessageId: 'msg-1', data: { text: 'working' } },
-    ])
-
-    expect(reconcileTimelineTurns([live], [history])[0]!.blocks).toEqual([history.blocks[0], live.blocks[1]])
-  })
-
-  it('ignores a full stream replay after its assistant message was finalized', () => {
-    let turns = [userTurn('user-1')]
-    const accumulator = new LiveAssistantStreamAccumulator('user-1')
-    const historyIndex = timelineTurnIndex([])
-    const messages = [
-      { type: 'stream_event', uuid: 'start-1', event: { type: 'message_start', message: { id: 'msg-1' } } },
-      { type: 'stream_event', uuid: 'block-1', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'hello' } } },
-      { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'hello' }] } },
-      { type: 'stream_event', uuid: 'start-replay', event: { type: 'message_start', message: { id: 'msg-1' } } },
-      { type: 'stream_event', uuid: 'block-replay', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'hello' } } },
-      { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'hello' }] } },
+  it('routes late tool results and task notifications to the tool-use owner turn', () => {
+    const toolUse = { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'tool_use', id: 'call-1', name: 'Agent', input: { prompt: 'Investigate' } }] } }
+    let turns: TurnSummary[] = [
+      { primaryUserUuid: 'user-1', messages: [userMessage('user-1'), toolUse] },
+      { primaryUserUuid: 'user-2', messages: [userMessage('user-2')] },
     ]
+    const result = { type: 'user', uuid: 'result-1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: 'done' }] } }
+    const notification = { type: 'user', uuid: 'task-1', message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-1</tool-use-id><status>completed</status><result>done</result></task-notification>' } }
 
-    for (const message of messages) turns = applySdkMessage(turns, message, historyIndex, 'user-1', accumulator).turns
+    turns = applySdkMessage(turns, result, timelineTurnIndex([]), 'user-2', null).turns
+    turns = applySdkMessage(turns, notification, timelineTurnIndex([]), 'user-2', null).turns
 
-    expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.text')).toHaveLength(1)
-    expect(turns[0]!.blocks.find((block) => block.kind === 'assistant.text')?.id).toBe('user-1:assistant:0:0')
+    expect(projectTimelineTurn(turns[0]!)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tool.result', toolUseId: 'call-1' }),
+      expect.objectContaining({ kind: 'assistant.task_notification', data: expect.objectContaining({ originalToolUse: { id: 'call-1', name: 'Agent', input: { prompt: 'Investigate' } } }) }),
+    ]))
+    expect(turns[1]?.messages).toHaveLength(1)
   })
 
-  it('reuses the same assistant draft when message_start is replayed', () => {
+  it('preserves live stream drafts until the final assistant message replaces them', () => {
     let turns = [userTurn('user-1')]
-    const accumulator = new LiveAssistantStreamAccumulator('user-1')
-    const historyIndex = timelineTurnIndex([])
-    const messages = [
-      { type: 'stream_event', uuid: 'stream-start', event: { type: 'message_start', message: { id: 'msg-1' } } },
-      { type: 'stream_event', uuid: 'stream-block', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
-      { type: 'stream_event', uuid: 'stream-start-replay', event: { type: 'message_start', message: { id: 'msg-1' } } },
-      { type: 'stream_event', uuid: 'stream-delta', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } } },
-      { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'msg-1', content: [{ type: 'text', text: 'hello' }] } },
-    ]
+    const index = timelineTurnIndex([])
+    turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'start', event: { type: 'message_start', message: { id: 'msg-1' } } }, index, 'user-1', null).turns
+    turns = applySdkMessage(turns, { type: 'stream_event', uuid: 'block', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'draft' } } }, index, 'user-1', null).turns
+    expect(projectTimelineTurn(turns[0]!)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'assistant.text', data: expect.objectContaining({ text: 'draft', streaming: true }) })]))
 
-    for (const message of messages) turns = applySdkMessage(turns, message, historyIndex, 'user-1', accumulator).turns
-
-    expect(turns[0]!.blocks.filter((block) => block.kind === 'assistant.text')).toHaveLength(1)
-    expect(turns[0]!.blocks.find((block) => block.kind === 'assistant.text')?.id).toBe('user-1:assistant:0:0')
+    turns = applySdkMessage(turns, { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'final' }] } }, index, 'user-1', null).turns
+    const assistantBlocks = projectTimelineTurn(turns[0]!).filter((block) => block.kind === 'assistant.text')
+    expect(assistantBlocks).toHaveLength(1)
+    expect(assistantBlocks[0]?.data).toMatchObject({ text: 'final' })
   })
 
-  it('reattaches late tool results to the tool-use owner across primary boundaries', () => {
-    const first = userTurn('user-1', [
-      { id: 'user-1:user', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'first', primaryTimelineUserMessage: true } },
-      { id: 'assistant-1:tool', kind: 'assistant.tool_use', sourceEventIds: ['assistant-1'], toolUseId: 'call-1', data: { type: 'tool_use', id: 'call-1' } },
-    ])
-    const second = userTurn('user-2')
-    const raw = { type: 'user', uuid: 'tool-result-1', session_id: 'session-1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: 'done' }] } }
-
-    const result = applySdkMessage([first, second], raw, timelineTurnIndex([]), 'user-2', null)
-
-    expect(result.turns[0]?.blocks.at(-1)).toMatchObject({ kind: 'tool.result', toolUseId: 'call-1' })
-    expect(result.turns[1]?.blocks.some((block) => block.kind === 'tool.result')).toBe(false)
-  })
-
-  it('keeps tool results and subsequent assistant output on the active user turn', () => {
-    const toolResult = {
-      type: 'user',
-      uuid: 'tool-result-1',
-      session_id: 'session-1',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }] },
-    }
-    const assistant = {
-      type: 'assistant',
-      uuid: 'assistant-1',
-      session_id: 'session-1',
-      message: { id: 'message-1', content: [{ type: 'text', text: 'answer' }] },
-    }
-    const turns = applySdkMessage([userTurn('user-1')], toolResult, timelineTurnIndex([]), 'user-1', new LiveAssistantStreamAccumulator('user-1')).turns
-    const result = applySdkMessage(turns, assistant, timelineTurnIndex([]), 'user-1', new LiveAssistantStreamAccumulator('user-1'))
-
-    expect(isPrimaryUserMessage(toolResult)).toBe(false)
-    expect(result.turns[0]?.blocks.map((block) => block.kind)).toEqual(['user.message', 'tool.result', 'assistant.text'])
-  })
-
-  it('identifies scheme A primary boundary user events', () => {
-    expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: 'hello' } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', promptSource: 'typed', isMeta: true, message: { role: 'user', content: 'hello' } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', promptSource: 'sdk', origin: { kind: 'sdk' }, message: { role: 'user', content: 'hello' } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: [{ type: 'image' }] } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', parent_tool_use_id: 'call-1', parent_agent_id: 'agent-1', message: { role: 'user', content: 'hello' } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: 'hello', isSynthetic: true, shouldQuery: false } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', promptSource: 'typed', message: { role: 'user', content: 'hello', origin: 'internal' } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', promptSource: 'typed', origin: { kind: 'human' }, message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-1</tool-use-id></task-notification>' } })).toBe(true)
-    expect(isPrimaryUserMessage({ type: 'user', message: { role: 'user', content: '<task-notification><summary>Looks like one</summary></task-notification>' } })).toBe(true)
-  })
-
-  it('uses turn, api message, and block ids for identity but not provenance ids', () => {
-    const first = userTurn('user-1', [
-      { id: 'assistant-text', kind: 'assistant.text', sourceEventIds: ['same-event'], apiMessageId: 'msg-1', data: { text: 'text' } },
-      { id: 'assistant-tool', kind: 'assistant.tool_use', sourceEventIds: ['same-event'], apiMessageId: 'msg-1', data: { name: 'Read' } },
-    ])
-    const second = userTurn('user-2', [{ id: 'stable-block', kind: 'system.message', sourceEventIds: ['same-event'], data: {} }])
-    const index = timelineTurnIndex([first, second])
-
-    expect(index).toEqual({ userMessageUuids: new Set(['user-1', 'user-2']), apiMessageIds: new Set(['msg-1']), assistantBlockIds: new Set(['msg-1:same-event:assistant.text:', 'msg-1:same-event:assistant.tool_use:']), blockIds: new Set(['assistant-text', 'assistant-tool', 'stable-block']) })
-    expect(reconcileTimelineTurns([userTurn('other', [{ id: 'other-block', kind: 'system.message', sourceEventIds: ['same-event'], data: {} }])], [second])).toHaveLength(2)
-  })
-
-  it.each([
-    ['tool result', { type: 'user', uuid: 'tool', session_id: 'session-1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: 'done' }] } }],
-    ['sidechain', { type: 'user', uuid: 'sidechain', session_id: 'session-1', isSidechain: true, message: { role: 'user', content: 'internal' } }],
-    ['meta', { type: 'user', uuid: 'meta', session_id: 'session-1', isMeta: true, message: { role: 'user', content: 'internal' } }],
-    ['task origin', { type: 'user', uuid: 'task-origin', session_id: 'session-1', promptSource: 'sdk', origin: { kind: 'task-notification' }, message: { role: 'user', content: 'internal' } }],
-    ['peer origin', { type: 'user', uuid: 'peer', session_id: 'session-1', origin: { kind: 'peer' }, message: { role: 'user', content: 'internal' } }],
-    ['internal', { type: 'user', uuid: 'internal', session_id: 'session-1', message: { role: 'user', content: 'internal', origin: 'internal' } }],
-    ['non-query', { type: 'user', uuid: 'non-query', session_id: 'session-1', shouldQuery: false, message: { role: 'user', content: 'internal' } }],
-  ])('does not open a primary turn for %s messages', (_label, raw) => {
-    const result = applySdkMessage([], raw, timelineTurnIndex([]), null, null, 10)
-
-    expect(isPrimaryUserMessage(raw)).toBe(false)
-    expect(result.currentUserMessageUuid).toBe(raw.uuid)
-    expect(result.turns[0]?.id).toBe(raw.uuid)
-  })
-
-  it('ignores synthetic user messages without changing the primary turn', () => {
-    const raw = { type: 'user', uuid: 'synthetic', session_id: 'session-1', isSynthetic: true, message: { role: 'user', content: 'internal' } }
-    const turns = [userTurn('primary')]
-    const result = applySdkMessage(turns, raw, timelineTurnIndex([]), 'primary', null, 10)
-
-    expect(isPrimaryUserMessage(raw)).toBe(false)
-    expect(result.currentUserMessageUuid).toBe('primary')
-    expect(result.turns).toBe(turns)
-  })
-
-  it('attaches live task notifications to the originating tool turn with parsed result and input', () => {
-    const turns = [userTurn('turn-1', [{ id: 'tool-1', kind: 'assistant.tool_use', sourceEventIds: ['assistant-1'], toolUseId: 'call-1', data: { name: 'Agent', input: { prompt: 'Investigate' } } }]), userTurn('turn-2')]
-    const raw = { type: 'user', uuid: 'task-1', session_id: 'session-1', message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><tool-use-id>call-1</tool-use-id><status>failed</status><summary>Agent failed</summary><result>boom</result></task-notification>' } }
-    const result = applySdkMessage(turns, raw, timelineTurnIndex([]), 'turn-2', null, 10)
-
-    expect(result.turns[0]?.blocks.at(-1)).toMatchObject({
-      kind: 'assistant.task_notification',
-      data: expect.objectContaining({
-        taskId: 'task-1',
-        toolUseId: 'call-1',
-        status: 'failed',
-        summary: 'Agent failed',
-        result: 'boom',
-        originalToolUse: { id: 'call-1', name: 'Agent', input: { prompt: 'Investigate' } },
-      }),
+  it('indexes canonical message identities rather than projected blocks', () => {
+    const turn: TurnSummary = { primaryUserUuid: 'user-1', messages: [userMessage('user-1'), { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', content: [] } }] }
+    expect(timelineTurnIndex([turn])).toEqual({
+      primaryUserUuids: new Set(['user-1']),
+      messageIds: new Set(['uuid:user-1', 'uuid:assistant-1']),
+      finalizedApiMessageIds: new Set(['msg-1']),
     })
-    expect(result.turns[1]?.blocks.some((block) => block.id === 'task-1:task_notification')).toBe(false)
-  })
-
-  it('renders live task notifications without tool-use ids on the active turn', () => {
-    const raw = { type: 'user', uuid: 'task-1', session_id: 'session-1', promptSource: 'system', origin: { kind: 'task-notification' }, message: { role: 'user', content: '<task-notification><task-id>task-1</task-id><status>stopped</status><summary>Agent stopped</summary><result>Partial answer</result></task-notification>' } }
-    const result = applySdkMessage([userTurn('turn-1')], raw, timelineTurnIndex([]), 'turn-1', null, 10)
-
-    expect(result.turns[0]?.blocks.at(-1)).toMatchObject({
-      kind: 'assistant.task_notification',
-      data: expect.objectContaining({ taskId: 'task-1', status: 'stopped', summary: 'Agent stopped', result: 'Partial answer' }),
-    })
-    expect(result.turns[0]?.blocks.at(-1)?.data).not.toEqual(expect.objectContaining({ originalToolUse: expect.anything() }))
-  })
-
-  it('attaches orphan tool results to session events and uses message-level parent tool id', () => {
-    const raw = { type: 'user', uuid: 'tool-result', session_id: 'session-1', parent_tool_use_id: 'call-parent', message: { role: 'user', content: [{ type: 'tool_result', content: 'done' }] } }
-    const result = applySdkMessage([], raw, timelineTurnIndex([]), null, null, 10)
-
-    expect(result.turns[0]?.blocks[0]).toMatchObject({ kind: 'tool.result', toolUseId: 'call-parent' })
-  })
-
-  it.each([
-    { type: 'system', uuid: 'system-1', session_id: 'session-1', subtype: 'thinking_tokens', estimated_tokens: 282, estimated_tokens_delta: 1 },
-    { type: 'system', uuid: 'system-2', session_id: 'session-1', subtype: 'session_state_changed', state: 'running' },
-    { type: 'command_lifecycle', uuid: 'command-1', session_id: 'session-1' },
-  ])('does not render %s messages as timeline blocks', (raw) => {
-    const result = applySdkMessage([userTurn('user-1')], raw, timelineTurnIndex([]), 'user-1', null, 10)
-
-    expect(result.turns[0]?.blocks).toEqual(userTurn('user-1').blocks)
-  })
-
-  it.each(['status', 'unknown'])('keeps %s messages as raw session events', (type) => {
-    const result = applySdkMessage([], { type, uuid: `${type}-1`, session_id: 'session-1', state: 'running' }, timelineTurnIndex([]), null, null, 10)
-
-    expect(result.turns[0]).toMatchObject({ id: `${type}-1`, blocks: [{ kind: `raw.${type}`, id: `${type}-1:raw` }] })
-  })
-
-  it('does not render orphan stream events as raw timeline blocks', () => {
-    const result = applySdkMessage([], { type: 'stream_event', uuid: 'stream-1', session_id: 'session-1', event: { type: 'message_start', message: { id: 'msg-1' } } }, timelineTurnIndex([]), null, null, 10)
-
-    expect(result.turns).toEqual([])
-  })
-
-  it('aggregates leading response events into the first event frame', () => {
-    const historyIndex = timelineTurnIndex([])
-    const first = applySdkMessage([], { type: 'assistant', uuid: 'assistant-1', session_id: 'session-1', message: { id: 'message-1', content: [{ type: 'text', text: 'continued' }] } }, historyIndex, null, null, 10)
-    const second = applySdkMessage(first.turns, { type: 'status', uuid: 'status-1', session_id: 'session-1', state: 'running' }, historyIndex, first.currentUserMessageUuid, null, 20)
-
-    expect(second.currentUserMessageUuid).toBe('assistant-1')
-    expect(second.turns).toHaveLength(1)
-    expect(second.turns[0]).toMatchObject({ id: 'assistant-1' })
-    expect(second.turns[0]?.blocks.map((block) => block.kind)).toEqual(['assistant.text', 'raw.status'])
-  })
-
-  it('marks the active turn complete on result without adding timeline content', () => {
-    const live = userTurn('user-1')
-    const raw = { type: 'result', subtype: 'success', is_error: false, errors: [] }
-
-    const result = applySdkMessage([live], raw, timelineTurnIndex([]), 'user-1', null, 42)
-
-    expect(result).toEqual({ turns: [{ ...live, rawStatus: 'complete', displayStatus: 'complete', completedAt: 42 }], currentUserMessageUuid: 'user-1', terminal: true })
-  })
-
-  it('keeps post-result system messages hidden until the next primary', () => {
-    const historyIndex = timelineTurnIndex([])
-    const completed = applySdkMessage([userTurn('user-1')], { type: 'result', subtype: 'success' }, historyIndex, 'user-1', null, 20)
-    const trailing = applySdkMessage(completed.turns, { type: 'command_lifecycle', uuid: 'command-1', session_id: 'session-1' }, historyIndex, completed.currentUserMessageUuid, null, 30)
-    const next = applySdkMessage(trailing.turns, { type: 'user', uuid: 'user-2', session_id: 'session-1', message: { role: 'user', content: 'next' } }, historyIndex, trailing.currentUserMessageUuid, null, 40)
-
-    expect(trailing.currentUserMessageUuid).toBe('user-1')
-    expect(trailing.turns[0]?.blocks).toEqual(userTurn('user-1').blocks)
-    expect(next.currentUserMessageUuid).toBe('user-2')
-  })
-
-  it('marks the active turn error on a failed result', () => {
-    const live = userTurn('user-1')
-    const raw = { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['SDK stream failed'] }
-
-    const result = applySdkMessage([live], raw, timelineTurnIndex([]), 'user-1', null, 42)
-
-    expect(result).toEqual({ turns: [{ ...live, rawStatus: 'error', displayStatus: 'error', completedAt: 42 }], currentUserMessageUuid: 'user-1', terminal: true })
   })
 })

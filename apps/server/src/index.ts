@@ -9,7 +9,7 @@ import { createLiveEventStore, type LiveEventStore } from './live-event-store.js
 import { LiveTurnManager } from './live-turn-manager.js'
 import { defaultModelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
 import { registerHealthRoute } from './routes/health.js'
-import { registerProjectRoutes, type ProjectRoutesLiveTurnManager, type ProjectRoutesSessionObservationReader } from './routes/projects.js'
+import { registerProjectRoutes, type ProjectRoutesLiveTurnManager, type ProjectRoutesSessionObservationReader, type ProjectRoutesTimelineMetadataReader } from './routes/projects.js'
 import { createClaudeSessionRegistry } from './claude-session-registry.js'
 import { SessionSummaryCache } from './session-summary-cache.js'
 import { createSettingsStore, type SettingsStore } from './settings-store.js'
@@ -26,7 +26,7 @@ export function createApp(input: {
   settingsStore?: SettingsStore
   sessionObservationReader?: ProjectRoutesSessionObservationReader
   claudeSessionRegistry?: Pick<Awaited<ReturnType<typeof createClaudeSessionRegistry>>, 'cliRunState'>
-  turnDurationReader?: (projectId: string, sessionId: string) => ReadonlyMap<string, number> | Promise<ReadonlyMap<string, number>>
+  timelineMetadataReader?: ProjectRoutesTimelineMetadataReader
   turnMetaTranscriptReader?: Pick<TurnMetaTranscriptStore, 'listEntries'>
   auth?: CottaAuth
 } = {}): Hono {
@@ -43,7 +43,7 @@ export function createApp(input: {
   app.use('*', auth.middleware)
   registerHealthRoute(app)
   auth.registerRoutes(app)
-  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionObservationReader: input.sessionObservationReader, turnDurationReader: input.turnDurationReader, turnMetaTranscriptReader: input.turnMetaTranscriptReader })
+  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionObservationReader: input.sessionObservationReader, timelineMetadataReader: input.timelineMetadataReader, turnMetaTranscriptReader: input.turnMetaTranscriptReader })
   return app
 }
 
@@ -64,9 +64,12 @@ if (process.env.NODE_ENV !== 'test') {
     console.error('claude-session-registry:start failed', error)
     return null
   })
-  const unsubscribeRegistry = claudeSessionRegistry?.subscribe(({ changedSessions }) => {
+  const unsubscribeRegistry = claudeSessionRegistry?.subscribe(({ changedSessions, idleSessionIds }) => {
     for (const { sessionId, cwd } of changedSessions) {
       sessionSummaryCache.observeSession({ sessionId, ...(cwd ? { projectId: projectIdFromPath(cwd) } : {}) })
+    }
+    for (const sessionId of idleSessionIds) {
+      void liveTurnManager.rebuildRuntimeAfterCliIdle(sessionId).catch((error) => console.error(`live-runtime:CLI idle rebuild failed for ${sessionId}`, error))
     }
   })
   const app = createApp({
@@ -76,7 +79,7 @@ if (process.env.NODE_ENV !== 'test') {
     sessionSummaryCache,
     sessionObservationReader: claudeSessionRegistry ?? undefined,
     claudeSessionRegistry: claudeSessionRegistry ?? undefined,
-    turnDurationReader: (projectId, sessionId) => turnMetaStore.loadDurations(projectId, sessionId),
+    timelineMetadataReader: (projectId, sessionId) => turnMetaStore.loadTimelineMetadata(projectId, sessionId),
     turnMetaTranscriptReader: turnMetaStore,
   })
 

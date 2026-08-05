@@ -2861,6 +2861,20 @@ h2 {
 .session-workspace-view .timeline-block-assistant { --tl-block-accent: var(--tl-assistant); }
 .session-workspace-view .timeline-block-tool { --tl-block-accent: var(--tl-tool); }
 
+.session-away-summary {
+  max-width: 780px;
+  border: 1px solid var(--tl-border);
+  border-left: 3px solid var(--tl-assistant);
+  border-radius: 14px;
+  background: var(--tl-surface);
+  padding: 12px 14px;
+  box-shadow: var(--tl-shadow-soft);
+}
+
+.session-away-summary .timeline-kind {
+  margin-bottom: 9px;
+}
+
 .session-workspace-view .timeline-block-danger {
   --tl-block-accent: var(--tl-danger);
   border-color: rgb(166 83 75 / 22%);

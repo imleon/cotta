@@ -84,6 +84,10 @@ type SessionRuntime = {
   model?: ModelSelection
   effort?: EffortLevel
   currentUserMessageUuid: string | null
+  startingTurnToken: symbol | null
+  stale: boolean
+  rebuildingAfterCliIdle: boolean
+  ready: Promise<void>
   closed: boolean
   idleTimer: ReturnType<typeof setTimeout> | null
 }
@@ -177,41 +181,84 @@ export class LiveTurnManager {
     })
   }
 
-  ensureRuntime(input: { projectId: string; sessionId: string; permissionMode?: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): void {
-    this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
+  async ensureRuntime(input: { projectId: string; sessionId: string; permissionMode?: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<void> {
+    await this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
+  }
+
+  async rebuildRuntimeAfterCliIdle(sessionId: string): Promise<boolean> {
+    const current = this.runtimes.get(sessionId)
+    if (!current) return false
+    if (current.rebuildingAfterCliIdle) {
+      await current.ready
+      return true
+    }
+    if (current.currentUserMessageUuid || current.startingTurnToken) return false
+
+    const input = {
+      projectId: current.projectId,
+      sessionId,
+      resume: true,
+      permissionMode: current.permissionMode,
+      model: current.model,
+      effort: current.effort,
+    }
+    current.stale = true
+    this.closeRuntime(current)
+    const replacement = this.createRuntime(input)
+    replacement.rebuildingAfterCliIdle = true
+    try {
+      await replacement.ready
+      return true
+    } finally {
+      replacement.rebuildingAfterCliIdle = false
+    }
   }
 
   async startTurn(input: { projectId: string; sessionId: string; resume: boolean; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<{ sessionId: string; userMessageUuid: string }> {
     const sessionId = input.sessionId
-    let runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: input.resume, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
-    if (runtime.currentUserMessageUuid) throw new Error('Session already has a running generation')
+    let runtime = await this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: input.resume, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
+    if (runtime.currentUserMessageUuid || runtime.startingTurnToken) throw new Error('Session already has a running generation')
+    const startingTurnToken = Symbol('starting-turn')
+    runtime.startingTurnToken = startingTurnToken
     this.clearIdleTimer(runtime)
-    if (input.effort === 'max' && runtime.effort !== 'max') {
-      this.closeRuntime(runtime)
-      runtime = this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: true, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
-      this.clearIdleTimer(runtime)
-    }
-    if (runtime.permissionMode !== input.permissionMode) {
-      await runtime.query.setPermissionMode(input.permissionMode)
-      runtime.permissionMode = input.permissionMode
-    }
-    if (input.model !== undefined && runtime.model !== input.model) {
-      await runtime.query.setModel(input.model)
-      runtime.model = input.model
-    }
-    if (input.effort !== undefined && input.effort !== 'max' && runtime.effort !== input.effort) {
-      await runtime.query.applyFlagSettings({ effortLevel: input.effort })
-      runtime.effort = input.effort
-    }
+    try {
+      if (input.effort === 'max' && runtime.effort !== 'max') {
+        runtime.startingTurnToken = null
+        runtime.stale = true
+        this.closeRuntime(runtime)
+        runtime = this.createRuntime({ projectId: input.projectId, sessionId, resume: true, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
+        runtime.startingTurnToken = startingTurnToken
+        await runtime.ready
+        this.clearIdleTimer(runtime)
+      }
+      if (runtime.permissionMode !== input.permissionMode) {
+        await runtime.query.setPermissionMode(input.permissionMode)
+        runtime.permissionMode = input.permissionMode
+      }
+      if (input.model !== undefined && runtime.model !== input.model) {
+        await runtime.query.setModel(input.model)
+        runtime.model = input.model
+      }
+      if (input.effort !== undefined && input.effort !== 'max' && runtime.effort !== input.effort) {
+        await runtime.query.applyFlagSettings({ effortLevel: input.effort })
+        runtime.effort = input.effort
+      }
 
-    const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
-    const userMessage = sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() })
-    runtime.currentUserMessageUuid = userMessageUuid
-    this.setRunState(runtime, { phase: 'running', activeUserMessageUuid: userMessageUuid, lastTurn: null })
-    this.persist(runtime, userMessage)
-    runtime.input.push(userMessage)
+      const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
+      const userMessage = sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() })
+      runtime.currentUserMessageUuid = userMessageUuid
+      runtime.startingTurnToken = null
+      this.setRunState(runtime, { phase: 'running', activeUserMessageUuid: userMessageUuid, lastTurn: null })
+      this.persist(runtime, userMessage)
+      runtime.input.push(userMessage)
 
-    return { sessionId, userMessageUuid }
+      return { sessionId, userMessageUuid }
+    } finally {
+      if (runtime.startingTurnToken === startingTurnToken) {
+        runtime.startingTurnToken = null
+        this.scheduleIdleClose(runtime)
+      }
+    }
   }
 
   async interrupt(sessionId: string): Promise<boolean> {
@@ -221,39 +268,55 @@ export class LiveTurnManager {
     return true
   }
 
-  private ensureRuntimeInternal(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): SessionRuntime {
-    const existing = this.runtimes.get(input.sessionId)
-    if (existing) {
-      if (existing.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
-      return existing
+  private async ensureRuntimeInternal(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<SessionRuntime> {
+    for (;;) {
+      const runtime = this.runtimes.get(input.sessionId) ?? this.createRuntime(input)
+      if (runtime.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
+      await runtime.ready
+      if (this.runtimes.get(input.sessionId) === runtime && !runtime.stale && !runtime.closed) return runtime
     }
+  }
 
+  private createRuntime(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): SessionRuntime {
     const projectPath = projectPathFromId(input.projectId)
     if (!projectPath) throw new Error('Invalid project id')
     const runtimeInput = new AsyncQueue<SDKUserMessage>()
+    const sdkQuery = query({
+      prompt: runtimeInput,
+      options: {
+        cwd: projectPath,
+        ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
+        includePartialMessages: true,
+        permissionMode: input.permissionMode,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        allowDangerouslySkipPermissions: true,
+      },
+    })
     const runtime: SessionRuntime = {
       projectId: input.projectId,
       sessionId: input.sessionId,
       input: runtimeInput,
-      query: query({
-        prompt: runtimeInput,
-        options: {
-          cwd: projectPath,
-          ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
-          includePartialMessages: true,
-          permissionMode: input.permissionMode,
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.effort ? { effort: input.effort } : {}),
-          allowDangerouslySkipPermissions: true,
-        },
-      }),
+      query: sdkQuery,
       permissionMode: input.permissionMode,
       model: input.model,
       effort: input.effort,
       currentUserMessageUuid: null,
+      startingTurnToken: null,
+      stale: false,
+      rebuildingAfterCliIdle: false,
+      ready: Promise.resolve(),
       closed: false,
       idleTimer: null,
     }
+    runtime.ready = sdkQuery.initializationResult().then(
+      () => undefined,
+      (error) => {
+        runtime.stale = true
+        this.closeRuntime(runtime)
+        throw error
+      },
+    )
     this.runtimes.set(input.sessionId, runtime)
     this.scheduleIdleClose(runtime)
     void this.drainRuntime(runtime)

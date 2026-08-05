@@ -1,19 +1,13 @@
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId } from '@cotta/shared'
-import type { SessionTask, SessionTimelineResponse, TimelineBlock, TurnSummary } from '@cotta/shared'
+import type { SessionTask, SessionTimelineResponse, TurnSummary } from '@cotta/shared'
 
-type ProjectedSessionTimeline = Omit<SessionTimelineResponse, 'state'>
+type ProjectedSessionTimeline = Omit<SessionTimelineResponse, 'state' | 'awaySummary' | 'sessionMeta'>
+
+type OrganizedTurn = TurnSummary & { messages: SessionMessage[] }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
-}
-
-function jsonData(value: unknown): unknown {
-  return value === undefined ? null : value
-}
-
-function hasMessageValue(message: SessionMessage): boolean {
-  return message.message !== undefined && message.message !== null
 }
 
 function timestampMs(value: unknown): number | undefined {
@@ -31,218 +25,53 @@ function messageContent(message: SessionMessage): unknown {
   return isRecord(message.message) ? message.message.content : undefined
 }
 
-const taskNotificationStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'killed', 'stopped'])
-
-type TaskNotificationMetadata = {
-  text: string
-  taskId: string
-  toolUseId?: string
-  outputFile?: string
-  status?: string
-  summary?: string
-  result?: string
-}
-
-function isToolResultMessage(message: SessionMessage): boolean {
-  const content = messageContent(message)
-  return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === 'tool_result')
-}
-
 function isSyntheticUserMessage(message: SessionMessage): boolean {
   return message.type === 'user' && 'isSynthetic' in message && message.isSynthetic === true
 }
 
-function tagText(content: string, tagName: string): string | null {
-  const match = content.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`))
-  return match?.[1]?.trim() || null
-}
-
-function taskNotificationMetadata(message: SessionMessage): TaskNotificationMetadata | null {
-  if (message.type !== 'user' || !isRecord(message.message) || message.message.role !== 'user') return null
+function toolUseIds(message: SessionMessage): string[] {
   const content = messageContent(message)
-  if (typeof content !== 'string') return null
-
-  const text = content.trim()
-  const wrapperMatch = text.match(/^<task-notification(?:\s[^>]*)?>([\s\S]*)<\/task-notification>$/)
-  if (!wrapperMatch) return null
-
-  const body = wrapperMatch[1] ?? ''
-  const taskId = tagText(body, 'task-id')
-  const toolUseId = tagText(body, 'tool-use-id')
-  const outputFile = tagText(body, 'output-file')
-  const status = tagText(body, 'status')
-  const summary = tagText(body, 'summary')
-  const result = tagText(body, 'result') ?? undefined
-  if (!taskId) return null
-  if (status && !taskNotificationStatuses.has(status)) return null
-
-  return { text, taskId, ...(toolUseId ? { toolUseId } : {}), ...(outputFile ? { outputFile } : {}), ...(status ? { status } : {}), ...(summary ? { summary } : {}), ...(result ? { result } : {}) }
+  if (!Array.isArray(content)) return []
+  return content.flatMap((block) => isRecord(block) && block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : [])
 }
 
-function isTaskNotificationMessage(message: SessionMessage): boolean {
-  return isTimelineTaskNotificationMessage(message)
-}
-
-function textFromUnknownContent(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content
-    .map((block) => {
-      if (!isRecord(block)) return ''
-      if (typeof block.text === 'string') return block.text
-      if (typeof block.content === 'string') return block.content
-      return ''
-    })
-    .filter(Boolean)
-    .join('\n')
-}
-
-function userText(message: SessionMessage): string {
-  return textFromUnknownContent(messageContent(message))
-}
-
-function blockKindForContentBlock(block: unknown): string {
-  if (!isRecord(block) || typeof block.type !== 'string') return 'assistant.unknown_block'
-  return `assistant.${block.type}`
-}
-
-function toolUseMetadata(message: SessionMessage, block: unknown): Pick<TimelineBlock, 'contentBlockId' | 'toolUseId'> {
-  if (isRecord(block) && block.type === 'tool_use' && typeof block.id === 'string') return { contentBlockId: block.id, toolUseId: block.id }
-  const toolUseId = timelineToolUseId(message, block)
-  return toolUseId ? { toolUseId } : {}
-}
-
-function messageApiMessageId(message: SessionMessage): string | undefined {
-  return isRecord(message.message) && typeof message.message.id === 'string' ? message.message.id : undefined
-}
-
-function originalToolUseData(block: TimelineBlock): unknown {
-  if (!isRecord(block.data)) return undefined
-  return { id: block.toolUseId, name: block.data.name, input: block.data.input }
-}
-
-function addOriginalToolUse(block: TimelineBlock, toolUse: unknown): TimelineBlock {
-  return toolUse && isRecord(block.data) ? { ...block, data: { ...block.data, originalToolUse: toolUse } } : block
-}
-
-function timelineBlocksForTaskNotificationMessage(message: SessionMessage): TimelineBlock[] {
-  const metadata = taskNotificationMetadata(message)
-  return [{
-    id: `${message.uuid}:task_notification`,
-    kind: 'assistant.task_notification',
-    sourceEventIds: [message.uuid],
-    data: metadata ? { ...metadata, raw: message.message } : { raw: message.message },
-  }]
-}
-
-function timelineBlocksForToolResultMessage(message: SessionMessage): TimelineBlock[] {
+function toolResultIds(message: SessionMessage): string[] {
   const content = messageContent(message)
-  if (!Array.isArray(content)) {
-    const toolUseId = timelineToolUseId(message, null)
-    return [{
-      id: `${message.uuid}:tool_result`,
-      kind: 'tool.result',
-      sourceEventIds: [message.uuid],
-      ...(toolUseId ? { toolUseId } : {}),
-      data: jsonData(message.message),
-    }]
-  }
+  if (!Array.isArray(content)) return []
+  return content.flatMap((block) => {
+    if (!isRecord(block) || block.type !== 'tool_result') return []
+    const id = timelineToolUseId(message, block)
+    return id ? [id] : []
+  })
+}
 
-  const blocks = content
-    .map((block, index): TimelineBlock | null => {
-      if (!isRecord(block) || block.type !== 'tool_result') return null
-      return {
-        id: `${message.uuid}:tool_result:${index}`,
-        kind: 'tool.result',
-        sourceEventIds: [message.uuid],
-        ...toolUseMetadata(message, block),
-        data: jsonData(block),
+function organizeSessionTurns(messages: SessionMessage[]): OrganizedTurn[] {
+  const turns: OrganizedTurn[] = []
+  const turnsByToolUseId = new Map<string, OrganizedTurn>()
+  let current: OrganizedTurn | undefined
+
+  for (const message of messages) {
+    if (isSyntheticUserMessage(message)) continue
+    const taskNotification = isTimelineTaskNotificationMessage(message)
+    const linkedToolUseId = taskNotification
+      ? timelineTaskNotificationToolUseId(message)
+      : toolResultIds(message).find((id) => turnsByToolUseId.has(id))
+    if (isPrimaryTimelineUserMessage(message) && !taskNotification) {
+      current = {
+        primaryUserUuid: message.uuid,
+        primaryUserTimestampMs: messageTimestampMs(message),
+        messages: [],
       }
-    })
-    .filter((block): block is TimelineBlock => block !== null)
-
-  return blocks.length > 0 ? blocks : [{
-    id: `${message.uuid}:tool_result`,
-    kind: 'tool.result',
-    sourceEventIds: [message.uuid],
-    data: jsonData(message.message),
-  }]
-}
-
-function primaryInputData(message: SessionMessage, data: unknown): unknown {
-  if (!isPrimaryTimelineUserMessage(message)) return data
-  return isRecord(data) ? { ...data, primaryTimelineUserMessage: true } : data
-}
-
-function timelineBlocksForUserMessageCard(message: SessionMessage): TimelineBlock[] {
-  return [{ id: `${message.uuid}:user_message`, kind: 'assistant.user_message', sourceEventIds: [message.uuid], data: jsonData(message) }]
-}
-
-function timelineBlocksForMessage(message: SessionMessage): TimelineBlock[] {
-  if (message.type === 'user') {
-    if (isToolResultMessage(message)) return timelineBlocksForToolResultMessage(message)
-    if (isTaskNotificationMessage(message)) return timelineBlocksForTaskNotificationMessage(message)
-    if (isSyntheticUserMessage(message)) return []
-    if (!isPrimaryTimelineUserMessage(message)) return timelineBlocksForUserMessageCard(message)
-    const content = messageContent(message)
-    if (Array.isArray(content)) {
-      return content.flatMap((block, index): TimelineBlock[] => {
-        if (!isRecord(block)) return []
-        if (block.type === 'text' && typeof block.text === 'string') return [{ id: `${message.uuid}:user:${index}`, kind: 'user.message', sourceEventIds: [message.uuid], data: primaryInputData(message, { text: block.text, raw: block }) }]
-        if (block.type === 'image') return [{ id: `${message.uuid}:image:${index}`, kind: 'user.image', sourceEventIds: [message.uuid], data: primaryInputData(message, block) }]
-        if (block.type === 'file' || block.type === 'document') return [{ id: `${message.uuid}:file:${index}`, kind: 'user.file', sourceEventIds: [message.uuid], data: primaryInputData(message, block) }]
-        return []
-      })
+      turns.push(current)
     }
-    return [{
-      id: `${message.uuid}:user`,
-      kind: 'user.message',
-      sourceEventIds: [message.uuid],
-      data: primaryInputData(message, { text: userText(message), raw: message.message }),
-    }]
+    if (!current) continue
+
+    const target = linkedToolUseId ? turnsByToolUseId.get(linkedToolUseId) ?? current : current
+    if (message.type === 'user' || message.type === 'assistant') target.messages.push(message)
+    for (const id of toolUseIds(message)) turnsByToolUseId.set(id, target)
   }
 
-  if (message.type === 'assistant') {
-    const rawContent = messageContent(message)
-    const apiMessageId = messageApiMessageId(message)
-    if (!Array.isArray(rawContent)) {
-      return [{
-        id: `${message.uuid}:assistant`,
-        kind: 'assistant.message',
-        sourceEventIds: [message.uuid],
-        ...(apiMessageId ? { apiMessageId } : {}),
-        data: jsonData(message.message),
-      }]
-    }
-    return rawContent.map((block, index) => ({
-      id: `${message.uuid}:assistant:${index}`,
-      kind: blockKindForContentBlock(block),
-      sourceEventIds: [message.uuid],
-      ...(apiMessageId ? { apiMessageId } : {}),
-      ...toolUseMetadata(message, block),
-      data: jsonData(block),
-    }))
-  }
-
-  if (!hasMessageValue(message)) return []
-  return [{
-    id: `${message.uuid}:system`,
-    kind: 'system.message',
-    sourceEventIds: [message.uuid],
-    data: jsonData(message.message),
-  }]
-}
-
-function turnTitleFromMessage(message: SessionMessage): string {
-  const text = userText(message).trim().replace(/\s+/g, ' ')
-  if (!text) {
-    const content = messageContent(message)
-    const imageCount = Array.isArray(content)
-      ? content.filter((block) => isRecord(block) && block.type === 'image').length
-      : 0
-    return imageCount > 1 ? `${imageCount} images` : imageCount === 1 ? 'Image' : 'Untitled turn'
-  }
-  return text.length > 80 ? `${text.slice(0, 77)}…` : text
+  return turns
 }
 
 function toolResultText(block: Record<string, unknown>): string {
@@ -263,6 +92,7 @@ function projectSessionTasks(messages: SessionMessage[], latestProjectedTurnId?:
 
   for (const message of messages) {
     if (isPrimaryTimelineUserMessage(message)) currentTurnId = message.uuid
+    if (!currentTurnId) continue
     const content = messageContent(message)
     if (!Array.isArray(content)) continue
 
@@ -330,79 +160,8 @@ function projectSessionTasks(messages: SessionMessage[], latestProjectedTurnId?:
     .map(({ completedTurnId: _, ...task }) => ({ ...task, blockedBy: task.blockedBy.filter((taskId) => latestByTaskId.get(taskId)?.status !== 'completed') }))
 }
 
-function projectTurns(messages: SessionMessage[]): TurnSummary[] {
-  const turns: TurnSummary[] = []
-  const turnsByToolUseId = new Map<string, TurnSummary>()
-  const toolUseDataById = new Map<string, unknown>()
-  let current: TurnSummary | null = null
-
-  for (const message of messages) {
-    const blocks = timelineBlocksForMessage(message)
-    if (message.type === 'user' && isSyntheticUserMessage(message)) continue
-    const isPrimary = isPrimaryTimelineUserMessage(message)
-    const timestamp = messageTimestampMs(message)
-    const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
-    const taskToolUseId = hasTaskNotification ? timelineTaskNotificationToolUseId(message) : undefined
-    const taskTurn = taskToolUseId ? turnsByToolUseId.get(taskToolUseId) : undefined
-    if ((isPrimary && !hasTaskNotification && !taskTurn) || current === null) {
-      current = {
-        id: message.uuid,
-        sessionId: message.session_id,
-        title: isPrimary ? turnTitleFromMessage(message) : 'Session events',
-        startedAt: timestamp,
-        rawStatus: 'complete',
-        displayStatus: 'complete',
-        blocks: [],
-      }
-      turns.push(current)
-    }
-
-    for (const block of blocks) {
-      const target: TurnSummary = block.kind === 'tool.result' && block.toolUseId
-        ? turnsByToolUseId.get(block.toolUseId) ?? current
-        : block.kind === 'assistant.task_notification' && taskTurn
-          ? taskTurn
-          : current
-      const nextBlock = block.kind === 'assistant.task_notification' && taskToolUseId ? addOriginalToolUse(block, toolUseDataById.get(taskToolUseId)) : block
-      target.blocks.push(nextBlock)
-      if (block.kind === 'assistant.tool_use' && block.toolUseId) {
-        turnsByToolUseId.set(block.toolUseId, target)
-        toolUseDataById.set(block.toolUseId, originalToolUseData(block))
-      }
-      if ((!isPrimary || target !== current) && timestamp !== undefined) target.completedAt = timestamp
-    }
-  }
-
-  return turns
-}
-
 export function sessionMessagesForTurn(messages: SessionMessage[], turnId: string): SessionMessage[] | null {
-  const turnsByToolUseId = new Map<string, string>()
-  let currentTurnId: string | null = null
-  let foundTurn = false
-
-  const selected = messages.filter((message) => {
-    if (isSyntheticUserMessage(message)) return false
-    const blocks = timelineBlocksForMessage(message)
-    const hasTaskNotification = blocks.some((block) => block.kind === 'assistant.task_notification')
-    const taskToolUseId = hasTaskNotification ? timelineTaskNotificationToolUseId(message) : undefined
-    const taskTurnId = taskToolUseId ? turnsByToolUseId.get(taskToolUseId) : undefined
-    if ((isPrimaryTimelineUserMessage(message) && !hasTaskNotification && !taskTurnId) || currentTurnId === null) {
-      currentTurnId = message.uuid
-      if (currentTurnId === turnId) foundTurn = true
-    }
-    const targetTurnIds = new Set(blocks.map((block) => block.kind === 'tool.result' && block.toolUseId
-      ? turnsByToolUseId.get(block.toolUseId) ?? currentTurnId
-      : block.kind === 'assistant.task_notification' && taskTurnId
-        ? taskTurnId
-        : currentTurnId))
-    for (const block of blocks) {
-      if (block.kind === 'assistant.tool_use' && block.toolUseId && currentTurnId) turnsByToolUseId.set(block.toolUseId, currentTurnId)
-    }
-    return (message.type === 'user' || message.type === 'assistant') && targetTurnIds.has(turnId)
-  })
-
-  return foundTurn ? selected : null
+  return organizeSessionTurns(messages).find((turn) => turn.primaryUserUuid === turnId)?.messages ?? null
 }
 
 export function projectSessionTimeline(
@@ -410,10 +169,10 @@ export function projectSessionTimeline(
   messages: SessionMessage[],
   options: { limitTurns: number; cursor: string | null },
 ): ProjectedSessionTimeline {
-  const allTurns = projectTurns(messages)
-  const tasks = projectSessionTasks(messages, allTurns.at(-1)?.id)
+  const allTurns = organizeSessionTurns(messages)
+  const tasks = projectSessionTasks(messages, allTurns.at(-1)?.primaryUserUuid)
   const endExclusive = options.cursor
-    ? Math.max(0, allTurns.findIndex((turn) => turn.id === options.cursor))
+    ? Math.max(0, allTurns.findIndex((turn) => turn.primaryUserUuid === options.cursor))
     : allTurns.length
   const start = Math.max(0, endExclusive - options.limitTurns)
   const turns = allTurns.slice(start, endExclusive)
@@ -422,6 +181,6 @@ export function projectSessionTimeline(
     turns,
     tasks,
     hasMore: start > 0,
-    nextCursor: start > 0 ? allTurns[start]?.id ?? null : null,
+    nextCursor: start > 0 ? allTurns[start]?.primaryUserUuid ?? null : null,
   }
 }

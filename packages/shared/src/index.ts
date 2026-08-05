@@ -185,16 +185,16 @@ export const timelineBlockSchema = z.object({
 
 export type TimelineBlock = z.infer<typeof timelineBlockSchema>
 
+export const rawSessionMessageSchema = z.unknown()
+export type RawSessionMessage = z.infer<typeof rawSessionMessageSchema>
+
 export const turnSummarySchema = z.object({
-  id: z.string(),
-  sessionId: z.string(),
-  title: z.string().optional(),
-  startedAt: z.number().optional(),
-  completedAt: z.number().optional(),
+  primaryUserUuid: z.string(),
+  primaryUserTimestampMs: z.number().optional(),
   durationMs: z.number().optional(),
-  rawStatus: z.string().optional(),
-  displayStatus: z.string().optional(),
-  blocks: z.array(timelineBlockSchema),
+  durationTimestampMs: z.number().optional(),
+  awaySummary: z.string().nullable().optional(),
+  messages: z.array(rawSessionMessageSchema),
 })
 
 export type TurnSummary = z.infer<typeof turnSummarySchema>
@@ -227,20 +227,34 @@ export const sessionTaskSchema = z.object({
 
 export type SessionTask = z.infer<typeof sessionTaskSchema>
 
+export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'])
+export type PermissionMode = z.infer<typeof permissionModeSchema>
+
+export const modelSelectionSchema = z.string().trim().min(1)
+export type ModelSelection = z.infer<typeof modelSelectionSchema>
+
+export const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
+export type EffortLevel = z.infer<typeof effortLevelSchema>
+export const defaultTurnOptionSchema = z.literal('default')
+export type DefaultTurnOption = z.infer<typeof defaultTurnOptionSchema>
+export const turnEffortSelectionSchema = z.union([effortLevelSchema, defaultTurnOptionSchema])
+export type TurnEffortSelection = z.infer<typeof turnEffortSelectionSchema>
+
 export const sessionTimelineResponseSchema = z.object({
   sessionId: z.string(),
   turns: z.array(turnSummarySchema),
   tasks: z.array(sessionTaskSchema),
+  sessionMeta: z.object({
+    permissionMode: permissionModeSchema.nullable(),
+    model: z.string().nullable(),
+    effort: effortLevelSchema.nullable(),
+  }),
   hasMore: z.boolean(),
   nextCursor: z.string().nullable(),
   state: sessionTimelineStateSchema,
 })
 
 export type SessionTimelineResponse = z.infer<typeof sessionTimelineResponseSchema>
-
-export const rawSessionMessageSchema = z.unknown()
-
-export type RawSessionMessage = z.infer<typeof rawSessionMessageSchema>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -321,19 +335,6 @@ export const sessionLiveEventsResponseSchema = z.object({
 })
 
 export type SessionLiveEventsResponse = z.infer<typeof sessionLiveEventsResponseSchema>
-
-export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'])
-export type PermissionMode = z.infer<typeof permissionModeSchema>
-
-export const modelSelectionSchema = z.string().trim().min(1)
-export type ModelSelection = z.infer<typeof modelSelectionSchema>
-
-export const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
-export type EffortLevel = z.infer<typeof effortLevelSchema>
-export const defaultTurnOptionSchema = z.literal('default')
-export type DefaultTurnOption = z.infer<typeof defaultTurnOptionSchema>
-export const turnEffortSelectionSchema = z.union([effortLevelSchema, defaultTurnOptionSchema])
-export type TurnEffortSelection = z.infer<typeof turnEffortSelectionSchema>
 
 export const modelCatalogItemSchema = z.object({
   value: z.string(),
@@ -424,6 +425,10 @@ export const turnMetaTranscriptRowSchema = z.object({
   primaryTimestampMs: z.number().int(),
   primaryByteOffset: z.number().int(),
   primaryEntrypoint: z.string().nullable(),
+  permissionMode: permissionModeSchema.nullable(),
+  model: z.string().nullable(),
+  effort: effortLevelSchema.nullable(),
+  awaySummary: z.string().nullable(),
   durationUuid: z.string().nullable(),
   durationParentUuid: z.string().nullable(),
   durationTimestampMs: z.number().int().nullable(),
@@ -485,6 +490,8 @@ export const appSettingsSchema = z.object({
   defaultPermissionMode: permissionModeSchema.optional(),
   defaultModel: modelSelectionSchema.nullable().optional(),
   defaultEffort: effortLevelSchema.nullable().optional(),
+  resumeUsesLastPermissionMode: z.boolean().optional(),
+  resumeUsesLastModelAndEffort: z.boolean().optional(),
   modelCatalog: modelCatalogResponseSchema.optional(),
   showDebugNav: z.boolean().optional(),
 }).catchall(z.unknown())

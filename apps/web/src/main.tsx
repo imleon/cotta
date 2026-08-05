@@ -17,6 +17,7 @@ import {
   type SessionObservationSort,
   type SessionRuntimeResponse,
   type SessionTask,
+  type SessionTimelineResponse,
   type TurnMetaTranscriptRow,
   type TurnSummary,
 } from '@cotta/shared'
@@ -131,21 +132,22 @@ async function interruptTurn(projectId: string, sessionId: string): Promise<void
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
-function pendingUserTurn(text: string, sessionId: string, userMessageUuid: string): TurnSummary {
-  const startedAt = Date.now()
+function pendingUserTurn(text: string, sessionId: string, userMessageUuid: string): { sessionId: string; turn: TurnSummary } {
+  const timestamp = new Date().toISOString()
   return {
-    id: userMessageUuid,
     sessionId,
-    title: text.length > 80 ? `${text.slice(0, 77)}…` : text,
-    startedAt,
-    rawStatus: 'running',
-    displayStatus: 'running',
-    blocks: [{
-      id: `${userMessageUuid}:user`,
-      kind: 'user.message',
-      sourceEventIds: [userMessageUuid],
-      data: { text, status: 'pending', primaryTimelineUserMessage: true },
-    }],
+    turn: {
+      primaryUserUuid: userMessageUuid,
+      primaryUserTimestampMs: Date.parse(timestamp),
+      messages: [{
+        type: 'user',
+        message: { role: 'user', content: text },
+        parent_tool_use_id: null,
+        uuid: userMessageUuid,
+        session_id: sessionId,
+        timestamp,
+      }],
+    },
   }
 }
 
@@ -196,13 +198,14 @@ function TurnComposer({
   settings,
   sessionRuntime,
   sessionInfo,
+  sessionMeta,
 }: {
   projectId: string | null
   selectedSessionId: string | null
   selectedSessionRunState: ProjectSessionsResponse['sessions'][number]['runState'] | null
   liveUserMessageUuid: string | null
   setSelectedSessionId: (sessionId: string | null) => void
-  setPendingTurn: Dispatch<SetStateAction<TurnSummary | null>>
+  setPendingTurn: Dispatch<SetStateAction<{ sessionId: string; turn: TurnSummary } | null>>
   refreshSessionLists: (projectId?: string) => void
   onProjectRequired: (text: string) => void
   pendingProjectId: string | null
@@ -211,6 +214,7 @@ function TurnComposer({
   settings: AppSettings
   sessionRuntime: SessionRuntimeResponse | null
   sessionInfo: SessionInfoResponse | null
+  sessionMeta: SessionTimelineResponse['sessionMeta'] | null
 }) {
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -228,7 +232,9 @@ function TurnComposer({
   const [menuModelValue, setMenuModelValue] = useState<ModelSelection | DefaultTurnOption>(DEFAULT_TURN_OPTION)
   const [effortMenuPosition, setEffortMenuPosition] = useState<CSSProperties>()
   const modelMenuRef = useRef<HTMLDivElement | null>(null)
-  const runtimeSettings = sessionRuntime?.projectId === projectId && sessionRuntime.sessionId === selectedSessionId ? sessionRuntime.settings : null
+  const composerScopeKey = `${projectId ?? ''}\0${selectedSessionId ?? ''}`
+  const initializedComposerScopeRef = useRef<string | null>(null)
+  const composerManuallyChangedRef = useRef(false)
   const permissionOptions = PERMISSION_MODE_OPTIONS
   const catalogModels = settings.modelCatalog?.models ?? []
   const selectedModel = model === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === model || item.resolvedModel === model)
@@ -239,10 +245,18 @@ function TurnComposer({
   useEffect(() => { setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
   useEffect(() => { if (!liveUserMessageUuid) setInterrupting(false) }, [liveUserMessageUuid])
   useEffect(() => {
-    setPermissionMode(runtimeSettings?.permissionMode ?? settings.defaultPermissionMode ?? 'default')
-    setModel(runtimeSettings ? runtimeSettings.model ?? DEFAULT_TURN_OPTION : settings.defaultModel ?? DEFAULT_TURN_OPTION)
-    setEffort(runtimeSettings ? runtimeSettings.effort ?? DEFAULT_EFFORT : settings.defaultEffort ?? DEFAULT_EFFORT)
-  }, [runtimeSettings, settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort])
+    initializedComposerScopeRef.current = null
+    composerManuallyChangedRef.current = false
+  }, [composerScopeKey])
+  useEffect(() => {
+    if (initializedComposerScopeRef.current === composerScopeKey || composerManuallyChangedRef.current) return
+    const wantsSessionMeta = Boolean(selectedSessionId && (settings.resumeUsesLastPermissionMode === true || settings.resumeUsesLastModelAndEffort === true))
+    if (wantsSessionMeta && !sessionMeta) return
+    setPermissionMode(settings.resumeUsesLastPermissionMode === true && selectedSessionId ? sessionMeta?.permissionMode ?? settings.defaultPermissionMode ?? 'default' : settings.defaultPermissionMode ?? 'default')
+    setModel(settings.resumeUsesLastModelAndEffort === true && selectedSessionId ? sessionMeta?.model ?? DEFAULT_TURN_OPTION : settings.defaultModel ?? DEFAULT_TURN_OPTION)
+    setEffort(settings.resumeUsesLastModelAndEffort === true && selectedSessionId ? sessionMeta?.effort ?? DEFAULT_EFFORT : settings.defaultEffort ?? DEFAULT_EFFORT)
+    initializedComposerScopeRef.current = composerScopeKey
+  }, [composerScopeKey, selectedSessionId, sessionMeta, settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort, settings.resumeUsesLastPermissionMode, settings.resumeUsesLastModelAndEffort])
   useEffect(() => {
     if (model === DEFAULT_TURN_OPTION || selectedModel) return
     setModel(DEFAULT_TURN_OPTION)
@@ -334,6 +348,11 @@ function TurnComposer({
     }
   }
 
+  function markComposerManualChange() {
+    composerManuallyChangedRef.current = true
+    initializedComposerScopeRef.current = composerScopeKey
+  }
+
   function toggleModelMenu() {
     setMenuModelValue(DEFAULT_TURN_OPTION)
     setModelMenuOpen((open) => !open)
@@ -354,18 +373,21 @@ function TurnComposer({
   }
 
   function chooseDefaultModel() {
+    markComposerManualChange()
     setModel(DEFAULT_TURN_OPTION)
     setEffort(DEFAULT_EFFORT)
     setModelMenuOpen(false)
   }
 
   function chooseModelOnly(option: ModelCatalogItem) {
+    markComposerManualChange()
     setModel(option.value)
     setEffort(DEFAULT_TURN_OPTION)
     setModelMenuOpen(false)
   }
 
   function chooseEffort(option: ModelCatalogItem, nextEffort: EffortLevel) {
+    markComposerManualChange()
     setModel(option.value)
     setEffort(nextEffort)
     setModelMenuOpen(false)
@@ -421,7 +443,7 @@ function TurnComposer({
                         className="permission-mode-option"
                         role="menuitemradio"
                         aria-checked={permissionMode === option.value}
-                        onClick={() => { setPermissionMode(option.value); setPermissionMenuOpen(false) }}
+                        onClick={() => { markComposerManualChange(); setPermissionMode(option.value); setPermissionMenuOpen(false) }}
                       >
                         <span className="permission-mode-option-icon"><ComposerIcon name={option.value} /></span>
                         <span className="permission-mode-option-copy">
@@ -554,11 +576,12 @@ function WorkspacePanel({
   onNotify: (toast: ToastState) => void
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
-  const [pendingTurn, setPendingTurn] = useState<TurnSummary | null>(null)
+  const [pendingTurn, setPendingTurn] = useState<{ sessionId: string; turn: TurnSummary } | null>(null)
   const [sessionTasks, setSessionTasks] = useState<SessionTask[]>([])
+  const [sessionMeta, setSessionMeta] = useState<{ projectId: string; sessionId: string; meta: SessionTimelineResponse['sessionMeta'] } | null>(null)
   const projectName = detail?.project.name
 
-  useEffect(() => { setLiveUserMessageUuid(null); setSessionTasks([]) }, [projectId, selectedSessionId])
+  useEffect(() => { setLiveUserMessageUuid(null); setSessionTasks([]); setSessionMeta(null) }, [projectId, selectedSessionId])
   useEffect(() => { setPendingTurn(null) }, [projectId])
 
   function refreshSessionListsForCurrentProject(targetProjectId = projectId) {
@@ -569,14 +592,15 @@ function WorkspacePanel({
     setLiveUserMessageUuid(userMessageUuid)
   }
 
-  const selectedPendingTurn = pendingTurn?.sessionId === selectedSessionId ? pendingTurn : null
+  const selectedPendingTurn = pendingTurn?.sessionId === selectedSessionId ? pendingTurn.turn : null
   const selectedSessionRunState = detail?.sessions.find((session) => session.id === selectedSessionId)?.runState ?? null
+  const selectedSessionMeta = sessionMeta?.projectId === projectId && sessionMeta.sessionId === selectedSessionId ? sessionMeta.meta : null
 
   return (
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
         {projectId && selectedSessionId
-          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={selectedSessionId} pendingTurn={selectedPendingTurn} runState={selectedSessionRunState} tasks={sessionTasks} onLiveTurnChange={handleLiveTurnChange} onTasksChange={setSessionTasks} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
+          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={selectedSessionId} pendingTurn={selectedPendingTurn} runState={selectedSessionRunState} tasks={sessionTasks} onLiveTurnChange={handleLiveTurnChange} onTasksChange={setSessionTasks} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onSessionMetaChange={(meta) => setSessionMeta({ projectId, sessionId: selectedSessionId, meta })} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
           : <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div>}
       </div>
       <SessionTaskList tasks={sessionTasks} />
@@ -596,6 +620,7 @@ function WorkspacePanel({
         settings={settings}
         sessionRuntime={sessionRuntime}
         sessionInfo={sessionInfo}
+        sessionMeta={selectedSessionMeta}
       />
     </section>
   )
@@ -723,6 +748,34 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setStatus(null)
     try {
       const response = await saveSettings({ ...settings, defaultModel: nextModel === DEFAULT_TURN_OPTION ? null : nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
+      queryClient.setQueryData(['settings'], response)
+      setStatus({ message: 'Saved', tone: 'success' })
+    } catch (error) {
+      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveResumeUsesLastPermissionMode(resumeUsesLastPermissionMode: boolean) {
+    setSaving(true)
+    setStatus(null)
+    try {
+      const response = await saveSettings({ ...settings, resumeUsesLastPermissionMode })
+      queryClient.setQueryData(['settings'], response)
+      setStatus({ message: 'Saved', tone: 'success' })
+    } catch (error) {
+      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveResumeUsesLastModelAndEffort(resumeUsesLastModelAndEffort: boolean) {
+    setSaving(true)
+    setStatus(null)
+    try {
+      const response = await saveSettings({ ...settings, resumeUsesLastModelAndEffort })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -867,6 +920,44 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
               </div>
             ) : null}
           </div>
+        </div>
+      </form>
+
+      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
+        <div className="settings-card-copy">
+          <h3>Resume permission</h3>
+          <p className="muted">Use the last session permission mode when resuming instead of the default.</p>
+        </div>
+        <div className="settings-card-controls">
+          <button
+            type="button"
+            className="settings-switch"
+            role="switch"
+            aria-checked={settings.resumeUsesLastPermissionMode === true}
+            disabled={saving}
+            onClick={() => void saveResumeUsesLastPermissionMode(settings.resumeUsesLastPermissionMode !== true)}
+          >
+            <span className="settings-switch-thumb" />
+          </button>
+        </div>
+      </form>
+
+      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
+        <div className="settings-card-copy">
+          <h3>Resume model / effort</h3>
+          <p className="muted">Use the last session model and effort when resuming instead of the default.</p>
+        </div>
+        <div className="settings-card-controls">
+          <button
+            type="button"
+            className="settings-switch"
+            role="switch"
+            aria-checked={settings.resumeUsesLastModelAndEffort === true}
+            disabled={saving}
+            onClick={() => void saveResumeUsesLastModelAndEffort(settings.resumeUsesLastModelAndEffort !== true)}
+          >
+            <span className="settings-switch-thumb" />
+          </button>
         </div>
       </form>
 
@@ -1223,16 +1314,7 @@ function ProjectsDashboard() {
 
 
   useEffect(() => {
-    if (!selectedProjectId || !selectedSessionId) {
-      setSelectedSessionInfo(null)
-      return
-    }
-    let cancelled = false
     setSelectedSessionInfo(null)
-    void fetchSessionInfo(selectedProjectId, selectedSessionId).then((info) => {
-      if (!cancelled) setSelectedSessionInfo(info)
-    }).catch(() => {})
-    return () => { cancelled = true }
   }, [selectedProjectId, selectedSessionId])
 
   async function createProjectForPendingTurn(directoryPath: string) {

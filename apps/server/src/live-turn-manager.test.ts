@@ -13,7 +13,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import { LiveTurnManager, type LiveTurnEvent } from './live-turn-manager.js'
 
 function queryFromGenerator(generator: AsyncGenerator<SDKMessage>, overrides: Partial<Query> = {}): Query {
-  return Object.assign(generator, { close: vi.fn(), interrupt: vi.fn(), setPermissionMode: vi.fn(), setModel: vi.fn(), applyFlagSettings: vi.fn(), ...overrides }) as unknown as Query
+  return Object.assign(generator, { close: vi.fn(), interrupt: vi.fn(), setPermissionMode: vi.fn(), setModel: vi.fn(), applyFlagSettings: vi.fn(), initializationResult: vi.fn().mockResolvedValue({}), ...overrides }) as unknown as Query
 }
 
 function streamingQuery(prompt: AsyncIterable<SDKUserMessage>, overrides: Partial<Query> = {}): Query {
@@ -221,6 +221,87 @@ describe('LiveTurnManager', () => {
     expect(setPermissionMode).toHaveBeenCalledWith('plan')
     expect(setModel).toHaveBeenCalledWith('claude-sonnet-5')
     expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'xhigh' })
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-2', outcome: 'success' } }))
+    await manager.rebuildRuntimeAfterCliIdle('session-1')
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ permissionMode: 'plan', model: 'claude-sonnet-5', effort: 'xhigh' }),
+    }))
+    manager.closeAll()
+  })
+
+  it('rebuilds an opened runtime after CLI idle and preserves current options', async () => {
+    const close = vi.fn()
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1', permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })
+    await expect(manager.rebuildRuntimeAfterCliIdle('session-1')).resolves.toBe(true)
+
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(queryMock).toHaveBeenCalledTimes(2)
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ resume: 'session-1', permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' }),
+    }))
+    manager.closeAll()
+  })
+
+  it('holds new turns until a CLI-idle replacement initializes', async () => {
+    let resolveInitialization!: () => void
+    const replacementReady = new Promise<void>((resolve) => { resolveInitialization = resolve })
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, {
+        initializationResult: vi.fn(async () => { await replacementReady; return {} as Awaited<ReturnType<Query['initializationResult']>> }),
+      }))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+
+    const rebuild = manager.rebuildRuntimeAfterCliIdle('session-1')
+    let started = false
+    const start = manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'latest', userMessageUuid: 'user-1', permissionMode: 'default' }).then(() => { started = true })
+    await Promise.resolve()
+    expect(started).toBe(false)
+
+    resolveInitialization()
+    await expect(rebuild).resolves.toBe(true)
+    await start
+    expect(started).toBe(true)
+    manager.closeAll()
+  })
+
+  it('cleans up a failed CLI-idle replacement so a later request can retry', async () => {
+    const replacementClose = vi.fn()
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, {
+        close: replacementClose,
+        initializationResult: vi.fn().mockRejectedValue(new Error('setup failed')),
+      }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+
+    await expect(manager.rebuildRuntimeAfterCliIdle('session-1')).rejects.toThrow('setup failed')
+    expect(replacementClose).toHaveBeenCalledTimes(1)
+    await expect(manager.ensureRuntime({ projectId, sessionId: 'session-1' })).resolves.toBeUndefined()
+    expect(queryMock).toHaveBeenCalledTimes(3)
+    manager.closeAll()
+  })
+
+  it('does not rebuild a runtime with an active frontend turn', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
+
+    await expect(manager.rebuildRuntimeAfterCliIdle('session-1')).resolves.toBe(false)
+    expect(queryMock).toHaveBeenCalledTimes(1)
+    manager.closeAll()
   })
 
   it('closes a session runtime explicitly once', async () => {
@@ -246,8 +327,10 @@ describe('LiveTurnManager', () => {
       .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { close: closeB }))
     const manager = new LiveTurnManager()
 
-    manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-1' })
-    manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-2' })
+    await Promise.all([
+      manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-1' }),
+      manager.ensureRuntime({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-2' }),
+    ])
     manager.closeAll()
 
     expect(closeA).toHaveBeenCalledTimes(1)

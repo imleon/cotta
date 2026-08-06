@@ -35,8 +35,8 @@ function primary(sessionId: string, uuid: string, content = 'hello') {
   return { type: 'user', uuid, sessionId, cwd: '/repo', timestamp: '2026-01-01T00:00:00.000Z', origin: 'human', message: { role: 'user', content } }
 }
 
-function duration(sessionId: string, uuid: string, parentUuid: string, durationMs = 42) {
-  return { type: 'system', subtype: 'turn_duration', uuid, parentUuid, sessionId, timestamp: '2026-01-01T00:00:01.000Z', durationMs, messageCount: 2, cwd: '/repo' }
+function duration(sessionId: string, uuid: string, parentUuid: string, durationMs = 42, extra: Record<string, unknown> = {}) {
+  return { type: 'system', subtype: 'turn_duration', uuid, parentUuid, sessionId, timestamp: '2026-01-01T00:00:01.000Z', durationMs, messageCount: 2, cwd: '/repo', ...extra }
 }
 
 function child(sessionId: string, uuid: string, parentUuid: string, extra: Record<string, unknown> = {}) {
@@ -99,6 +99,25 @@ describe('TurnMetaTranscriptStore', () => {
 
     expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 42]]))
     expect((db.prepare('SELECT duration_byte_offset FROM turn_meta_transcript').get() as { duration_byte_offset: number }).duration_byte_offset).toBe(Buffer.byteLength(jsonl(primary('session', 'user'))))
+  })
+
+  it('loads pending background agent counts from turn duration metadata', async () => {
+    const { projectDir, store } = await setup()
+    await writeFile(join(projectDir, 'session.jsonl'), jsonl(
+      primary('session', 'waiting'),
+      duration('session', 'waiting-duration', 'waiting', 42, { pendingBackgroundAgentCount: 2 }),
+      primary('session', 'done'),
+      duration('session', 'done-duration', 'done', 42, { pendingBackgroundAgentCount: 0 }),
+      primary('session', 'legacy'),
+      duration('session', 'legacy-duration', 'legacy'),
+    ))
+
+    await store.syncSessions([changed('session')])
+
+    const metadata = store.loadTimelineMetadata('project', 'session').turnMetadata
+    expect(metadata.get('waiting')).toMatchObject({ pendingBackgroundAgentCount: 2 })
+    expect(metadata.get('done')).toMatchObject({ pendingBackgroundAgentCount: 0 })
+    expect(metadata.get('legacy')).not.toHaveProperty('pendingBackgroundAgentCount')
   })
 
   it('stores per-turn permission, model, and effort observed while scanning', async () => {

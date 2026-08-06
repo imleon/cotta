@@ -75,6 +75,7 @@ export const sessionSummarySchema = z.object({
   projectId: z.string(),
   lastActivityAt: z.number().optional(),
   status: sessionStatusSchema,
+  hasRunningShell: z.boolean().optional(),
   kind: z.string().nullable(),
   entrypoint: z.string().nullable(),
 })
@@ -198,6 +199,7 @@ export const turnSummarySchema = z.object({
   primaryUserTimestampMs: z.number().optional(),
   durationMs: z.number().optional(),
   durationTimestampMs: z.number().optional(),
+  pendingBackgroundAgentCount: z.number().int().nonnegative().optional(),
   awaySummary: z.string().nullable().optional(),
   messages: z.array(rawSessionMessageSchema),
 })
@@ -505,8 +507,19 @@ export const settingsResponseSchema = z.object({
 })
 export type SettingsResponse = z.infer<typeof settingsResponseSchema>
 
+export const appSettingsUpdateSchema = z.object({
+  defaultPermissionMode: permissionModeSchema.optional(),
+  defaultModel: modelSelectionSchema.nullable().optional(),
+  defaultEffort: effortLevelSchema.nullable().optional(),
+  showDebugNav: z.boolean().optional(),
+}).refine(
+  ({ defaultModel, defaultEffort }) => (defaultModel === undefined) === (defaultEffort === undefined),
+  'defaultModel and defaultEffort must be updated together',
+)
+export type AppSettingsUpdate = z.infer<typeof appSettingsUpdateSchema>
+
 export const settingsUpdateRequestSchema = z.object({
-  settings: appSettingsSchema,
+  settings: appSettingsUpdateSchema,
 })
 export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>
 

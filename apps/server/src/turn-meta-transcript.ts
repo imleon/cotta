@@ -129,11 +129,11 @@ export class TurnMetaTranscriptStore {
   }
 
   loadTimelineMetadata(projectKey: string, sessionId: string): {
-    turnMetadata: ReadonlyMap<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'awaySummary'>>
+    turnMetadata: ReadonlyMap<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>>
     sessionMeta: SessionTimelineResponse['sessionMeta']
   } {
     const rows = this.db.prepare(`
-      SELECT primary_user_uuid, duration_ms, duration_timestamp_ms, away_summary, permission_mode, model, effort
+      SELECT primary_user_uuid, duration_ms, duration_timestamp_ms, duration_pending_background_agent_count, away_summary, permission_mode, model, effort
       FROM turn_meta_transcript
       WHERE project_key = ? AND session_id = ?
       ORDER BY primary_timestamp_ms DESC, primary_byte_offset DESC
@@ -141,12 +141,13 @@ export class TurnMetaTranscriptStore {
       primary_user_uuid: string
       duration_ms: number | null
       duration_timestamp_ms: number | null
+      duration_pending_background_agent_count: number | null
       away_summary: string | null
       permission_mode: PermissionMode | null
       model: string | null
       effort: EffortLevel | null
     }>
-    const turnMetadata = new Map<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'awaySummary'>>()
+    const turnMetadata = new Map<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>>()
     const storedSessionMeta = this.sessionMetaStore.getSessionMeta(projectKey, sessionId)
     const sessionMeta: SessionTimelineResponse['sessionMeta'] = storedSessionMeta ?? { permissionMode: null, model: null, effort: null }
     for (const row of rows) {
@@ -154,6 +155,7 @@ export class TurnMetaTranscriptStore {
         turnMetadata.set(row.primary_user_uuid, {
           ...(row.duration_ms !== null ? { durationMs: row.duration_ms } : {}),
           ...(row.duration_timestamp_ms !== null ? { durationTimestampMs: row.duration_timestamp_ms } : {}),
+          ...(row.duration_pending_background_agent_count !== null ? { pendingBackgroundAgentCount: row.duration_pending_background_agent_count } : {}),
           awaySummary: row.away_summary,
         })
       }

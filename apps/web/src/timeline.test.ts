@@ -374,6 +374,9 @@ describe('timeline response frame grouping', () => {
   it('formats stable Claude Code-style turn duration labels', () => {
     expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000 })).toMatch(/^(Thought|Baked|Brewed|Churned|Cogitated|Cooked|Crunched|Sauted|Worked) for 21s$/)
     expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 415_000 })).toBe(`${turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000 })?.split(' for ')[0]} for 6m 55s`)
+    expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 1 })).toBe('Waiting for 1 background agent to finish')
+    expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 2 })).toBe('Waiting for 2 background agents to finish')
+    expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 0 })).toMatch(/ for 21s$/)
     expect(turnDurationLabel({ primaryUserUuid: 'turn-1' })).toBeNull()
   })
 

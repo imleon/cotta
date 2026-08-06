@@ -123,8 +123,31 @@ describe('ClaudeSessionRegistry', () => {
     const observer = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
     observers.push(observer)
     await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', kind: 'bg', status: 'idle' }))
-    await expect.poll(() => observer.cliSessionMetadata('session-1')).toEqual({ status: 'idle', kind: 'bg', entrypoint: 'cli' })
+    await expect.poll(() => observer.cliSessionMetadata('session-1')).toEqual({ status: 'idle', hasRunningShell: false, kind: 'bg', entrypoint: 'cli' })
     expect(observer.cliRunState('session-1')).toBeNull()
+  })
+
+  it('treats CLI shell as idle metadata with a shell tag', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cotta-session-registry-shell-'))
+    roots.push(root)
+    const sessionsDir = join(root, 'sessions')
+    const dbPath = join(root, 'observations.sqlite')
+    const sessionPath = join(sessionsDir, '999999999.json')
+    await mkdir(sessionsDir)
+
+    const observer = await createClaudeSessionRegistry({ sessionsDir, dbPath, debounceMs: 10 })
+    observers.push(observer)
+    const changes: Array<{ changedSessions: Array<{ sessionId: string; cwd: string | null }>; idleSessionIds: string[]; activeSessionIds: string[] }> = []
+    observer.subscribe((change) => changes.push(change))
+
+    await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'busy' }))
+    await expect.poll(() => changes.length).toBe(1)
+
+    await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'shell' }))
+    await expect.poll(() => changes.length).toBe(2)
+    expect(changes[1]).toEqual({ changedSessions: [{ sessionId: 'session-1', cwd: null }], idleSessionIds: ['session-1'], activeSessionIds: [] })
+    expect(observer.cliRunState('session-1')).toBeNull()
+    expect(observer.cliSessionMetadata('session-1')).toEqual({ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' })
   })
 
   it('reports CLI idle immediately after active status clears', async () => {

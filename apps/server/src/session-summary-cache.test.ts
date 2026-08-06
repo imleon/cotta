@@ -283,13 +283,24 @@ describe('SessionSummaryCache', () => {
 
   it('exposes CLI background metadata separately from status', async () => {
     const cache = new SessionSummaryCache(10)
-    const metadata: SessionMetadata = { status: 'idle', kind: 'bg', entrypoint: 'cli' }
+    const metadata: SessionMetadata = { status: 'idle', hasRunningShell: false, kind: 'bg', entrypoint: 'cli' }
     cache.setSessionMetadataReader(() => metadata)
     listSessionsMock.mockResolvedValueOnce([session('s1')])
 
     await cache.requestScan('global')
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
       sessions: [{ status: 'idle', kind: 'bg', entrypoint: 'cli' }],
+    })
+  })
+
+  it('exposes a running shell separately from idle status', async () => {
+    const cache = new SessionSummaryCache(10)
+    cache.setSessionMetadataReader(() => ({ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' }))
+    listSessionsMock.mockResolvedValueOnce([session('s1')])
+
+    await cache.requestScan('global')
+    await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
+      sessions: [{ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' }],
     })
   })
 

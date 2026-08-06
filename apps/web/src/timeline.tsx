@@ -1202,7 +1202,9 @@ function formatTurnDuration(durationMs: number): string {
   return hours > 0 ? `${hours}h ${minutes}m ${remainder}s` : minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`
 }
 
-export function turnDurationLabel(turn: Pick<TurnSummary, 'primaryUserUuid' | 'durationMs'>): string | null {
+export function turnDurationLabel(turn: Pick<TurnSummary, 'primaryUserUuid' | 'durationMs' | 'pendingBackgroundAgentCount'>): string | null {
+  const pending = turn.pendingBackgroundAgentCount ?? 0
+  if (pending > 0) return `Waiting for ${pending} background ${pending === 1 ? 'agent' : 'agents'} to finish`
   return turn.durationMs === undefined ? null : `${stableTurnVerb(turn.primaryUserUuid)} for ${formatTurnDuration(turn.durationMs)}`
 }
 

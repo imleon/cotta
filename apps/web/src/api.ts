@@ -23,6 +23,7 @@ import {
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
   turnMetaTranscriptResponseSchema,
+  type AppSettingsUpdate,
   type AuthSessionResponse,
   type CreateProjectResponse,
   type DeleteSessionResponse,
@@ -172,7 +173,7 @@ export async function fetchSettings(): Promise<SettingsResponse> {
   return settingsResponseSchema.parse(await response.json())
 }
 
-export async function saveSettings(settings: SettingsResponse['settings']): Promise<SettingsResponse> {
+export async function saveSettings(settings: AppSettingsUpdate): Promise<SettingsResponse> {
   const response = await fetch('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

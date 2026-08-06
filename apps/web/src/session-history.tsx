@@ -43,7 +43,8 @@ function isBackgroundKind(kind: string | null): boolean {
 
 function sessionKindTag(session: SessionSummary): string | null {
   if (isBackgroundKind(session.kind)) return 'BG'
-  if (session.entrypoint === 'cli' && session.status !== 'idle') return 'CLI'
+  if (session.hasRunningShell) return 'SHELL'
+  if (session.entrypoint === 'cli' && (session.status === 'busy' || session.status === 'waiting')) return 'CLI'
   return null
 }
 

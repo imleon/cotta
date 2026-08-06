@@ -56,7 +56,7 @@ export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'interrupt' | '
 }
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
 export type ProjectRoutesSessionObservationReader = Pick<ClaudeSessionRegistry, 'listObservations'>
-type TurnMetadataValue = Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'awaySummary'>
+type TurnMetadataValue = Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>
 type TimelineMetadata = { turnMetadata: ReadonlyMap<string, TurnMetadataValue>; sessionMeta: SessionTimelineResponse['sessionMeta'] }
 export type ProjectRoutesTimelineMetadataReader = (projectId: string, sessionId: string) => TimelineMetadata | Promise<TimelineMetadata>
 export type ProjectRoutesTurnMetaTranscriptReader = { listEntries(input: { sessionId?: string; limit: number; offset: number }): unknown }
@@ -184,14 +184,19 @@ function sessionRuntimeExternallyOwned(metadata: SessionMetadata | null | undefi
 function overlayLiveSessionRunState<T extends { sessions: Array<{ id: string }> }>(
   liveTurnManager: ProjectRoutesLiveTurnManager,
   response: T,
+  sessionMetadataReader?: (sessionId: string) => SessionMetadata | null,
 ): T {
   return {
     ...response,
     sessions: response.sessions.map((session) => {
       const runState = liveTurnManager.sessionRunState(session.id) ?? defaultRunState()
+      const metadata = sessionMetadataReader?.(session.id) ?? null
       return {
         ...session,
-        status: statusFromRunState(runState),
+        status: runState.phase === 'idle' ? metadata?.status ?? 'idle' : statusFromRunState(runState),
+        hasRunningShell: metadata?.hasRunningShell ?? false,
+        kind: metadata?.kind ?? null,
+        entrypoint: metadata?.entrypoint ?? null,
       }
     }),
   }
@@ -230,8 +235,9 @@ export function registerProjectRoutes(
 
   app.put('/api/settings', async (c) => {
     try {
-      const body = settingsUpdateRequestSchema.parse(await c.req.json())
-      input.settingsStore?.setMany('global', body.settings)
+      const body = settingsUpdateRequestSchema.safeParse(await c.req.json())
+      if (!body.success) return c.json({ error: 'invalid_settings_update' }, 400)
+      input.settingsStore?.setMany('global', body.data.settings)
       return c.json(settingsResponseSchema.parse({ settings: readSettings(input.settingsStore) }))
     } catch (error) {
       console.error('settings:update failed', error)
@@ -332,7 +338,7 @@ export function registerProjectRoutes(
       if (!result) {
         return c.json({ error: 'project_not_found' }, 404)
       }
-      const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionRunState(input.liveTurnManager, result)
+      const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionRunState(input.liveTurnManager, result, input.sessionMetadataReader)
       return c.json(response)
     } catch (error) {
       const cursorError = listCursorErrorResponse(error)

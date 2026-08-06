@@ -80,6 +80,7 @@ const sessions: SessionSummary[] = [
     title: 'Newest session',
     lastActivityAt: 123,
     status: 'idle',
+    hasRunningShell: false,
     kind: null,
     entrypoint: null,
   },
@@ -89,6 +90,7 @@ const sessions: SessionSummary[] = [
     title: 'Older session',
     lastActivityAt: 100,
     status: 'idle',
+    hasRunningShell: false,
     kind: null,
     entrypoint: null,
   },
@@ -313,13 +315,29 @@ describe('project routes', () => {
 
     expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
 
+    const permission = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultPermissionMode: 'default' } }),
+    })
+    expect(permission.status).toBe(200)
+    expect(await permission.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
+
+    const incompleteModel = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultModel: 'gateway/my-model' } }),
+    })
+    expect(incompleteModel.status).toBe(400)
+    expect(await incompleteModel.json()).toEqual({ error: 'invalid_settings_update' })
+
     const saved = await app.request('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ settings: { defaultModel: 'gateway/my-model', defaultEffort: 'high' } }),
     })
     expect(saved.status).toBe(200)
-    expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'high' } })
+    expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: 'gateway/my-model', defaultEffort: 'high' } })
 
     const reset = await app.request('/api/settings', {
       method: 'PUT',
@@ -327,12 +345,12 @@ describe('project routes', () => {
       body: JSON.stringify({ settings: { defaultModel: null, defaultEffort: null } }),
     })
     expect(reset.status).toBe(200)
-    expect(await reset.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
-    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
+    expect(await reset.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
 
     const refreshed = await app.request('/api/settings/model-catalog/refresh', { method: 'POST' })
     expect(refreshed.status).toBe(200)
-    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null, modelCatalog } })
+    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null, modelCatalog } })
   })
 
   it('creates a nested project directory inside the configured root', async () => {
@@ -1002,7 +1020,7 @@ describe('project routes', () => {
   it('awaits the injected timeline metadata reader', async () => {
     const app = new Hono()
     const timelineMetadataReader = vi.fn(async () => ({
-      turnMetadata: new Map([['user-2', { durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, awaySummary: 'Turn recap' }]]),
+      turnMetadata: new Map([['user-2', { durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, pendingBackgroundAgentCount: 2, awaySummary: 'Turn recap' }]]),
       sessionMeta: { permissionMode: 'plan' as const, model: 'claude-opus-5', effort: 'high' as const },
     }))
     registerProjectRoutes(app, {
@@ -1022,7 +1040,7 @@ describe('project routes', () => {
     const response = await app.request(`/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`)
     const body = sessionTimelineResponseSchema.parse(await response.json())
 
-    expect(body.turns[0]).toMatchObject({ durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, awaySummary: 'Turn recap' })
+    expect(body.turns[0]).toMatchObject({ durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, pendingBackgroundAgentCount: 2, awaySummary: 'Turn recap' })
     expect(body.sessionMeta).toEqual({ permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })
     expect(timelineMetadataReader).toHaveBeenCalledWith(project.id, 'session-newest')
   })
@@ -1421,7 +1439,7 @@ describe('project routes', () => {
       },
       claudeSessionRegistry: {
         cliRunState: () => null,
-        cliSessionMetadata: () => ({ status: 'idle', kind: 'bg', entrypoint: 'cli' }),
+        cliSessionMetadata: () => ({ status: 'idle', hasRunningShell: false, kind: 'bg', entrypoint: 'cli' }),
       },
     }).request(
       `/api/projects/${project.id}/sessions/session-newest/runtime`,
@@ -1430,6 +1448,37 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(ensured).toBe(false)
+  })
+
+  it('ensures runtime for CLI sessions with a background shell', async () => {
+    let ensured = false
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => { ensured = true },
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        async deleteSession() { return true },
+        async renameSession() { return true },
+        async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState },
+        async getSessionMessages() { return messages },
+      },
+      claudeSessionRegistry: {
+        cliRunState: () => null,
+        cliSessionMetadata: () => ({ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' }),
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/runtime`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(ensured).toBe(true)
   })
 
   it('returns 404 when ensuring runtime for an unknown session', async () => {

@@ -94,6 +94,7 @@ function toSessionSummary(activity: SessionActivityTracker, projectId: string, s
     projectId,
     lastActivityAt: activity.get(session),
     status: 'idle',
+    hasRunningShell: false,
     kind: null,
     entrypoint: null,
   }

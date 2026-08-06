@@ -160,22 +160,23 @@ function isBackgroundKind(kind: string | null): boolean {
   return kind === 'bg' || kind === 'daemon' || kind === 'daemon-worker'
 }
 
-function sessionControlTag(session: ProjectSessionsResponse['sessions'][number] | null | undefined): 'BG' | 'CLI' | null {
+function sessionControlTag(session: ProjectSessionsResponse['sessions'][number] | null | undefined): 'BG' | 'SHELL' | 'CLI' | null {
   if (!session) return null
   if (isBackgroundKind(session.kind)) return 'BG'
-  if (session.entrypoint === 'cli' && session.status !== 'idle') return 'CLI'
+  if (session.hasRunningShell) return 'SHELL'
+  if (session.entrypoint === 'cli' && (session.status === 'busy' || session.status === 'waiting')) return 'CLI'
   return null
 }
 
 function sessionExternallyOwned(session: ProjectSessionsResponse['sessions'][number] | null | undefined): boolean {
-  return sessionControlTag(session) !== null
+  const tag = sessionControlTag(session)
+  return tag === 'BG' || tag === 'CLI'
 }
 
 function selectedTimelineRunState(session: ProjectSessionsResponse['sessions'][number] | null | undefined, liveUserMessageUuid: string | null): SessionRunState {
   if (liveUserMessageUuid) return { phase: session?.status === 'waiting' ? 'requires_action' : 'running', activeUserMessageUuid: liveUserMessageUuid, lastTurn: null }
   if (session?.entrypoint === 'cli') {
     if (session.status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
-    if (session.status === 'shell') return { phase: 'cli_shell', activeUserMessageUuid: null }
     if (session.status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
   }
   return { phase: 'idle', activeUserMessageUuid: null }
@@ -787,7 +788,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setSaving(true)
     setStatus(null)
     try {
-      const response = await saveSettings({ ...settings, defaultPermissionMode: nextPermissionMode })
+      const response = await saveSettings({ defaultPermissionMode: nextPermissionMode })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -804,7 +805,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setSaving(true)
     setStatus(null)
     try {
-      const response = await saveSettings({ ...settings, defaultModel: nextModel === DEFAULT_TURN_OPTION ? null : nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
+      const response = await saveSettings({ defaultModel: nextModel === DEFAULT_TURN_OPTION ? null : nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -818,7 +819,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setSaving(true)
     setStatus(null)
     try {
-      const response = await saveSettings({ ...settings, showDebugNav })
+      const response = await saveSettings({ showDebugNav })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -1134,7 +1135,7 @@ function ProjectsDashboard() {
     retry: false,
   })
   const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
-  const settings = settingsQuery.data?.settings ?? {}
+  const settings: AppSettings = settingsQuery.data?.settings ?? { defaultModel: null, defaultEffort: null }
   const navItems = settings.showDebugNav === false ? DASHBOARD_NAV_ITEMS.filter((item) => item.key !== 'debug') : DASHBOARD_NAV_ITEMS
   const workspaceNavActive = activeNav === 'chat'
   const selection = useProjectSessionSelection({ selectInitialProject: false, enabled: workspaceNavActive })

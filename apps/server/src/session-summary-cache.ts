@@ -41,6 +41,7 @@ type ProjectSessionsWindow = {
 
 export type SessionMetadata = {
   status: SessionStatus
+  hasRunningShell: boolean
   kind: string | null
   entrypoint: 'cli'
 }
@@ -136,7 +137,7 @@ function sameRunState(left: SessionRunState | null | undefined, right: SessionRu
 }
 
 function sameSessionMetadata(left: SessionMetadata | null | undefined, right: SessionMetadata | null | undefined): boolean {
-  return (left?.status ?? 'idle') === (right?.status ?? 'idle') && (left?.kind ?? null) === (right?.kind ?? null) && (left?.entrypoint ?? null) === (right?.entrypoint ?? null)
+  return (left?.status ?? 'idle') === (right?.status ?? 'idle') && (left?.hasRunningShell ?? false) === (right?.hasRunningShell ?? false) && (left?.kind ?? null) === (right?.kind ?? null) && (left?.entrypoint ?? null) === (right?.entrypoint ?? null)
 }
 
 function statusFromRunState(runState: SessionRunState | null | undefined): SessionStatus {
@@ -165,6 +166,7 @@ function toSessionSummary(
     // Keep ownership separate: live-runtime only updates normalized status, while
     // CLI session JSON is the only source allowed to populate kind/entrypoint.
     status: runState.phase === 'idle' ? metadata?.status ?? 'idle' : statusFromRunState(runState),
+    hasRunningShell: metadata?.hasRunningShell ?? false,
     kind: metadata?.kind ?? null,
     entrypoint: metadata?.entrypoint ?? null,
   }

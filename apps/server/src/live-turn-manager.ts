@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto'
-import { query, type Query, type SDKMessage, type SDKResultError, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { EffortLevel, ModelSelection, PermissionMode, SessionRunState } from '@cotta/shared'
+import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { DefaultTurnOption, EffortLevel, ModelSelection, PermissionMode, SessionRunState } from '@cotta/shared'
 import { projectPathFromId } from './claude-code-api.js'
 import type { LiveEventStore } from './live-event-store.js'
 
@@ -22,35 +21,14 @@ function sdkUserMessage(input: { uuid: SDKUserMessage['uuid']; text: string; ses
   }
 }
 
-function sdkFailureResult(input: { error: string; sessionId: string }): SDKResultError {
-  return {
-    type: 'result',
-    subtype: 'error_during_execution',
-    duration_ms: 0,
-    duration_api_ms: 0,
-    is_error: true,
-    num_turns: 0,
-    stop_reason: null,
-    total_cost_usd: 0,
-    usage: {
-      cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      inference_geo: '',
-      input_tokens: 0,
-      iterations: [],
-      output_tokens: 0,
-      output_tokens_details: { thinking_tokens: 0 },
-      server_tool_use: { web_fetch_requests: 0, web_search_requests: 0 },
-      service_tier: 'standard',
-      speed: 'standard',
-    },
-    modelUsage: {},
-    permission_denials: [],
-    errors: [input.error],
-    uuid: randomUUID(),
-    session_id: input.sessionId,
-  }
+type CottaLiveTurnFailedEvent = {
+  type: 'cotta_live_turn_failed'
+  error: string
+  session_id: string
+}
+
+function cottaLiveTurnFailed(input: { error: string; sessionId: string }): CottaLiveTurnFailedEvent {
+  return { type: 'cotta_live_turn_failed', error: input.error, session_id: input.sessionId }
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -81,8 +59,8 @@ type SessionRuntime = {
   query: Query
   input: AsyncQueue<SDKUserMessage>
   permissionMode: PermissionMode
-  model?: ModelSelection
-  effort?: EffortLevel
+  model?: ModelSelection | DefaultTurnOption
+  effort?: EffortLevel | null
   currentUserMessageUuid: string | null
   startingTurnToken: symbol | null
   stale: boolean
@@ -98,7 +76,7 @@ function liveSessionStateFromSdkMessage(message: SDKMessage): LiveSessionState |
   return message.state === 'idle' || message.state === 'running' || message.state === 'requires_action' ? message.state : null
 }
 
-export type LiveTurnEvent = SDKMessage
+export type LiveTurnEvent = SDKMessage | CottaLiveTurnFailedEvent
 export type LiveTurnSubscriber = (event: LiveTurnEvent) => void
 
 export class LiveTurnManager {
@@ -133,7 +111,7 @@ export class LiveTurnManager {
         console.error('live-runtime:external-owner interrupt failed', error)
       }
       if (runtime.currentUserMessageUuid === userMessageUuid) {
-        this.publish(runtime, sdkFailureResult({
+        this.publish(runtime, cottaLiveTurnFailed({
           error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.',
           sessionId: runtime.sessionId,
         }))
@@ -206,11 +184,11 @@ export class LiveTurnManager {
     })
   }
 
-  async ensureRuntime(input: { projectId: string; sessionId: string; permissionMode?: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<void> {
+  async ensureRuntime(input: { projectId: string; sessionId: string; permissionMode?: PermissionMode; model?: ModelSelection | DefaultTurnOption; effort?: EffortLevel | null }): Promise<void> {
     await this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
   }
 
-  async rebuildRuntimeAfterCliIdle(sessionId: string): Promise<boolean> {
+  async rebuildRuntimeAfterCliIdle(sessionId: string, options?: { permissionMode?: PermissionMode; model?: ModelSelection | DefaultTurnOption; effort?: EffortLevel | null }): Promise<boolean> {
     const current = this.runtimes.get(sessionId)
     if (!current) return false
     if (current.rebuildingAfterCliIdle) {
@@ -223,9 +201,9 @@ export class LiveTurnManager {
       projectId: current.projectId,
       sessionId,
       resume: true,
-      permissionMode: current.permissionMode,
-      model: current.model,
-      effort: current.effort,
+      permissionMode: options?.permissionMode ?? current.permissionMode,
+      model: options?.model ?? current.model,
+      effort: options && 'effort' in options ? options.effort : current.effort,
     }
     current.stale = true
     this.closeRuntime(current)
@@ -239,7 +217,7 @@ export class LiveTurnManager {
     }
   }
 
-  async startTurn(input: { projectId: string; sessionId: string; resume: boolean; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<{ sessionId: string; userMessageUuid: string }> {
+  async startTurn(input: { projectId: string; sessionId: string; resume: boolean; text: string; userMessageUuid: string; permissionMode: PermissionMode; model?: ModelSelection | DefaultTurnOption; effort?: EffortLevel | null }): Promise<{ sessionId: string; userMessageUuid: string }> {
     const sessionId = input.sessionId
     let runtime = await this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: input.resume, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
     if (runtime.currentUserMessageUuid || runtime.startingTurnToken) throw new Error('Session already has a running generation')
@@ -269,7 +247,7 @@ export class LiveTurnManager {
         runtime.effort = input.effort
       }
 
-      const userMessageUuid = input.userMessageUuid as ReturnType<typeof randomUUID>
+      const userMessageUuid = input.userMessageUuid as NonNullable<SDKUserMessage['uuid']>
       const userMessage = sdkUserMessage({ uuid: userMessageUuid, text: input.text, sessionId, startedAt: Date.now() })
       runtime.currentUserMessageUuid = userMessageUuid
       runtime.startingTurnToken = null
@@ -293,7 +271,7 @@ export class LiveTurnManager {
     return true
   }
 
-  private async ensureRuntimeInternal(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): Promise<SessionRuntime> {
+  private async ensureRuntimeInternal(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection | DefaultTurnOption; effort?: EffortLevel | null }): Promise<SessionRuntime> {
     for (;;) {
       const runtime = this.runtimes.get(input.sessionId) ?? this.createRuntime(input)
       if (runtime.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
@@ -302,7 +280,7 @@ export class LiveTurnManager {
     }
   }
 
-  private createRuntime(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection; effort?: EffortLevel }): SessionRuntime {
+  private createRuntime(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection | DefaultTurnOption; effort?: EffortLevel | null }): SessionRuntime {
     const projectPath = projectPathFromId(input.projectId)
     if (!projectPath) throw new Error('Invalid project id')
     const runtimeInput = new AsyncQueue<SDKUserMessage>()
@@ -369,7 +347,7 @@ export class LiveTurnManager {
       console.error('live-runtime:drain failed', error)
       if (runtime.currentUserMessageUuid) {
         const userMessageUuid = runtime.currentUserMessageUuid
-        this.publish(runtime, sdkFailureResult({
+        this.publish(runtime, cottaLiveTurnFailed({
           error: error instanceof Error ? error.message : String(error),
           sessionId: runtime.sessionId,
         }))

@@ -80,9 +80,9 @@ const sessions: SessionSummary[] = [
     title: 'Newest session',
     lastActivityAt: 123,
     status: 'idle',
+    hasRunningShell: false,
     kind: null,
     entrypoint: null,
-    runState: idleRunState,
   },
   {
     id: 'session-older',
@@ -90,9 +90,9 @@ const sessions: SessionSummary[] = [
     title: 'Older session',
     lastActivityAt: 100,
     status: 'idle',
+    hasRunningShell: false,
     kind: null,
     entrypoint: null,
-    runState: idleRunState,
   },
 ]
 
@@ -183,17 +183,27 @@ const messages: TimestampedSessionMessage[] = [
   },
 ]
 
-function memorySettingsStore(initial: Record<string, unknown> = {}, initialSessions: Record<string, { permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'; model: string | null; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }> = {}) {
+type TestSessionMeta = { permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto' | null; model: string | null; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }
+
+function memorySessionMetaStore(initial: Record<string, TestSessionMeta> = {}) {
+  const sessionData = new Map(Object.entries(initial))
+  const store = {
+    getSessionMeta: (_projectId: string, sessionId: string) => sessionData.get(sessionId) ?? null,
+    setSessionMeta: (_projectId: string, sessionId: string, update: Partial<TestSessionMeta>) => {
+      const current = sessionData.get(sessionId) ?? { permissionMode: null, model: null, effort: null }
+      sessionData.set(sessionId, { ...current, ...update })
+    },
+    timelineVersion: (_projectId: string, sessionId: string) => `session-meta=${sessionData.has(sessionId) ? 1 : 0}`,
+  }
+  return store as typeof store & import('../session-meta-store.js').SessionMetaStore
+}
+
+function memorySettingsStore(initial: Record<string, unknown> = {}) {
   const data = { ...initial }
-  const sessionData = new Map(Object.entries(initialSessions))
   return {
     getAll: () => data,
     setMany(_scope: string, settings: Record<string, unknown>) {
       Object.assign(data, settings)
-    },
-    getSessionSettings: (_projectId: string, sessionId: string) => sessionData.get(sessionId) ?? null,
-    setSessionSettings(_projectId: string, sessionId: string, settings: { permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'; model: string | null; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }) {
-      sessionData.set(sessionId, settings)
     },
     getAuthSession: () => null,
     setAuthSession() {},
@@ -302,7 +312,23 @@ describe('project routes', () => {
       },
     })
 
-    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan' } })
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
+
+    const permission = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultPermissionMode: 'default' } }),
+    })
+    expect(permission.status).toBe(200)
+    expect(await permission.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
+
+    const incompleteModel = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultModel: 'gateway/my-model' } }),
+    })
+    expect(incompleteModel.status).toBe(400)
+    expect(await incompleteModel.json()).toEqual({ error: 'invalid_settings_update' })
 
     const saved = await app.request('/api/settings', {
       method: 'PUT',
@@ -310,11 +336,66 @@ describe('project routes', () => {
       body: JSON.stringify({ settings: { defaultModel: 'gateway/my-model', defaultEffort: 'high' } }),
     })
     expect(saved.status).toBe(200)
-    expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'high' } })
+    expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: 'gateway/my-model', defaultEffort: 'high' } })
+
+    const explicitDefault = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultModel: 'default', defaultEffort: null } }),
+    })
+    expect(explicitDefault.status).toBe(200)
+    expect(await explicitDefault.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: null } })
+
+    const reset = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { defaultModel: null, defaultEffort: null } }),
+    })
+    expect(reset.status).toBe(200)
+    expect(await reset.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
 
     const refreshed = await app.request('/api/settings/model-catalog/refresh', { method: 'POST' })
     expect(refreshed.status).toBe(200)
-    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'high', modelCatalog } })
+    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null, modelCatalog } })
+  })
+
+  it('updates session permission independently from model and effort', async () => {
+    const sessionMetaStore = memorySessionMetaStore({ session: { permissionMode: 'default', model: 'gateway/my-model', effort: 'high' } })
+    const app = createApp({
+      sessionMetaStore,
+      settingsStore: memorySettingsStore({ modelCatalog }),
+      liveTurnManager: { ensureRuntime: () => {}, sessionRunState: () => null, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {} },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        async deleteSession() { return false },
+        async renameSession() { return false },
+        async forkSession() { return null },
+        async getSessionTimelineState() { return null },
+        async getSessionMessages() { return null },
+      },
+    })
+
+    const permission = await app.request('/api/projects/project/sessions/session/meta', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'plan' }),
+    })
+    expect(permission.status).toBe(200)
+    expect(sessionMetaStore.getSessionMeta('project', 'session')).toEqual({ permissionMode: 'plan', model: 'gateway/my-model', effort: 'high' })
+
+    const pair = await app.request('/api/projects/project/sessions/session/meta', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'no-effort-model', effort: 'high' }),
+    })
+    expect(pair.status).toBe(200)
+    expect(sessionMetaStore.getSessionMeta('project', 'session')).toEqual({ permissionMode: 'plan', model: 'no-effort-model', effort: null })
+
+    const halfPair = await app.request('/api/projects/project/sessions/session/meta', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'gateway/my-model' }),
+    })
+    expect(halfPair.status).toBe(400)
+    expect(await halfPair.json()).toEqual({ error: 'invalid_session_meta_update' })
   })
 
   it('creates a nested project directory inside the configured root', async () => {
@@ -490,7 +571,7 @@ describe('project routes', () => {
     })
   })
 
-  it('overlays live session runState on project sessions', async () => {
+  it('overlays live session status on project sessions', async () => {
     const response = await createTestApp({
       'session-newest': { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null },
       'session-older': { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null },
@@ -500,8 +581,8 @@ describe('project routes', () => {
     expect(projectSessionsResponseSchema.parse(await response.json())).toEqual({
       project: { ...project },
       sessions: [
-        { ...sessions[0], status: 'busy', runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } },
-        { ...sessions[1], status: 'waiting', runState: { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null } },
+        { ...sessions[0], status: 'busy' },
+        { ...sessions[1], status: 'waiting' },
       ],
       defaultSessionId: 'session-newest',
       hasMore: false,
@@ -654,7 +735,7 @@ describe('project routes', () => {
         queryProjectSessions: () => ({
           sessionsByProject: {
             [project.id]: {
-              sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
+              sessions: [{ ...sessions[0], status: 'busy' }, sessions[1]],
               hasMore: false,
               nextCursor: null,
             },
@@ -671,7 +752,7 @@ describe('project routes', () => {
     expect(projectSessionsQueryResponseSchema.parse(await response.json())).toEqual({
       sessionsByProject: {
         [project.id]: {
-          sessions: [{ ...sessions[0], runState: { phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null } }, sessions[1]],
+          sessions: [{ ...sessions[0], status: 'busy' }, sessions[1]],
           hasMore: false,
           nextCursor: null,
         },
@@ -738,10 +819,11 @@ describe('project routes', () => {
         async getSessionMessages() { return null },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
+      sessionMetaStore: memorySessionMetaStore({ '10000000-0000-4000-8000-000000000001': { permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' } }),
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000001', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001', permissionMode: 'plan', model: 'gateway/my-model', effort: 'xhigh' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000001', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000001' }),
     })
 
     expect(response.status).toBe(202)
@@ -763,7 +845,7 @@ describe('project routes', () => {
   })
 
 
-  it('creates an existing-session turn without SDK model and effort by default', async () => {
+  it('creates an existing-session turn with explicit default model and no effort', async () => {
     let received: unknown
     const response = await createApp({
       liveTurnManager: {
@@ -799,8 +881,8 @@ describe('project routes', () => {
       userMessageUuid: '00000000-0000-4000-8000-000000000002',
       permissionMode: 'default',
     })
-    expect(received).not.toHaveProperty('model')
-    expect(received).not.toHaveProperty('effort')
+    expect(received).toHaveProperty('model', 'default')
+    expect(received).toHaveProperty('effort', null)
   })
 
   it('rejects a body session id that differs from the existing-session path', async () => {
@@ -814,7 +896,7 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'session_id_mismatch' })
   })
 
-  it('treats explicit default model and effort as SDK omissions', async () => {
+  it('passes explicit default model and omits effort', async () => {
     let received: unknown
     const response = await createApp({
       liveTurnManager: {
@@ -849,8 +931,8 @@ describe('project routes', () => {
       userMessageUuid: '00000000-0000-4000-8000-000000000006',
       permissionMode: 'default',
     })
-    expect(received).not.toHaveProperty('model')
-    expect(received).not.toHaveProperty('effort')
+    expect(received).toHaveProperty('model', 'default')
+    expect(received).toHaveProperty('effort', null)
   })
 
   it('rejects unsupported turn model', async () => {
@@ -874,10 +956,11 @@ describe('project routes', () => {
         async getSessionMessages() { return null },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
+      sessionMetaStore: memorySessionMetaStore({ '10000000-0000-4000-8000-000000000003': { permissionMode: 'default', model: 'missing-model', effort: null } }),
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000003', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003', model: 'missing-model' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000003', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000003' }),
     })
 
     expect(response.status).toBe(400)
@@ -905,10 +988,11 @@ describe('project routes', () => {
         async getSessionMessages() { return null },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
+      sessionMetaStore: memorySessionMetaStore({ '10000000-0000-4000-8000-000000000004': { permissionMode: 'default', model: 'no-effort-model', effort: 'high' } }),
     }).request(`/api/projects/${project.id}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000004', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004', model: 'no-effort-model', effort: 'high' }),
+      body: JSON.stringify({ sessionId: '10000000-0000-4000-8000-000000000004', text: 'hello', userMessageUuid: '00000000-0000-4000-8000-000000000004' }),
     })
 
     expect(response.status).toBe(400)
@@ -981,7 +1065,7 @@ describe('project routes', () => {
   it('awaits the injected timeline metadata reader', async () => {
     const app = new Hono()
     const timelineMetadataReader = vi.fn(async () => ({
-      turnMetadata: new Map([['user-2', { durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, awaySummary: 'Turn recap' }]]),
+      turnMetadata: new Map([['user-2', { durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, pendingBackgroundAgentCount: 2, awaySummary: 'Turn recap' }]]),
       sessionMeta: { permissionMode: 'plan' as const, model: 'claude-opus-5', effort: 'high' as const },
     }))
     registerProjectRoutes(app, {
@@ -1001,7 +1085,7 @@ describe('project routes', () => {
     const response = await app.request(`/api/projects/${project.id}/sessions/session-newest/timeline?limitTurns=1`)
     const body = sessionTimelineResponseSchema.parse(await response.json())
 
-    expect(body.turns[0]).toMatchObject({ durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, awaySummary: 'Turn recap' })
+    expect(body.turns[0]).toMatchObject({ durationMs: 12_345, durationTimestampMs: 1_752_470_490_000, pendingBackgroundAgentCount: 2, awaySummary: 'Turn recap' })
     expect(body.sessionMeta).toEqual({ permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })
     expect(timelineMetadataReader).toHaveBeenCalledWith(project.id, 'session-newest')
   })
@@ -1344,6 +1428,39 @@ describe('project routes', () => {
     expect(await response.json()).toEqual({ error: 'session_not_found' })
   })
 
+  it('rejects unsupported runtime effort', async () => {
+    let ensured = false
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => { ensured = true },
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        async deleteSession() { return true },
+        async renameSession() { return true },
+        async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState },
+        async getSessionMessages() { return messages },
+      },
+      settingsStore: memorySettingsStore({ modelCatalog }),
+      sessionMetaStore: memorySessionMetaStore({ 'session-newest': { permissionMode: 'default', model: 'no-effort-model', effort: 'high' } }),
+    }).request(
+      `/api/projects/${project.id}/sessions/session-newest/runtime`,
+      { method: 'POST' },
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'unsupported_effort' })
+    expect(ensured).toBe(false)
+  })
+
   it('ensures runtime for an existing session', async () => {
     let ensured: unknown
     const response = await createApp({
@@ -1372,9 +1489,9 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(ensured).toMatchObject({ projectId: project.id, sessionId: 'session-newest', permissionMode: 'default' })
-    expect(ensured).not.toHaveProperty('model')
-    expect(ensured).not.toHaveProperty('effort')
-    expect(await response.json()).toEqual({ ok: true, projectId: project.id, sessionId: 'session-newest', settings: { permissionMode: 'default', model: null, effort: null } })
+    expect(ensured).toHaveProperty('model', 'default')
+    expect(ensured).toHaveProperty('effort', null)
+    expect(await response.json()).toEqual({ ok: true, projectId: project.id, sessionId: 'session-newest', settings: { permissionMode: 'default', model: 'default', effort: null } })
   })
 
   it('skips runtime ensure for background CLI sessions', async () => {
@@ -1400,7 +1517,7 @@ describe('project routes', () => {
       },
       claudeSessionRegistry: {
         cliRunState: () => null,
-        cliSessionMetadata: () => ({ status: 'idle', kind: 'bg', entrypoint: 'cli' }),
+        cliSessionMetadata: () => ({ status: 'idle', hasRunningShell: false, kind: 'bg', entrypoint: 'cli' }),
       },
     }).request(
       `/api/projects/${project.id}/sessions/session-newest/runtime`,
@@ -1409,6 +1526,37 @@ describe('project routes', () => {
 
     expect(response.status).toBe(200)
     expect(ensured).toBe(false)
+  })
+
+  it('ensures runtime for CLI sessions with a background shell', async () => {
+    let ensured = false
+    const response = await createApp({
+      liveTurnManager: {
+        ensureRuntime: () => { ensured = true },
+        sessionRunState: () => null,
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        async listProjects() { return { projects: [project], hasMore: false, nextCursor: null } },
+        async getProject() { return project },
+        async listProjectSessions() { return null },
+        async getSessionInfo() { return null },
+        async deleteSession() { return true },
+        async renameSession() { return true },
+        async forkSession() { return null },
+        async getSessionTimelineState() { return timelineState },
+        async getSessionMessages() { return messages },
+      },
+      claudeSessionRegistry: {
+        cliRunState: () => null,
+        cliSessionMetadata: () => ({ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' }),
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/runtime`, { method: 'POST' })
+
+    expect(response.status).toBe(200)
+    expect(ensured).toBe(true)
   })
 
   it('returns 404 when ensuring runtime for an unknown session', async () => {

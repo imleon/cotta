@@ -31,6 +31,7 @@ type Snapshot = {
 
 export type CliSessionMetadata = {
   status: SessionStatus
+  hasRunningShell: boolean
   kind: string | null
   entrypoint: 'cli'
 }
@@ -69,12 +70,12 @@ function activeSessionId(snapshot: Snapshot | undefined): string | null {
   if (!snapshot || stringField(snapshot.payload, 'entrypoint') !== 'cli') return null
   const status = stringField(snapshot.payload, 'status')
   if (isBackgroundKind(stringField(snapshot.payload, 'kind'))) return stringField(snapshot.payload, 'sessionId')
-  return status === 'busy' || status === 'shell' || status === 'waiting' ? stringField(snapshot.payload, 'sessionId') : null
+  return status === 'busy' || status === 'waiting' ? stringField(snapshot.payload, 'sessionId') : null
 }
 
 function sessionStatusFromSnapshot(snapshot: Snapshot | undefined): SessionStatus {
   const status = stringField(snapshot?.payload ?? null, 'status')
-  return status === 'busy' || status === 'shell' || status === 'waiting' ? status : 'idle'
+  return status === 'busy' || status === 'waiting' ? status : 'idle'
 }
 
 function latestCliSnapshot(snapshots: Iterable<Snapshot>, sessionId: string): Snapshot | undefined {
@@ -215,7 +216,6 @@ export class ClaudeSessionRegistry {
   cliRunState(sessionId: string): SessionRunState | null {
     const status = sessionStatusFromSnapshot(latestCliSnapshot(this.snapshots.values(), sessionId))
     if (status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
-    if (status === 'shell') return { phase: 'cli_shell', activeUserMessageUuid: null }
     if (status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
     return null
   }
@@ -225,6 +225,7 @@ export class ClaudeSessionRegistry {
     if (!current) return null
     return {
       status: sessionStatusFromSnapshot(current),
+      hasRunningShell: stringField(current.payload, 'status') === 'shell',
       kind: stringField(current.payload, 'kind'),
       entrypoint: 'cli',
     }

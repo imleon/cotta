@@ -122,7 +122,7 @@ describe('LiveTurnManager', () => {
     await vi.waitFor(() => expect(events).toHaveLength(2))
 
     expect(events[0]).toMatchObject({ type: 'user', uuid: 'user-1' })
-    expect(events[1]).toMatchObject({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['SDK stream failed'], session_id: 'session-1' })
+    expect(events[1]).toEqual({ type: 'cotta_live_turn_failed', error: 'SDK stream failed', session_id: 'session-1' })
     expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
     expect(observeSession).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'session-1' }))
   })
@@ -171,7 +171,7 @@ describe('LiveTurnManager', () => {
     }))
   })
 
-  it('omits model and effort when using SDK defaults', async () => {
+  it('passes the explicit default model and omits effort', async () => {
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt))
     const manager = new LiveTurnManager()
 
@@ -182,11 +182,13 @@ describe('LiveTurnManager', () => {
       text: 'first',
       userMessageUuid: 'user-1',
       permissionMode: 'default',
+      model: 'default',
     })
 
     expect(queryMock).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.not.objectContaining({ model: expect.anything(), effort: expect.anything() }),
+      options: expect.objectContaining({ model: 'default' }),
     }))
+    expect(queryMock.mock.calls[0]?.[0].options).not.toHaveProperty('effort')
   })
 
   it('updates session options when reusing a session runtime', async () => {
@@ -227,6 +229,32 @@ describe('LiveTurnManager', () => {
       options: expect.objectContaining({ permissionMode: 'plan', model: 'claude-sonnet-5', effort: 'xhigh' }),
     }))
     manager.closeAll()
+  })
+
+  it('clears effort when a reused runtime switches to no effort', async () => {
+    const applyFlagSettings = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { applyFlagSettings }))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'first', userMessageUuid: 'user-1', permissionMode: 'default', model: 'claude-opus-5', effort: 'high' })
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')?.phase).toBe('idle'))
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'second', userMessageUuid: 'user-2', permissionMode: 'default', model: 'default', effort: null })
+
+    expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: null })
+  })
+
+  it('updates a reused runtime to the explicit default model', async () => {
+    const setModel = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { setModel }))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'first', userMessageUuid: 'user-1', permissionMode: 'default', model: 'claude-opus-5' })
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')?.phase).toBe('idle'))
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'second', userMessageUuid: 'user-2', permissionMode: 'default', model: 'default' })
+
+    expect(setModel).toHaveBeenCalledWith('default')
   })
 
   it('rebuilds an opened runtime after CLI idle and preserves current options', async () => {
@@ -320,11 +348,11 @@ describe('LiveTurnManager', () => {
     expect(interrupt).toHaveBeenCalledTimes(1)
     expect(close).toHaveBeenCalledTimes(1)
     expect(events).toEqual([
-      expect.objectContaining({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['Session was interrupted because it was taken over by Claude Code CLI/background agent.'] }),
+      { type: 'cotta_live_turn_failed', error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.', session_id: 'session-1' },
     ])
     expect(persisted).toEqual([
       expect.objectContaining({ type: 'user', uuid: 'user-1' }),
-      expect.objectContaining({ type: 'result', subtype: 'error_during_execution' }),
+      { type: 'cotta_live_turn_failed', error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.', session_id: 'session-1' },
     ])
     expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
   })

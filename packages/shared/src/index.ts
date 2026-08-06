@@ -75,9 +75,9 @@ export const sessionSummarySchema = z.object({
   projectId: z.string(),
   lastActivityAt: z.number().optional(),
   status: sessionStatusSchema,
+  hasRunningShell: z.boolean().optional(),
   kind: z.string().nullable(),
   entrypoint: z.string().nullable(),
-  runState: sessionRunStateSchema,
 })
 
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
@@ -199,6 +199,7 @@ export const turnSummarySchema = z.object({
   primaryUserTimestampMs: z.number().optional(),
   durationMs: z.number().optional(),
   durationTimestampMs: z.number().optional(),
+  pendingBackgroundAgentCount: z.number().int().nonnegative().optional(),
   awaySummary: z.string().nullable().optional(),
   messages: z.array(rawSessionMessageSchema),
 })
@@ -494,10 +495,8 @@ export type SessionInfoResponse = z.infer<typeof sessionInfoResponseSchema>
 
 export const appSettingsSchema = z.object({
   defaultPermissionMode: permissionModeSchema.optional(),
-  defaultModel: modelSelectionSchema.nullable().optional(),
-  defaultEffort: effortLevelSchema.nullable().optional(),
-  resumeUsesLastPermissionMode: z.boolean().optional(),
-  resumeUsesLastModelAndEffort: z.boolean().optional(),
+  defaultModel: modelSelectionSchema.nullable().default(null),
+  defaultEffort: effortLevelSchema.nullable().default(null),
   modelCatalog: modelCatalogResponseSchema.optional(),
   showDebugNav: z.boolean().optional(),
 }).catchall(z.unknown())
@@ -508,8 +507,19 @@ export const settingsResponseSchema = z.object({
 })
 export type SettingsResponse = z.infer<typeof settingsResponseSchema>
 
+export const appSettingsUpdateSchema = z.object({
+  defaultPermissionMode: permissionModeSchema.optional(),
+  defaultModel: modelSelectionSchema.nullable().optional(),
+  defaultEffort: effortLevelSchema.nullable().optional(),
+  showDebugNav: z.boolean().optional(),
+}).refine(
+  ({ defaultModel, defaultEffort }) => (defaultModel === undefined) === (defaultEffort === undefined),
+  'defaultModel and defaultEffort must be updated together',
+)
+export type AppSettingsUpdate = z.infer<typeof appSettingsUpdateSchema>
+
 export const settingsUpdateRequestSchema = z.object({
-  settings: appSettingsSchema,
+  settings: appSettingsUpdateSchema,
 })
 export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>
 
@@ -552,13 +562,30 @@ export type GitHubDevicePollResponse = z.infer<typeof githubDevicePollResponseSc
 export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>
 
+export const sessionMetaSchema = z.object({
+  permissionMode: permissionModeSchema,
+  model: modelSelectionSchema.nullable(),
+  effort: effortLevelSchema.nullable(),
+})
+export type SessionMeta = z.infer<typeof sessionMetaSchema>
+
+export const sessionMetaUpdateRequestSchema = z.object({
+  permissionMode: permissionModeSchema.optional(),
+  model: modelSelectionSchema.nullable().optional(),
+  effort: effortLevelSchema.nullable().optional(),
+}).refine(
+  ({ model, effort }) => (model === undefined) === (effort === undefined),
+  'model and effort must be updated together',
+).refine(
+  ({ permissionMode, model }) => permissionMode !== undefined || model !== undefined,
+  'at least one session meta field must be updated',
+)
+export type SessionMetaUpdateRequest = z.infer<typeof sessionMetaUpdateRequestSchema>
+
 export const createTurnRequestSchema = z.object({
   sessionId: z.string().uuid().optional(),
   text: z.string().trim().min(1),
   userMessageUuid: z.string().uuid(),
-  permissionMode: permissionModeSchema.optional(),
-  model: z.union([modelSelectionSchema, defaultTurnOptionSchema]).optional(),
-  effort: turnEffortSelectionSchema.optional(),
 })
 
 export type CreateTurnRequest = z.infer<typeof createTurnRequestSchema>

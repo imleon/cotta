@@ -20,7 +20,6 @@ function formatAge(value?: number): string {
 }
 
 function statusTone(session: SessionSummary): string {
-  if (session.runState.lastTurn?.outcome === 'error') return 'danger'
   if (session.status === 'busy') return 'running'
   if (session.status === 'shell') return 'shell'
   if (session.status === 'waiting') return 'warning'
@@ -28,7 +27,6 @@ function statusTone(session: SessionSummary): string {
 }
 
 function statusLabel(session: SessionSummary): string {
-  if (session.runState.lastTurn?.outcome === 'error') return 'Error'
   if (session.status === 'busy') return 'Busy'
   if (session.status === 'shell') return 'Shell'
   if (session.status === 'waiting') return 'Waiting'
@@ -45,7 +43,8 @@ function isBackgroundKind(kind: string | null): boolean {
 
 function sessionKindTag(session: SessionSummary): string | null {
   if (isBackgroundKind(session.kind)) return 'BG'
-  if (session.entrypoint === 'cli' && session.status !== 'idle') return 'CLI'
+  if (session.hasRunningShell) return 'SHELL'
+  if (session.entrypoint === 'cli' && (session.status === 'busy' || session.status === 'waiting')) return 'CLI'
   return null
 }
 

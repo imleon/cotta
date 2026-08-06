@@ -16,12 +16,14 @@ import {
   projectsResponseSchema,
   sessionInfoResponseSchema,
   sessionLiveEventsResponseSchema,
+  sessionMetaUpdateRequestSchema,
   sessionObservationsResponseSchema,
   sessionRawMessagesResponseSchema,
   sessionRuntimeResponseSchema,
   sessionTimelineResponseSchema,
   sessionTimelineStateResponseSchema,
   turnMetaTranscriptResponseSchema,
+  type AppSettingsUpdate,
   type AuthSessionResponse,
   type CreateProjectResponse,
   type DeleteSessionResponse,
@@ -39,6 +41,7 @@ import {
   type SettingsResponse,
   type SessionInfoResponse,
   type SessionLiveEventsResponse,
+  type SessionMetaUpdateRequest,
   type SessionObservationsResponse,
   type SessionObservationSort,
   type SessionRawMessagesResponse,
@@ -170,7 +173,7 @@ export async function fetchSettings(): Promise<SettingsResponse> {
   return settingsResponseSchema.parse(await response.json())
 }
 
-export async function saveSettings(settings: SettingsResponse['settings']): Promise<SettingsResponse> {
+export async function saveSettings(settings: AppSettingsUpdate): Promise<SettingsResponse> {
   const response = await fetch('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -199,6 +202,16 @@ export async function fetchSessionTimeline(
   )
   if (!response.ok) throw new Error(`Session timeline request failed: ${response.status}`)
   return sessionTimelineResponseSchema.parse(await response.json())
+}
+
+export async function saveSessionMeta(projectId: string, sessionId: string, meta: SessionMetaUpdateRequest): Promise<void> {
+  sessionMetaUpdateRequestSchema.parse(meta)
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/meta`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(meta),
+  })
+  if (!response.ok) throw new Error(`Session meta save failed: ${response.status}`)
 }
 
 export async function fetchSessionRawMessages(

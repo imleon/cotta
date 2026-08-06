@@ -15,8 +15,8 @@ import {
   renameSessionRequestSchema,
   renameSessionResponseSchema,
   projectSessionsQueryResponseSchema,
-  permissionModeSchema,
   sessionInfoResponseSchema,
+  sessionMetaUpdateRequestSchema,
   sessionRuntimeResponseSchema,
   sessionObservationSortSchema,
   sessionObservationsResponseSchema,
@@ -25,7 +25,6 @@ import {
   settingsUpdateRequestSchema,
   type CreateTurnResponse,
   type ListVersionsEvent,
-  type PermissionMode,
   type ProjectDirectoriesResponse,
   type ProjectResponse,
   type ProjectsResponse,
@@ -47,8 +46,9 @@ import type { LiveEventStore } from '../live-event-store.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import type { ModelCatalogProvider } from '../model-catalog.js'
 import type { SettingsStore } from '../settings-store.js'
+import type { SessionMetaStore } from '../session-meta-store.js'
 import { projectSessionTimeline, sessionMessagesForTurn } from '../timeline-projection.js'
-import { persistedTurnOptions, readSettings, resolveTurnOptions, sdkEffort, sdkModel, validateTurnOptions } from '../turn-options.js'
+import { normalizeModelEffortSelection, persistedTurnOptions, readSettings, resolveTurnOptions, validateTurnOptions } from '../turn-options.js'
 
 export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'interrupt' | 'sessionRunState' | 'startTurn' | 'subscribe'> & {
   ensureRuntime(input: Parameters<LiveTurnManager['ensureRuntime']>[0]): void | Promise<void>
@@ -56,7 +56,7 @@ export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'interrupt' | '
 }
 export type ProjectRoutesLiveEventStore = Pick<LiveEventStore, 'listSessionEvents'>
 export type ProjectRoutesSessionObservationReader = Pick<ClaudeSessionRegistry, 'listObservations'>
-type TurnMetadataValue = Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'awaySummary'>
+type TurnMetadataValue = Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>
 type TimelineMetadata = { turnMetadata: ReadonlyMap<string, TurnMetadataValue>; sessionMeta: SessionTimelineResponse['sessionMeta'] }
 export type ProjectRoutesTimelineMetadataReader = (projectId: string, sessionId: string) => TimelineMetadata | Promise<TimelineMetadata>
 export type ProjectRoutesTurnMetaTranscriptReader = { listEntries(input: { sessionId?: string; limit: number; offset: number }): unknown }
@@ -184,15 +184,19 @@ function sessionRuntimeExternallyOwned(metadata: SessionMetadata | null | undefi
 function overlayLiveSessionRunState<T extends { sessions: Array<{ id: string }> }>(
   liveTurnManager: ProjectRoutesLiveTurnManager,
   response: T,
+  sessionMetadataReader?: (sessionId: string) => SessionMetadata | null,
 ): T {
   return {
     ...response,
     sessions: response.sessions.map((session) => {
       const runState = liveTurnManager.sessionRunState(session.id) ?? defaultRunState()
+      const metadata = sessionMetadataReader?.(session.id) ?? null
       return {
         ...session,
-        status: statusFromRunState(runState),
-        runState,
+        status: runState.phase === 'idle' ? metadata?.status ?? 'idle' : statusFromRunState(runState),
+        hasRunningShell: metadata?.hasRunningShell ?? false,
+        kind: metadata?.kind ?? null,
+        entrypoint: metadata?.entrypoint ?? null,
       }
     }),
   }
@@ -200,7 +204,7 @@ function overlayLiveSessionRunState<T extends { sessions: Array<{ id: string }> 
 
 export function registerProjectRoutes(
   app: Hono,
-  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; modelCatalogProvider: ModelCatalogProvider; settingsStore?: SettingsStore; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache; sessionObservationReader?: ProjectRoutesSessionObservationReader; sessionMetadataReader?: (sessionId: string) => SessionMetadata | null; timelineMetadataReader?: ProjectRoutesTimelineMetadataReader; turnMetaTranscriptReader?: ProjectRoutesTurnMetaTranscriptReader },
+  input: { claudeCodeApi: ClaudeCodeApi; liveTurnManager: ProjectRoutesLiveTurnManager; modelCatalogProvider: ModelCatalogProvider; settingsStore?: SettingsStore; sessionMetaStore?: SessionMetaStore; liveEventStore?: ProjectRoutesLiveEventStore; sessionSummaryCache?: SessionSummaryCache; sessionObservationReader?: ProjectRoutesSessionObservationReader; sessionMetadataReader?: (sessionId: string) => SessionMetadata | null; timelineMetadataReader?: ProjectRoutesTimelineMetadataReader; turnMetaTranscriptReader?: ProjectRoutesTurnMetaTranscriptReader },
 ): void {
   app.get('/api/debug/turn-meta-transcript', (c) => {
     if (!input.turnMetaTranscriptReader) return c.json({ error: 'turn_meta_transcript_unavailable' }, 503)
@@ -231,8 +235,16 @@ export function registerProjectRoutes(
 
   app.put('/api/settings', async (c) => {
     try {
-      const body = settingsUpdateRequestSchema.parse(await c.req.json())
-      input.settingsStore?.setMany('global', body.settings)
+      const body = settingsUpdateRequestSchema.safeParse(await c.req.json())
+      if (!body.success) return c.json({ error: 'invalid_settings_update' }, 400)
+      const settings = body.data.settings
+      const normalized = settings.defaultModel === undefined
+        ? settings
+        : (() => {
+            const pair = normalizeModelEffortSelection({ model: settings.defaultModel, effort: settings.defaultEffort! }, readSettings(input.settingsStore).modelCatalog)
+            return { ...settings, defaultModel: pair.model, defaultEffort: pair.effort }
+          })()
+      input.settingsStore?.setMany('global', normalized)
       return c.json(settingsResponseSchema.parse({ settings: readSettings(input.settingsStore) }))
     } catch (error) {
       console.error('settings:update failed', error)
@@ -333,7 +345,7 @@ export function registerProjectRoutes(
       if (!result) {
         return c.json({ error: 'project_not_found' }, 404)
       }
-      const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionRunState(input.liveTurnManager, result)
+      const response: ProjectSessionsResponse = input.sessionSummaryCache ? result : overlayLiveSessionRunState(input.liveTurnManager, result, input.sessionMetadataReader)
       return c.json(response)
     } catch (error) {
       const cursorError = listCursorErrorResponse(error)
@@ -411,11 +423,11 @@ export function registerProjectRoutes(
       const projectId = c.req.param('projectId')
       const body = createTurnRequestSchema.parse(await c.req.json())
       if (!body.sessionId) return c.json({ error: 'session_id_required' }, 400)
-      const options = resolveTurnOptions({ body, projectId, settingsStore: input.settingsStore })
+      const options = resolveTurnOptions({ projectId, sessionId: body.sessionId, settingsStore: input.settingsStore, sessionMetaStore: input.sessionMetaStore })
       const validation = validateTurnOptions(options, input.settingsStore)
       if (!validation.ok) return c.json({ error: validation.error }, 400)
-      const model = sdkModel(options.model)
-      const effort = sdkEffort(options.effort)
+      const model = options.model
+      const effort = options.effort
       const result = await input.liveTurnManager.startTurn({
         projectId,
         sessionId: body.sessionId,
@@ -424,9 +436,8 @@ export function registerProjectRoutes(
         userMessageUuid: body.userMessageUuid,
         permissionMode: options.permissionMode,
         ...(model ? { model } : {}),
-        ...(effort ? { effort } : {}),
+        effort,
       })
-      input.settingsStore?.setSessionSettings(projectId, result.sessionId, persistedTurnOptions(options))
       const response: CreateTurnResponse = {
         projectId: c.req.param('projectId'),
         sessionId: result.sessionId,
@@ -445,11 +456,11 @@ export function registerProjectRoutes(
       const sessionId = c.req.param('sessionId')
       const body = createTurnRequestSchema.parse(await c.req.json())
       if (body.sessionId && body.sessionId !== sessionId) return c.json({ error: 'session_id_mismatch' }, 400)
-      const options = resolveTurnOptions({ body, projectId, sessionId, settingsStore: input.settingsStore })
+      const options = resolveTurnOptions({ projectId, sessionId, settingsStore: input.settingsStore, sessionMetaStore: input.sessionMetaStore })
       const validation = validateTurnOptions(options, input.settingsStore)
       if (!validation.ok) return c.json({ error: validation.error }, 400)
-      const model = sdkModel(options.model)
-      const effort = sdkEffort(options.effort)
+      const model = options.model
+      const effort = options.effort
       const result = await input.liveTurnManager.startTurn({
         projectId,
         sessionId,
@@ -458,9 +469,8 @@ export function registerProjectRoutes(
         userMessageUuid: body.userMessageUuid,
         permissionMode: options.permissionMode,
         ...(model ? { model } : {}),
-        ...(effort ? { effort } : {}),
+        effort,
       })
-      input.settingsStore?.setSessionSettings(projectId, result.sessionId, persistedTurnOptions(options))
       const response: CreateTurnResponse = {
         projectId: c.req.param('projectId'),
         sessionId: result.sessionId,
@@ -534,6 +544,25 @@ export function registerProjectRoutes(
     }
   })
 
+  app.put('/api/projects/:projectId/sessions/:sessionId/meta', async (c) => {
+    try {
+      if (!input.sessionMetaStore) return c.json({ error: 'session_meta_unavailable' }, 503)
+      const projectId = c.req.param('projectId')
+      const sessionId = c.req.param('sessionId')
+      const parsed = sessionMetaUpdateRequestSchema.safeParse(await c.req.json())
+      if (!parsed.success) return c.json({ error: 'invalid_session_meta_update' }, 400)
+      const body = parsed.data
+      const normalized = body.model === undefined
+        ? body
+        : { ...body, ...normalizeModelEffortSelection({ model: body.model, effort: body.effort! }, readSettings(input.settingsStore).modelCatalog) }
+      input.sessionMetaStore.setSessionMeta(projectId, sessionId, normalized)
+      return c.json({ ok: true })
+    } catch (error) {
+      console.error('session:meta failed', error)
+      return c.json({ error: 'session_meta_failed' }, 500)
+    }
+  })
+
   app.post('/api/projects/:projectId/sessions/:sessionId/runtime', async (c) => {
     try {
       const projectId = c.req.param('projectId')
@@ -542,17 +571,19 @@ export function registerProjectRoutes(
       if (!state) {
         return c.json({ error: 'session_not_found' }, 404)
       }
-      const options = resolveTurnOptions({ projectId, sessionId, settingsStore: input.settingsStore })
+      const options = resolveTurnOptions({ projectId, sessionId, settingsStore: input.settingsStore, sessionMetaStore: input.sessionMetaStore })
+      const validation = validateTurnOptions(options, input.settingsStore)
+      if (!validation.ok) return c.json({ error: validation.error }, 400)
       const metadata = input.sessionMetadataReader?.(sessionId) ?? null
       if (!sessionRuntimeExternallyOwned(metadata)) {
-        const model = sdkModel(options.model)
-        const effort = sdkEffort(options.effort)
+        const model = options.model
+        const effort = options.effort
         await input.liveTurnManager.ensureRuntime({
           projectId,
           sessionId,
           permissionMode: options.permissionMode,
           ...(model ? { model } : {}),
-          ...(effort ? { effort } : {}),
+          effort,
         })
       }
       return c.json(sessionRuntimeResponseSchema.parse({

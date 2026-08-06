@@ -35,8 +35,8 @@ function primary(sessionId: string, uuid: string, content = 'hello') {
   return { type: 'user', uuid, sessionId, cwd: '/repo', timestamp: '2026-01-01T00:00:00.000Z', origin: 'human', message: { role: 'user', content } }
 }
 
-function duration(sessionId: string, uuid: string, parentUuid: string, durationMs = 42) {
-  return { type: 'system', subtype: 'turn_duration', uuid, parentUuid, sessionId, timestamp: '2026-01-01T00:00:01.000Z', durationMs, messageCount: 2, cwd: '/repo' }
+function duration(sessionId: string, uuid: string, parentUuid: string, durationMs = 42, extra: Record<string, unknown> = {}) {
+  return { type: 'system', subtype: 'turn_duration', uuid, parentUuid, sessionId, timestamp: '2026-01-01T00:00:01.000Z', durationMs, messageCount: 2, cwd: '/repo', ...extra }
 }
 
 function child(sessionId: string, uuid: string, parentUuid: string, extra: Record<string, unknown> = {}) {
@@ -101,6 +101,25 @@ describe('TurnMetaTranscriptStore', () => {
     expect((db.prepare('SELECT duration_byte_offset FROM turn_meta_transcript').get() as { duration_byte_offset: number }).duration_byte_offset).toBe(Buffer.byteLength(jsonl(primary('session', 'user'))))
   })
 
+  it('loads pending background agent counts from turn duration metadata', async () => {
+    const { projectDir, store } = await setup()
+    await writeFile(join(projectDir, 'session.jsonl'), jsonl(
+      primary('session', 'waiting'),
+      duration('session', 'waiting-duration', 'waiting', 42, { pendingBackgroundAgentCount: 2 }),
+      primary('session', 'done'),
+      duration('session', 'done-duration', 'done', 42, { pendingBackgroundAgentCount: 0 }),
+      primary('session', 'legacy'),
+      duration('session', 'legacy-duration', 'legacy'),
+    ))
+
+    await store.syncSessions([changed('session')])
+
+    const metadata = store.loadTimelineMetadata('project', 'session').turnMetadata
+    expect(metadata.get('waiting')).toMatchObject({ pendingBackgroundAgentCount: 2 })
+    expect(metadata.get('done')).toMatchObject({ pendingBackgroundAgentCount: 0 })
+    expect(metadata.get('legacy')).not.toHaveProperty('pendingBackgroundAgentCount')
+  })
+
   it('stores per-turn permission, model, and effort observed while scanning', async () => {
     const { projectDir, store, db } = await setup()
     await writeFile(join(projectDir, 'session.jsonl'), jsonl(
@@ -117,6 +136,27 @@ describe('TurnMetaTranscriptStore', () => {
       model: 'claude-sonnet-5',
       effort: 'xhigh',
     })
+  })
+
+  it('clears session effort when transcript switches to a model without effort support', async () => {
+    const { projectDir, config, db } = await setup()
+    const settingsStore = { getAll: () => ({ modelCatalog: { models: [
+      { value: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet', supportsEffort: true, supportedEffortLevels: ['medium', 'high'] },
+      { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: 'Haiku' },
+    ] } }) }
+    const store = new TurnMetaTranscriptStore(db, { claudeConfigDir: config, settingsStore: settingsStore as never })
+    await writeFile(join(projectDir, 'session.jsonl'), jsonl(
+      primary('session', 'first'),
+      child('session', 'first-assistant', 'first', { effort: 'high', message: { role: 'assistant', model: 'claude-sonnet-5', content: [] } }),
+      duration('session', 'first-duration', 'first-assistant'),
+      primary('session', 'second'),
+      child('session', 'second-assistant', 'second', { message: { role: 'assistant', model: 'claude-haiku-4-5-20251001', content: [] } }),
+      duration('session', 'second-duration', 'second-assistant'),
+    ))
+
+    await store.syncSessions([changed('session')])
+
+    expect(store.loadTimelineMetadata('project', 'session').sessionMeta).toEqual({ permissionMode: null, model: 'claude-haiku-4-5-20251001', effort: null })
   })
 
   it('stores away summaries on their owner turn', async () => {
@@ -211,7 +251,7 @@ describe('TurnMetaTranscriptStore', () => {
     insert.run('project-a', '/a.jsonl', 'turn-a', 1, 'plan', null, 'high')
     insert.run('project-b', '/b.jsonl', 'turn-b', 2, null, 'claude-opus-5', 'xhigh')
 
-    expect(store.loadTimelineMetadata('project-a', 'shared-session').sessionMeta).toEqual({ permissionMode: 'plan', model: null, effort: 'high' })
+    expect(store.loadTimelineMetadata('project-a', 'shared-session').sessionMeta).toEqual({ permissionMode: 'plan', model: null, effort: null })
     expect(store.loadTimelineMetadata('project-b', 'shared-session').sessionMeta).toEqual({ permissionMode: null, model: 'claude-opus-5', effort: 'xhigh' })
   })
 
@@ -400,7 +440,7 @@ describe('TurnMetaTranscriptStore', () => {
     await store.syncSessions([changed('session')])
     expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 42]]))
     expect(store.loadTimelineMetadata('other-project', 'session')).toEqual({ turnMetadata: new Map(), sessionMeta: { permissionMode: null, model: null, effort: null } })
-    expect(store.timelineVersion('project', 'session', 'base')).toMatch(/^base:turn-meta=\d+:\d+$/)
-    expect(store.timelineVersion('other-project', 'session', 'base')).toBe('base:turn-meta=0:0')
+    expect(store.timelineVersion('project', 'session', 'base')).toMatch(/^base:turn-meta=\d+:\d+:session-meta=\d+$/)
+    expect(store.timelineVersion('other-project', 'session', 'base')).toBe('base:turn-meta=0:0:session-meta=0')
   })
 })

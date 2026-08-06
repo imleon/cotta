@@ -283,7 +283,7 @@ describe('SessionSummaryCache', () => {
 
   it('exposes CLI background metadata separately from status', async () => {
     const cache = new SessionSummaryCache(10)
-    const metadata: SessionMetadata = { status: 'idle', kind: 'bg', entrypoint: 'cli' }
+    const metadata: SessionMetadata = { status: 'idle', hasRunningShell: false, kind: 'bg', entrypoint: 'cli' }
     cache.setSessionMetadataReader(() => metadata)
     listSessionsMock.mockResolvedValueOnce([session('s1')])
 
@@ -293,7 +293,18 @@ describe('SessionSummaryCache', () => {
     })
   })
 
-  it('publishes non-idle runState immediately for known sessions only', async () => {
+  it('exposes a running shell separately from idle status', async () => {
+    const cache = new SessionSummaryCache(10)
+    cache.setSessionMetadataReader(() => ({ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' }))
+    listSessionsMock.mockResolvedValueOnce([session('s1')])
+
+    await cache.requestScan('global')
+    await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
+      sessions: [{ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' }],
+    })
+  })
+
+  it('publishes non-idle status immediately for known sessions only', async () => {
     const cache = new SessionSummaryCache(10)
     let runState: SessionRunState = { phase: 'idle', activeUserMessageUuid: null }
     cache.setSessionRunStateReader(() => runState)
@@ -306,7 +317,7 @@ describe('SessionSummaryCache', () => {
 
     expect(listSessionsMock).toHaveBeenCalledTimes(calls)
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
-      sessions: [{ runState: { phase: 'running', activeUserMessageUuid: 'u' } }],
+      sessions: [{ status: 'busy' }],
     })
   })
 
@@ -320,13 +331,13 @@ describe('SessionSummaryCache', () => {
 
     await cache.notifySessionRunStateActive('s1')
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
-      sessions: [{ runState: { phase: 'running', activeUserMessageUuid: 'u' } }],
+      sessions: [{ status: 'busy' }],
     })
 
     listSessionsMock.mockResolvedValueOnce([session('s1')])
     await cache.requestScan({ projectId: projectId('/repo/a') })
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({
-      sessions: [{ runState: { phase: 'idle', activeUserMessageUuid: null } }],
+      sessions: [{ status: 'idle' }],
     })
   })
 

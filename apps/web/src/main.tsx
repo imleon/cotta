@@ -15,13 +15,15 @@ import {
   type SessionInfoResponse,
   type SessionObservation,
   type SessionObservationSort,
+  type SessionRunState,
   type SessionRuntimeResponse,
+  type SessionMetaUpdateRequest,
   type SessionTask,
   type SessionTimelineResponse,
   type TurnMetaTranscriptRow,
   type TurnSummary,
 } from '@cotta/shared'
-import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, fetchTurnMetaTranscript, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, fetchTurnMetaTranscript, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSessionMeta, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
 import { SessionTaskList, SessionTimeline } from './timeline'
@@ -111,14 +113,14 @@ function createUserMessageUuid(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-async function createTurn(projectId: string, existingSessionId: string | null, sessionId: string, text: string, userMessageUuid: string, permissionMode: PermissionMode, model: ModelSelection | DefaultTurnOption, effort: EffortLevel | DefaultTurnOption): Promise<CreateTurnResponse> {
+async function createTurn(projectId: string, existingSessionId: string | null, sessionId: string, text: string, userMessageUuid: string): Promise<CreateTurnResponse> {
   const path = existingSessionId
     ? `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(existingSessionId)}/turns`
     : `/api/projects/${encodeURIComponent(projectId)}/sessions`
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, text, userMessageUuid, permissionMode, model, effort }),
+    body: JSON.stringify({ sessionId, text, userMessageUuid }),
   })
   if (!response.ok) throw new CreateTurnHttpError(response.status)
   return createTurnResponseSchema.parse(await response.json())
@@ -159,24 +161,30 @@ function isBackgroundKind(kind: string | null): boolean {
   return kind === 'bg' || kind === 'daemon' || kind === 'daemon-worker'
 }
 
-function sessionControlTag(session: ProjectSessionsResponse['sessions'][number] | null | undefined): 'BG' | 'CLI' | null {
+function sessionControlTag(session: ProjectSessionsResponse['sessions'][number] | null | undefined): 'BG' | 'SHELL' | 'CLI' | null {
   if (!session) return null
   if (isBackgroundKind(session.kind)) return 'BG'
-  if (session.entrypoint === 'cli' && session.status !== 'idle') return 'CLI'
+  if (session.hasRunningShell) return 'SHELL'
+  if (session.entrypoint === 'cli' && (session.status === 'busy' || session.status === 'waiting')) return 'CLI'
   return null
 }
 
 function sessionExternallyOwned(session: ProjectSessionsResponse['sessions'][number] | null | undefined): boolean {
-  return sessionControlTag(session) !== null
+  const tag = sessionControlTag(session)
+  return tag === 'BG' || tag === 'CLI'
+}
+
+function selectedTimelineRunState(session: ProjectSessionsResponse['sessions'][number] | null | undefined, liveUserMessageUuid: string | null): SessionRunState {
+  if (liveUserMessageUuid) return { phase: session?.status === 'waiting' ? 'requires_action' : 'running', activeUserMessageUuid: liveUserMessageUuid, lastTurn: null }
+  if (session?.entrypoint === 'cli') {
+    if (session.status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
+    if (session.status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
+  }
+  return { phase: 'idle', activeUserMessageUuid: null }
 }
 
 const EFFORT_ORDER: EffortLevel[] = ['max', 'xhigh', 'high', 'medium', 'low']
 const DEFAULT_TURN_OPTION: DefaultTurnOption = 'default'
-const DEFAULT_EFFORT: EffortLevel = 'medium'
-
-function defaultEffort(levels: EffortLevel[]): EffortLevel {
-  return levels.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : levels[0] ?? DEFAULT_EFFORT
-}
 
 const PERMISSION_MODE_OPTIONS: Array<{ value: PermissionMode; description: string }> = [
   { value: 'plan', description: 'Planning mode, no execution of tools.' },
@@ -219,7 +227,7 @@ function TurnComposer({
   projectId: string | null
   selectedSessionId: string | null
   selectedSession: ProjectSessionsResponse['sessions'][number] | null | undefined
-  selectedSessionRunState: ProjectSessionsResponse['sessions'][number]['runState'] | null
+  selectedSessionRunState: SessionRunState | null
   liveUserMessageUuid: string | null
   setSelectedSessionId: (sessionId: string | null) => void
   setPendingTurn: Dispatch<SetStateAction<{ sessionId: string; turn: TurnSummary } | null>>
@@ -244,7 +252,7 @@ function TurnComposer({
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const permissionMenuRef = useRef<HTMLDivElement | null>(null)
   const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
-  const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_EFFORT)
+  const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [menuModelValue, setMenuModelValue] = useState<ModelSelection | DefaultTurnOption>(DEFAULT_TURN_OPTION)
   const [effortMenuPosition, setEffortMenuPosition] = useState<CSSProperties>()
@@ -252,12 +260,13 @@ function TurnComposer({
   const composerScopeKey = `${projectId ?? ''}\0${selectedSessionId ?? ''}`
   const initializedComposerScopeRef = useRef<string | null>(null)
   const composerManuallyChangedRef = useRef(false)
+  const sessionMetaSaveRef = useRef<{ key: string; promise: Promise<void> } | null>(null)
   const permissionOptions = PERMISSION_MODE_OPTIONS
   const catalogModels = settings.modelCatalog?.models ?? []
   const selectedModel = model === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === model || item.resolvedModel === model)
   const menuModel = menuModelValue === DEFAULT_TURN_OPTION ? undefined : catalogModels.find((item) => item.value === menuModelValue || item.resolvedModel === menuModelValue)
-  const triggerModelLabel = selectedModel?.displayName || 'Claude Code default'
-  const triggerEffortLabel = model === DEFAULT_TURN_OPTION ? effortLabel(effort) : selectedModel?.supportsEffort && effort !== DEFAULT_TURN_OPTION ? effortLabel(effort) : null
+  const triggerModelLabel = model === DEFAULT_TURN_OPTION ? 'Claude Code default' : selectedModel?.displayName || model
+  const triggerEffortLabel = selectedModel?.supportsEffort && effort !== DEFAULT_TURN_OPTION ? effortLabel(effort) : null
 
   useEffect(() => { setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
   useEffect(() => { if (!liveUserMessageUuid) setInterrupting(false) }, [liveUserMessageUuid])
@@ -267,18 +276,14 @@ function TurnComposer({
   }, [composerScopeKey])
   useEffect(() => {
     if (initializedComposerScopeRef.current === composerScopeKey || composerManuallyChangedRef.current) return
-    const wantsSessionMeta = Boolean(selectedSessionId && (settings.resumeUsesLastPermissionMode === true || settings.resumeUsesLastModelAndEffort === true))
-    if (wantsSessionMeta && !sessionMeta) return
-    setPermissionMode(settings.resumeUsesLastPermissionMode === true && selectedSessionId ? sessionMeta?.permissionMode ?? settings.defaultPermissionMode ?? 'default' : settings.defaultPermissionMode ?? 'default')
-    setModel(settings.resumeUsesLastModelAndEffort === true && selectedSessionId ? sessionMeta?.model ?? DEFAULT_TURN_OPTION : settings.defaultModel ?? DEFAULT_TURN_OPTION)
-    setEffort(settings.resumeUsesLastModelAndEffort === true && selectedSessionId ? sessionMeta?.effort ?? DEFAULT_EFFORT : settings.defaultEffort ?? DEFAULT_EFFORT)
+    if (selectedSessionId && !sessionMeta) return
+    const nextModel = selectedSessionId && sessionMeta?.model != null ? sessionMeta.model : settings.defaultModel ?? DEFAULT_TURN_OPTION
+    const nextEffort = selectedSessionId && sessionMeta?.model != null ? sessionMeta.effort ?? DEFAULT_TURN_OPTION : settings.defaultModel != null ? settings.defaultEffort ?? DEFAULT_TURN_OPTION : DEFAULT_TURN_OPTION
+    setPermissionMode(selectedSessionId ? sessionMeta?.permissionMode ?? settings.defaultPermissionMode ?? 'default' : settings.defaultPermissionMode ?? 'default')
+    setModel(nextModel)
+    setEffort(nextEffort)
     initializedComposerScopeRef.current = composerScopeKey
-  }, [composerScopeKey, selectedSessionId, sessionMeta, settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort, settings.resumeUsesLastPermissionMode, settings.resumeUsesLastModelAndEffort])
-  useEffect(() => {
-    if (model === DEFAULT_TURN_OPTION || selectedModel) return
-    setModel(DEFAULT_TURN_OPTION)
-    setEffort(DEFAULT_TURN_OPTION)
-  }, [model, selectedModel])
+  }, [composerScopeKey, selectedSessionId, sessionMeta, settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort])
   useEffect(() => {
     const input = inputRef.current
     if (!input) return
@@ -323,9 +328,14 @@ function TurnComposer({
     setSubmitError(null)
     if (!existingSessionId && targetProjectId === projectId) setSelectedSessionId(targetSessionId)
     try {
+      const effectiveEffort = selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION
+      if (existingSessionId) {
+        const save = sessionMetaSaveRef.current
+        if (save?.key === `${targetProjectId}\0${existingSessionId}`) await save.promise
+      } else if (composerManuallyChangedRef.current) await saveSessionMeta(targetProjectId, targetSessionId, { permissionMode, model, effort: effectiveEffort === DEFAULT_TURN_OPTION ? null : effectiveEffort })
       setPendingTurn(pendingUserTurn(text, targetSessionId, userMessageUuid))
       setInputText('')
-      const response = await createTurn(targetProjectId, existingSessionId, targetSessionId, text, userMessageUuid, permissionMode, model, selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION)
+      const response = await createTurn(targetProjectId, existingSessionId, targetSessionId, text, userMessageUuid)
       if (targetProjectId !== projectId) onSessionCreated(response.projectId, response.sessionId)
       else setSelectedSessionId(response.sessionId)
       await refreshProjects(response.projectId)
@@ -364,6 +374,26 @@ function TurnComposer({
     }
   }
 
+  function currentSessionMeta() {
+    return {
+      permissionMode,
+      model,
+      effort: effort === DEFAULT_TURN_OPTION ? null : effort,
+    }
+  }
+
+  function saveCurrentSessionMeta(update: SessionMetaUpdateRequest, targetProjectId = projectId, targetSessionId = selectedSessionId) {
+    if (!targetProjectId || !targetSessionId) return
+    const key = `${targetProjectId}\0${targetSessionId}`
+    const save = (sessionMetaSaveRef.current?.key === key ? sessionMetaSaveRef.current.promise.catch(() => {}) : Promise.resolve())
+      .then(() => saveSessionMeta(targetProjectId, targetSessionId, update))
+    sessionMetaSaveRef.current = { key, promise: save }
+    void save.catch((error) => {
+      if (sessionMetaSaveRef.current?.promise === save) sessionMetaSaveRef.current = null
+      setSubmitError(error instanceof Error ? error.message : String(error))
+    })
+  }
+
   function markComposerManualChange() {
     composerManuallyChangedRef.current = true
     initializedComposerScopeRef.current = composerScopeKey
@@ -391,15 +421,17 @@ function TurnComposer({
   function chooseDefaultModel() {
     markComposerManualChange()
     setModel(DEFAULT_TURN_OPTION)
-    setEffort(DEFAULT_EFFORT)
+    setEffort(DEFAULT_TURN_OPTION)
     setModelMenuOpen(false)
+    saveCurrentSessionMeta({ model: DEFAULT_TURN_OPTION, effort: null })
   }
 
-  function chooseModelOnly(option: ModelCatalogItem) {
+  function chooseModel(option: ModelCatalogItem) {
     markComposerManualChange()
     setModel(option.value)
     setEffort(DEFAULT_TURN_OPTION)
     setModelMenuOpen(false)
+    saveCurrentSessionMeta({ model: option.value, effort: null })
   }
 
   function chooseEffort(option: ModelCatalogItem, nextEffort: EffortLevel) {
@@ -407,6 +439,7 @@ function TurnComposer({
     setModel(option.value)
     setEffort(nextEffort)
     setModelMenuOpen(false)
+    saveCurrentSessionMeta({ model: option.value, effort: nextEffort })
   }
 
   const actionMode = submitting || interrupting ? 'loading' : liveUserMessageUuid ? 'stop' : 'submit'
@@ -463,7 +496,7 @@ function TurnComposer({
                         className="permission-mode-option"
                         role="menuitemradio"
                         aria-checked={permissionMode === option.value}
-                        onClick={() => { markComposerManualChange(); setPermissionMode(option.value); setPermissionMenuOpen(false) }}
+                        onClick={() => { markComposerManualChange(); setPermissionMode(option.value); setPermissionMenuOpen(false); saveCurrentSessionMeta({ permissionMode: option.value }) }}
                       >
                         <span className="permission-mode-option-icon"><ComposerIcon name={option.value} /></span>
                         <span className="permission-mode-option-copy">
@@ -514,7 +547,7 @@ function TurnComposer({
                             aria-current={active}
                             onMouseEnter={(event) => showEffortMenu(option, event.currentTarget)}
                             onFocus={(event) => showEffortMenu(option, event.currentTarget)}
-                            onClick={(event) => option.supportsEffort && option.supportedEffortLevels?.length ? showEffortMenu(option, event.currentTarget) : chooseModelOnly(option)}
+                            onClick={(event) => option.supportsEffort && option.supportedEffortLevels?.length ? showEffortMenu(option, event.currentTarget) : chooseModel(option)}
                           >
                             <span className="model-effort-option-title">{option.displayName || option.value}</span>
                             {selected ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
@@ -616,7 +649,7 @@ function WorkspacePanel({
 
   const selectedPendingTurn = pendingTurn?.sessionId === selectedSessionId ? pendingTurn.turn : null
   const selectedSession = detail?.sessions.find((session) => session.id === selectedSessionId)
-  const selectedSessionRunState = selectedSession?.runState ?? null
+  const selectedSessionRunState = selectedTimelineRunState(selectedSession, liveUserMessageUuid)
   const selectedSessionMeta = sessionMeta?.projectId === projectId && sessionMeta.sessionId === selectedSessionId ? sessionMeta.meta : null
 
   return (
@@ -657,7 +690,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
   const catalogModels = settings.modelCatalog?.models ?? []
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode ?? 'default')
   const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
-  const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_EFFORT)
+  const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
   const [status, setStatus] = useState<ToastState | null>(null)
   const [saving, setSaving] = useState(false)
   const [catalogLoading, setCatalogLoading] = useState(false)
@@ -676,14 +709,13 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
   useEffect(() => {
     setPermissionMode(settings.defaultPermissionMode ?? 'default')
     setModel(settings.defaultModel ?? DEFAULT_TURN_OPTION)
-    setEffort(settings.defaultEffort ?? DEFAULT_EFFORT)
+    setEffort(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
   }, [settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort])
 
   useEffect(() => {
-    if (model === DEFAULT_TURN_OPTION) { if (effort === DEFAULT_TURN_OPTION) setEffort(DEFAULT_EFFORT); return }
-    if (!selectedModel) { setModel(DEFAULT_TURN_OPTION); setEffort(DEFAULT_EFFORT); return }
-    if (!effortLevels.length) { setEffort(DEFAULT_EFFORT); return }
-    if (effort === DEFAULT_TURN_OPTION || !effortLevels.includes(effort)) setEffort(defaultEffort(effortLevels))
+    if (model === DEFAULT_TURN_OPTION) return
+    if (!selectedModel) { setModel(DEFAULT_TURN_OPTION); setEffort(DEFAULT_TURN_OPTION); return }
+    if (!effortLevels.length || effort !== DEFAULT_TURN_OPTION && !effortLevels.includes(effort)) setEffort(DEFAULT_TURN_OPTION)
   }, [model, selectedModel, effort, effortLevels])
 
   useEffect(() => {
@@ -726,7 +758,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setEffortMenuPosition({ top: Math.max(8, Math.min(alignedTop, maxTop)) })
   }
 
-  function chooseModelOnly(nextModel: ModelSelection | DefaultTurnOption) {
+  function chooseModel(nextModel: ModelSelection | DefaultTurnOption) {
     void saveModelDefault(nextModel, DEFAULT_TURN_OPTION)
   }
 
@@ -754,7 +786,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setSaving(true)
     setStatus(null)
     try {
-      const response = await saveSettings({ ...settings, defaultPermissionMode: nextPermissionMode })
+      const response = await saveSettings({ defaultPermissionMode: nextPermissionMode })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -771,35 +803,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setSaving(true)
     setStatus(null)
     try {
-      const response = await saveSettings({ ...settings, defaultModel: nextModel === DEFAULT_TURN_OPTION ? null : nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
-      queryClient.setQueryData(['settings'], response)
-      setStatus({ message: 'Saved', tone: 'success' })
-    } catch (error) {
-      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function saveResumeUsesLastPermissionMode(resumeUsesLastPermissionMode: boolean) {
-    setSaving(true)
-    setStatus(null)
-    try {
-      const response = await saveSettings({ ...settings, resumeUsesLastPermissionMode })
-      queryClient.setQueryData(['settings'], response)
-      setStatus({ message: 'Saved', tone: 'success' })
-    } catch (error) {
-      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function saveResumeUsesLastModelAndEffort(resumeUsesLastModelAndEffort: boolean) {
-    setSaving(true)
-    setStatus(null)
-    try {
-      const response = await saveSettings({ ...settings, resumeUsesLastModelAndEffort })
+      const response = await saveSettings({ defaultModel: nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -813,7 +817,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setSaving(true)
     setStatus(null)
     try {
-      const response = await saveSettings({ ...settings, showDebugNav })
+      const response = await saveSettings({ showDebugNav })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -889,7 +893,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
               <span className="model-effort-trigger-icon" aria-hidden="true">◉</span>
               <span className="model-effort-trigger-copy">
                 <span className="model-effort-trigger-model">{triggerModelLabel}</span>
-                {(model === DEFAULT_TURN_OPTION || selectedModel?.supportsEffort && effort !== DEFAULT_TURN_OPTION) ? <span className="model-effort-trigger-effort">{effortLabel(effort)}</span> : null}
+                {selectedModel?.supportsEffort && effort !== DEFAULT_TURN_OPTION ? <span className="model-effort-trigger-effort">{effortLabel(effort)}</span> : null}
               </span>
             </button>
             {modelMenuOpen ? (
@@ -897,7 +901,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
                 {catalogLoading ? <div className="model-effort-hint">Loading model catalog…</div> : null}
                 {!catalogLoading && !catalogModels.length ? <div className="model-effort-hint">No models found.</div> : null}
                 <div className="model-effort-models" role="group" aria-label="Models">
-                  <button type="button" className="model-effort-option" role="menuitem" aria-current={model === DEFAULT_TURN_OPTION} onClick={() => chooseModelOnly(DEFAULT_TURN_OPTION)}>
+                  <button type="button" className="model-effort-option" role="menuitem" aria-current={model === DEFAULT_TURN_OPTION} onClick={() => chooseModel(DEFAULT_TURN_OPTION)}>
                     <span className="model-effort-option-title">Claude Code default</span>
                     {model === DEFAULT_TURN_OPTION ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
                   </button>
@@ -913,7 +917,7 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
                         aria-current={active}
                         onMouseEnter={(event) => showEffortMenu(option, event.currentTarget)}
                         onFocus={(event) => showEffortMenu(option, event.currentTarget)}
-                        onClick={(event) => option.supportsEffort && option.supportedEffortLevels?.length ? showEffortMenu(option, event.currentTarget) : chooseModelOnly(option.value)}
+                        onClick={(event) => option.supportsEffort && option.supportedEffortLevels?.length ? showEffortMenu(option, event.currentTarget) : chooseModel(option.value)}
                       >
                         <span className="model-effort-option-title">{option.displayName || option.value}</span>
                         {selected ? <span className="model-effort-option-check" aria-hidden="true">✓</span> : null}
@@ -944,44 +948,6 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
               </div>
             ) : null}
           </div>
-        </div>
-      </form>
-
-      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
-        <div className="settings-card-copy">
-          <h3>Resume permission</h3>
-          <p className="muted">Use the last session permission mode when resuming instead of the default.</p>
-        </div>
-        <div className="settings-card-controls">
-          <button
-            type="button"
-            className="settings-switch"
-            role="switch"
-            aria-checked={settings.resumeUsesLastPermissionMode === true}
-            disabled={saving}
-            onClick={() => void saveResumeUsesLastPermissionMode(settings.resumeUsesLastPermissionMode !== true)}
-          >
-            <span className="settings-switch-thumb" />
-          </button>
-        </div>
-      </form>
-
-      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
-        <div className="settings-card-copy">
-          <h3>Resume model / effort</h3>
-          <p className="muted">Use the last session model and effort when resuming instead of the default.</p>
-        </div>
-        <div className="settings-card-controls">
-          <button
-            type="button"
-            className="settings-switch"
-            role="switch"
-            aria-checked={settings.resumeUsesLastModelAndEffort === true}
-            disabled={saving}
-            onClick={() => void saveResumeUsesLastModelAndEffort(settings.resumeUsesLastModelAndEffort !== true)}
-          >
-            <span className="settings-switch-thumb" />
-          </button>
         </div>
       </form>
 
@@ -1167,7 +1133,7 @@ function ProjectsDashboard() {
     retry: false,
   })
   const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
-  const settings = settingsQuery.data?.settings ?? {}
+  const settings: AppSettings = settingsQuery.data?.settings ?? { defaultModel: null, defaultEffort: null }
   const navItems = settings.showDebugNav === false ? DASHBOARD_NAV_ITEMS.filter((item) => item.key !== 'debug') : DASHBOARD_NAV_ITEMS
   const workspaceNavActive = activeNav === 'chat'
   const selection = useProjectSessionSelection({ selectInitialProject: false, enabled: workspaceNavActive })

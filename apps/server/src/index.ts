@@ -13,8 +13,9 @@ import { registerProjectRoutes, type ProjectRoutesLiveTurnManager, type ProjectR
 import { createClaudeSessionRegistry } from './claude-session-registry.js'
 import { SessionSummaryCache } from './session-summary-cache.js'
 import { createSettingsStore, type SettingsStore } from './settings-store.js'
+import { SessionMetaStore } from './session-meta-store.js'
 import { TurnMetaTranscriptStore } from './turn-meta-transcript.js'
-import { resolveTurnOptions, sdkEffort, sdkModel } from './turn-options.js'
+import { resolveTurnOptions, validateTurnOptions } from './turn-options.js'
 
 setGlobalDispatcher(new EnvHttpProxyAgent())
 
@@ -25,6 +26,7 @@ export function createApp(input: {
   sessionSummaryCache?: SessionSummaryCache
   modelCatalogProvider?: ModelCatalogProvider
   settingsStore?: SettingsStore
+  sessionMetaStore?: SessionMetaStore
   sessionObservationReader?: ProjectRoutesSessionObservationReader
   claudeSessionRegistry?: Pick<Awaited<ReturnType<typeof createClaudeSessionRegistry>>, 'cliRunState' | 'cliSessionMetadata'>
   timelineMetadataReader?: ProjectRoutesTimelineMetadataReader
@@ -37,7 +39,7 @@ export function createApp(input: {
   const claudeCodeApi = input.claudeCodeApi ?? createClaudeCodeApi(sessionSummaryCache)
   const liveTurnManager = input.liveTurnManager ?? new LiveTurnManager(liveEventStore, sessionSummaryCache)
   const modelCatalogProvider = input.modelCatalogProvider ?? defaultModelCatalogProvider
-  const settingsStore = input.settingsStore ?? (process.env.NODE_ENV === 'test' ? undefined : createSettingsStore())
+  const settingsStore = input.settingsStore
   const auth = input.auth ?? (process.env.NODE_ENV === 'test' ? createAuth({ github: { clientId: '' }, settingsStore }) : createAuth({ settingsStore }))
   sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId) ?? input.claudeSessionRegistry?.cliRunState(sessionId) ?? null)
   sessionSummaryCache?.setSessionMetadataReader?.((sessionId) => input.claudeSessionRegistry?.cliSessionMetadata(sessionId) ?? null)
@@ -45,7 +47,7 @@ export function createApp(input: {
   app.use('*', auth.middleware)
   registerHealthRoute(app)
   auth.registerRoutes(app)
-  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionObservationReader: input.sessionObservationReader, sessionMetadataReader: (sessionId) => input.claudeSessionRegistry?.cliSessionMetadata(sessionId) ?? null, timelineMetadataReader: input.timelineMetadataReader, turnMetaTranscriptReader: input.turnMetaTranscriptReader })
+  registerProjectRoutes(app, { claudeCodeApi, liveTurnManager, modelCatalogProvider, liveEventStore, sessionSummaryCache, settingsStore, sessionMetaStore: input.sessionMetaStore, sessionObservationReader: input.sessionObservationReader, sessionMetadataReader: (sessionId) => input.claudeSessionRegistry?.cliSessionMetadata(sessionId) ?? null, timelineMetadataReader: input.timelineMetadataReader, turnMetaTranscriptReader: input.turnMetaTranscriptReader })
   return app
 }
 
@@ -55,8 +57,10 @@ const port = Number(process.env.PORT ?? 3000)
 if (process.env.NODE_ENV !== 'test') {
   const liveEventStore = createLiveEventStore()
   const sessionSummaryCache = new SessionSummaryCache()
-  const settingsStore = createSettingsStore()
-  const turnMetaStore = new TurnMetaTranscriptStore(createCottaDatabase())
+  const cottaDb = createCottaDatabase()
+  const settingsStore = createSettingsStore(cottaDb)
+  const sessionMetaStore = new SessionMetaStore(cottaDb)
+  const turnMetaStore = new TurnMetaTranscriptStore(cottaDb, { settingsStore })
   await turnMetaStore.repairIncompleteTranscripts()
   sessionSummaryCache.setChangedListener((changes) => turnMetaStore.syncSessions(changes))
   const claudeCodeApi = createClaudeCodeApi(sessionSummaryCache, {
@@ -80,15 +84,16 @@ if (process.env.NODE_ENV !== 'test') {
     for (const sessionId of idleSessionIds) {
       const projectId = projectIdsBySessionId.get(sessionId)
       if (!projectId) continue
-      const options = resolveTurnOptions({ projectId, sessionId, settingsStore })
-      const model = sdkModel(options.model)
-      const effort = sdkEffort(options.effort)
-      void liveTurnManager.ensureRuntime({
-        projectId,
-        sessionId,
+      const options = resolveTurnOptions({ projectId, sessionId, settingsStore, sessionMetaStore })
+      const validation = validateTurnOptions(options, settingsStore)
+      if (!validation.ok) {
+        console.error(`live-runtime:CLI idle rebuild skipped for ${sessionId}: ${validation.error}`)
+        continue
+      }
+      void liveTurnManager.rebuildRuntimeAfterCliIdle(sessionId, {
         permissionMode: options.permissionMode,
-        ...(model ? { model } : {}),
-        ...(effort ? { effort } : {}),
+        model: options.model,
+        effort: options.effort,
       }).catch((error) => console.error(`live-runtime:CLI idle rebuild failed for ${sessionId}`, error))
     }
   })
@@ -98,6 +103,7 @@ if (process.env.NODE_ENV !== 'test') {
     liveTurnManager,
     sessionSummaryCache,
     settingsStore,
+    sessionMetaStore,
     sessionObservationReader: claudeSessionRegistry ?? undefined,
     claudeSessionRegistry: claudeSessionRegistry ?? undefined,
     timelineMetadataReader: (projectId, sessionId) => turnMetaStore.loadTimelineMetadata(projectId, sessionId),
@@ -121,6 +127,7 @@ if (process.env.NODE_ENV !== 'test') {
     sessionSummaryCache.close()
     void claudeSessionRegistry?.close()
     turnMetaStore.close()
+    cottaDb.close()
     server.close(() => process.exit(0))
     setTimeout(() => process.exit(0), 1000).unref()
   }
@@ -136,6 +143,7 @@ if (process.env.NODE_ENV !== 'test') {
       sessionSummaryCache.close()
       void claudeSessionRegistry?.close()
       turnMetaStore.close()
+      cottaDb.close()
       process.exitCode = 1
       return
     }

@@ -4,6 +4,9 @@ import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 import { isPrimaryTimelineUserMessage, permissionModeSchema, effortLevelSchema, type EffortLevel, type PermissionMode, type SessionTimelineResponse, type TurnMetaTranscriptResponse, type TurnMetaTranscriptRow, type TurnSummary } from '@cotta/shared'
+import { SessionMetaStore } from './session-meta-store.js'
+import type { SettingsStore } from './settings-store.js'
+import { mergeTranscriptModelEffort, readSettings } from './turn-options.js'
 
 export type ChangedTranscriptSession = {
   projectId: string
@@ -66,17 +69,26 @@ function awaySummary(value: JsonRecord): string | null {
 export class TurnMetaTranscriptStore {
   private readonly paths = new Map<string, string>()
   private readonly projectsRoot: string
+  private readonly sessionMetaStore: SessionMetaStore
+  private readonly settingsStore?: SettingsStore
+  private closed = false
 
-  constructor(private readonly db: DatabaseSync, options: { claudeConfigDir?: string } = {}) {
+  constructor(private readonly db: DatabaseSync, options: { claudeConfigDir?: string; sessionMetaStore?: SessionMetaStore; settingsStore?: SettingsStore } = {}) {
     this.projectsRoot = join(resolve(options.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')), 'projects')
+    this.sessionMetaStore = options.sessionMetaStore ?? new SessionMetaStore(db)
+    this.settingsStore = options.settingsStore
   }
 
   async syncSessions(sessions: ChangedTranscriptSession[]): Promise<void> {
+    if (this.closed) return
     for (const session of sessions) {
+      if (this.closed) return
       try {
         const transcriptPath = await this.locateTranscript(session)
+        if (this.closed) return
         await this.syncTranscript(session.projectId, session.projectPath, session.sessionInfo.sessionId, transcriptPath)
       } catch (error) {
+        if (this.closed && record(error) && error.code === 'ERR_INVALID_STATE') return
         console.error(`turn-meta-transcript:sync failed for ${session.sessionInfo.sessionId}`, error)
       }
     }
@@ -121,11 +133,11 @@ export class TurnMetaTranscriptStore {
   }
 
   loadTimelineMetadata(projectKey: string, sessionId: string): {
-    turnMetadata: ReadonlyMap<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'awaySummary'>>
+    turnMetadata: ReadonlyMap<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>>
     sessionMeta: SessionTimelineResponse['sessionMeta']
   } {
     const rows = this.db.prepare(`
-      SELECT primary_user_uuid, duration_ms, duration_timestamp_ms, away_summary, permission_mode, model, effort
+      SELECT primary_user_uuid, duration_ms, duration_timestamp_ms, duration_pending_background_agent_count, away_summary, permission_mode, model, effort
       FROM turn_meta_transcript
       WHERE project_key = ? AND session_id = ?
       ORDER BY primary_timestamp_ms DESC, primary_byte_offset DESC
@@ -133,24 +145,33 @@ export class TurnMetaTranscriptStore {
       primary_user_uuid: string
       duration_ms: number | null
       duration_timestamp_ms: number | null
+      duration_pending_background_agent_count: number | null
       away_summary: string | null
       permission_mode: PermissionMode | null
       model: string | null
       effort: EffortLevel | null
     }>
-    const turnMetadata = new Map<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'awaySummary'>>()
-    const sessionMeta: SessionTimelineResponse['sessionMeta'] = { permissionMode: null, model: null, effort: null }
+    const turnMetadata = new Map<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>>()
+    const storedSessionMeta = this.sessionMetaStore.getSessionMeta(projectKey, sessionId)
+    const sessionMeta: SessionTimelineResponse['sessionMeta'] = storedSessionMeta ?? { permissionMode: null, model: null, effort: null }
+    let transcriptModelFound = false
     for (const row of rows) {
       if (!turnMetadata.has(row.primary_user_uuid)) {
         turnMetadata.set(row.primary_user_uuid, {
           ...(row.duration_ms !== null ? { durationMs: row.duration_ms } : {}),
           ...(row.duration_timestamp_ms !== null ? { durationTimestampMs: row.duration_timestamp_ms } : {}),
+          ...(row.duration_pending_background_agent_count !== null ? { pendingBackgroundAgentCount: row.duration_pending_background_agent_count } : {}),
           awaySummary: row.away_summary,
         })
       }
-      sessionMeta.permissionMode ??= row.permission_mode
-      sessionMeta.model ??= row.model
-      sessionMeta.effort ??= row.effort
+      if (!storedSessionMeta) {
+        sessionMeta.permissionMode ??= row.permission_mode
+        if (!transcriptModelFound && row.model !== null) {
+          sessionMeta.model = row.model
+          sessionMeta.effort = row.effort
+          transcriptModelFound = true
+        }
+      }
     }
     return { turnMetadata, sessionMeta }
   }
@@ -161,11 +182,12 @@ export class TurnMetaTranscriptStore {
       FROM turn_meta_transcript
       WHERE project_key = ? AND session_id = ?
     `).get(projectKey, sessionId) as { scan_byte_offset: number | null; file_size: number | null }
-    return `${baseVersion}:turn-meta=${row.scan_byte_offset ?? 0}:${row.file_size ?? 0}`
+    return `${baseVersion}:turn-meta=${row.scan_byte_offset ?? 0}:${row.file_size ?? 0}:${this.sessionMetaStore.timelineVersion(projectKey, sessionId)}`
   }
 
   close(): void {
-    this.db.close()
+    if (this.closed) return
+    this.closed = true
   }
 
   private async locateTranscript(session: ChangedTranscriptSession): Promise<string> {
@@ -306,17 +328,41 @@ export class TurnMetaTranscriptStore {
     let owners = new Map<string, string>()
     let prefixLoaded = offset === 0
     let currentPrimaryUserUuid: string | null = null
-    const updateTurnMetadata = (owner: string, options: { permissionMode?: PermissionMode | null; model?: string | null; effort?: EffortLevel | null; awaySummary?: string | null }) => {
-      if (!options.permissionMode && !options.model && !options.effort && !options.awaySummary) return
+    const updateTurnMetadata = (owner: string, options: { permissionMode?: PermissionMode | null; model?: string | null; effort?: EffortLevel | null; awaySummary?: string | null }, observedAtMs = now) => {
+      const hasPermission = 'permissionMode' in options && options.permissionMode !== null
+      const hasModel = 'model' in options
+      const hasEffort = 'effort' in options
+      const hasAwaySummary = 'awaySummary' in options && options.awaySummary !== null
+      if (!hasPermission && !hasModel && !hasEffort && !hasAwaySummary) return
+      if (hasPermission || hasModel || hasEffort) {
+        const current = this.sessionMetaStore.getSessionMeta(projectKey, sessionId)
+        let model = current?.model ?? null
+        let effort = current?.effort ?? null
+        if (hasModel || hasEffort) {
+          const merged = mergeTranscriptModelEffort({
+            currentModel: current?.model ?? null,
+            currentEffort: current?.effort ?? null,
+            observedModel: hasModel ? options.model ?? null : undefined,
+            observedEffort: hasEffort ? options.effort ?? null : undefined,
+            settings: readSettings(this.settingsStore),
+          })
+          model = merged.model
+          effort = merged.effort
+        }
+        this.sessionMetaStore.setSessionMeta(projectKey, sessionId, {
+          ...(hasPermission ? { permissionMode: options.permissionMode! } : {}),
+          ...(hasModel || hasEffort ? { model, effort } : {}),
+        }, observedAtMs)
+      }
       this.db.prepare(`
         UPDATE turn_meta_transcript SET
-          permission_mode = CASE WHEN ? IS NULL THEN permission_mode ELSE ? END,
-          model = CASE WHEN ? IS NULL THEN model ELSE ? END,
-          effort = CASE WHEN ? IS NULL THEN effort ELSE ? END,
-          away_summary = CASE WHEN ? IS NULL THEN away_summary ELSE ? END,
+          permission_mode = CASE WHEN ? THEN ? ELSE permission_mode END,
+          model = CASE WHEN ? THEN ? ELSE model END,
+          effort = CASE WHEN ? THEN ? ELSE effort END,
+          away_summary = CASE WHEN ? THEN ? ELSE away_summary END,
           updated_at_ms = ?
         WHERE transcript_path = ? AND primary_user_uuid = ?
-      `).run(options.permissionMode ?? null, options.permissionMode ?? null, options.model ?? null, options.model ?? null, options.effort ?? null, options.effort ?? null, options.awaySummary ?? null, options.awaySummary ?? null, now, transcriptPath, owner)
+      `).run(hasPermission ? 1 : 0, options.permissionMode ?? null, hasModel ? 1 : 0, options.model ?? null, hasEffort ? 1 : 0, options.effort ?? null, hasAwaySummary ? 1 : 0, options.awaySummary ?? null, now, transcriptPath, owner)
     }
 
     this.db.exec('BEGIN IMMEDIATE')
@@ -363,18 +409,22 @@ export class TurnMetaTranscriptStore {
             typeof value.entrypoint === 'string' ? value.entrypoint : null, Math.trunc(fileInfo.mtimeMs), fileInfo.size, nextOffset, lineNo, now, now)
           owners.set(value.uuid, value.uuid)
           currentPrimaryUserUuid = value.uuid
-          updateTurnMetadata(value.uuid, { permissionMode: permissionMode(value.permissionMode) })
+          updateTurnMetadata(value.uuid, { permissionMode: permissionMode(value.permissionMode) }, primaryTimestamp)
           continue
         }
 
         if (value.type === 'permission-mode' && value.sessionId === sessionId && currentPrimaryUserUuid) {
-          updateTurnMetadata(currentPrimaryUserUuid, { permissionMode: permissionMode(value.permissionMode) })
+          updateTurnMetadata(currentPrimaryUserUuid, { permissionMode: permissionMode(value.permissionMode) }, timestampMs(value.timestamp) ?? now)
           continue
         }
 
         if (value.type === 'assistant' && value.sessionId === sessionId) {
           const owner = typeof value.parentUuid === 'string' ? owners.get(value.parentUuid) : currentPrimaryUserUuid
-          if (owner) updateTurnMetadata(owner, { model: assistantModel(value), effort: effortLevel(value.effort) })
+          if (owner) {
+            const model = assistantModel(value)
+            const effort = effortLevel(value.effort)
+            updateTurnMetadata(owner, { ...(model !== null ? { model, effort } : effort !== null ? { effort } : {}) }, timestampMs(value.timestamp) ?? now)
+          }
         }
 
         if (value.type !== 'system' || value.subtype !== 'turn_duration' || value.isSidechain === true

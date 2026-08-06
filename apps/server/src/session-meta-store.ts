@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { EffortLevel, ModelSelection, PermissionMode } from '@cotta/shared'
+import type { EffortLevel, ModelSelection, PermissionMode, SessionMetaUpdateRequest } from '@cotta/shared'
 
 export type SessionMeta = {
   permissionMode: PermissionMode | null
@@ -19,19 +19,32 @@ export class SessionMetaStore {
     return row ? { permissionMode: row.permission_mode, model: row.model, effort: row.effort } : null
   }
 
-  setSessionMeta(projectId: string, sessionId: string, meta: SessionMeta, observedAtMs = Date.now()): void {
+  setSessionMeta(projectId: string, sessionId: string, meta: SessionMetaUpdateRequest, observedAtMs = Date.now()): void {
     const now = Date.now()
+    const hasPermission = meta.permissionMode !== undefined
+    const hasModelEffort = meta.model !== undefined
     this.db.prepare(`
       INSERT INTO session_meta (project_id, session_id, permission_mode, model, effort, observed_at_ms, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(project_id, session_id) DO UPDATE SET
-        permission_mode = excluded.permission_mode,
-        model = excluded.model,
-        effort = excluded.effort,
+        permission_mode = CASE WHEN ? THEN excluded.permission_mode ELSE session_meta.permission_mode END,
+        model = CASE WHEN ? THEN excluded.model ELSE session_meta.model END,
+        effort = CASE WHEN ? THEN excluded.effort ELSE session_meta.effort END,
         observed_at_ms = excluded.observed_at_ms,
         updated_at_ms = excluded.updated_at_ms
       WHERE excluded.observed_at_ms >= session_meta.observed_at_ms
-    `).run(projectId, sessionId, meta.permissionMode, meta.model, meta.effort, observedAtMs, now)
+    `).run(
+      projectId,
+      sessionId,
+      meta.permissionMode ?? null,
+      meta.model ?? null,
+      meta.effort ?? null,
+      observedAtMs,
+      now,
+      hasPermission ? 1 : 0,
+      hasModelEffort ? 1 : 0,
+      hasModelEffort ? 1 : 0,
+    )
   }
 
   timelineVersion(projectId: string, sessionId: string): string {

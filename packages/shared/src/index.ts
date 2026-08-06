@@ -569,7 +569,17 @@ export const sessionMetaSchema = z.object({
 })
 export type SessionMeta = z.infer<typeof sessionMetaSchema>
 
-export const sessionMetaUpdateRequestSchema = sessionMetaSchema
+export const sessionMetaUpdateRequestSchema = z.object({
+  permissionMode: permissionModeSchema.optional(),
+  model: modelSelectionSchema.nullable().optional(),
+  effort: effortLevelSchema.nullable().optional(),
+}).refine(
+  ({ model, effort }) => (model === undefined) === (effort === undefined),
+  'model and effort must be updated together',
+).refine(
+  ({ permissionMode, model }) => permissionMode !== undefined || model !== undefined,
+  'at least one session meta field must be updated',
+)
 export type SessionMetaUpdateRequest = z.infer<typeof sessionMetaUpdateRequestSchema>
 
 export const createTurnRequestSchema = z.object({

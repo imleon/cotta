@@ -28,6 +28,18 @@ describe('SessionMetaStore', () => {
     db.close()
   })
 
+  it('patches permission independently from model and effort', async () => {
+    const { db, store: meta } = await store()
+
+    meta.setSessionMeta('project', 'session', { model: 'claude-opus-5', effort: 'high' }, 100)
+    meta.setSessionMeta('project', 'session', { permissionMode: 'plan' }, 101)
+    expect(meta.getSessionMeta('project', 'session')).toEqual({ permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })
+
+    meta.setSessionMeta('project', 'session', { model: 'claude-sonnet-5', effort: 'medium' }, 102)
+    expect(meta.getSessionMeta('project', 'session')).toEqual({ permissionMode: 'plan', model: 'claude-sonnet-5', effort: 'medium' })
+    db.close()
+  })
+
   it('ignores older observations and accepts newer ones', async () => {
     const { db, store: meta } = await store()
 

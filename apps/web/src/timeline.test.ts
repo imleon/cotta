@@ -498,20 +498,83 @@ describe('timeline raw-message protocol', () => {
     expect(projectTimelineTurn(result.turns[0]!)[0]?.data).toMatchObject({ text: 'hello', primaryTimelineUserMessage: true })
   })
 
-  it('reconciles history and live at message identity level', () => {
-    const historyUser = userMessage('user-1', 'hello')
-    const assistant = { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'final' }] } }
-    const live: TurnSummary = { primaryUserUuid: 'user-1', primaryUserTimestampMs: 1, messages: [historyUser, assistant] }
-    const history: TurnSummary = { primaryUserUuid: 'user-1', primaryUserTimestampMs: 1, durationMs: 10, messages: [historyUser] }
+  it('treats Cotta live failures as terminal control events without rendering them', () => {
+    const turn = userTurn('user-1')
+    const failure = { type: 'cotta_live_turn_failed', error: 'boom', session_id: 'session-1' }
 
-    const [merged] = reconcileTimelineTurns([live], [history])
+    const result = applySdkMessage([turn], failure, timelineTurnIndex([]), 'user-1', null)
 
-    expect(merged?.durationMs).toBe(10)
-    expect(merged?.messages).toEqual([historyUser, assistant])
-    expect(projectTimelineTurn(merged!)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'user.message' }),
-      expect.objectContaining({ kind: 'assistant.text' }),
+    expect(result.terminal).toBe(true)
+    expect(result.turns).toEqual([turn])
+    expect(projectTimelineTurn({ ...turn, messages: [...turn.messages, failure] })).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'raw.cotta_live_turn_failed' }),
     ]))
+  })
+
+  it('keeps SDK result messages as terminal events', () => {
+    const turn = userTurn('user-1')
+    const success = applySdkMessage([turn], { type: 'result', subtype: 'success' }, timelineTurnIndex([]), 'user-1', null)
+    const failure = applySdkMessage([turn], { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'] }, timelineTurnIndex([]), 'user-1', null)
+
+    expect(success.terminal).toBe(true)
+    expect(failure.terminal).toBe(true)
+  })
+
+  it('stales live-only messages before the newest history turn', () => {
+    const firstUser = userMessage('user-1', 'first')
+    const staleUser = userMessage('stale-user')
+    const staleAssistant = { type: 'assistant', uuid: 'stale-assistant', message: { id: 'stale-msg', role: 'assistant', content: [{ type: 'text', text: 'stale' }] } }
+    const secondUser = userMessage('user-2', 'second')
+    const liveAssistant = { type: 'assistant', uuid: 'live-assistant', message: { id: 'live-msg', role: 'assistant', content: [{ type: 'text', text: 'live' }] } }
+    const current: TurnSummary[] = [
+      { primaryUserUuid: 'user-1', primaryUserTimestampMs: 1, messages: [firstUser, staleUser, staleAssistant] },
+      { primaryUserUuid: 'user-2', primaryUserTimestampMs: 2, messages: [secondUser, liveAssistant] },
+    ]
+    const history: TurnSummary[] = [
+      { primaryUserUuid: 'user-1', primaryUserTimestampMs: 1, durationMs: 10, messages: [firstUser] },
+      { primaryUserUuid: 'user-2', primaryUserTimestampMs: 2, messages: [secondUser] },
+    ]
+
+    const merged = reconcileTimelineTurns(current, history)
+
+    expect(merged[0]).toMatchObject({ durationMs: 10, messages: [firstUser] })
+    expect(merged[1]?.messages).toEqual([secondUser, liveAssistant])
+  })
+
+  it('stales live turns inside the history page before the watermark', () => {
+    const current: TurnSummary[] = [
+      { primaryUserUuid: 'older-page', primaryUserTimestampMs: 5, messages: [] },
+      { primaryUserUuid: 'stale-live', primaryUserTimestampMs: 15, messages: [] },
+      { primaryUserUuid: 'equal-live', primaryUserTimestampMs: 20, messages: [] },
+      { primaryUserUuid: 'newer-live', primaryUserTimestampMs: 25, messages: [] },
+    ]
+    const history: TurnSummary[] = [
+      { primaryUserUuid: 'history-1', primaryUserTimestampMs: 10, messages: [] },
+      { primaryUserUuid: 'history-2', primaryUserTimestampMs: 20, messages: [] },
+    ]
+
+    expect(reconcileTimelineTurns(current, history).map((turn) => turn.primaryUserUuid)).toEqual([
+      'older-page',
+      'history-1',
+      'history-2',
+      'equal-live',
+      'newer-live',
+    ])
+  })
+
+  it('keeps unorderable live data when the history watermark has no timestamp', () => {
+    const historyUser = userMessage('user-2')
+    const liveAssistant = { type: 'assistant', uuid: 'live-assistant', message: { id: 'live-msg', role: 'assistant', content: [] } }
+    const current: TurnSummary[] = [
+      { primaryUserUuid: 'unknown-live', messages: [] },
+      { primaryUserUuid: 'user-2', messages: [historyUser, liveAssistant] },
+    ]
+    const history: TurnSummary[] = [{ primaryUserUuid: 'user-2', messages: [historyUser] }]
+
+    const merged = reconcileTimelineTurns(current, history)
+
+    expect(merged[0]?.messages).toEqual([historyUser, liveAssistant])
+    expect(merged[1]?.primaryUserUuid).toBe('unknown-live')
   })
 
   it('routes late tool results and task notifications to the tool-use owner turn', () => {

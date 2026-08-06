@@ -28,8 +28,6 @@ function memorySettingsStore() {
   return {
     getAll: () => ({}),
     setMany() {},
-    getSessionSettings: () => null,
-    setSessionSettings() {},
     getAuthSession: (sessionId: string) => authSessions.get(sessionId) ?? null,
     setAuthSession: (sessionId: string, session: { user: { login: string; name: string | null; avatarUrl: string | null }; expiresAt: number }) => { authSessions.set(sessionId, session) },
     deleteAuthSession: (sessionId: string) => { authSessions.delete(sessionId) },

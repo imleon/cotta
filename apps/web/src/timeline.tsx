@@ -1065,8 +1065,14 @@ function userBlocksFromMessage(message: Record<string, unknown>, uuid: string, p
 
 export const isPrimaryUserMessage = isPrimaryTimelineUserMessage
 
+function isTerminalLiveEvent(value: unknown): boolean {
+  return isRecord(value) && (value.type === 'result' || value.type === 'cotta_live_turn_failed')
+}
+
 function resultFailureMessage(value: unknown): string | null {
-  if (!isRecord(value) || value.type !== 'result') return null
+  if (!isRecord(value)) return null
+  if (value.type === 'cotta_live_turn_failed') return typeof value.error === 'string' ? value.error : 'Turn failed'
+  if (value.type !== 'result') return null
   const failed = value.is_error === true || (typeof value.subtype === 'string' && (value.subtype === 'failed' || value.subtype.startsWith('error')))
   if (!failed) return null
   return Array.isArray(value.errors) && typeof value.errors[0] === 'string' ? value.errors[0] : 'Turn failed'
@@ -1170,7 +1176,7 @@ export function projectTimelineTurn(turn: TurnSummary): TimelineBlock[] {
       }
       continue
     }
-    if (message.type !== 'result' && message.type !== 'system' && message.type !== 'command_lifecycle') blocks.push(rawMessageBlock(message))
+    if (message.type !== 'result' && message.type !== 'system' && message.type !== 'command_lifecycle' && message.type !== 'cotta_live_turn_failed') blocks.push(rawMessageBlock(message))
   }
   return blocks
 }
@@ -1280,6 +1286,7 @@ export function applySdkMessage(
   _sessionId = 'pending',
 ): ApplySdkMessageResult {
   if (!isRecord(raw) || typeof raw.type !== 'string') return { turns, currentUserMessageUuid, terminal: false }
+  if (isTerminalLiveEvent(raw) && raw.type !== 'result') return { turns, currentUserMessageUuid, terminal: true }
   if (raw.type === 'user' && raw.isSynthetic === true) return { turns, currentUserMessageUuid, terminal: false }
 
   if (raw.type === 'user' && isPrimaryTimelineUserMessage(raw) && !isTimelineTaskNotificationMessage(raw)) {
@@ -1298,10 +1305,10 @@ export function applySdkMessage(
     return { turns: turnIsRepresentedBy(turn, historyIndex) ? turns : [...turns, turn], currentUserMessageUuid: uuid, terminal: false }
   }
 
-  if (!currentUserMessageUuid) return { turns, currentUserMessageUuid, terminal: raw.type === 'result' }
-  if (messageIsRepresentedBy(raw, historyIndex)) return { turns, currentUserMessageUuid, terminal: raw.type === 'result' }
+  if (!currentUserMessageUuid) return { turns, currentUserMessageUuid, terminal: isTerminalLiveEvent(raw) }
+  if (messageIsRepresentedBy(raw, historyIndex)) return { turns, currentUserMessageUuid, terminal: isTerminalLiveEvent(raw) }
   const owner = messageOwnerTurnId(turns, currentUserMessageUuid, raw)
-  return { turns: appendMessageToTurn(turns, owner, raw), currentUserMessageUuid, terminal: raw.type === 'result' }
+  return { turns: appendMessageToTurn(turns, owner, raw), currentUserMessageUuid, terminal: isTerminalLiveEvent(raw) }
 }
 
 function persistedLiveEventPayload(event: PersistedLiveEvent): unknown {
@@ -1344,22 +1351,27 @@ export function liveEventsForTurn(events: PersistedLiveEvent[], turnId: string):
 }
 
 export function reconcileTimelineTurns(current: TurnSummary[], incoming: TurnSummary[]): TurnSummary[] {
+  const watermark = incoming.at(-1)
+  if (!watermark) return current
+
   const incomingIndex = timelineTurnIndex(incoming)
   const mergedIncoming = incoming.map((turn) => {
+    if (turn.primaryUserUuid !== watermark.primaryUserUuid) return turn
     const liveTurn = current.find((item) => item.primaryUserUuid === turn.primaryUserUuid)
     if (!liveTurn) return turn
     const liveMessages = liveTurn.messages.filter((message) => !messageIsRepresentedBy(message, incomingIndex))
     return liveMessages.length > 0 ? { ...turn, messages: [...turn.messages, ...liveMessages] } : turn
   })
   const unreconciled = current.filter((turn) => !turnIsRepresentedBy(turn, incomingIndex))
-  const firstIncomingOrder = mergedIncoming[0] ? turnOrderValue(mergedIncoming[0]) : null
-  if (firstIncomingOrder === null) return [...mergedIncoming, ...unreconciled]
+  const firstIncomingOrder = turnOrderValue(incoming[0]!)
+  const watermarkOrder = turnOrderValue(watermark)
+  if (firstIncomingOrder === null || watermarkOrder === null) return [...mergedIncoming, ...unreconciled]
   const older: TurnSummary[] = []
   const newerOrUnknown: TurnSummary[] = []
   for (const turn of unreconciled) {
     const order = turnOrderValue(turn)
-    if (order === null || order < firstIncomingOrder) older.push(turn)
-    else newerOrUnknown.push(turn)
+    if (order !== null && order < firstIncomingOrder) older.push(turn)
+    else if (order === null || order >= watermarkOrder) newerOrUnknown.push(turn)
   }
   return [...older, ...mergedIncoming, ...newerOrUnknown]
 }
@@ -1737,8 +1749,8 @@ function useSessionTimelineData(
           onLiveTurnChangeRef.current?.(userMessageUuid)
         }
       }
-      const terminal = isRecord(raw) && raw.type === 'result'
       const result = applySdkMessage(turnsRef.current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current, Date.now(), sessionId)
+      const terminal = result.terminal
       liveUserMessageUuidRef.current = result.currentUserMessageUuid
       turnsRef.current = result.turns
       setTurns(result.turns)

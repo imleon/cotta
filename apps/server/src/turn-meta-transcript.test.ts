@@ -138,6 +138,27 @@ describe('TurnMetaTranscriptStore', () => {
     })
   })
 
+  it('clears session effort when transcript switches to a model without effort support', async () => {
+    const { projectDir, config, db } = await setup()
+    const settingsStore = { getAll: () => ({ modelCatalog: { models: [
+      { value: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet', supportsEffort: true, supportedEffortLevels: ['medium', 'high'] },
+      { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: 'Haiku' },
+    ] } }) }
+    const store = new TurnMetaTranscriptStore(db, { claudeConfigDir: config, settingsStore: settingsStore as never })
+    await writeFile(join(projectDir, 'session.jsonl'), jsonl(
+      primary('session', 'first'),
+      child('session', 'first-assistant', 'first', { effort: 'high', message: { role: 'assistant', model: 'claude-sonnet-5', content: [] } }),
+      duration('session', 'first-duration', 'first-assistant'),
+      primary('session', 'second'),
+      child('session', 'second-assistant', 'second', { message: { role: 'assistant', model: 'claude-haiku-4-5-20251001', content: [] } }),
+      duration('session', 'second-duration', 'second-assistant'),
+    ))
+
+    await store.syncSessions([changed('session')])
+
+    expect(store.loadTimelineMetadata('project', 'session').sessionMeta).toEqual({ permissionMode: null, model: 'claude-haiku-4-5-20251001', effort: null })
+  })
+
   it('stores away summaries on their owner turn', async () => {
     const { projectDir, store, db } = await setup()
     await writeFile(join(projectDir, 'session.jsonl'), jsonl(
@@ -230,7 +251,7 @@ describe('TurnMetaTranscriptStore', () => {
     insert.run('project-a', '/a.jsonl', 'turn-a', 1, 'plan', null, 'high')
     insert.run('project-b', '/b.jsonl', 'turn-b', 2, null, 'claude-opus-5', 'xhigh')
 
-    expect(store.loadTimelineMetadata('project-a', 'shared-session').sessionMeta).toEqual({ permissionMode: 'plan', model: null, effort: 'high' })
+    expect(store.loadTimelineMetadata('project-a', 'shared-session').sessionMeta).toEqual({ permissionMode: 'plan', model: null, effort: null })
     expect(store.loadTimelineMetadata('project-b', 'shared-session').sessionMeta).toEqual({ permissionMode: null, model: 'claude-opus-5', effort: 'xhigh' })
   })
 

@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingLabel, cliCookingTurnId, CLI_COOKING_VERBS, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, projectTimelineTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionAwaySummary, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel } from './timeline'
+import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingLabel, cliCookingTurnId, CLI_COOKING_VERBS, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, projectTimelineTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionAwaySummary, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel, turnFooterState } from './timeline'
 
 describe('session task list', () => {
   it('hides empty lists and shows task statuses without active form', () => {
@@ -64,6 +64,15 @@ describe('assistant response skeleton', () => {
     expect(html).toContain('aria-busy="true"')
     expect(html).toContain('timeline-skeleton-line')
     expect(html).toContain('Cooking...')
+  })
+
+  it('shows pending background agents on primary-only skeletons before cooking', () => {
+    const html = renderToStaticMarkup(createElement(AssistantResponseFrameSkeleton, { activeLabel: 'Writing tests...', footerState: { kind: 'waiting', label: 'Waiting for 2 background agents to finish' } }))
+
+    expect(html).toContain('Waiting for 2 background agents to finish')
+    expect(html).not.toContain('Writing tests...')
+    expect(html).toContain('role="status"')
+    expect(html).toContain('aria-live="polite"')
   })
 
   it('keeps Claude Code cooking verb spelling', () => {
@@ -378,6 +387,13 @@ describe('timeline response frame grouping', () => {
     expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 2 })).toBe('Waiting for 2 background agents to finish')
     expect(turnDurationLabel({ primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 0 })).toMatch(/ for 21s$/)
     expect(turnDurationLabel({ primaryUserUuid: 'turn-1' })).toBeNull()
+  })
+
+  it('prioritizes pending agents before cooking and cooked duration', () => {
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 2 }, cooking: true, activeLabel: 'Writing tests...' })).toEqual({ kind: 'waiting', label: 'Waiting for 2 background agents to finish' })
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1' }, cooking: true, activeLabel: 'Writing tests...' })).toEqual({ kind: 'cooking', label: 'Writing tests...' })
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1' }, cooking: true })).toEqual({ kind: 'cooking', label: undefined })
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000 }, cooking: false })?.kind).toBe('duration')
   })
 
   it('selects the latest unfinished primary turn for active CLI phases', () => {

@@ -779,7 +779,14 @@ const TimelineRenderItemView = memo(function TimelineRenderItemView({ item, time
 
 type ToastNotification = { message: string; tone: 'success' | 'error' }
 
-export function AssistantResponseFrameSkeleton({ activeLabel }: { activeLabel?: string }) {
+function FooterStatus({ state }: { state: TurnFooterState }) {
+  if (!state) return null
+  if (state.kind === 'cooking') return <CliCookingIndicator label={state.label} />
+  return <span className="text-[13px] leading-[1.6]" role="status" aria-live="polite" aria-label={state.kind === 'waiting' ? 'Background agents pending' : 'Turn duration'}><span aria-hidden="true">✻ </span>{state.label}</span>
+}
+
+export function AssistantResponseFrameSkeleton({ activeLabel, footerState }: { activeLabel?: string; footerState?: TurnFooterState }) {
+  const state = footerState ?? { kind: 'cooking' as const, label: activeLabel }
   return (
     <div className="assistant-response group">
       <section className={timelineMessageClass.assistantFrame} aria-label="Turn response" aria-busy="true">
@@ -790,13 +797,13 @@ export function AssistantResponseFrameSkeleton({ activeLabel }: { activeLabel?: 
         </div>
       </section>
       <div className="flex items-center px-1 text-[var(--tl-muted)]">
-        <CliCookingIndicator label={activeLabel} />
+        <FooterStatus state={state} />
       </div>
     </div>
   )
 }
 
-const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, durationLabel, cooking, activeLabel, source, onViewRaw, onForkSession, onNotify }: { item: AssistantResponseFrameItem; timestamp?: number; durationLabel?: string | null; cooking?: boolean; activeLabel?: string; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void; onForkSession?: (upToMessageId: string) => Promise<unknown>; onNotify?: (toast: ToastNotification) => void }) {
+const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ item, timestamp, footerState, source, onViewRaw, onForkSession, onNotify }: { item: AssistantResponseFrameItem; timestamp?: number; footerState?: TurnFooterState; source?: 'history' | 'live'; onViewRaw?: (blocks: TimelineBlock[]) => void; onForkSession?: (upToMessageId: string) => Promise<unknown>; onNotify?: (toast: ToastNotification) => void }) {
   const copyText = assistantResponseText(item.items)
   const forkMessageId = assistantResponseFrameForkMessageId(item)
   const [forking, setForking] = useState(false)
@@ -830,7 +837,7 @@ const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ it
         </div>
       </section>
       <div className="flex items-center px-1 text-[var(--tl-muted)]">
-        {cooking ? <><CliCookingIndicator label={activeLabel} /><span className="mx-2 h-3 w-px bg-[var(--tl-border-soft)] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" /></> : durationLabel ? <><span className="text-[13px] leading-[1.6]" aria-label="Turn duration"><span aria-hidden="true">✻ </span>{durationLabel}</span><span className="mx-2 h-3 w-px bg-[var(--tl-border-soft)] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" /></> : null}
+        {footerState ? <><FooterStatus state={footerState} /><span className="mx-2 h-3 w-px bg-[var(--tl-border-soft)] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" /></> : null}
         <TimelineTimestamp value={timestamp} className={timelineMessageClass.timestampAssistant} copyText={copyText} copyLabel="Copy assistant response" onViewRaw={onViewRaw ? () => onViewRaw(item.items.flatMap(timelineRenderItemBlocks)) : undefined} viewRawLabel="View raw assistant response" extraActions={forkAction} source={source} />
       </div>
       {forkError ? <div className="panel error">Failed to fork session: {forkError}</div> : null}
@@ -1208,10 +1215,23 @@ function formatTurnDuration(durationMs: number): string {
   return hours > 0 ? `${hours}h ${minutes}m ${remainder}s` : minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`
 }
 
-export function turnDurationLabel(turn: Pick<TurnSummary, 'primaryUserUuid' | 'durationMs' | 'pendingBackgroundAgentCount'>): string | null {
+export function turnPendingAgentLabel(turn: Pick<TurnSummary, 'pendingBackgroundAgentCount'>): string | null {
   const pending = turn.pendingBackgroundAgentCount ?? 0
-  if (pending > 0) return `Waiting for ${pending} background ${pending === 1 ? 'agent' : 'agents'} to finish`
-  return turn.durationMs === undefined ? null : `${stableTurnVerb(turn.primaryUserUuid)} for ${formatTurnDuration(turn.durationMs)}`
+  return pending > 0 ? `Waiting for ${pending} background ${pending === 1 ? 'agent' : 'agents'} to finish` : null
+}
+
+export function turnDurationLabel(turn: Pick<TurnSummary, 'primaryUserUuid' | 'durationMs' | 'pendingBackgroundAgentCount'>): string | null {
+  return turnPendingAgentLabel(turn) ?? (turn.durationMs === undefined ? null : `${stableTurnVerb(turn.primaryUserUuid)} for ${formatTurnDuration(turn.durationMs)}`)
+}
+
+export type TurnFooterState = { kind: 'waiting' | 'duration'; label: string } | { kind: 'cooking'; label?: string } | null
+
+export function turnFooterState(input: { turn: Pick<TurnSummary, 'primaryUserUuid' | 'durationMs' | 'pendingBackgroundAgentCount'>; cooking: boolean; activeLabel?: string }): TurnFooterState {
+  const pendingLabel = turnPendingAgentLabel(input.turn)
+  if (pendingLabel) return { kind: 'waiting', label: pendingLabel }
+  if (input.cooking) return { kind: 'cooking', label: input.activeLabel }
+  const durationLabel = turnDurationLabel(input.turn)
+  return durationLabel ? { kind: 'duration', label: durationLabel } : null
 }
 
 export function cliCookingTurnId(turns: TurnSummary[], runState?: SessionRunState | null): string | null {
@@ -1985,18 +2005,18 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
           const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
           const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
           const source = turn.primaryUserUuid === liveTurnId ? 'live' : 'history'
-          const durationLabel = turnDurationLabel(turn)
           const cooking = turn.primaryUserUuid === cookingTurnId || turn.primaryUserUuid === activeTurnId
           const activeLabel = turn.primaryUserUuid === activeTurnId && activeTaskLabel ? activeTaskLabel : turn.primaryUserUuid === cookingTurnId ? cliCookingLabel(turn.primaryUserUuid) : undefined
+          const footerState = turnFooterState({ turn, cooking, activeLabel })
           const showResponseSkeleton = shouldShowAssistantResponseSkeleton({ turn, cooking, lastAssistantFrameId, runState, fallbackTurnId: responseSkeletonTurnIdRef.current })
           if (responseSkeletonTurnIdRef.current === turn.primaryUserUuid && (lastAssistantFrameId || turn.durationMs !== undefined)) responseSkeletonTurnIdRef.current = null
           return (
             <article className="turn-card" key={turn.primaryUserUuid}>
               <div className="timeline-blocks">{displayItems.map((item) => item.type === 'assistant-response-frame'
-                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId && turn.durationMs !== undefined ? turn.durationTimestampMs : undefined} durationLabel={item.id === lastAssistantFrameId ? durationLabel : null} cooking={cooking && item.id === lastAssistantFrameId} activeLabel={activeLabel} source={source} onViewRaw={() => openRawMessages(turn.primaryUserUuid)} onForkSession={runState?.phase === 'idle' ? onForkSession : undefined} onNotify={onNotify} key={item.id} />
+                ? <AssistantResponseFrameView item={item} timestamp={item.id === lastAssistantFrameId && turn.durationMs !== undefined ? turn.durationTimestampMs : undefined} footerState={item.id === lastAssistantFrameId ? footerState : null} source={source} onViewRaw={() => openRawMessages(turn.primaryUserUuid)} onForkSession={runState?.phase === 'idle' ? onForkSession : undefined} onNotify={onNotify} key={item.id} />
                 : <TimelineRenderItemView item={item.item} timestamp={item.item.type === 'block' && item.item.block.kind === 'user.message' ? turn.primaryUserTimestampMs : undefined} source={source} onViewRaw={() => openRawMessages(turn.primaryUserUuid)} key={timelineRenderItemKey(item.item)} />,
               )}</div>
-              {showResponseSkeleton ? <AssistantResponseFrameSkeleton activeLabel={activeLabel} /> : null}
+              {showResponseSkeleton ? <AssistantResponseFrameSkeleton activeLabel={activeLabel} footerState={footerState} /> : null}
               {turn.awaySummary?.trim() ? <SessionAwaySummary value={turn.awaySummary} /> : null}
             </article>
           )

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { codeToHtml } from 'shiki'
-import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId, type PersistedLiveEvent, type SessionInfoResponse, type SessionRunState, type SessionTask, type SessionTimelineResponse, type TimelineBlock, type TurnSummary } from '@cotta/shared'
+import { isPrimaryTimelineUserMessage, isTimelineTaskNotificationMessage, timelineTaskNotificationToolUseId, timelineToolUseId, type PersistedLiveEvent, type SessionInfoResponse, type SessionRunState, type SessionStatus, type SessionTask, type SessionTimelineResponse, type TimelineBlock, type TurnSummary } from '@cotta/shared'
 import { fetchSessionInfo, fetchSessionLiveEvents, fetchSessionRawMessages, fetchSessionTimeline } from './api'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -781,8 +781,8 @@ type ToastNotification = { message: string; tone: 'success' | 'error' }
 
 function FooterStatus({ state }: { state: TurnFooterState }) {
   if (!state) return null
-  if (state.kind === 'cooking') return <CliCookingIndicator label={state.label} />
-  return <span className="text-[13px] leading-[1.6]" role="status" aria-live="polite" aria-label={state.kind === 'waiting' ? 'Background agents pending' : 'Turn duration'}><span aria-hidden="true">✻ </span>{state.label}</span>
+  if (state.kind === 'cooking' || state.kind === 'waiting') return <CliCookingIndicator label={state.label} />
+  return <span className="text-[13px] leading-[1.6]" role="status" aria-live="polite" aria-label="Turn duration"><span aria-hidden="true">✻ </span>{state.label}</span>
 }
 
 export function AssistantResponseFrameSkeleton({ activeLabel, footerState }: { activeLabel?: string; footerState?: TurnFooterState }) {
@@ -823,7 +823,7 @@ const AssistantResponseFrameView = memo(function AssistantResponseFrameView({ it
     }
   }
 
-  const forkAction = source === 'history' && forkMessageId && onForkSession ? (
+  const forkAction = source === 'history' && footerState?.kind === 'duration' && forkMessageId && onForkSession ? (
     <button className="timeline-action-button inline-flex size-5 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-inherit hover:bg-[var(--tl-surface-soft)] disabled:cursor-default disabled:opacity-50" style={{ borderRadius: 5 }} type="button" aria-label="Fork session from this response" data-tooltip="Fork" onClick={handleFork} disabled={forking}>
       {forking ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 max-sm:h-4 max-sm:w-4" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1.9 10h5.4c1.1 0 1.6-.2 2.3-.9l6.2-6.2" /><path d="M10.8 2.8h5v5" /><path d="m10.8 12.9 5 5" /><path d="M10.8 17.2h5v-5" /></svg>}
     </button>
@@ -1234,16 +1234,15 @@ export function turnFooterState(input: { turn: Pick<TurnSummary, 'primaryUserUui
   return durationLabel ? { kind: 'duration', label: durationLabel } : null
 }
 
-export function cliCookingTurnId(turns: TurnSummary[], runState?: SessionRunState | null): string | null {
-  if (!runState || !['cli_busy', 'cli_shell', 'cli_waiting'].includes(runState.phase)) return null
+export function cliCookingTurnId(turns: TurnSummary[], cliActive = false): string | null {
+  if (!cliActive) return null
   const turn = turns.at(-1)
   return turn && turn.durationMs === undefined && projectTimelineTurn(turn).some(isPrimaryInputBlock) ? turn.primaryUserUuid : null
 }
 
 export function activeTimelineTurnId(turns: TurnSummary[], runState?: SessionRunState | null): string | null {
   if (!runState || runState.phase === 'idle') return null
-  if (runState.phase === 'running' || runState.phase === 'requires_action') return turns.some((turn) => turn.primaryUserUuid === runState.activeUserMessageUuid) ? runState.activeUserMessageUuid : null
-  return cliCookingTurnId(turns, runState)
+  return turns.some((turn) => turn.primaryUserUuid === runState.activeUserMessageUuid) ? runState.activeUserMessageUuid : null
 }
 
 export function shouldShowAssistantResponseSkeleton(input: { turn: TurnSummary; cooking: boolean; lastAssistantFrameId?: string; runState?: SessionRunState | null; fallbackTurnId?: string | null }): boolean {
@@ -1258,7 +1257,7 @@ export function shouldShowAssistantResponseSkeleton(input: { turn: TurnSummary; 
 
 function CliCookingIndicator({ label = 'Cooking…' }: { label?: string }) {
   const paceClass = useRef(Math.random() < 0.5 ? 'cli-cooking-medium' : 'cli-cooking-slow').current
-  return <span className={`cli-cooking ${paceClass} text-[13px] leading-[1.6]`} role="status"><span className="cli-cooking-mark" aria-hidden="true" /> {label}</span>
+  return <span className={`cli-cooking ${paceClass} text-[13px] leading-[1.6]`} role="status" aria-live="polite"><span className="cli-cooking-mark" aria-hidden="true" /> {label}</span>
 }
 
 function upsertBlock(blocks: TimelineBlock[], block: TimelineBlock): TimelineBlock[] {
@@ -1412,9 +1411,7 @@ export function belongsToTimelineSession(sessionId: string | null, candidateSess
 }
 
 export function shouldResetSessionTimeline(previous: SessionTimelineScope | null, next: SessionTimelineScope): boolean {
-  if (!previous || previous.projectId !== next.projectId) return true
-  if (previous.sessionId === next.sessionId) return false
-  return !(previous.sessionId === null && next.sessionId !== null && previous.pendingPrimaryTurnUuid !== null && previous.pendingPrimaryTurnUuid === next.pendingPrimaryTurnUuid)
+  return !previous || previous.projectId !== next.projectId || previous.sessionId !== next.sessionId
 }
 
 function rawStringField(value: unknown, field: string): string {
@@ -1620,8 +1617,10 @@ export function RawMessagesDialog({ messages, loading, error, liveEvents, liveEv
 function useSessionTimelineData(
   projectId: string | null,
   sessionId: string | null,
+  historyEnabled: boolean,
   pendingTurn?: TurnSummary | null,
-  onLiveTurnChange?: (userMessageUuid: string | null) => void,
+  onLiveTurnChange?: (sessionId: string, userMessageUuid: string | null) => void,
+  onPendingTurnReconciled?: (sessionId: string, userMessageUuid: string) => void,
   onTasksChange?: (tasks: SessionTask[]) => void,
   onSessionListStale?: () => void,
   onSessionInfoChange?: (info: SessionInfoResponse) => void,
@@ -1643,6 +1642,7 @@ function useSessionTimelineData(
   const liveAccumulatorRef = useRef<LiveAssistantStreamAccumulator | null>(null)
   const loadOlderRequestRef = useRef(0)
   const onLiveTurnChangeRef = useRef(onLiveTurnChange)
+  const onPendingTurnReconciledRef = useRef(onPendingTurnReconciled)
   const onSessionListStaleRef = useRef(onSessionListStale)
   const onSessionInfoChangeRef = useRef(onSessionInfoChange)
   const onSessionMetaChangeRef = useRef(onSessionMetaChange)
@@ -1651,12 +1651,13 @@ function useSessionTimelineData(
   const refetchSessionInfoRef = useRef<() => unknown>(() => undefined)
   const previousScopeRef = useRef<SessionTimelineScope | null>(null)
   const pendingPrimaryTurnUuid = pendingTurn?.primaryUserUuid ?? null
-  const enabled = Boolean(projectId && sessionId)
+  const liveEnabled = Boolean(projectId && sessionId)
+  const historyQueryEnabled = liveEnabled && historyEnabled
 
   const timeline = useQuery({
     queryKey: ['session-timeline', projectId, sessionId],
     queryFn: () => fetchSessionTimeline(projectId!, sessionId!),
-    enabled,
+    enabled: historyQueryEnabled,
     retry: false,
     refetchOnWindowFocus: false,
   })
@@ -1664,13 +1665,14 @@ function useSessionTimelineData(
   const sessionInfo = useQuery({
     queryKey: ['session-info', projectId, sessionId],
     queryFn: () => fetchSessionInfo(projectId!, sessionId!),
-    enabled,
+    enabled: historyQueryEnabled,
     retry: false,
     refetchInterval: liveActive ? false : 8000,
     refetchIntervalInBackground: false,
   })
   useEffect(() => {
     onLiveTurnChangeRef.current = onLiveTurnChange
+    onPendingTurnReconciledRef.current = onPendingTurnReconciled
     onSessionListStaleRef.current = onSessionListStale
     onSessionInfoChangeRef.current = onSessionInfoChange
     onSessionMetaChangeRef.current = onSessionMetaChange
@@ -1706,7 +1708,7 @@ function useSessionTimelineData(
       liveUserMessageUuidRef.current = pendingTurn.primaryUserUuid
       liveAccumulatorRef.current = new LiveAssistantStreamAccumulator(pendingTurn.primaryUserUuid)
       setLiveActive(true)
-      onLiveTurnChangeRef.current?.(pendingTurn.primaryUserUuid)
+      if (sessionId) onLiveTurnChangeRef.current?.(sessionId, pendingTurn.primaryUserUuid)
     }
     setTurns((current) => {
       const next = current.some((turn) => turn.primaryUserUuid === pendingTurn.primaryUserUuid)
@@ -1731,9 +1733,12 @@ function useSessionTimelineData(
     setHasMore(timeline.data.hasMore)
     onSessionMetaChangeRef.current?.(timeline.data.sessionMeta)
     onTasksChange?.(timeline.data.tasks)
+    if (sessionId && pendingPrimaryTurnUuid && timeline.data.turns.some((turn) => turn.primaryUserUuid === pendingPrimaryTurnUuid)) {
+      onPendingTurnReconciledRef.current?.(sessionId, pendingPrimaryTurnUuid)
+    }
     setOlderError(null)
     lastAppliedTimelineVersionRef.current = nextVersion
-  }, [timeline.data])
+  }, [pendingPrimaryTurnUuid, sessionId, timeline.data])
 
   useEffect(() => {
     if (!sessionInfo.data) return
@@ -1766,7 +1771,7 @@ function useSessionTimelineData(
           liveUserMessageUuidRef.current = userMessageUuid
           liveAccumulatorRef.current = new LiveAssistantStreamAccumulator(userMessageUuid)
           setLiveActive(true)
-          onLiveTurnChangeRef.current?.(userMessageUuid)
+          onLiveTurnChangeRef.current?.(sessionId, userMessageUuid)
         }
       }
       const result = applySdkMessage(turnsRef.current, raw, historyIndexRef.current, liveUserMessageUuidRef.current, liveAccumulatorRef.current, Date.now(), sessionId)
@@ -1778,7 +1783,12 @@ function useSessionTimelineData(
         liveUserMessageUuidRef.current = null
         liveAccumulatorRef.current = null
         setLiveActive(false)
-        onLiveTurnChangeRef.current?.(null)
+        onLiveTurnChangeRef.current?.(sessionId, null)
+        onSessionListStaleRef.current?.()
+        if (historyEnabled) {
+          void refetchTimelineRef.current()
+          void refetchSessionInfoRef.current()
+        }
       }
       shouldScrollToBottomRef.current ||= isTimelineAtBottomRef.current?.() ?? true
     }
@@ -1796,7 +1806,7 @@ function useSessionTimelineData(
   }, [projectId, sessionId])
 
   const loadOlder = useCallback(async (): Promise<boolean> => {
-    if (!projectId || !sessionId || !nextCursor || loadingOlder) return false
+    if (!historyEnabled || !projectId || !sessionId || !nextCursor || loadingOlder) return false
     const requestId = loadOlderRequestRef.current + 1
     loadOlderRequestRef.current = requestId
     setLoadingOlder(true)
@@ -1819,7 +1829,7 @@ function useSessionTimelineData(
     } finally {
       if (loadOlderRequestRef.current === requestId) setLoadingOlder(false)
     }
-  }, [loadingOlder, nextCursor, projectId, sessionId])
+  }, [historyEnabled, loadingOlder, nextCursor, projectId, sessionId])
 
   return {
     turns,
@@ -1872,14 +1882,18 @@ export function SessionTaskList({ tasks }: { tasks: SessionTask[] }) {
   )
 }
 
-export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn, runState, tasks = [], onLiveTurnChange, onTasksChange, onSessionListStale, onSessionInfoChange, onSessionMetaChange, onForkSession, onNotify }: {
+export function SessionTimeline({ projectId, projectName, sessionId, historyEnabled = true, pendingTurn, runState, sessionStatus = 'idle', sessionEntrypoint = null, tasks = [], onLiveTurnChange, onPendingTurnReconciled, onTasksChange, onSessionListStale, onSessionInfoChange, onSessionMetaChange, onForkSession, onNotify }: {
   projectId: string
   projectName?: string | null
   sessionId: string | null
+  historyEnabled?: boolean
   pendingTurn?: TurnSummary | null
   runState?: SessionRunState | null
+  sessionStatus?: SessionStatus
+  sessionEntrypoint?: string | null
   tasks?: SessionTask[]
-  onLiveTurnChange?: (userMessageUuid: string | null) => void
+  onLiveTurnChange?: (sessionId: string, userMessageUuid: string | null) => void
+  onPendingTurnReconciled?: (sessionId: string, userMessageUuid: string) => void
   onTasksChange?: (tasks: SessionTask[]) => void
   onSessionListStale?: () => void
   onSessionInfoChange?: (info: SessionInfoResponse) => void
@@ -1913,7 +1927,7 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
     if (!panel) return true
     return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
   }, [])
-  const { turns, hasMore, olderError, loadingOlder, liveConnectionError, liveTurnId, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, pendingTurn, onLiveTurnChange, onTasksChange, onSessionListStale, onSessionInfoChange, onSessionMetaChange, isTimelineAtBottom)
+  const { turns, hasMore, olderError, loadingOlder, liveConnectionError, liveTurnId, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, historyEnabled, pendingTurn, onLiveTurnChange, onPendingTurnReconciled, onTasksChange, onSessionListStale, onSessionInfoChange, onSessionMetaChange, isTimelineAtBottom)
   const visibleTurns: ProjectedTimelineTurn[] = turns.map((turn) => ({ ...turn, blocks: projectTimelineTurn(turn) }))
   const matchingLiveEvents = rawMessageSelection && liveEvents.data
     ? liveEventsForTurn(liveEvents.data.events, rawMessageSelection.turnId)
@@ -1953,7 +1967,7 @@ export function SessionTimeline({ projectId, projectName, sessionId, pendingTurn
     setRawMessageSelection(null)
   }, [pendingPrimaryTurnUuid, projectId, sessionId, shouldScrollToBottomRef])
 
-  const cookingTurnId = cliCookingTurnId(visibleTurns, runState)
+  const cookingTurnId = cliCookingTurnId(visibleTurns, sessionEntrypoint === 'cli' && (sessionStatus === 'busy' || sessionStatus === 'waiting'))
   const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
   if (cookingTurnId || activeTurnId) responseSkeletonTurnIdRef.current = cookingTurnId ?? activeTurnId
   const responseSkeletonScrollKey = visibleTurns.flatMap((turn) => {

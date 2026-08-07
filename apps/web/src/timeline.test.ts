@@ -101,9 +101,9 @@ describe('timeline scope reset', () => {
     expect(belongsToTimelineSession(null, 'session-1')).toBe(false)
   })
 
-  it('preserves pending state when the same primary turn hydrates a real session id', () => {
+  it('preserves pending state while history becomes available for the same session id', () => {
     expect(shouldResetSessionTimeline(
-      { projectId: 'project-1', sessionId: null, pendingPrimaryTurnUuid: 'user-1' },
+      { projectId: 'project-1', sessionId: 'session-1', pendingPrimaryTurnUuid: 'user-1' },
       { projectId: 'project-1', sessionId: 'session-1', pendingPrimaryTurnUuid: 'user-1' },
     )).toBe(false)
   })
@@ -394,33 +394,30 @@ describe('timeline response frame grouping', () => {
     expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1' }, cooking: true, activeLabel: 'Writing tests...' })).toEqual({ kind: 'cooking', label: 'Writing tests...' })
     expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1' }, cooking: true })).toEqual({ kind: 'cooking', label: undefined })
     expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000 }, cooking: false })?.kind).toBe('duration')
+    expect(shouldShowAssistantResponseSkeleton({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000, messages: [] }, cooking: false })).toBe(false)
   })
 
-  it('selects the latest unfinished primary turn for active CLI phases', () => {
+  it('selects the latest unfinished primary turn when CLI is active', () => {
     const turns = [userTurn('turn-1'), userTurn('turn-2')]
-    for (const phase of ['cli_busy', 'cli_shell', 'cli_waiting'] as const) {
-      expect(cliCookingTurnId(turns, { phase, activeUserMessageUuid: null })).toBe('turn-2')
-    }
-    expect(cliCookingTurnId(turns, { phase: 'idle', activeUserMessageUuid: null })).toBeNull()
-    expect(cliCookingTurnId(turns, { phase: 'running', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBeNull()
-    expect(cliCookingTurnId([{ ...turns[1]!, durationMs: 1000 }], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
-    expect(cliCookingTurnId([userTurn('turn-2', [{ id: 'assistant-only', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'hello' } }])], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
-    expect(cliCookingTurnId([], { phase: 'cli_busy', activeUserMessageUuid: null })).toBeNull()
+    expect(cliCookingTurnId(turns, true)).toBe('turn-2')
+    expect(cliCookingTurnId(turns, false)).toBeNull()
+    expect(cliCookingTurnId([{ ...turns[1]!, durationMs: 1000 }], true)).toBeNull()
+    expect(cliCookingTurnId([userTurn('turn-2', [{ id: 'assistant-only', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'hello' } }])], true)).toBeNull()
+    expect(cliCookingTurnId([], true)).toBeNull()
   })
 
   it('selects only the active turn for task progress text', () => {
     const turns = [userTurn('turn-1'), userTurn('turn-2')]
     expect(activeTimelineTurnId(turns, { phase: 'running', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBe('turn-2')
     expect(activeTimelineTurnId(turns, { phase: 'requires_action', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBe('turn-2')
-    expect(activeTimelineTurnId(turns, { phase: 'cli_busy', activeUserMessageUuid: null })).toBe('turn-2')
     expect(activeTimelineTurnId(turns, { phase: 'idle', activeUserMessageUuid: null })).toBeNull()
     expect(activeTimelineTurnId(turns, { phase: 'running', activeUserMessageUuid: 'missing', lastTurn: null })).toBeNull()
   })
 
   it('keeps the assistant skeleton until a just-finished response frame arrives', () => {
     const turn = userTurn('turn-1')
-    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, runState: { phase: 'cli_busy', activeUserMessageUuid: null } })).toBe(true)
-    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, lastAssistantFrameId: 'frame-1', runState: { phase: 'cli_busy', activeUserMessageUuid: null } })).toBe(false)
+    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, runState: { phase: 'idle', activeUserMessageUuid: null } })).toBe(true)
+    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, lastAssistantFrameId: 'frame-1', runState: { phase: 'idle', activeUserMessageUuid: null } })).toBe(false)
     expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'success' } } })).toBe(true)
     expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, fallbackTurnId: 'turn-1', runState: { phase: 'idle', activeUserMessageUuid: null } })).toBe(true)
     expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'error' } } })).toBe(false)

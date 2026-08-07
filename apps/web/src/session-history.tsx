@@ -21,14 +21,12 @@ function formatAge(value?: number): string {
 
 function statusTone(session: SessionSummary): string {
   if (session.status === 'busy') return 'running'
-  if (session.status === 'shell') return 'shell'
   if (session.status === 'waiting') return 'warning'
   return 'neutral'
 }
 
 function statusLabel(session: SessionSummary): string {
   if (session.status === 'busy') return 'Busy'
-  if (session.status === 'shell') return 'Shell'
   if (session.status === 'waiting') return 'Waiting'
   return 'Idle'
 }

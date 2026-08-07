@@ -149,7 +149,7 @@ describe('server routes', () => {
       liveTurnManager: {
         ensureRuntime: () => {}, sessionRunState: () => liveRunState, startTurn: async () => { throw new Error('not implemented') }, interrupt: async () => false, subscribe: () => () => {},
       },
-      claudeSessionRegistry: { cliRunState: () => ({ phase: 'cli_busy', activeUserMessageUuid: null }), cliSessionMetadata: () => null },
+      claudeSessionRegistry: { cliSessionMetadata: () => null },
     })
 
     expect(cache.reader?.('session-1')).toBe(liveRunState)

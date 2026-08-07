@@ -108,7 +108,6 @@ describe('ClaudeSessionRegistry', () => {
       observers.push(observer)
       await writeFile(join(sessionsDir, '999999999.json'), JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', kind, status: 'idle' }))
       await expect.poll(() => observer.cliSessionMetadata('session-1')?.kind).toBe(kind)
-      expect(observer.cliRunState('session-1')).toBeNull()
     }
   })
 
@@ -124,7 +123,6 @@ describe('ClaudeSessionRegistry', () => {
     observers.push(observer)
     await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', kind: 'bg', status: 'idle' }))
     await expect.poll(() => observer.cliSessionMetadata('session-1')).toEqual({ status: 'idle', hasRunningShell: false, kind: 'bg', entrypoint: 'cli' })
-    expect(observer.cliRunState('session-1')).toBeNull()
   })
 
   it('treats CLI shell as idle metadata with a shell tag', async () => {
@@ -146,7 +144,6 @@ describe('ClaudeSessionRegistry', () => {
     await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'shell' }))
     await expect.poll(() => changes.length).toBe(2)
     expect(changes[1]).toEqual({ changedSessions: [{ sessionId: 'session-1', cwd: null }], idleSessionIds: ['session-1'], activeSessionIds: [] })
-    expect(observer.cliRunState('session-1')).toBeNull()
     expect(observer.cliSessionMetadata('session-1')).toEqual({ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' })
   })
 
@@ -165,12 +162,11 @@ describe('ClaudeSessionRegistry', () => {
 
     await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'busy' }))
     await expect.poll(() => changes.length).toBe(1)
-    expect(observer.cliRunState('session-1')).toEqual({ phase: 'cli_busy', activeUserMessageUuid: null })
+    expect(observer.cliSessionMetadata('session-1')).toEqual({ status: 'busy', hasRunningShell: false, kind: null, entrypoint: 'cli' })
 
     await writeFile(sessionPath, JSON.stringify({ sessionId: 'session-1', entrypoint: 'cli', status: 'idle' }))
     await expect.poll(() => changes.length).toBe(2)
     expect(changes[1]).toEqual({ changedSessions: [{ sessionId: 'session-1', cwd: null }], idleSessionIds: ['session-1'], activeSessionIds: [] })
-    expect(observer.cliRunState('session-1')).toBeNull()
   })
 
   it('appends complete snapshots and every observed file state', async () => {

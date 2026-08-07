@@ -23,7 +23,7 @@ import {
   type SessionSummary,
   type SessionTimelineState,
 } from '@cotta/shared'
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { SDKMessage, SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createApp } from '../index.js'
 import { ListCursorError } from '../list-cursor.js'
 import { registerProjectRoutes } from './projects.js'
@@ -312,7 +312,7 @@ describe('project routes', () => {
       },
     })
 
-    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null } })
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'plan', defaultModel: null, defaultEffort: null, useOneMillionContext: true } })
 
     const permission = await app.request('/api/settings', {
       method: 'PUT',
@@ -320,7 +320,7 @@ describe('project routes', () => {
       body: JSON.stringify({ settings: { defaultPermissionMode: 'default' } }),
     })
     expect(permission.status).toBe(200)
-    expect(await permission.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
+    expect(await permission.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null, useOneMillionContext: true } })
 
     const incompleteModel = await app.request('/api/settings', {
       method: 'PUT',
@@ -333,31 +333,31 @@ describe('project routes', () => {
     const saved = await app.request('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: { defaultModel: 'gateway/my-model', defaultEffort: 'high' } }),
+      body: JSON.stringify({ settings: { defaultModel: 'gateway/my-model', defaultEffort: 'high', useOneMillionContext: true } }),
     })
     expect(saved.status).toBe(200)
-    expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: 'gateway/my-model', defaultEffort: 'high' } })
+    expect(await saved.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: 'gateway/my-model', defaultEffort: 'high', useOneMillionContext: true } })
 
     const explicitDefault = await app.request('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: { defaultModel: 'default', defaultEffort: null } }),
+      body: JSON.stringify({ settings: { defaultModel: 'default', defaultEffort: null, useOneMillionContext: true } }),
     })
     expect(explicitDefault.status).toBe(200)
-    expect(await explicitDefault.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: null } })
+    expect(await explicitDefault.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: null, useOneMillionContext: true } })
 
     const reset = await app.request('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: { defaultModel: null, defaultEffort: null } }),
+      body: JSON.stringify({ settings: { defaultModel: null, defaultEffort: null, useOneMillionContext: true } }),
     })
     expect(reset.status).toBe(200)
-    expect(await reset.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
-    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null } })
+    expect(await reset.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null, useOneMillionContext: true } })
+    expect(await (await app.request('/api/settings')).json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null, useOneMillionContext: true } })
 
     const refreshed = await app.request('/api/settings/model-catalog/refresh', { method: 'POST' })
     expect(refreshed.status).toBe(200)
-    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null, modelCatalog } })
+    expect(await refreshed.json()).toEqual({ settings: { defaultPermissionMode: 'default', defaultModel: null, defaultEffort: null, useOneMillionContext: true, modelCatalog } })
   })
 
   it('updates session permission independently from model and effort', async () => {
@@ -1044,6 +1044,15 @@ describe('project routes', () => {
     expect(body.state).toEqual(timelineState)
   })
 
+  it('returns 404 for a live session before history is discoverable', async () => {
+    const response = await createTestApp({
+      'session-live': { phase: 'running', activeUserMessageUuid: 'turn-live', lastTurn: null },
+    }).request(`/api/projects/${project.id}/sessions/session-live/timeline?limitTurns=20`)
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
   it('lists turn meta transcript debug rows and validates pagination', async () => {
     const listEntries = vi.fn(() => ({ entries: [], sessionIds: ['session-newest'], limit: 2, offset: 1, hasMore: false }))
     const app = createApp({ turnMetaTranscriptReader: { listEntries } })
@@ -1419,6 +1428,15 @@ describe('project routes', () => {
     })
   })
 
+  it('returns 404 for live session info before history is discoverable', async () => {
+    const response = await createTestApp({
+      'session-live': { phase: 'running', activeUserMessageUuid: 'turn-live', lastTurn: null },
+    }).request(`/api/projects/${project.id}/sessions/session-live/info`)
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({ error: 'session_not_found' })
+  })
+
   it('returns 404 for session info of an unknown session', async () => {
     const response = await createTestApp().request(
       `/api/projects/${project.id}/sessions/missing/info`,
@@ -1516,7 +1534,6 @@ describe('project routes', () => {
         async getSessionMessages() { return messages },
       },
       claudeSessionRegistry: {
-        cliRunState: () => null,
         cliSessionMetadata: () => ({ status: 'idle', hasRunningShell: false, kind: 'bg', entrypoint: 'cli' }),
       },
     }).request(
@@ -1550,7 +1567,6 @@ describe('project routes', () => {
         async getSessionMessages() { return messages },
       },
       claudeSessionRegistry: {
-        cliRunState: () => null,
         cliSessionMetadata: () => ({ status: 'idle', hasRunningShell: true, kind: null, entrypoint: 'cli' }),
       },
     }).request(`/api/projects/${project.id}/sessions/session-newest/runtime`, { method: 'POST' })
@@ -1622,13 +1638,64 @@ describe('project routes', () => {
     })
   })
 
-  it('returns 404 for live events of an unknown session', async () => {
-    const response = await createTestApp().request(
-      `/api/projects/${project.id}/sessions/missing/live-events`,
-    )
+  it('returns live events without requiring transcript history', async () => {
+    const liveEvents: PersistedLiveEvent[] = [{
+      id: 1,
+      projectId: project.id,
+      sessionId: 'session-live',
+      eventType: 'user',
+      source: 'sdk',
+      recordedAtMs: 1,
+      payload: { type: 'user', uuid: 'turn-live', parent_tool_use_id: null },
+    }]
+    const app = createTestApp({}, messages, liveEvents)
 
-    expect(response.status).toBe(404)
-    expect(await response.json()).toEqual({ error: 'session_not_found' })
+    for (const path of [
+      `/api/projects/${project.id}/sessions/session-live/live-events`,
+      `/api/projects/${project.id}/live-sessions/session-live/events`,
+    ]) {
+      const response = await app.request(path)
+      expect(response.status).toBe(200)
+      expect(sessionLiveEventsResponseSchema.parse(await response.json())).toEqual({ sessionId: 'session-live', events: liveEvents })
+    }
+  })
+
+  it('replays the current turn after subscribing, then continues live', async () => {
+    const user = { type: 'user', uuid: 'turn-live', parent_tool_use_id: null }
+    const assistant = { type: 'assistant', uuid: 'assistant-live' }
+    const live = { type: 'result', subtype: 'success' }
+    let subscriber: ((event: SDKMessage) => void) | undefined
+    const app = createApp({
+      liveEventStore: {
+        append() {},
+        listSessionEvents: () => [
+          { id: 1, projectId: project.id, sessionId: 'session-live', eventType: 'user', source: 'sdk', recordedAtMs: 1, payload: { type: 'user', uuid: 'old-turn', parent_tool_use_id: null } },
+          { id: 2, projectId: project.id, sessionId: 'session-live', eventType: 'user', source: 'sdk', recordedAtMs: 2, payload: user },
+          { id: 3, projectId: project.id, sessionId: 'session-live', eventType: 'assistant', source: 'sdk', recordedAtMs: 3, payload: assistant },
+        ],
+      },
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => ({ phase: 'running', activeUserMessageUuid: 'turn-live', lastTurn: null }),
+        startTurn: async () => { throw new Error('not implemented') },
+        interrupt: async () => false,
+        subscribe: (_sessionId, next) => { subscriber = next; return () => {} },
+      },
+    })
+
+    const response = await app.request(`/api/projects/${project.id}/sessions/session-live/events`)
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let replay = ''
+    while (!replay.includes(JSON.stringify(assistant))) replay += decoder.decode((await reader.read()).value)
+    subscriber?.(live as SDKMessage)
+    const next = decoder.decode((await reader.read()).value)
+    await reader.cancel()
+
+    expect(replay).not.toContain('old-turn')
+    expect(replay).toContain(JSON.stringify(user))
+    expect(replay).toContain(JSON.stringify(assistant))
+    expect(next).toContain(JSON.stringify(live))
   })
 
   it('returns raw messages for a session', async () => {

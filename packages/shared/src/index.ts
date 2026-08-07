@@ -59,14 +59,11 @@ export const sessionRunStateSchema = z.discriminatedUnion('phase', [
     activeUserMessageUuid: z.string(),
     lastTurn: z.null().optional(),
   }),
-  z.object({ phase: z.literal('cli_busy'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
-  z.object({ phase: z.literal('cli_shell'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
-  z.object({ phase: z.literal('cli_waiting'), activeUserMessageUuid: z.null(), lastTurn: z.null().optional() }),
 ])
 
 export type SessionRunState = z.infer<typeof sessionRunStateSchema>
 
-export const sessionStatusSchema = z.enum(['idle', 'busy', 'shell', 'waiting'])
+export const sessionStatusSchema = z.enum(['idle', 'busy', 'waiting'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
 export const sessionSummarySchema = z.object({
@@ -353,12 +350,12 @@ export const modelCatalogItemSchema = z.object({
   supportsAdaptiveThinking: z.boolean().optional(),
   supportsFastMode: z.boolean().optional(),
   supportsAutoMode: z.boolean().optional(),
-})
+}).passthrough()
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>
 
 export const modelCatalogResponseSchema = z.object({
   models: z.array(modelCatalogItemSchema),
-})
+}).passthrough()
 export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>
 
 export const sessionObservationEventKindSchema = z.enum(['snapshot', 'create', 'change', 'delete'])
@@ -498,6 +495,7 @@ export const appSettingsSchema = z.object({
   defaultModel: modelSelectionSchema.nullable().default(null),
   defaultEffort: effortLevelSchema.nullable().default(null),
   modelCatalog: modelCatalogResponseSchema.optional(),
+  useOneMillionContext: z.boolean().default(true),
   showDebugNav: z.boolean().optional(),
 }).catchall(z.unknown())
 export type AppSettings = z.infer<typeof appSettingsSchema>
@@ -511,6 +509,7 @@ export const appSettingsUpdateSchema = z.object({
   defaultPermissionMode: permissionModeSchema.optional(),
   defaultModel: modelSelectionSchema.nullable().optional(),
   defaultEffort: effortLevelSchema.nullable().optional(),
+  useOneMillionContext: z.boolean().optional(),
   showDebugNav: z.boolean().optional(),
 }).refine(
   ({ defaultModel, defaultEffort }) => (defaultModel === undefined) === (defaultEffort === undefined),

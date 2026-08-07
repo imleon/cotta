@@ -93,6 +93,10 @@ export class LiveTurnManager {
     return this.runStateBySession.get(sessionId) ?? null
   }
 
+  projectIdForSession(sessionId: string): string | null {
+    return this.runtimes.get(sessionId)?.projectId ?? null
+  }
+
   close(sessionId: string): boolean {
     const runtime = this.runtimes.get(sessionId)
     if (!runtime) return false
@@ -342,6 +346,14 @@ export class LiveTurnManager {
           runtime.currentUserMessageUuid = null
           this.scheduleIdleClose(runtime)
         }
+      }
+      if (runtime.currentUserMessageUuid) {
+        const userMessageUuid = runtime.currentUserMessageUuid
+        this.publish(runtime, cottaLiveTurnFailed({
+          error: 'SDK stream ended before the turn completed.',
+          sessionId: runtime.sessionId,
+        }))
+        this.finishTurn(runtime, userMessageUuid, 'error')
       }
     } catch (error) {
       console.error('live-runtime:drain failed', error)

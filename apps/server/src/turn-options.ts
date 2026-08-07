@@ -16,8 +16,25 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = 'default'
 const DEFAULT_TRANSCRIPT_EFFORT: EffortLevel = 'medium'
 const EFFORT_ORDER: EffortLevel[] = ['max', 'xhigh', 'high', 'medium', 'low']
 
-function matchingCatalogModel(models: ModelCatalogItem[], model: string): ModelCatalogItem | undefined {
-  return models.find((item) => item.value === model || item.resolvedModel === model)
+function modelIds(model: ModelCatalogItem): string[] {
+  return [model.value, model.resolvedModel].filter((value): value is string => Boolean(value))
+}
+
+function baseModelId(model: string): string {
+  return model.replace(/\[[^\]]+\]$/, '')
+}
+
+function isOneMillionModel(model: ModelCatalogItem): boolean {
+  return modelIds(model).some((id) => /\[1m\]$/.test(id))
+}
+
+function matchingCatalogModel(models: ModelCatalogItem[], model: string, settings?: Pick<AppSettings, 'useOneMillionContext'>): ModelCatalogItem | undefined {
+  const base = baseModelId(model)
+  const candidates = models.filter((item) => modelIds(item).some((id) => id === model || baseModelId(id) === base))
+  if (candidates.length <= 1) return candidates[0]
+  const oneMillion = candidates.find(isOneMillionModel)
+  const standard = candidates.find((item) => !isOneMillionModel(item))
+  return settings?.useOneMillionContext === false ? standard ?? oneMillion : oneMillion ?? standard
 }
 
 function supportedEffortLevels(model?: ModelCatalogItem): EffortLevel[] {
@@ -73,20 +90,20 @@ export function validateTurnOptions(options: ResolvedTurnOptions, settingsStore?
   if (modelValue === DEFAULT_MODEL) return effortValue ? { ok: false, error: 'unsupported_effort' } : { ok: true }
   const catalog = readSettings(settingsStore).modelCatalog
   if (!catalog) return { ok: true }
-  const model = matchingCatalogModel(catalog.models, modelValue)
+  const model = matchingCatalogModel(catalog.models, modelValue, readSettings(settingsStore))
   if (!model) return { ok: false, error: 'unsupported_model' }
   if (effortValue && !supportedEffortLevels(model).includes(effortValue)) return { ok: false, error: 'unsupported_effort' }
   return { ok: true }
 }
 
-export function normalizeModelEffortSelection(input: { model: ModelSelection | DefaultTurnOption | null; effort: EffortLevel | null }, catalog?: ModelCatalogResponse): { model: ModelSelection | DefaultTurnOption | null; effort: EffortLevel | null } {
+export function normalizeModelEffortSelection(input: { model: ModelSelection | DefaultTurnOption | null; effort: EffortLevel | null }, settings?: Pick<AppSettings, 'modelCatalog' | 'useOneMillionContext'>): { model: ModelSelection | DefaultTurnOption | null; effort: EffortLevel | null } {
   if (input.model == null) return { model: null, effort: null }
   if (input.model === DEFAULT_MODEL) return { model: DEFAULT_MODEL, effort: null }
-  const catalogModel = catalog ? matchingCatalogModel(catalog.models, input.model) : undefined
+  const catalogModel = settings?.modelCatalog ? matchingCatalogModel(settings.modelCatalog.models, input.model, settings) : undefined
   if (!catalogModel) return input
   const supported = supportedEffortLevels(catalogModel)
-  if (!supported.length) return { model: input.model, effort: null }
-  return { model: input.model, effort: input.effort ? downgradeEffort(input.effort, supported) : null }
+  if (!supported.length) return { model: catalogModel.value, effort: null }
+  return { model: catalogModel.value, effort: input.effort ? downgradeEffort(input.effort, supported) : null }
 }
 
 export function mergeTranscriptModelEffort(input: {
@@ -103,15 +120,16 @@ export function mergeTranscriptModelEffort(input: {
     : input.settings?.defaultModel != null
       ? input.settings.defaultEffort ?? null
       : null
-  const targetModel = input.observedModel ?? currentModel
+  const observedCatalogModel = input.observedModel && catalog ? matchingCatalogModel(catalog.models, input.observedModel, input.settings) : undefined
+  const targetModel = observedCatalogModel?.value ?? input.observedModel ?? currentModel
   if (targetModel === DEFAULT_MODEL) return { model: DEFAULT_MODEL, effort: null }
-  const targetCatalogModel = catalog ? matchingCatalogModel(catalog.models, targetModel) : undefined
+  const targetCatalogModel = catalog ? matchingCatalogModel(catalog.models, targetModel, input.settings) : undefined
   const targetSupported = supportedEffortLevels(targetCatalogModel)
   if (targetCatalogModel && !targetSupported.length) return { model: targetModel, effort: null }
   if (input.observedEffort) return { model: targetModel, effort: targetSupported.length ? downgradeEffort(input.observedEffort, targetSupported) : input.observedEffort }
   if (!targetCatalogModel) return { model: targetModel, effort: currentEffort }
   if (currentEffort) return { model: targetModel, effort: downgradeEffort(currentEffort, targetSupported) }
-  const currentCatalogModel = catalog ? matchingCatalogModel(catalog.models, currentModel) : undefined
+  const currentCatalogModel = catalog ? matchingCatalogModel(catalog.models, currentModel, input.settings) : undefined
   if (currentCatalogModel && modelSupportsEffort(currentCatalogModel)) return { model: targetModel, effort: null }
   return { model: targetModel, effort: targetSupported.includes(DEFAULT_TRANSCRIPT_EFFORT) ? DEFAULT_TRANSCRIPT_EFFORT : targetSupported[0] ?? null }
 }

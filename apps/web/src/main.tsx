@@ -23,7 +23,7 @@ import {
   type TurnMetaTranscriptRow,
   type TurnSummary,
 } from '@cotta/shared'
-import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, fetchTurnMetaTranscript, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSessionMeta, saveSettings, startGitHubDeviceLogin } from './api'
+import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchModelCatalog, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, fetchTurnMetaTranscript, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSessionMeta, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
 import { SessionTaskList, SessionTimeline } from './timeline'
@@ -99,9 +99,18 @@ function clampWorkspaceRailDragWidth(width: number): number {
 }
 
 class CreateTurnHttpError extends Error {
-  constructor(readonly status: number) {
-    super(`Create turn failed: ${status}`)
+  constructor(message: string) {
+    super(message)
   }
+}
+
+async function responseErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = await response.clone().json() as { error?: unknown }
+    if (typeof body.error === 'string' && body.error) return body.error
+  } catch {}
+  const text = await response.text().catch(() => '')
+  return text || response.statusText || 'Request failed'
 }
 
 function createUserMessageUuid(): string {
@@ -122,7 +131,7 @@ async function createTurn(projectId: string, existingSessionId: string | null, s
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, text, userMessageUuid }),
   })
-  if (!response.ok) throw new CreateTurnHttpError(response.status)
+  if (!response.ok) throw new CreateTurnHttpError(await responseErrorMessage(response))
   return createTurnResponseSchema.parse(await response.json())
 }
 
@@ -134,9 +143,12 @@ async function interruptTurn(projectId: string, sessionId: string): Promise<void
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
-function pendingUserTurn(text: string, sessionId: string, userMessageUuid: string): { sessionId: string; turn: TurnSummary } {
+type PendingTurn = { projectId: string; sessionId: string; turn: TurnSummary }
+
+function pendingUserTurn(projectId: string, text: string, sessionId: string, userMessageUuid: string): PendingTurn {
   const timestamp = new Date().toISOString()
   return {
+    projectId,
     sessionId,
     turn: {
       primaryUserUuid: userMessageUuid,
@@ -176,10 +188,6 @@ function sessionExternallyOwned(session: ProjectSessionsResponse['sessions'][num
 
 function selectedTimelineRunState(session: ProjectSessionsResponse['sessions'][number] | null | undefined, liveUserMessageUuid: string | null): SessionRunState {
   if (liveUserMessageUuid) return { phase: session?.status === 'waiting' ? 'requires_action' : 'running', activeUserMessageUuid: liveUserMessageUuid, lastTurn: null }
-  if (session?.entrypoint === 'cli') {
-    if (session.status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
-    if (session.status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
-  }
   return { phase: 'idle', activeUserMessageUuid: null }
 }
 
@@ -211,6 +219,7 @@ function TurnComposer({
   selectedSessionId,
   selectedSession,
   selectedSessionRunState,
+  liveSessionId,
   liveUserMessageUuid,
   setSelectedSessionId,
   setPendingTurn,
@@ -223,15 +232,17 @@ function TurnComposer({
   sessionRuntime,
   sessionInfo,
   sessionMeta,
+  onNotify,
 }: {
   projectId: string | null
   selectedSessionId: string | null
   selectedSession: ProjectSessionsResponse['sessions'][number] | null | undefined
   selectedSessionRunState: SessionRunState | null
+  liveSessionId: string | null
   liveUserMessageUuid: string | null
   setSelectedSessionId: (sessionId: string | null) => void
-  setPendingTurn: Dispatch<SetStateAction<{ sessionId: string; turn: TurnSummary } | null>>
-  refreshSessionLists: (projectId?: string) => void
+  setPendingTurn: Dispatch<SetStateAction<PendingTurn | null>>
+  refreshSessionLists: (projectId?: string, selectedSessionId?: string | null) => void
   onProjectRequired: (text: string) => void
   pendingProjectId: string | null
   pendingProjectRequest: number
@@ -240,6 +251,7 @@ function TurnComposer({
   sessionRuntime: SessionRuntimeResponse | null
   sessionInfo: SessionInfoResponse | null
   sessionMeta: SessionTimelineResponse['sessionMeta'] | null
+  onNotify: (toast: ToastState) => void
 }) {
   const [inputText, setInputText] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -326,29 +338,30 @@ function TurnComposer({
     const targetSessionId = existingSessionId ?? createUserMessageUuid()
     setSubmitting(true)
     setSubmitError(null)
-    if (!existingSessionId && targetProjectId === projectId) setSelectedSessionId(targetSessionId)
     try {
       const effectiveEffort = selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION
       if (existingSessionId) {
         const save = sessionMetaSaveRef.current
         if (save?.key === `${targetProjectId}\0${existingSessionId}`) await save.promise
       } else if (composerManuallyChangedRef.current) await saveSessionMeta(targetProjectId, targetSessionId, { permissionMode, model, effort: effectiveEffort === DEFAULT_TURN_OPTION ? null : effectiveEffort })
-      setPendingTurn(pendingUserTurn(text, targetSessionId, userMessageUuid))
+      setPendingTurn(pendingUserTurn(targetProjectId, text, targetSessionId, userMessageUuid))
       setInputText('')
       const response = await createTurn(targetProjectId, existingSessionId, targetSessionId, text, userMessageUuid)
-      if (targetProjectId !== projectId) onSessionCreated(response.projectId, response.sessionId)
-      else setSelectedSessionId(response.sessionId)
-      await refreshProjects(response.projectId)
-      refreshSessionLists(response.projectId)
+      if (existingSessionId) setSelectedSessionId(response.sessionId)
+      else if (targetProjectId !== projectId) onSessionCreated(response.projectId, response.sessionId)
+      void refreshProjects(response.projectId)
+      refreshSessionLists(response.projectId, response.sessionId)
     } catch (error) {
       if (error instanceof CreateTurnHttpError) {
         setPendingTurn(null)
         setInputText(text)
         if (!existingSessionId && targetProjectId === projectId) setSelectedSessionId(null)
         if (targetProjectId !== projectId) setRetryProjectId(targetProjectId)
-        setSubmitError(error.message)
+        onNotify({ message: error.message, tone: 'error' })
       } else {
-        setSubmitError(`Submission status unknown. Check the timeline or session list before retrying. ${error instanceof Error ? error.message : String(error)}`)
+        const message = error instanceof Error ? error.message : String(error)
+        setSubmitError(`Submission status unknown. Check the timeline or session list before retrying. ${message}`)
+        onNotify({ message, tone: 'error' })
         refreshSessionLists(targetProjectId)
       }
     } finally {
@@ -363,11 +376,11 @@ function TurnComposer({
   }, [pendingProjectId, pendingProjectRequest, inputText])
 
   async function stopLiveTurn() {
-    if (!projectId || !selectedSessionId || !liveUserMessageUuid || interrupting) return
+    if (!projectId || !liveSessionId || !liveUserMessageUuid || interrupting) return
     setInterrupting(true)
     setSubmitError(null)
     try {
-      await interruptTurn(projectId, selectedSessionId)
+      await interruptTurn(projectId, liveSessionId)
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
       setInterrupting(false)
@@ -449,6 +462,7 @@ function TurnComposer({
   return (
     <section className="composer-card composer-card-bottom">
       <form className="turn-form" onSubmit={(event) => { event.preventDefault(); void submitTurn(retryProjectId ?? projectId) }}>
+        {submitError ? <div className="panel error">{submitError}</div> : null}
         <div
           className={`turn-composer${cliSubmitBlocked ? ' turn-composer-disabled' : ''}`}
           onClick={(event) => {
@@ -591,7 +605,6 @@ function TurnComposer({
             </div>
           </div>
         </div>
-        {submitError ? <div className="panel error">{submitError}</div> : null}
       </form>
     </section>
   )
@@ -618,7 +631,7 @@ function WorkspacePanel({
   detail: ProjectSessionsResponse | undefined
   selectedSessionId: string | null
   setSelectedSessionId: (sessionId: string | null) => void
-  refreshSessionLists: (projectIds: string[]) => void
+  refreshSessionLists: (projectIds: string[], selectedSessionId?: string | null) => void
   onProjectRequired: (text: string) => void
   pendingProjectId: string | null
   pendingProjectRequest: number
@@ -631,32 +644,51 @@ function WorkspacePanel({
   onNotify: (toast: ToastState) => void
 }) {
   const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
-  const [pendingTurn, setPendingTurn] = useState<{ sessionId: string; turn: TurnSummary } | null>(null)
+  const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null)
   const [sessionTasks, setSessionTasks] = useState<SessionTask[]>([])
   const [sessionMeta, setSessionMeta] = useState<{ projectId: string; sessionId: string; meta: SessionTimelineResponse['sessionMeta'] } | null>(null)
   const projectName = detail?.project.name
 
-  useEffect(() => { setLiveUserMessageUuid(null); setSessionTasks([]); setSessionMeta(null) }, [projectId, selectedSessionId])
-  useEffect(() => { setPendingTurn(null) }, [projectId])
+  useEffect(() => {
+    setPendingTurn((current) => current?.projectId === projectId ? current : null)
+    setLiveUserMessageUuid(null)
+  }, [projectId])
 
-  function refreshSessionListsForCurrentProject(targetProjectId = projectId) {
-    if (targetProjectId) refreshSessionLists([targetProjectId])
+  function refreshSessionListsForCurrentProject(targetProjectId = projectId, targetSessionId?: string | null) {
+    if (targetProjectId) refreshSessionLists([targetProjectId], targetSessionId)
   }
 
-  function handleLiveTurnChange(userMessageUuid: string | null) {
+  function handleLiveTurnChange(sessionId: string, userMessageUuid: string | null) {
+    if (sessionId !== timelineSessionId) return
     setLiveUserMessageUuid(userMessageUuid)
+    if (!userMessageUuid) refreshSessionListsForCurrentProject(projectId, sessionId)
   }
 
-  const selectedPendingTurn = pendingTurn?.sessionId === selectedSessionId ? pendingTurn.turn : null
-  const selectedSession = detail?.sessions.find((session) => session.id === selectedSessionId)
-  const selectedSessionRunState = selectedTimelineRunState(selectedSession, liveUserMessageUuid)
-  const selectedSessionMeta = sessionMeta?.projectId === projectId && sessionMeta.sessionId === selectedSessionId ? sessionMeta.meta : null
+  const selectedPending = pendingTurn?.projectId === projectId && (pendingTurn.sessionId === selectedSessionId || !selectedSessionId) ? pendingTurn : null
+  const timelineSessionId = selectedPending?.sessionId ?? selectedSessionId
+  const selectedPendingTurn = selectedPending?.turn ?? null
+  const selectedSession = detail?.sessions.find((session) => session.id === timelineSessionId)
+  const historyEnabled = Boolean(selectedSessionId && selectedSessionId === timelineSessionId)
+  const selectedSessionRunState = selectedTimelineRunState(selectedSession, liveUserMessageUuid ?? selectedPendingTurn?.primaryUserUuid ?? null)
+  const selectedSessionMeta = sessionMeta?.projectId === projectId && sessionMeta.sessionId === timelineSessionId ? sessionMeta.meta : null
+
+  useEffect(() => { setSessionTasks([]) }, [projectId, timelineSessionId])
+
+  useEffect(() => {
+    if (!selectedSessionId && selectedPending && selectedSession) setSelectedSessionId(selectedPending.sessionId)
+  }, [selectedPending, selectedSession, selectedSessionId, setSelectedSessionId])
+
+  useEffect(() => {
+    if (!selectedSessionId || !pendingTurn || pendingTurn.sessionId === selectedSessionId) return
+    setPendingTurn(null)
+    setLiveUserMessageUuid(null)
+  }, [pendingTurn, selectedSessionId])
 
   return (
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
-        {projectId && selectedSessionId
-          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={selectedSessionId} pendingTurn={selectedPendingTurn} runState={selectedSessionRunState} tasks={sessionTasks} onLiveTurnChange={handleLiveTurnChange} onTasksChange={setSessionTasks} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onSessionMetaChange={(meta) => setSessionMeta({ projectId, sessionId: selectedSessionId, meta })} onForkSession={selectedSessionId ? (upToMessageId) => onForkSession(projectId, selectedSessionId, upToMessageId) : undefined} onNotify={onNotify} />
+        {projectId && timelineSessionId
+          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={timelineSessionId} historyEnabled={historyEnabled} pendingTurn={selectedPendingTurn} runState={selectedSessionRunState} sessionStatus={selectedSession?.status} sessionEntrypoint={selectedSession?.entrypoint} tasks={sessionTasks} onLiveTurnChange={handleLiveTurnChange} onPendingTurnReconciled={(sessionId, userMessageUuid) => setPendingTurn((current) => current?.sessionId === sessionId && current.turn.primaryUserUuid === userMessageUuid ? null : current)} onTasksChange={setSessionTasks} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onSessionMetaChange={(meta) => setSessionMeta({ projectId, sessionId: timelineSessionId, meta })} onForkSession={historyEnabled ? (upToMessageId) => onForkSession(projectId, timelineSessionId, upToMessageId) : undefined} onNotify={onNotify} />
           : <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div>}
       </div>
       <SessionTaskList tasks={sessionTasks} />
@@ -666,6 +698,7 @@ function WorkspacePanel({
         selectedSessionId={selectedSessionId}
         selectedSession={selectedSession}
         selectedSessionRunState={selectedSessionRunState}
+        liveSessionId={timelineSessionId}
         liveUserMessageUuid={liveUserMessageUuid}
         setSelectedSessionId={setSelectedSessionId}
         setPendingTurn={setPendingTurn}
@@ -678,6 +711,7 @@ function WorkspacePanel({
         sessionRuntime={sessionRuntime}
         sessionInfo={sessionInfo}
         sessionMeta={selectedSessionMeta}
+        onNotify={onNotify}
       />
     </section>
   )
@@ -804,6 +838,20 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
     setStatus(null)
     try {
       const response = await saveSettings({ defaultModel: nextModel, defaultEffort: nextEffort === DEFAULT_TURN_OPTION ? null : nextEffort })
+      queryClient.setQueryData(['settings'], response)
+      setStatus({ message: 'Saved', tone: 'success' })
+    } catch (error) {
+      setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveUseOneMillionContext(useOneMillionContext: boolean) {
+    setSaving(true)
+    setStatus(null)
+    try {
+      const response = await saveSettings({ useOneMillionContext })
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -948,6 +996,25 @@ function SettingsPanel({ projectId, settings }: { projectId: string | null; sett
               </div>
             ) : null}
           </div>
+        </div>
+      </form>
+
+      <form className="settings-card" onSubmit={(event) => event.preventDefault()}>
+        <div className="settings-card-copy">
+          <h3>Use 1M context</h3>
+          <p className="muted">Prefer 1M model variants when the catalog offers them.</p>
+        </div>
+        <div className="settings-card-controls">
+          <button
+            type="button"
+            className="settings-switch"
+            role="switch"
+            aria-checked={settings.useOneMillionContext !== false}
+            disabled={saving}
+            onClick={() => void saveUseOneMillionContext(settings.useOneMillionContext === false)}
+          >
+            <span className="settings-switch-thumb" />
+          </button>
         </div>
       </form>
 
@@ -1133,7 +1200,7 @@ function ProjectsDashboard() {
     retry: false,
   })
   const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
-  const settings: AppSettings = settingsQuery.data?.settings ?? { defaultModel: null, defaultEffort: null }
+  const settings: AppSettings = settingsQuery.data?.settings ?? { defaultModel: null, defaultEffort: null, useOneMillionContext: true }
   const navItems = settings.showDebugNav === false ? DASHBOARD_NAV_ITEMS.filter((item) => item.key !== 'debug') : DASHBOARD_NAV_ITEMS
   const workspaceNavActive = activeNav === 'chat'
   const selection = useProjectSessionSelection({ selectInitialProject: false, enabled: workspaceNavActive })
@@ -1167,6 +1234,7 @@ function ProjectsDashboard() {
   const [highlightedForkSession, setHighlightedForkSession] = useState<{ projectId: string; sessionId: string } | null>(null)
   const [highlightedForkSeen, setHighlightedForkSeen] = useState(false)
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false)
+  const modelCatalogQuery = useQuery({ queryKey: ['model-catalog', selectedProjectId], queryFn: () => fetchModelCatalog(selectedProjectId), enabled: sessionInfoOpen, retry: false })
   const [newConversationMenuOpen, setNewConversationMenuOpen] = useState(false)
   const [isSessionRailSnapping, setIsSessionRailSnapping] = useState(false)
   const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
@@ -1541,16 +1609,15 @@ function ProjectsDashboard() {
       else clearSelection()
       return
     }
-    if (selectedSessionId && selectedProjectOutcome?.selectedSessionExists === false) setSelectedSessionId(null)
   }, [clearSelection, queryClient, selectProject, selectedProjectId, selectedSessionId, setSelectedSessionId])
 
-  const refreshVisibleWindows = useCallback(async (projectIds = visibleProjectIds) => {
+  const refreshVisibleWindows = useCallback(async (projectIds = visibleProjectIds, sessionIdOverride?: string | null) => {
     const targetProjectIds = [...new Set(projectIds)]
     if (targetProjectIds.length === 0) return new Map<string, { outcome: string; selectedSessionExists?: boolean }>()
     const selectionSnapshot = {
       intentId: pendingSessionRequestRef.current,
       projectId: selectedProjectId,
-      sessionId: selectedSessionId,
+      sessionId: sessionIdOverride ?? selectedSessionId,
     }
     const generations = new Map(targetProjectIds.map((projectId) => {
       const generation = (visibleSessionGenerationsRef.current.get(projectId) ?? 0) + 1
@@ -1881,6 +1948,7 @@ function ProjectsDashboard() {
                 <dl className="session-info-kv">
                   {headerSessionInfoRows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
                 </dl>
+                {modelCatalogQuery.data ? <pre className="debug-content-cell raw-message-json" style={{ maxHeight: 360, overflow: 'auto' }}>{JSON.stringify(modelCatalogQuery.data, null, 2)}</pre> : null}
               </div>
             ) : null}
             <div className="workspace-main-content">

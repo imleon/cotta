@@ -16,6 +16,7 @@ import {
   renameSessionResponseSchema,
   projectSessionsQueryResponseSchema,
   sessionInfoResponseSchema,
+  sessionTimelineResponseSchema,
   sessionMetaUpdateRequestSchema,
   sessionRuntimeResponseSchema,
   sessionObservationSortSchema,
@@ -166,10 +167,9 @@ function defaultRunState(): SessionRunState {
   return { phase: 'idle', activeUserMessageUuid: null }
 }
 
-function statusFromRunState(runState: SessionRunState): 'idle' | 'busy' | 'shell' | 'waiting' {
-  if (runState.phase === 'running' || runState.phase === 'cli_busy') return 'busy'
-  if (runState.phase === 'requires_action' || runState.phase === 'cli_waiting') return 'waiting'
-  if (runState.phase === 'cli_shell') return 'shell'
+function statusFromRunState(runState: SessionRunState): 'idle' | 'busy' | 'waiting' {
+  if (runState.phase === 'running') return 'busy'
+  if (runState.phase === 'requires_action') return 'waiting'
   return 'idle'
 }
 
@@ -238,10 +238,11 @@ export function registerProjectRoutes(
       const body = settingsUpdateRequestSchema.safeParse(await c.req.json())
       if (!body.success) return c.json({ error: 'invalid_settings_update' }, 400)
       const settings = body.data.settings
+      const currentSettings = readSettings(input.settingsStore)
       const normalized = settings.defaultModel === undefined
         ? settings
         : (() => {
-            const pair = normalizeModelEffortSelection({ model: settings.defaultModel, effort: settings.defaultEffort! }, readSettings(input.settingsStore).modelCatalog)
+            const pair = normalizeModelEffortSelection({ model: settings.defaultModel, effort: settings.defaultEffort! }, { ...currentSettings, ...settings })
             return { ...settings, defaultModel: pair.model, defaultEffort: pair.effort }
           })()
       input.settingsStore?.setMany('global', normalized)
@@ -552,9 +553,10 @@ export function registerProjectRoutes(
       const parsed = sessionMetaUpdateRequestSchema.safeParse(await c.req.json())
       if (!parsed.success) return c.json({ error: 'invalid_session_meta_update' }, 400)
       const body = parsed.data
+      const settings = readSettings(input.settingsStore)
       const normalized = body.model === undefined
         ? body
-        : { ...body, ...normalizeModelEffortSelection({ model: body.model, effort: body.effort! }, readSettings(input.settingsStore).modelCatalog) }
+        : { ...body, ...normalizeModelEffortSelection({ model: body.model, effort: body.effort! }, settings) }
       input.sessionMetaStore.setSessionMeta(projectId, sessionId, normalized)
       return c.json({ ok: true })
     } catch (error) {
@@ -629,6 +631,19 @@ export function registerProjectRoutes(
         const unsubscribe = input.liveTurnManager.subscribe(sessionId, (event) => {
           controller.enqueue(encoder.encode(encodeSse(event)))
         })
+        const runState = input.liveTurnManager.sessionRunState(sessionId)
+        const turnId = runState?.activeUserMessageUuid ?? runState?.lastTurn?.id
+        if (turnId) {
+          const events = input.liveEventStore?.listSessionEvents(c.req.param('projectId'), sessionId, 1000) ?? []
+          const turnStart = events.findIndex(({ payload }) => {
+            if (!payload || typeof payload !== 'object') return false
+            const message = payload as Record<string, unknown>
+            return message.type === 'user' && message.uuid === turnId && message.parent_tool_use_id == null
+          })
+          if (turnStart >= 0) {
+            for (const { payload } of events.slice(turnStart)) controller.enqueue(encoder.encode(encodeSse(payload)))
+          }
+        }
         c.req.raw.signal.addEventListener('abort', () => {
           unsubscribe()
           controller.close()
@@ -663,21 +678,11 @@ export function registerProjectRoutes(
 
   app.get('/api/projects/:projectId/sessions/:sessionId/timeline', async (c) => {
     try {
-      const state = await input.claudeCodeApi.getSessionTimelineState(
-        c.req.param('projectId'),
-        c.req.param('sessionId'),
-      )
-      if (!state) {
-        return c.json({ error: 'session_not_found' }, 404)
-      }
-      const messages = await input.claudeCodeApi.getSessionMessages(
-        c.req.param('projectId'),
-        c.req.param('sessionId'),
-      )
-      if (!messages) {
-        return c.json({ error: 'session_not_found' }, 404)
-      }
+      const projectId = c.req.param('projectId')
       const sessionId = c.req.param('sessionId')
+      const state = await input.claudeCodeApi.getSessionTimelineState(projectId, sessionId)
+      const messages = state ? await input.claudeCodeApi.getSessionMessages(projectId, sessionId) : null
+      if (!state || !messages) return c.json({ error: 'session_not_found' }, 404)
       const timeline = projectSessionTimeline(sessionId, messages, {
         limitTurns: parseLimit(c.req.query('limitTurns'), 10, 100),
         cursor: parseCursor(c.req.query('cursor')),
@@ -704,10 +709,6 @@ export function registerProjectRoutes(
     try {
       const projectId = c.req.param('projectId')
       const sessionId = c.req.param('sessionId')
-      const state = await input.claudeCodeApi.getSessionTimelineState(projectId, sessionId)
-      if (!state) {
-        return c.json({ error: 'session_not_found' }, 404)
-      }
       const response: SessionLiveEventsResponse = {
         sessionId,
         events: input.liveEventStore?.listSessionEvents(projectId, sessionId, parseLiveEventLimit(c.req.query('limit'), 500)) ?? [],
@@ -723,10 +724,6 @@ export function registerProjectRoutes(
     try {
       const projectId = c.req.param('projectId')
       const sessionId = c.req.param('sessionId')
-      const state = await input.claudeCodeApi.getSessionTimelineState(projectId, sessionId)
-      if (!state) {
-        return c.json({ error: 'session_not_found' }, 404)
-      }
       const response: SessionLiveEventsResponse = {
         sessionId,
         events: input.liveEventStore?.listSessionEvents(projectId, sessionId, parseLiveEventLimit(c.req.query('limit'), 500)) ?? [],

@@ -1697,7 +1697,6 @@ h2 {
 
 .status-running .status-dot,
 .status-warning .status-dot,
-.status-shell .status-dot,
 .status-danger .status-dot {
   animation: status-dot-breathe 1.8s ease-in-out infinite;
 }
@@ -1711,7 +1710,6 @@ h2 {
 .status-running { background: rgb(52 168 83 / 9%); color: #3aa878; }
 .status-success { background: #dcfce7; color: #166534; }
 .status-warning { background: rgb(250 204 21 / 9%); color: #d6a300; }
-.status-shell { background: rgb(126 34 206 / 10%); color: #7e22ce; }
 .status-danger { background: rgb(244 63 94 / 9%); color: #dc4c64; }
 
 .turn-form {

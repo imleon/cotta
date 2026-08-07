@@ -142,6 +142,40 @@ describe('SessionSummaryCache', () => {
     expect(listSessionsMock).toHaveBeenCalledTimes(1)
   })
 
+  it('retries discovery until the observed session appears and merges later observations', async () => {
+    vi.useFakeTimers()
+    const cache = new SessionSummaryCache(10)
+    listSessionsMock.mockResolvedValueOnce([]).mockResolvedValueOnce([session('new')])
+
+    cache.observeSession({ sessionId: 'new', projectId: projectId('/repo/a') })
+    await vi.advanceTimersByTimeAsync(800)
+    expect(listSessionsMock).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(400)
+    cache.observeSession({ sessionId: 'new' })
+    cache.observeSession({ sessionId: 'new' })
+    await vi.advanceTimersByTimeAsync(799)
+    expect(listSessionsMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(listSessionsMock).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(listSessionsMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops discovery retries at the bounded deadline', async () => {
+    vi.useFakeTimers()
+    const cache = new SessionSummaryCache(10)
+    cache.observeSession({ sessionId: 'missing', projectId: projectId('/repo/a') })
+
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(listSessionsMock.mock.calls.length).toBeGreaterThan(1)
+    const callsAtDeadline = listSessionsMock.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(listSessionsMock).toHaveBeenCalledTimes(callsAtDeadline)
+  })
+
   it('starts a new debounce window after a prior observation fires', async () => {
     vi.useFakeTimers()
     const cache = new SessionSummaryCache(10)

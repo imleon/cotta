@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { mergeTranscriptModelEffort, resolveTurnOptions, validateTurnOptions } from './turn-options.js'
+import { mergeTranscriptModelEffort, normalizeModelEffortSelection, resolveTurnOptions, validateTurnOptions } from './turn-options.js'
 
 const modelCatalog = {
   models: [
     { value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high'] },
     { value: 'opus', displayName: 'Opus', description: 'Opus', supportsEffort: true, supportedEffortLevels: ['medium', 'high', 'xhigh', 'max'] },
     { value: 'haiku', displayName: 'Haiku', description: 'Haiku' },
+    { value: 'claude-gpt-5-5-max', displayName: 'GPT 5.5', description: 'GPT 5.5', supportsEffort: true, supportedEffortLevels: ['medium', 'high'] },
+    { value: 'claude-gpt-5-5-max[1m]', displayName: 'GPT 5.5 1M', description: 'GPT 5.5 1M', supportsEffort: true, supportedEffortLevels: ['medium', 'high', 'xhigh'] },
+    { value: 'claude-gpt-5-6-sol-max[1m]', displayName: 'GPT 5.6 1M', description: 'GPT 5.6 1M', supportsEffort: true, supportedEffortLevels: ['medium', 'high'] },
   ],
 }
 
@@ -86,6 +89,21 @@ describe('validateTurnOptions', () => {
 
   it('rejects unsupported effort for the selected model', () => {
     expect(validateTurnOptions({ permissionMode: 'default', model: 'haiku', effort: 'high' }, settingsStore as never)).toEqual({ ok: false, error: 'unsupported_effort' })
+  })
+
+  it('accepts historical non-1m ids when a matching 1m catalog value exists', () => {
+    expect(validateTurnOptions({ permissionMode: 'default', model: 'claude-gpt-5-6-sol-max', effort: 'high' }, settingsStore as never)).toEqual({ ok: true })
+  })
+})
+
+describe('normalizeModelEffortSelection', () => {
+  it('normalizes to the only matching 1m catalog value', () => {
+    expect(normalizeModelEffortSelection({ model: 'claude-gpt-5-6-sol-max', effort: 'high' }, settingsStore.getAll() as never)).toEqual({ model: 'claude-gpt-5-6-sol-max[1m]', effort: 'high' })
+  })
+
+  it('chooses between 1m and non-1m siblings from settings', () => {
+    expect(normalizeModelEffortSelection({ model: 'claude-gpt-5-5-max', effort: 'xhigh' }, settingsStore.getAll() as never)).toEqual({ model: 'claude-gpt-5-5-max[1m]', effort: 'xhigh' })
+    expect(normalizeModelEffortSelection({ model: 'claude-gpt-5-5-max', effort: 'xhigh' }, { ...settingsStore.getAll(), useOneMillionContext: false } as never)).toEqual({ model: 'claude-gpt-5-5-max', effort: 'high' })
   })
 })
 

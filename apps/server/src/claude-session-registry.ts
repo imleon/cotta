@@ -3,7 +3,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { SessionObservation, SessionObservationSort, SessionObservationsResponse, SessionRunState, SessionStatus } from '@cotta/shared'
+import type { SessionObservation, SessionObservationSort, SessionObservationsResponse, SessionStatus } from '@cotta/shared'
 
 const MAX_SANE_EPOCH_MS = 4_000_000_000_000_000
 const SESSION_FILE = /^(\d+)\.json$/
@@ -211,13 +211,6 @@ export class ClaudeSessionRegistry {
   subscribe(listener: (change: ClaudeSessionRegistryChange) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
-  }
-
-  cliRunState(sessionId: string): SessionRunState | null {
-    const status = sessionStatusFromSnapshot(latestCliSnapshot(this.snapshots.values(), sessionId))
-    if (status === 'busy') return { phase: 'cli_busy', activeUserMessageUuid: null }
-    if (status === 'waiting') return { phase: 'cli_waiting', activeUserMessageUuid: null }
-    return null
   }
 
   cliSessionMetadata(sessionId: string): CliSessionMetadata | null {

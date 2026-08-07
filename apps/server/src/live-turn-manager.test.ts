@@ -34,6 +34,12 @@ function failingQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
   })())
 }
 
+function endingQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
+  return queryFromGenerator((async function* () {
+    for await (const _message of prompt) return
+  })())
+}
+
 function resultOnlyQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
   return queryFromGenerator((async function* () {
     for await (const _message of prompt) yield { type: 'result', subtype: 'success' } as SDKMessage
@@ -65,6 +71,19 @@ function recordingStore(messages: unknown[]): LiveEventStore {
 describe('LiveTurnManager', () => {
   beforeEach(() => {
     queryMock.mockReset()
+  })
+
+  it('returns the project id for an existing runtime', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => resultOnlyQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+
+    expect(manager.projectIdForSession('session-1')).toBe(projectId)
+    expect(manager.projectIdForSession('missing')).toBeNull()
+    manager.close('session-1')
+    expect(manager.projectIdForSession('session-1')).toBeNull()
   })
 
   it('creates a new SDK session with the client-provided session id', async () => {
@@ -125,6 +144,26 @@ describe('LiveTurnManager', () => {
     expect(events[1]).toEqual({ type: 'cotta_live_turn_failed', error: 'SDK stream failed', session_id: 'session-1' })
     expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
     expect(observeSession).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'session-1' }))
+  })
+
+  it('fails an active turn when the SDK stream ends without a result', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => endingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const events: LiveTurnEvent[] = []
+    manager.subscribe('session-1', (event) => events.push(event))
+
+    await manager.startTurn({
+      projectId: Buffer.from('/repo/a').toString('base64url'),
+      sessionId: 'session-1',
+      resume: true,
+      text: 'hello',
+      userMessageUuid: 'user-1',
+      permissionMode: 'default',
+    })
+
+    await vi.waitFor(() => expect(manager.sessionRunState('session-1')?.phase).toBe('idle'))
+    expect(events).toEqual([{ type: 'cotta_live_turn_failed', error: 'SDK stream ended before the turn completed.', session_id: 'session-1' }])
+    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
   })
 
   it('observes key runtime states without publishing run-state versions immediately', async () => {

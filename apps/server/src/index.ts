@@ -28,7 +28,7 @@ export function createApp(input: {
   settingsStore?: SettingsStore
   sessionMetaStore?: SessionMetaStore
   sessionObservationReader?: ProjectRoutesSessionObservationReader
-  claudeSessionRegistry?: Pick<Awaited<ReturnType<typeof createClaudeSessionRegistry>>, 'cliRunState' | 'cliSessionMetadata'>
+  claudeSessionRegistry?: Pick<Awaited<ReturnType<typeof createClaudeSessionRegistry>>, 'cliSessionMetadata'>
   timelineMetadataReader?: ProjectRoutesTimelineMetadataReader
   turnMetaTranscriptReader?: Pick<TurnMetaTranscriptStore, 'listEntries'>
   auth?: CottaAuth
@@ -41,7 +41,7 @@ export function createApp(input: {
   const modelCatalogProvider = input.modelCatalogProvider ?? defaultModelCatalogProvider
   const settingsStore = input.settingsStore
   const auth = input.auth ?? (process.env.NODE_ENV === 'test' ? createAuth({ github: { clientId: '' }, settingsStore }) : createAuth({ settingsStore }))
-  sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId) ?? input.claudeSessionRegistry?.cliRunState(sessionId) ?? null)
+  sessionSummaryCache?.setSessionRunStateReader((sessionId) => liveTurnManager.sessionRunState(sessionId) ?? null)
   sessionSummaryCache?.setSessionMetadataReader?.((sessionId) => input.claudeSessionRegistry?.cliSessionMetadata(sessionId) ?? null)
   void sessionSummaryCache?.ensureReady().catch((error) => console.error('session-summary-cache:ensure-ready failed', error))
   app.use('*', auth.middleware)
@@ -82,7 +82,7 @@ if (process.env.NODE_ENV !== 'test') {
       void liveTurnManager.closeForExternalOwner(sessionId).catch((error) => console.error(`live-runtime:external owner close failed for ${sessionId}`, error))
     }
     for (const sessionId of idleSessionIds) {
-      const projectId = projectIdsBySessionId.get(sessionId)
+      const projectId = projectIdsBySessionId.get(sessionId) ?? liveTurnManager.projectIdForSession(sessionId)
       if (!projectId) continue
       const options = resolveTurnOptions({ projectId, sessionId, settingsStore, sessionMetaStore })
       const validation = validateTurnOptions(options, settingsStore)

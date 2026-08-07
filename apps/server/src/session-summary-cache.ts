@@ -85,6 +85,7 @@ type ObservationTimers = {
   projectId?: string
   debounce?: ReturnType<typeof setTimeout>
   maxWait?: ReturnType<typeof setTimeout>
+  deadline?: number
 }
 
 function projectIdFromPath(path: string): string {
@@ -142,9 +143,8 @@ function sameSessionMetadata(left: SessionMetadata | null | undefined, right: Se
 
 function statusFromRunState(runState: SessionRunState | null | undefined): SessionStatus {
   const state = runState ?? defaultRunState()
-  if (state.phase === 'running' || state.phase === 'cli_busy') return 'busy'
-  if (state.phase === 'requires_action' || state.phase === 'cli_waiting') return 'waiting'
-  if (state.phase === 'cli_shell') return 'shell'
+  if (state.phase === 'running') return 'busy'
+  if (state.phase === 'requires_action') return 'waiting'
   return 'idle'
 }
 
@@ -362,14 +362,32 @@ export class SessionSummaryCache {
     if (this.closed) return
     const timers = this.observationTimers.get(input.sessionId) ?? {}
     if (input.projectId) timers.projectId = input.projectId
-    const scan = () => {
+    const scan = async () => {
       if (timers.debounce) clearTimeout(timers.debounce)
       if (timers.maxWait) clearTimeout(timers.maxWait)
-      this.observationTimers.delete(input.sessionId)
+      timers.debounce = undefined
+      timers.maxWait = undefined
+      if (timers.deadline && Date.now() >= timers.deadline) {
+        this.observationTimers.delete(input.sessionId)
+        return
+      }
+      timers.deadline ??= Date.now() + 2_500
       const projectId = timers.projectId ?? this.projectIdBySessionId.get(input.sessionId)
-      void this.requestScan(projectId ? { projectId } : 'global').catch((error) => {
+      try {
+        await this.requestScan(projectId ? { projectId } : 'global')
+      } catch (error) {
         console.error('session-summary-cache:observation failed', error)
-      })
+      }
+      if (this.closed || this.projectIdBySessionId.has(input.sessionId) || Date.now() >= timers.deadline) {
+        if (timers.debounce) clearTimeout(timers.debounce)
+        if (timers.maxWait) clearTimeout(timers.maxWait)
+        this.observationTimers.delete(input.sessionId)
+        return
+      }
+      if (!timers.debounce) {
+        timers.debounce = setTimeout(scan, Math.min(800, timers.deadline - Date.now()))
+        timers.debounce.unref?.()
+      }
     }
     if (timers.debounce) clearTimeout(timers.debounce)
     timers.debounce = setTimeout(scan, 800)

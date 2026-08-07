@@ -185,6 +185,7 @@ function toSessionSummary(
     hasRunningShell: metadata?.hasRunningShell ?? false,
     kind: metadata?.kind ?? null,
     entrypoint: metadata?.entrypoint ?? null,
+    gitBranch: session.gitBranch,
   }
 }
 
@@ -239,6 +240,7 @@ function sameSession(left: SDKSessionInfo, right: SDKSessionInfo): boolean {
     left.lastModified === right.lastModified &&
     left.fileSize === right.fileSize &&
     left.cwd === right.cwd &&
+    left.gitBranch === right.gitBranch &&
     titleFromSession(left) === titleFromSession(right)
   )
 }
@@ -686,7 +688,7 @@ export class SessionSummaryCache {
     if (this.backgroundRefreshTimer || this.closed) return
     this.backgroundRefreshTimer = setInterval(() => {
       void this.requestScan('global').catch((error) => console.error('session-summary-cache:background-scan failed', error))
-    }, 30 * 60_000)
+    }, 5 * 60_000)
     this.backgroundRefreshTimer.unref?.()
   }
 

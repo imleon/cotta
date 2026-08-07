@@ -6,6 +6,7 @@ export const sessionQueryKeys = {
   projects: ['projects'] as const,
   projectSessionsDetail: (projectId: string | null, sessionLimit: number) => ['project-sessions-detail', projectId, sessionLimit] as const,
   projectSessionsRail: (projectId: string) => ['project-sessions-rail', projectId] as const,
+  projectSessionsRailWindow: (projectId: string, limit: number) => ['project-sessions-rail-window', projectId, limit] as const,
 }
 
 const projectRefreshGenerations = new WeakMap<QueryClient, number>()
@@ -59,7 +60,9 @@ function visibleProjectLoadedCount(queryClient: QueryClient, projectId: string):
   const detailLoaded = detailQueries.reduce((max, [queryKey, current]) => Math.max(max, typeof queryKey[2] === 'number' ? queryKey[2] : current?.sessions.length ?? 0), 0)
   const railQuery = queryClient.getQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(sessionQueryKeys.projectSessionsRail(projectId))
   const railLoaded = railQuery?.pages.reduce((sum, page) => sum + page.sessions.length, 0) ?? 0
-  return Math.max(detailLoaded, railLoaded)
+  const railWindowLoaded = queryClient.getQueriesData<ProjectSessionsResponse>({ queryKey: ['project-sessions-rail-window', projectId] })
+    .reduce((max, [queryKey, current]) => Math.max(max, typeof queryKey[2] === 'number' ? queryKey[2] : current?.sessions.length ?? 0), 0)
+  return Math.max(detailLoaded, railLoaded, railWindowLoaded)
 }
 
 function collectVisibleProjectRequests(queryClient: QueryClient, visibleProjectIds: string[], selectedProjectId: string | null, selectedSessionId: string | null): Array<{ projectId: string; limit: number; selectedSessionId?: string }> {
@@ -86,11 +89,12 @@ function patchProjectDetailQueries(queryClient: QueryClient, response: ProjectSe
     const defaultSessionId = current.defaultSessionId && latest.sessions.some((session) => session.id === current.defaultSessionId)
       ? current.defaultSessionId
       : latest.sessions[0]?.id ?? null
+    const limit = typeof queryKey[2] === 'number' ? queryKey[2] : latest.sessions.length
     queryClient.setQueryData(queryKey, {
       ...current,
-      sessions: latest.sessions,
+      sessions: latest.sessions.slice(0, limit),
       defaultSessionId,
-      hasMore: latest.hasMore,
+      hasMore: latest.hasMore || latest.sessions.length > limit,
       nextCursor: latest.nextCursor,
     })
   }
@@ -121,6 +125,17 @@ function patchProjectRailQuery(queryClient: QueryClient, response: ProjectSessio
     }],
     pageParams: [null],
   })
+  for (const [windowKey, currentWindow] of queryClient.getQueriesData<ProjectSessionsResponse>({ queryKey: ['project-sessions-rail-window', projectId] })) {
+    if (!currentWindow) continue
+    const limit = typeof windowKey[2] === 'number' ? windowKey[2] : latest.sessions.length
+    queryClient.setQueryData(windowKey, {
+      ...currentWindow,
+      sessions: latest.sessions.slice(0, limit),
+      defaultSessionId,
+      hasMore: latest.hasMore || latest.sessions.length > limit,
+      nextCursor: latest.nextCursor,
+    })
+  }
 }
 
 function withoutSession(page: ProjectSessionsResponse, sessionId: string): ProjectSessionsResponse {
@@ -139,11 +154,15 @@ export function removeProjectSessionFromCache(queryClient: QueryClient, projectI
 
   const railKey = sessionQueryKeys.projectSessionsRail(projectId)
   const rail = queryClient.getQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(railKey)
-  if (!rail) return
-  queryClient.setQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(railKey, {
-    ...rail,
-    pages: rail.pages.map((page) => withoutSession(page, sessionId)),
-  })
+  if (rail) {
+    queryClient.setQueryData<InfiniteData<ProjectSessionsResponse, string | null>>(railKey, {
+      ...rail,
+      pages: rail.pages.map((page) => withoutSession(page, sessionId)),
+    })
+  }
+  for (const [queryKey, current] of queryClient.getQueriesData<ProjectSessionsResponse>({ queryKey: ['project-sessions-rail-window', projectId] })) {
+    if (current) queryClient.setQueryData(queryKey, withoutSession(current, sessionId))
+  }
 }
 
 export async function refreshVisibleProjectSessions(

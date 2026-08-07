@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type UIEvent as ReactUIEvent } from 'react'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query'
 import type { ProjectSessionsResponse, ProjectSummary, SessionSummary } from '@cotta/shared'
-import { fetchProjectSessions, fetchProjects, PaginationCursorStaleError, queryProjectSessions } from './api'
+import { fetchProjectSessions, fetchProjects, queryProjectSessions } from './api'
 import { sessionQueryKeys } from './session-query-refresh'
 
 function formatAge(value?: number): string {
@@ -261,18 +261,18 @@ function SessionListSkeleton() {
 function SessionRow({
   session,
   selected,
-  pending,
   highlighted,
   menuOpen,
+  branchLabel,
   onSelect,
   onOpenMenu,
   motionState,
 }: {
   session: SessionSummary
   selected: boolean
-  pending?: boolean
   highlighted?: boolean
   menuOpen?: boolean
+  branchLabel?: string
   onSelect: () => void
   onOpenMenu: (button: HTMLButtonElement) => void
   motionState?: SidebarMotionState
@@ -286,9 +286,10 @@ function SessionRow({
             <StatusBadge session={session} />
             <strong>{session.title}</strong>
             {tag ? <span className={`session-kind-tag session-kind-${tag.toLowerCase()}`}>{tag}</span> : null}
+            {branchLabel ? <span className="session-kind-tag session-kind-branch">{branchLabel}</span> : null}
           </div>
         </div>
-        <span className="session-age">{pending ? <span className="turn-spinner session-age-spinner" aria-hidden="true" /> : formatAge(session.lastActivityAt)}</span>
+        <span className="session-age">{formatAge(session.lastActivityAt)}</span>
       </button>
       <button
         className="session-row-menu-button"
@@ -319,65 +320,164 @@ function projectVisualGroup(project: ProjectSummary): ProjectVisualGroup {
   return project.projectGroup ?? project
 }
 
-function ProjectSessionBranch({
-  project,
+function baseProjectForGroup(projectGroup: ProjectSessionRailGroup): ProjectSummary {
+  return projectGroup.projects.find((project) => project.id === projectGroup.group.id)
+    ?? projectGroup.projects.find((project) => !project.projectGroup)
+    ?? projectGroup.projects[0]!
+}
+
+function orderedGroupProjects(projectGroup: ProjectSessionRailGroup, baseProject: ProjectSummary): ProjectSummary[] {
+  return [baseProject, ...projectGroup.projects.filter((project) => project.id !== baseProject.id)]
+}
+
+type DisplaySession = {
+  project: ProjectSummary
+  session: SessionSummary
+  branchLabel?: string
+}
+
+const RAIL_SESSION_PAGE_SIZE = 10
+
+function compareDisplaySessions(left: DisplaySession, right: DisplaySession): number {
+  const byTime = (right.session.lastActivityAt ?? 0) - (left.session.lastActivityAt ?? 0)
+  return byTime !== 0 ? byTime : left.session.id.localeCompare(right.session.id)
+}
+
+function MergedProjectSessionList({
+  baseProject,
+  projects,
   selectedProjectId,
   selectedSessionId,
-  pendingProjectId,
-  pendingSessionId,
   highlightedProjectId,
   highlightedSessionId,
-  expanded,
-  visibleSessionState,
-  onToggleExpanded,
-  onSelectProject,
+  visibleSessionStates,
   onSelectSession,
   onOpenSessionMenu,
-  openMenuSessionId,
-  onCursorStale,
+  openMenu,
   onHighlightedSessionSeen,
-  motionState,
 }: {
-  project: ProjectSummary
+  baseProject: ProjectSummary
+  projects: ProjectSummary[]
   selectedProjectId: string | null
   selectedSessionId: string | null
-  pendingProjectId?: string | null
-  pendingSessionId?: string | null
   highlightedProjectId?: string | null
   highlightedSessionId?: string | null
-  expanded: boolean
-  visibleSessionState?: { loading: boolean; error: boolean }
-  onToggleExpanded: () => void
-  onSelectProject: () => void
+  visibleSessionStates: Record<string, { loading: boolean; error: boolean }>
   onSelectSession: (projectId: string, sessionId: string) => void
   onOpenSessionMenu: (projectId: string, session: SessionSummary, button: HTMLButtonElement) => void
-  openMenuSessionId: string | null
-  onCursorStale: (projectId: string) => void
+  openMenu: { projectId: string; session: SessionSummary; x: number; y: number } | null
   onHighlightedSessionSeen?: () => void
-  motionState?: SidebarMotionState
 }) {
-  const sessionsQuery = useInfiniteQuery({
-    queryKey: sessionQueryKeys.projectSessionsRail(project.id),
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => fetchProjectSessions(project.id, pageParam, 10),
-    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
-    retry: false,
-    enabled: false,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
-  })
-  const sessions = sessionsQuery.data?.pages.flatMap((page) => page.sessions) ?? []
-  const renderedSessions = useSidebarListMotion(sessions, (session) => session.id)
-  const selected = project.id === selectedProjectId
-  const highlighted = project.id === highlightedProjectId && sessions.some((session) => session.id === highlightedSessionId)
-  const sessionsRegionId = projectSessionsRegionId(project.id)
+  const [displayLimit, setDisplayLimit] = useState(RAIL_SESSION_PAGE_SIZE)
+  const projectIdsKey = projects.map((project) => project.id).sort().join('\0')
   const sessionsRef = useRef<HTMLDivElement | null>(null)
+  const queries = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: sessionQueryKeys.projectSessionsRailWindow(project.id, displayLimit),
+      queryFn: () => fetchProjectSessions(project.id, null, displayLimit),
+      retry: false,
+      refetchInterval: false,
+      refetchOnWindowFocus: false,
+    })),
+  })
+
+  useEffect(() => setDisplayLimit(RAIL_SESSION_PAGE_SIZE), [projectIdsKey])
+
+  const queryDataKey = queries.map((query) => query.dataUpdatedAt).join('\0')
+  const rows = useMemo(() => projects.flatMap((project, index): DisplaySession[] => {
+    const response = queries[index]?.data
+    if (!response) return []
+    return response.sessions.map((session) => ({
+      project,
+      session,
+      ...(project.id === baseProject.id ? {} : { branchLabel: session.gitBranch ?? project.name }),
+    }))
+  }).sort(compareDisplaySessions), [baseProject.id, projects, queryDataKey])
+  const visibleRows = useMemo(() => rows.slice(0, displayLimit), [displayLimit, rows])
+  const loading = queries.some((query, index) => query.isLoading || (!query.data && visibleSessionStates[projects[index]!.id]?.loading))
+  const error = queries.some((query, index) => query.isError || (!query.data && visibleSessionStates[projects[index]!.id]?.error))
+  const fetching = queries.some((query) => query.isFetching)
+  const hasMore = rows.length > displayLimit || queries.some((query) => query.data?.hasMore)
+  const highlighted = visibleRows.some((row) => row.project.id === highlightedProjectId && row.session.id === highlightedSessionId)
 
   useEffect(() => {
     if (!highlighted) return
     if (sessionsRef.current) sessionsRef.current.scrollTop = 0
     onHighlightedSessionSeen?.()
   }, [highlighted, onHighlightedSessionSeen])
+
+  return (
+    <div className="project-sessions" id={projectSessionsRegionId(baseProject.id)} role="group" aria-label={`${baseProject.name} sessions`} ref={sessionsRef}>
+      {loading ? <SessionListSkeleton /> : null}
+      {error ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
+      {!loading && !error && rows.length === 0 ? <div className="rail-empty">No sessions</div> : null}
+      {visibleRows.length > 0 ? (
+        <ol className="session-list rail-session-list">
+          {visibleRows.map((row) => (
+            <SessionRow
+              key={`${row.project.id}:${row.session.id}`}
+              session={row.session}
+              branchLabel={row.branchLabel}
+              selected={row.project.id === selectedProjectId && row.session.id === selectedSessionId}
+              highlighted={row.project.id === highlightedProjectId && row.session.id === highlightedSessionId}
+              menuOpen={openMenu?.projectId === row.project.id && openMenu.session.id === row.session.id}
+              onSelect={() => onSelectSession(row.project.id, row.session.id)}
+              onOpenMenu={(button) => onOpenSessionMenu(row.project.id, row.session, button)}
+            />
+          ))}
+        </ol>
+      ) : null}
+      {hasMore ? (
+        <button
+          className="load-more-sessions session-load-more"
+          type="button"
+          onClick={() => setDisplayLimit((limit) => limit + RAIL_SESSION_PAGE_SIZE)}
+          disabled={fetching}
+          aria-label={fetching ? `Loading more sessions for ${baseProject.name}` : `Show more sessions for ${baseProject.name}`}
+          aria-controls={projectSessionsRegionId(baseProject.id)}
+        >
+          {fetching ? 'Loading…' : 'Show more ↓'}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+function ProjectSessionBranch({
+  project,
+  projects,
+  selectedProjectId,
+  selectedSessionId,
+  highlightedProjectId,
+  highlightedSessionId,
+  expanded,
+  visibleSessionStates,
+  onToggleExpanded,
+  onSelectProject,
+  onSelectSession,
+  onOpenSessionMenu,
+  openMenu,
+  onHighlightedSessionSeen,
+  motionState,
+}: {
+  project: ProjectSummary
+  projects: ProjectSummary[]
+  selectedProjectId: string | null
+  selectedSessionId: string | null
+  highlightedProjectId?: string | null
+  highlightedSessionId?: string | null
+  expanded: boolean
+  visibleSessionStates: Record<string, { loading: boolean; error: boolean }>
+  onToggleExpanded: () => void
+  onSelectProject: () => void
+  onSelectSession: (projectId: string, sessionId: string) => void
+  onOpenSessionMenu: (projectId: string, session: SessionSummary, button: HTMLButtonElement) => void
+  openMenu: { projectId: string; session: SessionSummary; x: number; y: number } | null
+  onHighlightedSessionSeen?: () => void
+  motionState?: SidebarMotionState
+}) {
+  const selected = projects.some((candidate) => candidate.id === selectedProjectId)
+  const sessionsRegionId = projectSessionsRegionId(project.id)
 
   return (
     <div className={`project-tree-item sidebar-motion-item${motionStateClass(motionState)}`}>
@@ -390,44 +490,19 @@ function ProjectSessionBranch({
         onSelectProject={onSelectProject}
       />
       {expanded ? (
-        <div className="project-sessions" id={sessionsRegionId} role="group" aria-label={`${project.name} sessions`} ref={sessionsRef}>
-          {sessionsQuery.isLoading || (!sessionsQuery.data && visibleSessionState?.loading) ? <SessionListSkeleton /> : null}
-          {sessionsQuery.isError || (!sessionsQuery.data && visibleSessionState?.error) ? <div className="rail-empty error-text">Failed to load sessions</div> : null}
-          {!sessionsQuery.isLoading && !visibleSessionState?.loading && !sessionsQuery.isError && !visibleSessionState?.error && sessions.length === 0 && renderedSessions.length === 0 ? <div className="rail-empty">No sessions</div> : null}
-          {renderedSessions.length > 0 ? (
-            <ol className="session-list rail-session-list">
-              {renderedSessions.map(({ key, item: session, motionState }) => (
-                <SessionRow
-                  key={key}
-                  motionState={motionState}
-                  session={session}
-                  selected={project.id === selectedProjectId && session.id === selectedSessionId}
-                  pending={project.id === pendingProjectId && session.id === pendingSessionId}
-                  highlighted={project.id === highlightedProjectId && session.id === highlightedSessionId}
-                  menuOpen={openMenuSessionId === session.id}
-                  onSelect={() => onSelectSession(project.id, session.id)}
-                  onOpenMenu={(button) => onOpenSessionMenu(project.id, session, button)}
-                />
-              ))}
-            </ol>
-          ) : null}
-          {sessionsQuery.hasNextPage ? (
-            <button
-              className="load-more-sessions session-load-more"
-              type="button"
-              onClick={() => {
-                void sessionsQuery.fetchNextPage({ throwOnError: true }).catch((error) => {
-                  if (error instanceof PaginationCursorStaleError) onCursorStale(project.id)
-                })
-              }}
-              disabled={sessionsQuery.isFetchingNextPage}
-              aria-label={sessionsQuery.isFetchingNextPage ? `Loading more sessions for ${project.name}` : `Show more sessions for ${project.name}`}
-              aria-controls={sessionsRegionId}
-            >
-              {sessionsQuery.isFetchingNextPage ? 'Loading…' : 'Show more ↓'}
-            </button>
-          ) : null}
-        </div>
+        <MergedProjectSessionList
+          baseProject={project}
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          selectedSessionId={selectedSessionId}
+          highlightedProjectId={highlightedProjectId}
+          highlightedSessionId={highlightedSessionId}
+          visibleSessionStates={visibleSessionStates}
+          onSelectSession={onSelectSession}
+          onOpenSessionMenu={onOpenSessionMenu}
+          openMenu={openMenu}
+          onHighlightedSessionSeen={onHighlightedSessionSeen}
+        />
       ) : null}
     </div>
   )
@@ -437,8 +512,6 @@ export function ProjectSessionRail({
   projects,
   selectedProjectId,
   selectedSessionId,
-  pendingProjectId,
-  pendingSessionId,
   highlightedProjectId,
   highlightedSessionId,
   projectsHasMore,
@@ -457,8 +530,6 @@ export function ProjectSessionRail({
   projects: ProjectSummary[]
   selectedProjectId: string | null
   selectedSessionId: string | null
-  pendingProjectId?: string | null
-  pendingSessionId?: string | null
   highlightedProjectId?: string | null
   highlightedSessionId?: string | null
   projectsHasMore?: boolean
@@ -490,6 +561,11 @@ export function ProjectSessionRail({
     }
     return [...groups.values()]
   }, [projects])
+  const projectGroupByProjectId = useMemo(() => {
+    const groups = new Map<string, ProjectSessionRailGroup>()
+    for (const group of projectGroups) for (const project of group.projects) groups.set(project.id, group)
+    return groups
+  }, [projectGroups])
   const renderedProjectGroups = useSidebarListMotion(projectGroups, (group) => group.group.id)
 
   function expandProject(projectId: string) {
@@ -511,8 +587,11 @@ export function ProjectSessionRail({
   }
 
   useEffect(() => {
-    if (selectedProjectId) expandProject(selectedProjectId)
-  }, [selectedProjectId])
+    if (!selectedProjectId) return
+    expandProject(selectedProjectId)
+    const selectedGroup = projectGroupByProjectId.get(selectedProjectId)
+    if (selectedGroup) expandProject(baseProjectForGroup(selectedGroup).id)
+  }, [projectGroupByProjectId, selectedProjectId])
 
   useEffect(() => {
     const projectIds = new Set(projects.map((project) => project.id))
@@ -522,10 +601,16 @@ export function ProjectSessionRail({
     })
   }, [projects])
 
-  const visibleProjectIds = useMemo(
-    () => [...new Set([selectedProjectId, ...expandedProjectIds].filter((projectId): projectId is string => Boolean(projectId) && projects.some((project) => project.id === projectId)))].sort(),
-    [expandedProjectIds, projects, selectedProjectId],
-  )
+  const visibleProjectIds = useMemo(() => {
+    const visible = new Set<string>()
+    if (selectedProjectId) visible.add(selectedProjectId)
+    for (const group of projectGroups) {
+      const baseProject = baseProjectForGroup(group)
+      if (expandedProjectIds.has(baseProject.id)) for (const project of group.projects) visible.add(project.id)
+      else for (const project of group.projects) if (expandedProjectIds.has(project.id)) visible.add(project.id)
+    }
+    return [...visible].filter((projectId) => projects.some((project) => project.id === projectId)).sort()
+  }, [expandedProjectIds, projectGroups, projects, selectedProjectId])
 
   useEffect(() => {
     onVisibleProjectIdsChange?.(visibleProjectIds)
@@ -630,29 +715,30 @@ export function ProjectSessionRail({
         <div className="project-tree">
           {renderedProjectGroups.map(({ key, item: projectGroup, motionState }) => (
             <div className={`project-tree-group sidebar-motion-item${motionStateClass(motionState)}`} key={key}>
-              {projectGroup.projects.some((project) => project.projectGroup) ? <div className="project-group-label">{projectGroup.group.name}</div> : null}
               <div className="project-group-items">
-                {projectGroup.projects.map((project) => (
-                  <ProjectSessionBranch
-                    key={project.id}
-                    project={project}
-                    selectedProjectId={selectedProjectId}
-                    selectedSessionId={selectedSessionId}
-                    pendingProjectId={pendingProjectId}
-                    pendingSessionId={pendingSessionId}
-                    highlightedProjectId={highlightedProjectId}
-                    highlightedSessionId={highlightedSessionId}
-                    expanded={expandedProjectIds.has(project.id)}
-                    visibleSessionState={visibleSessionStates[project.id]}
-                    onToggleExpanded={() => toggleProject(project.id)}
-                    onSelectProject={() => onSelectProject(project.id)}
-                    onSelectSession={selectSession}
-                    onOpenSessionMenu={openSessionMenu}
-                    openMenuSessionId={openMenu?.projectId === project.id ? openMenu.session.id : null}
-                    onCursorStale={onSessionCursorStale}
-                    onHighlightedSessionSeen={onHighlightedSessionSeen}
-                  />
-                ))}
+                {(() => {
+                  const baseProject = baseProjectForGroup(projectGroup)
+                  const groupedProjects = orderedGroupProjects(projectGroup, baseProject)
+                  return (
+                    <ProjectSessionBranch
+                      key={baseProject.id}
+                      project={baseProject}
+                      projects={groupedProjects}
+                      selectedProjectId={selectedProjectId}
+                      selectedSessionId={selectedSessionId}
+                      highlightedProjectId={highlightedProjectId}
+                      highlightedSessionId={highlightedSessionId}
+                      expanded={expandedProjectIds.has(baseProject.id)}
+                      visibleSessionStates={visibleSessionStates}
+                      onToggleExpanded={() => toggleProject(baseProject.id)}
+                      onSelectProject={() => onSelectProject(baseProject.id)}
+                      onSelectSession={selectSession}
+                      onOpenSessionMenu={openSessionMenu}
+                      openMenu={openMenu}
+                      onHighlightedSessionSeen={onHighlightedSessionSeen}
+                    />
+                  )
+                })()}
               </div>
             </div>
           ))}

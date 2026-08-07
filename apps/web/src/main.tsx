@@ -26,7 +26,7 @@ import {
 import { connectListVersions, createProject, deleteSession, ensureSessionRuntime, fetchAuthSession, fetchModelCatalog, fetchProjectDirectories, fetchSessionInfo, fetchSessionObservations, fetchSettings, fetchTurnMetaTranscript, forkSession, logout, PaginationCursorStaleError, pollGitHubDeviceLogin, refreshModelCatalog, refreshProjects, renameSession, saveSessionMeta, saveSettings, startGitHubDeviceLogin } from './api'
 import { ProjectSessionRail, useProjectSessionSelection } from './session-history'
 import { refreshProjectsWindow, refreshVisibleProjectSessions, removeProjectSessionFromCache, sessionQueryKeys } from './session-query-refresh'
-import { SessionTaskList, SessionTimeline } from './timeline'
+import { authoritativeTurnPhase, SessionTaskList, SessionTimeline, submitStateFor, type SubmitState, type TurnPhase } from './timeline'
 import './styles.css'
 
 const DASHBOARD_NAV_ITEMS = [
@@ -143,13 +143,14 @@ async function interruptTurn(projectId: string, sessionId: string): Promise<void
   if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
-type PendingTurn = { projectId: string; sessionId: string; turn: TurnSummary }
+type PendingTurn = { projectId: string; sessionId: string; turn: TurnSummary; phase: TurnPhase }
 
 function pendingUserTurn(projectId: string, text: string, sessionId: string, userMessageUuid: string): PendingTurn {
   const timestamp = new Date().toISOString()
   return {
     projectId,
     sessionId,
+    phase: 'submitting',
     turn: {
       primaryUserUuid: userMessageUuid,
       primaryUserTimestampMs: Date.parse(timestamp),
@@ -193,6 +194,7 @@ function selectedTimelineRunState(session: ProjectSessionsResponse['sessions'][n
 
 const EFFORT_ORDER: EffortLevel[] = ['max', 'xhigh', 'high', 'medium', 'low']
 const DEFAULT_TURN_OPTION: DefaultTurnOption = 'default'
+const UNKNOWN_SUBMISSION_RECOVERY_MS = 10_000
 
 const PERMISSION_MODE_OPTIONS: Array<{ value: PermissionMode; description: string }> = [
   { value: 'plan', description: 'Planning mode, no execution of tools.' },
@@ -221,6 +223,8 @@ function TurnComposer({
   selectedSessionRunState,
   liveSessionId,
   liveUserMessageUuid,
+  latestTurnPhase,
+  pendingTurnId,
   setSelectedSessionId,
   setPendingTurn,
   refreshSessionLists,
@@ -240,6 +244,8 @@ function TurnComposer({
   selectedSessionRunState: SessionRunState | null
   liveSessionId: string | null
   liveUserMessageUuid: string | null
+  latestTurnPhase: TurnPhase | null
+  pendingTurnId: string | null
   setSelectedSessionId: (sessionId: string | null) => void
   setPendingTurn: Dispatch<SetStateAction<PendingTurn | null>>
   refreshSessionLists: (projectId?: string, selectedSessionId?: string | null) => void
@@ -259,6 +265,7 @@ function TurnComposer({
   const [interrupting, setInterrupting] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const handledProjectRequestRef = useRef(0)
+  const [unknownSubmission, setUnknownSubmission] = useState<{ userMessageUuid: string; text: string } | null>(null)
   const [retryProjectId, setRetryProjectId] = useState<string | null>(null)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode ?? 'default')
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
@@ -281,7 +288,22 @@ function TurnComposer({
   const triggerEffortLabel = selectedModel?.supportsEffort && effort !== DEFAULT_TURN_OPTION ? effortLabel(effort) : null
 
   useEffect(() => { setSubmitError(null); setInterrupting(false) }, [projectId, selectedSessionId])
-  useEffect(() => { if (!liveUserMessageUuid) setInterrupting(false) }, [liveUserMessageUuid])
+  useEffect(() => {
+    if (interrupting && latestTurnPhase === 'settled' && (!selectedSession || selectedSession.status === 'idle')) setInterrupting(false)
+  }, [interrupting, latestTurnPhase, selectedSession?.status])
+  useEffect(() => {
+    if (!unknownSubmission) return
+    if (pendingTurnId !== unknownSubmission.userMessageUuid) {
+      setUnknownSubmission(null)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setPendingTurn((turn) => turn?.turn.primaryUserUuid === unknownSubmission.userMessageUuid ? null : turn)
+      setInputText((value) => value || unknownSubmission.text)
+      setUnknownSubmission(null)
+    }, UNKNOWN_SUBMISSION_RECOVERY_MS)
+    return () => window.clearTimeout(timer)
+  }, [pendingTurnId, setPendingTurn, unknownSubmission])
   useEffect(() => {
     initializedComposerScopeRef.current = null
     composerManuallyChangedRef.current = false
@@ -325,9 +347,11 @@ function TurnComposer({
   }, [permissionMenuOpen, modelMenuOpen])
 
   const cliSubmitBlocked = Boolean(selectedSessionId && sessionExternallyOwned(selectedSession))
+  const submitState: SubmitState = submitStateFor({ submitting, stopping: interrupting, sessionIdle: (!selectedSession || selectedSession.status === 'idle') && !liveUserMessageUuid, latestPhase: latestTurnPhase })
 
   async function submitTurn(targetProjectId = projectId) {
-    if (submitting || liveUserMessageUuid || interrupting || !inputText.trim() || (targetProjectId === projectId && cliSubmitBlocked)) return
+    const sameProject = targetProjectId === projectId
+    if (submitting || interrupting || !inputText.trim() || (sameProject && (submitState !== 'ready' || cliSubmitBlocked))) return
     const text = inputText.trim()
     if (!targetProjectId) {
       onProjectRequired(text)
@@ -338,45 +362,46 @@ function TurnComposer({
     const targetSessionId = existingSessionId ?? createUserMessageUuid()
     setSubmitting(true)
     setSubmitError(null)
+    setPendingTurn(pendingUserTurn(targetProjectId, text, targetSessionId, userMessageUuid))
+    setInputText('')
     try {
       const effectiveEffort = selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION
       if (existingSessionId) {
         const save = sessionMetaSaveRef.current
         if (save?.key === `${targetProjectId}\0${existingSessionId}`) await save.promise
       } else if (composerManuallyChangedRef.current) await saveSessionMeta(targetProjectId, targetSessionId, { permissionMode, model, effort: effectiveEffort === DEFAULT_TURN_OPTION ? null : effectiveEffort })
-      setPendingTurn(pendingUserTurn(targetProjectId, text, targetSessionId, userMessageUuid))
-      setInputText('')
       const response = await createTurn(targetProjectId, existingSessionId, targetSessionId, text, userMessageUuid)
+      setPendingTurn((current) => current?.turn.primaryUserUuid === userMessageUuid ? { ...current, phase: 'submitted' } : current)
       if (existingSessionId) setSelectedSessionId(response.sessionId)
       else if (targetProjectId !== projectId) onSessionCreated(response.projectId, response.sessionId)
       void refreshProjects(response.projectId)
       refreshSessionLists(response.projectId, response.sessionId)
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
       if (error instanceof CreateTurnHttpError) {
-        setPendingTurn(null)
+        setPendingTurn((current) => current?.turn.primaryUserUuid === userMessageUuid ? null : current)
         setInputText(text)
         if (!existingSessionId && targetProjectId === projectId) setSelectedSessionId(null)
         if (targetProjectId !== projectId) setRetryProjectId(targetProjectId)
-        onNotify({ message: error.message, tone: 'error' })
       } else {
-        const message = error instanceof Error ? error.message : String(error)
-        setSubmitError(`Submission status unknown. Check the timeline or session list before retrying. ${message}`)
-        onNotify({ message, tone: 'error' })
-        refreshSessionLists(targetProjectId)
+        setUnknownSubmission({ userMessageUuid, text })
+        setSubmitError(`Submission status unknown. Waiting for the timeline to confirm it. ${message}`)
       }
+      onNotify({ message, tone: 'error' })
+      refreshSessionLists(targetProjectId)
     } finally {
       setSubmitting(false)
     }
   }
 
   useEffect(() => {
-    if (!pendingProjectId || pendingProjectRequest === handledProjectRequestRef.current || !inputText.trim()) return
+    if (!pendingProjectId || pendingProjectRequest === handledProjectRequestRef.current || submitting || interrupting || !inputText.trim()) return
     handledProjectRequestRef.current = pendingProjectRequest
     void submitTurn(pendingProjectId)
-  }, [pendingProjectId, pendingProjectRequest, inputText])
+  }, [pendingProjectId, pendingProjectRequest, inputText, submitting, interrupting])
 
   async function stopLiveTurn() {
-    if (!projectId || !liveSessionId || !liveUserMessageUuid || interrupting) return
+    if (!projectId || !liveSessionId || !liveUserMessageUuid || submitState !== 'busy') return
     setInterrupting(true)
     setSubmitError(null)
     try {
@@ -455,7 +480,7 @@ function TurnComposer({
     saveCurrentSessionMeta({ model: option.value, effort: nextEffort })
   }
 
-  const actionMode = submitting || interrupting ? 'loading' : liveUserMessageUuid ? 'stop' : 'submit'
+  const actionMode = submitState === 'submitting' || submitState === 'stopping' ? 'loading' : submitState === 'busy' ? 'stop' : 'submit'
   const controlTag = sessionControlTag(selectedSession)
   const controlLabel = controlTag === 'BG' ? 'Controlled by Claude Code in the background' : controlTag === 'CLI' ? 'Controlled by Claude Code CLI' : null
 
@@ -475,7 +500,7 @@ function TurnComposer({
             value={inputText}
             onChange={(event) => setInputText(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key !== 'Enter' || event.shiftKey || submitting || liveUserMessageUuid || interrupting || !inputText.trim() || cliSubmitBlocked) return
+              if (event.key !== 'Enter' || event.shiftKey || submitState !== 'ready' || !inputText.trim() || cliSubmitBlocked) return
               event.preventDefault()
               void submitTurn(retryProjectId ?? projectId)
             }}
@@ -596,7 +621,7 @@ function TurnComposer({
                 type={actionMode === 'submit' ? 'submit' : 'button'}
                 className="turn-action-button"
                 onClick={actionMode === 'stop' ? stopLiveTurn : undefined}
-                disabled={actionMode === 'loading' || (actionMode === 'submit' && (!inputText.trim() || cliSubmitBlocked))}
+                disabled={cliSubmitBlocked || actionMode === 'loading' || (actionMode === 'stop' && !liveUserMessageUuid) || (actionMode === 'submit' && !inputText.trim())}
                 aria-label={interrupting ? 'Interrupting' : actionMode === 'loading' ? 'Submitting' : actionMode === 'stop' ? 'Stop generation' : controlLabel ?? 'Submit'}
                 title={controlLabel ?? undefined}
               >
@@ -643,15 +668,17 @@ function WorkspacePanel({
   onForkSession: (projectId: string, sessionId: string, upToMessageId: string) => Promise<unknown>
   onNotify: (toast: ToastState) => void
 }) {
-  const [liveUserMessageUuid, setLiveUserMessageUuid] = useState<string | null>(null)
+  const [liveTurn, setLiveTurn] = useState<{ sessionId: string; userMessageUuid: string } | null>(null)
   const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null)
   const [sessionTasks, setSessionTasks] = useState<SessionTask[]>([])
+  const [latestTurnPhase, setLatestTurnPhase] = useState<{ sessionId: string; phase: TurnPhase | null } | null>(null)
   const [sessionMeta, setSessionMeta] = useState<{ projectId: string; sessionId: string; meta: SessionTimelineResponse['sessionMeta'] } | null>(null)
   const projectName = detail?.project.name
 
   useEffect(() => {
     setPendingTurn((current) => current?.projectId === projectId ? current : null)
-    setLiveUserMessageUuid(null)
+    setLatestTurnPhase(null)
+    setLiveTurn(null)
   }, [projectId])
 
   function refreshSessionListsForCurrentProject(targetProjectId = projectId, targetSessionId?: string | null) {
@@ -660,19 +687,27 @@ function WorkspacePanel({
 
   function handleLiveTurnChange(sessionId: string, userMessageUuid: string | null) {
     if (sessionId !== timelineSessionId) return
-    setLiveUserMessageUuid(userMessageUuid)
+    setLiveTurn(userMessageUuid ? { sessionId, userMessageUuid } : null)
     if (!userMessageUuid) refreshSessionListsForCurrentProject(projectId, sessionId)
   }
 
   const selectedPending = pendingTurn?.projectId === projectId && (pendingTurn.sessionId === selectedSessionId || !selectedSessionId) ? pendingTurn : null
   const timelineSessionId = selectedPending?.sessionId ?? selectedSessionId
+  const handleLatestTurnPhaseChange = useCallback((phase: TurnPhase | null) => {
+    if (!timelineSessionId) return
+    setLatestTurnPhase((current) => current?.sessionId === timelineSessionId && current.phase === phase ? current : { sessionId: timelineSessionId, phase })
+  }, [timelineSessionId])
   const selectedPendingTurn = selectedPending?.turn ?? null
   const selectedSession = detail?.sessions.find((session) => session.id === timelineSessionId)
+  const liveUserMessageUuid = liveTurn?.sessionId === timelineSessionId ? liveTurn.userMessageUuid : null
   const historyEnabled = Boolean(selectedSessionId && selectedSessionId === timelineSessionId)
   const selectedSessionRunState = selectedTimelineRunState(selectedSession, liveUserMessageUuid ?? selectedPendingTurn?.primaryUserUuid ?? null)
   const selectedSessionMeta = sessionMeta?.projectId === projectId && sessionMeta.sessionId === timelineSessionId ? sessionMeta.meta : null
 
   useEffect(() => { setSessionTasks([]) }, [projectId, timelineSessionId])
+  useEffect(() => {
+    if (liveTurn?.sessionId === timelineSessionId && selectedSession?.status === 'idle' && latestTurnPhase?.sessionId === timelineSessionId && latestTurnPhase.phase === 'settled') setLiveTurn(null)
+  }, [latestTurnPhase, liveTurn, selectedSession?.status, timelineSessionId])
 
   useEffect(() => {
     if (!selectedSessionId && selectedPending && selectedSession) setSelectedSessionId(selectedPending.sessionId)
@@ -681,14 +716,14 @@ function WorkspacePanel({
   useEffect(() => {
     if (!selectedSessionId || !pendingTurn || pendingTurn.sessionId === selectedSessionId) return
     setPendingTurn(null)
-    setLiveUserMessageUuid(null)
+    setLiveTurn(null)
   }, [pendingTurn, selectedSessionId])
 
   return (
     <section className="detail-panel workspace-main-panel">
       <div className="workspace-timeline">
         {projectId && timelineSessionId
-          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={timelineSessionId} historyEnabled={historyEnabled} pendingTurn={selectedPendingTurn} runState={selectedSessionRunState} sessionStatus={selectedSession?.status} sessionEntrypoint={selectedSession?.entrypoint} tasks={sessionTasks} onLiveTurnChange={handleLiveTurnChange} onPendingTurnReconciled={(sessionId, userMessageUuid) => setPendingTurn((current) => current?.sessionId === sessionId && current.turn.primaryUserUuid === userMessageUuid ? null : current)} onTasksChange={setSessionTasks} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onSessionMetaChange={(meta) => setSessionMeta({ projectId, sessionId: timelineSessionId, meta })} onForkSession={historyEnabled ? (upToMessageId) => onForkSession(projectId, timelineSessionId, upToMessageId) : undefined} onNotify={onNotify} />
+          ? <SessionTimeline projectId={projectId} projectName={projectName} sessionId={timelineSessionId} historyEnabled={historyEnabled} pendingTurn={selectedPendingTurn} pendingPhase={selectedPending?.phase} runState={selectedSessionRunState} sessionStatus={selectedSession?.status} sessionEntrypoint={selectedSession?.entrypoint} tasks={sessionTasks} onLiveTurnChange={handleLiveTurnChange} onPendingTurnReconciled={(sessionId, userMessageUuid) => setPendingTurn((current) => current?.sessionId === sessionId && current.turn.primaryUserUuid === userMessageUuid ? null : current)} onLatestTurnPhaseChange={handleLatestTurnPhaseChange} onTasksChange={setSessionTasks} onSessionListStale={refreshSessionListsForCurrentProject} onSessionInfoChange={onSessionInfoChange} onSessionMetaChange={(meta) => setSessionMeta({ projectId, sessionId: timelineSessionId, meta })} onForkSession={historyEnabled ? (upToMessageId) => onForkSession(projectId, timelineSessionId, upToMessageId) : undefined} onNotify={onNotify} />
           : <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div>}
       </div>
       <SessionTaskList tasks={sessionTasks} />
@@ -700,6 +735,8 @@ function WorkspacePanel({
         selectedSessionRunState={selectedSessionRunState}
         liveSessionId={timelineSessionId}
         liveUserMessageUuid={liveUserMessageUuid}
+        latestTurnPhase={authoritativeTurnPhase(selectedPending?.phase ?? null, latestTurnPhase?.sessionId === timelineSessionId ? latestTurnPhase.phase : null)}
+        pendingTurnId={selectedPending?.turn.primaryUserUuid ?? null}
         setSelectedSessionId={setSelectedSessionId}
         setPendingTurn={setPendingTurn}
         refreshSessionLists={refreshSessionListsForCurrentProject}
@@ -1845,8 +1882,6 @@ function ProjectsDashboard() {
               projects={selection.items}
               selectedProjectId={selectedProjectId}
               selectedSessionId={selectedSessionId}
-              pendingProjectId={null}
-              pendingSessionId={null}
               highlightedProjectId={highlightedForkSession?.projectId ?? null}
               highlightedSessionId={highlightedForkSession?.sessionId ?? null}
               projectsHasMore={selection.projects.hasNextPage}

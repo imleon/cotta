@@ -110,10 +110,9 @@ describe('refresh helpers', () => {
       sessions: [
         session('s9', 'S9', 'p1'),
         session('s8', 'S8', 'p1'),
-        session('s7', 'S7', 'p1'),
       ],
       defaultSessionId: 's9',
-      hasMore: false,
+      hasMore: true,
       nextCursor: null,
     })
 

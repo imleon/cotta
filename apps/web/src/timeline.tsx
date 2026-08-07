@@ -1,4 +1,4 @@
-import { Children, isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Children, isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -283,12 +283,12 @@ type TimelineDisplayItem =
   | { type: 'item'; item: TimelineRenderItem }
   | AssistantResponseFrameItem
 
-function assistantResponseText(items: TimelineRenderItem[]): string | null {
+export function assistantResponseText(items: TimelineRenderItem[]): string | null {
   const text = items.flatMap((item) => {
     if (item.type !== 'block' || (item.block.kind !== 'assistant.text' && item.block.kind !== 'assistant.message')) return []
     const value = textFromData(item.block.data)
     return value ? [value] : []
-  }).join('\n\n')
+  }).join('\n')
   return text || null
 }
 
@@ -1224,12 +1224,47 @@ export function turnDurationLabel(turn: Pick<TurnSummary, 'primaryUserUuid' | 'd
   return turnPendingAgentLabel(turn) ?? (turn.durationMs === undefined ? null : `${stableTurnVerb(turn.primaryUserUuid)} for ${formatTurnDuration(turn.durationMs)}`)
 }
 
+export type TurnPhase = 'submitting' | 'submitted' | 'rendering' | 'settled'
+export type SubmitState = 'ready' | 'submitting' | 'stopping' | 'busy'
 export type TurnFooterState = { kind: 'waiting' | 'duration'; label: string } | { kind: 'cooking'; label?: string } | null
 
-export function turnFooterState(input: { turn: Pick<TurnSummary, 'primaryUserUuid' | 'durationMs' | 'pendingBackgroundAgentCount'>; cooking: boolean; activeLabel?: string }): TurnFooterState {
+function hasTerminalEvidence(turn: TurnSummary): boolean {
+  return turn.durationMs !== undefined || turn.messages.some((message) => isRecord(message) && (message.type === 'result' || message.type === 'cotta_live_turn_failed'))
+}
+
+export function turnPhase(input: { turn: TurnSummary; latest: boolean; active: boolean; pendingPhase?: TurnPhase; stableSettled?: boolean; reopen?: boolean }): TurnPhase {
+  if (input.pendingPhase === 'submitting') return 'submitting'
+  const blocks = projectTimelineTurn(input.turn)
+  const hasResponse = blocks.some((block) => !isPrimaryInputBlock(block))
+  if (input.stableSettled || ((hasTerminalEvidence(input.turn) || !input.latest) && !input.reopen)) return 'settled'
+  if (input.reopen || input.active) return hasResponse ? 'rendering' : 'submitted'
+  return hasResponse ? 'rendering' : 'submitted'
+}
+
+export function turnVisibleDataToken(turn: ProjectedTimelineTurn): string {
+  return `${turn.primaryUserUuid}\0${turn.blocks.flatMap((block) => [block.id, ...block.sourceEventIds]).join('\0')}`
+}
+
+export function authoritativeTurnPhase(pending: TurnPhase | null, observed: TurnPhase | null): TurnPhase | null {
+  return observed === 'rendering' || observed === 'settled' ? observed : pending ?? observed
+}
+
+export function submitStateFor(input: { submitting: boolean; stopping: boolean; sessionIdle: boolean; latestPhase: TurnPhase | null }): SubmitState {
+  if (input.submitting) return 'submitting'
+  if (input.stopping) return 'stopping'
+  return input.sessionIdle && (input.latestPhase === null || input.latestPhase === 'settled') ? 'ready' : 'busy'
+}
+
+export function shouldStartTurnStableWindow(input: { sessionStatus: SessionStatus; previousStatus: SessionStatus; phase: TurnPhase; reopened: boolean; continuing: boolean }): boolean {
+  return input.sessionStatus === 'idle' && input.phase !== 'settled' && (input.previousStatus !== 'idle' || input.reopened || input.continuing)
+}
+
+export function turnFooterState(input: { turn: Pick<TurnSummary, 'primaryUserUuid' | 'durationMs' | 'pendingBackgroundAgentCount'>; phase: TurnPhase; cooking: boolean; taskLabel?: string; activeLabel?: string; primaryOnly?: boolean }): TurnFooterState {
+  if (input.phase !== 'settled') return input.cooking ? { kind: 'cooking', label: input.activeLabel } : null
+  if (input.primaryOnly) return null
   const pendingLabel = turnPendingAgentLabel(input.turn)
   if (pendingLabel) return { kind: 'waiting', label: pendingLabel }
-  if (input.cooking) return { kind: 'cooking', label: input.activeLabel }
+  if (input.taskLabel) return { kind: 'cooking', label: input.taskLabel }
   const durationLabel = turnDurationLabel(input.turn)
   return durationLabel ? { kind: 'duration', label: durationLabel } : null
 }
@@ -1243,16 +1278,6 @@ export function cliCookingTurnId(turns: TurnSummary[], cliActive = false): strin
 export function activeTimelineTurnId(turns: TurnSummary[], runState?: SessionRunState | null): string | null {
   if (!runState || runState.phase === 'idle') return null
   return turns.some((turn) => turn.primaryUserUuid === runState.activeUserMessageUuid) ? runState.activeUserMessageUuid : null
-}
-
-export function shouldShowAssistantResponseSkeleton(input: { turn: TurnSummary; cooking: boolean; lastAssistantFrameId?: string; runState?: SessionRunState | null; fallbackTurnId?: string | null }): boolean {
-  if (input.lastAssistantFrameId) return false
-  if (input.cooking) return true
-  if (input.turn.durationMs !== undefined) return false
-  return (input.runState?.phase === 'idle'
-    && input.runState.lastTurn?.id === input.turn.primaryUserUuid
-    && input.runState.lastTurn.outcome === 'success')
-    || input.fallbackTurnId === input.turn.primaryUserUuid
 }
 
 function CliCookingIndicator({ label = 'Cooking…' }: { label?: string }) {
@@ -1882,18 +1907,20 @@ export function SessionTaskList({ tasks }: { tasks: SessionTask[] }) {
   )
 }
 
-export function SessionTimeline({ projectId, projectName, sessionId, historyEnabled = true, pendingTurn, runState, sessionStatus = 'idle', sessionEntrypoint = null, tasks = [], onLiveTurnChange, onPendingTurnReconciled, onTasksChange, onSessionListStale, onSessionInfoChange, onSessionMetaChange, onForkSession, onNotify }: {
+export function SessionTimeline({ projectId, projectName, sessionId, historyEnabled = true, pendingTurn, pendingPhase, runState, sessionStatus = 'idle', sessionEntrypoint = null, tasks = [], onLiveTurnChange, onPendingTurnReconciled, onLatestTurnPhaseChange, onTasksChange, onSessionListStale, onSessionInfoChange, onSessionMetaChange, onForkSession, onNotify }: {
   projectId: string
   projectName?: string | null
   sessionId: string | null
   historyEnabled?: boolean
   pendingTurn?: TurnSummary | null
+  pendingPhase?: TurnPhase
   runState?: SessionRunState | null
   sessionStatus?: SessionStatus
   sessionEntrypoint?: string | null
   tasks?: SessionTask[]
   onLiveTurnChange?: (sessionId: string, userMessageUuid: string | null) => void
   onPendingTurnReconciled?: (sessionId: string, userMessageUuid: string) => void
+  onLatestTurnPhaseChange?: (phase: TurnPhase | null) => void
   onTasksChange?: (tasks: SessionTask[]) => void
   onSessionListStale?: () => void
   onSessionInfoChange?: (info: SessionInfoResponse) => void
@@ -1907,8 +1934,16 @@ export function SessionTimeline({ projectId, projectName, sessionId, historyEnab
   const previousScopeRef = useRef<SessionTimelineScope | null>(null)
   const pendingPrimaryTurnUuid = pendingTurn?.primaryUserUuid ?? null
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const showScrollToBottomRef = useRef(false)
   const [rawMessageSelection, setRawMessageSelection] = useState<{ turnId: string } | null>(null)
-  const responseSkeletonTurnIdRef = useRef<string | null>(null)
+  const [stableSettled, setStableSettled] = useState<{ turnId: string; dataToken: string } | null>(null)
+  const previousSessionStatusRef = useRef<SessionStatus>(sessionStatus)
+  const stableWindowTurnIdRef = useRef<string | null>(null)
+  const previousLatestDataRef = useRef<{ turnId: string; dataToken: string; terminal: boolean } | null>(null)
+  const reopenedLatestDataRef = useRef<{ turnId: string; dataToken: string } | null>(null)
+  const historicalDataTokensRef = useRef(new Map<string, string>())
+  const historicalReopenedRef = useRef(new Map<string, string>())
+  const [historicalSettled, setHistoricalSettled] = useState(new Map<string, string>())
   const rawMessages = useQuery({
     queryKey: ['session-raw-messages', projectId, sessionId, rawMessageSelection?.turnId],
     queryFn: () => fetchSessionRawMessages(projectId, sessionId!, rawMessageSelection!.turnId),
@@ -1928,7 +1963,7 @@ export function SessionTimeline({ projectId, projectName, sessionId, historyEnab
     return panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24
   }, [])
   const { turns, hasMore, olderError, loadingOlder, liveConnectionError, liveTurnId, timeline, loadOlder, shouldScrollToBottomRef } = useSessionTimelineData(projectId, sessionId, historyEnabled, pendingTurn, onLiveTurnChange, onPendingTurnReconciled, onTasksChange, onSessionListStale, onSessionInfoChange, onSessionMetaChange, isTimelineAtBottom)
-  const visibleTurns: ProjectedTimelineTurn[] = turns.map((turn) => ({ ...turn, blocks: projectTimelineTurn(turn) }))
+  const visibleTurns = useMemo<ProjectedTimelineTurn[]>(() => turns.map((turn) => ({ ...turn, blocks: projectTimelineTurn(turn) })), [turns])
   const matchingLiveEvents = rawMessageSelection && liveEvents.data
     ? liveEventsForTurn(liveEvents.data.events, rawMessageSelection.turnId)
     : []
@@ -1942,17 +1977,22 @@ export function SessionTimeline({ projectId, projectName, sessionId, historyEnab
     if (!loaded) olderScrollAnchorRef.current = null
     loadingOlderFromScrollRef.current = false
   }, [hasMore, loadOlder, loadingOlder])
+  const setScrollButtonVisible = useCallback((value: boolean) => {
+    if (showScrollToBottomRef.current === value) return
+    showScrollToBottomRef.current = value
+    setShowScrollToBottom(value)
+  }, [])
   const handleTimelineScroll = useCallback(() => {
     const panel = timelinePanelRef.current
-    setShowScrollToBottom(!isTimelineAtBottom())
+    setScrollButtonVisible(!isTimelineAtBottom())
     if (panel && panel.scrollTop <= 24) void loadOlderKeepingAnchor()
-  }, [isTimelineAtBottom, loadOlderKeepingAnchor])
+  }, [isTimelineAtBottom, loadOlderKeepingAnchor, setScrollButtonVisible])
   const scrollToTimelineBottom = useCallback(() => {
     const panel = timelinePanelRef.current
     if (!panel) return
     panel.scrollTop = panel.scrollHeight
-    setShowScrollToBottom(false)
-  }, [])
+    setScrollButtonVisible(false)
+  }, [setScrollButtonVisible])
 
   useEffect(() => {
     const nextScope = { projectId, sessionId, pendingPrimaryTurnUuid }
@@ -1961,21 +2001,72 @@ export function SessionTimeline({ projectId, projectName, sessionId, historyEnab
     if (!reset) return
     olderScrollAnchorRef.current = null
     loadingOlderFromScrollRef.current = false
-    responseSkeletonTurnIdRef.current = null
+    stableWindowTurnIdRef.current = null
+    previousSessionStatusRef.current = sessionStatus
+    previousLatestDataRef.current = null
+    reopenedLatestDataRef.current = null
+    historicalDataTokensRef.current.clear()
+    historicalReopenedRef.current.clear()
+    setHistoricalSettled(new Map())
+    setStableSettled(null)
     shouldScrollToBottomRef.current = true
-    setShowScrollToBottom(false)
+    setScrollButtonVisible(false)
     setRawMessageSelection(null)
-  }, [pendingPrimaryTurnUuid, projectId, sessionId, shouldScrollToBottomRef])
+  }, [pendingPrimaryTurnUuid, projectId, sessionId, setScrollButtonVisible, shouldScrollToBottomRef])
 
   const cookingTurnId = cliCookingTurnId(visibleTurns, sessionEntrypoint === 'cli' && (sessionStatus === 'busy' || sessionStatus === 'waiting'))
   const activeTurnId = activeTimelineTurnId(visibleTurns, runState)
-  if (cookingTurnId || activeTurnId) responseSkeletonTurnIdRef.current = cookingTurnId ?? activeTurnId
-  const responseSkeletonScrollKey = visibleTurns.flatMap((turn) => {
-    const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
-    const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
-    const cooking = turn.primaryUserUuid === cookingTurnId || turn.primaryUserUuid === activeTurnId
-    return shouldShowAssistantResponseSkeleton({ turn, cooking, lastAssistantFrameId, runState, fallbackTurnId: responseSkeletonTurnIdRef.current }) ? [turn.primaryUserUuid] : []
+  const latestTurn = visibleTurns.at(-1)
+  const latestDataToken = latestTurn ? turnVisibleDataToken(latestTurn) : null
+  const previousLatestData = previousLatestDataRef.current
+  const latestHasTerminalEvidence = latestTurn ? hasTerminalEvidence(latestTurn) : false
+  if (latestTurn && latestDataToken && previousLatestData?.turnId === latestTurn.primaryUserUuid && previousLatestData.dataToken !== latestDataToken && previousLatestData.terminal) reopenedLatestDataRef.current = { turnId: latestTurn.primaryUserUuid, dataToken: latestDataToken }
+  const latestReopened = Boolean(latestTurn && reopenedLatestDataRef.current?.turnId === latestTurn.primaryUserUuid && reopenedLatestDataRef.current.dataToken === latestDataToken)
+  const latestActive = sessionStatus !== 'idle' || latestTurn?.primaryUserUuid === cookingTurnId || latestTurn?.primaryUserUuid === activeTurnId
+  const latestPhase = latestTurn ? turnPhase({ turn: latestTurn, latest: true, active: latestActive, pendingPhase: latestTurn.primaryUserUuid === pendingPrimaryTurnUuid ? pendingPhase : undefined, stableSettled: stableSettled?.turnId === latestTurn.primaryUserUuid && stableSettled.dataToken === latestDataToken, reopen: latestReopened }) : null
+  previousLatestDataRef.current = latestTurn && latestDataToken ? { turnId: latestTurn.primaryUserUuid, dataToken: latestDataToken, terminal: latestHasTerminalEvidence || latestPhase === 'settled' } : null
+  for (const turn of visibleTurns.slice(0, -1)) {
+    const token = turnVisibleDataToken(turn)
+    const previous = historicalDataTokensRef.current.get(turn.primaryUserUuid)
+    if (previous && previous !== token) historicalReopenedRef.current.set(turn.primaryUserUuid, token)
+    historicalDataTokensRef.current.set(turn.primaryUserUuid, token)
+  }
+  const responseSkeletonScrollKey = visibleTurns.flatMap((turn, index) => {
+    const phase = turn.primaryUserUuid === latestTurn?.primaryUserUuid && latestPhase ? latestPhase : turnPhase({ turn, latest: index === visibleTurns.length - 1, active: false })
+    return phase === 'submitted' ? [turn.primaryUserUuid] : []
   }).join('|')
+
+  useEffect(() => { onLatestTurnPhaseChange?.(latestPhase) }, [latestPhase, onLatestTurnPhaseChange])
+
+  useEffect(() => {
+    const reopened = [...historicalReopenedRef.current]
+    if (reopened.length === 0) return
+    const timer = window.setTimeout(() => {
+      setHistoricalSettled((current) => new Map([...current, ...reopened]))
+      for (const [turnId, token] of reopened) if (historicalReopenedRef.current.get(turnId) === token) historicalReopenedRef.current.delete(turnId)
+    }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [turns])
+
+  useEffect(() => {
+    const previousStatus = previousSessionStatusRef.current
+    previousSessionStatusRef.current = sessionStatus
+    if (!latestTurn || !latestPhase || !shouldStartTurnStableWindow({ sessionStatus, previousStatus, phase: latestPhase, reopened: latestReopened, continuing: stableWindowTurnIdRef.current === latestTurn.primaryUserUuid })) {
+      stableWindowTurnIdRef.current = null
+      if (latestPhase === 'settled') reopenedLatestDataRef.current = null
+      return
+    }
+    const turnId = latestTurn.primaryUserUuid
+    stableWindowTurnIdRef.current = turnId
+    const dataToken = turnVisibleDataToken(latestTurn)
+    const timer = window.setTimeout(() => {
+      if (stableWindowTurnIdRef.current === turnId) {
+        setStableSettled({ turnId, dataToken })
+        reopenedLatestDataRef.current = null
+      }
+    }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [latestTurn?.messages, latestTurn?.primaryUserUuid, latestPhase, latestReopened, sessionStatus])
 
   useLayoutEffect(() => {
     const anchor = olderScrollAnchorRef.current
@@ -1993,8 +2084,8 @@ export function SessionTimeline({ projectId, projectName, sessionId, historyEnab
   }, [shouldScrollToBottomRef, visibleTurns])
 
   useLayoutEffect(() => {
-    setShowScrollToBottom(!isTimelineAtBottom())
-  }, [isTimelineAtBottom, visibleTurns])
+    setScrollButtonVisible(!isTimelineAtBottom())
+  }, [isTimelineAtBottom, setScrollButtonVisible, visibleTurns])
 
   useLayoutEffect(() => {
     if (!responseSkeletonScrollKey || showScrollToBottom) return
@@ -2015,15 +2106,19 @@ export function SessionTimeline({ projectId, projectName, sessionId, historyEnab
         {olderError ? <div className="panel error">Failed to load older turns: {olderError}</div> : null}
         {liveConnectionError ? <div className="panel muted">{liveConnectionError}</div> : null}
         {visibleTurns.length === 0 && !olderError && !liveConnectionError ? <div className="timeline-empty-state">{projectName ? `What should we work on in ${projectName}?` : 'What should we build?'}</div> : null}
-        {visibleTurns.map((turn) => {
+        {visibleTurns.map((turn, index) => {
           const displayItems = groupAssistantResponseFrames(groupTimelineBlocks(turn.blocks))
           const lastAssistantFrameId = [...displayItems].reverse().find((item) => item.type === 'assistant-response-frame')?.id
           const source = turn.primaryUserUuid === liveTurnId ? 'live' : 'history'
-          const cooking = turn.primaryUserUuid === cookingTurnId || turn.primaryUserUuid === activeTurnId
+          const active = turn.primaryUserUuid === cookingTurnId || turn.primaryUserUuid === activeTurnId
+          const dataToken = turnVisibleDataToken(turn)
+          const historicalReopened = historicalReopenedRef.current.get(turn.primaryUserUuid) === dataToken && historicalSettled.get(turn.primaryUserUuid) !== dataToken
+          const phase = turn.primaryUserUuid === latestTurn?.primaryUserUuid && latestPhase ? latestPhase : turnPhase({ turn, latest: index === visibleTurns.length - 1, active, reopen: historicalReopened })
+          const cooking = phase === 'submitted' || phase === 'rendering'
           const activeLabel = turn.primaryUserUuid === activeTurnId && activeTaskLabel ? activeTaskLabel : turn.primaryUserUuid === cookingTurnId ? cliCookingLabel(turn.primaryUserUuid) : undefined
-          const footerState = turnFooterState({ turn, cooking, activeLabel })
-          const showResponseSkeleton = shouldShowAssistantResponseSkeleton({ turn, cooking, lastAssistantFrameId, runState, fallbackTurnId: responseSkeletonTurnIdRef.current })
-          if (responseSkeletonTurnIdRef.current === turn.primaryUserUuid && (lastAssistantFrameId || turn.durationMs !== undefined)) responseSkeletonTurnIdRef.current = null
+          const primaryOnly = turn.blocks.every(isPrimaryInputBlock)
+          const footerState = turnFooterState({ turn, phase, cooking, activeLabel, taskLabel: index === visibleTurns.length - 1 ? activeTaskLabel : undefined, primaryOnly })
+          const showResponseSkeleton = phase === 'submitted'
           return (
             <article className="turn-card" key={turn.primaryUserUuid}>
               <div className="timeline-blocks">{displayItems.map((item) => item.type === 'assistant-response-frame'

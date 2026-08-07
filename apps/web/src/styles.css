@@ -1447,7 +1447,7 @@ h2 {
 
 .session-task-list li {
   display: grid;
-  grid-template-columns: 12px 76px 3ch minmax(0, 1fr) auto;
+  grid-template-columns: 12px 76px 3ch minmax(0, max-content) auto 1fr;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -1589,7 +1589,7 @@ h2 {
 .session-main {
   display: grid;
   min-width: 0;
-  grid-template-columns: 11px minmax(0, 1fr) max-content;
+  grid-template-columns: 11px minmax(0, 1fr) max-content max-content;
   align-items: center;
   gap: 5px;
 }
@@ -1615,6 +1615,12 @@ h2 {
   line-height: 1.2;
 }
 
+.session-kind-branch {
+  overflow: hidden;
+  max-width: 88px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .session-age {
   display: inline-flex;
@@ -1732,6 +1738,7 @@ h2 {
 }
 
 .turn-composer {
+  position: relative;
   display: grid;
   min-width: 0;
   max-width: 100%;
@@ -1763,6 +1770,14 @@ h2 {
 .turn-composer-disabled {
   background: #f8f8f8;
   border-color: var(--color-border);
+  cursor: not-allowed;
+}
+.turn-composer-disabled::after {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  content: '';
   cursor: not-allowed;
 }
 .turn-composer-disabled textarea {

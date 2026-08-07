@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PersistedLiveEvent, TimelineBlock, TurnSummary } from '@cotta/shared'
-import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, belongsToTimelineSession, cliCookingLabel, cliCookingTurnId, CLI_COOKING_VERBS, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, projectTimelineTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionAwaySummary, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldShowAssistantResponseSkeleton, TimelineBlockView, timelineTurnIndex, turnDurationLabel, turnFooterState } from './timeline'
+import { activeTimelineTurnId, applySdkMessage, AssistantResponseFrameSkeleton, assistantResponseFrameForkMessageId, assistantResponseText, authoritativeTurnPhase, belongsToTimelineSession, cliCookingLabel, cliCookingTurnId, CLI_COOKING_VERBS, groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryUserMessage, LiveAssistantStreamAccumulator, LiveEventsTable, liveEventsForTurn, projectTimelineTurn, rawMessageWaterfallRows, RawMessagesDialog, reconcileTimelineTurns, SessionAwaySummary, SessionTaskList, shouldRefetchTimelineVersion, shouldResetSessionTimeline, shouldStartTurnStableWindow, submitStateFor, TimelineBlockView, timelineTurnIndex, turnDurationLabel, turnFooterState, turnPhase, turnVisibleDataToken } from './timeline'
 
 describe('session task list', () => {
   it('hides empty lists and shows task statuses without active form', () => {
@@ -389,12 +389,57 @@ describe('timeline response frame grouping', () => {
     expect(turnDurationLabel({ primaryUserUuid: 'turn-1' })).toBeNull()
   })
 
-  it('prioritizes pending agents before cooking and cooked duration', () => {
-    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 2 }, cooking: true, activeLabel: 'Writing tests...' })).toEqual({ kind: 'waiting', label: 'Waiting for 2 background agents to finish' })
-    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1' }, cooking: true, activeLabel: 'Writing tests...' })).toEqual({ kind: 'cooking', label: 'Writing tests...' })
-    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1' }, cooking: true })).toEqual({ kind: 'cooking', label: undefined })
-    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000 }, cooking: false })?.kind).toBe('duration')
-    expect(shouldShowAssistantResponseSkeleton({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000, messages: [] }, cooking: false })).toBe(false)
+  it('shows cooking before settlement, then prioritizes pending agents, tasks, and duration', () => {
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', pendingBackgroundAgentCount: 2 }, phase: 'rendering', cooking: true, activeLabel: 'Writing tests...' })).toEqual({ kind: 'cooking', label: 'Writing tests...' })
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000, pendingBackgroundAgentCount: 2 }, phase: 'settled', cooking: false, taskLabel: 'Writing tests...' })).toEqual({ kind: 'waiting', label: 'Waiting for 2 background agents to finish' })
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000 }, phase: 'settled', cooking: false, taskLabel: 'Writing tests...' })).toEqual({ kind: 'cooking', label: 'Writing tests...' })
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000 }, phase: 'settled', cooking: false })?.kind).toBe('duration')
+    expect(turnFooterState({ turn: { primaryUserUuid: 'turn-1', durationMs: 21_000 }, phase: 'settled', cooking: false, primaryOnly: true })).toBeNull()
+  })
+
+  it('derives transcript and Cotta turn phases with latest-only re-rendering', () => {
+    const submitted = userTurn('turn-1')
+    const rendering = userTurn('turn-1', [{ id: 'assistant', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'hello' } }])
+    expect(turnPhase({ turn: submitted, latest: true, active: false, pendingPhase: 'submitting' })).toBe('submitting')
+    expect(turnPhase({ turn: submitted, latest: true, active: true })).toBe('submitted')
+    expect(turnPhase({ turn: rendering, latest: true, active: true })).toBe('rendering')
+    expect(turnPhase({ turn: rendering, latest: false, active: false })).toBe('settled')
+    expect(turnPhase({ turn: rendering, latest: false, active: false, reopen: true })).toBe('rendering')
+    const terminal = { ...rendering, durationMs: 100 }
+    expect(turnPhase({ turn: terminal, latest: true, active: true })).toBe('settled')
+    expect(turnPhase({ turn: terminal, latest: true, active: false, reopen: true })).toBe('rendering')
+    expect(turnPhase({ turn: rendering, latest: true, active: true, stableSettled: true })).toBe('settled')
+    expect(turnPhase({ turn: rendering, latest: true, active: true, stableSettled: false, reopen: true })).toBe('rendering')
+  })
+
+  it('starts a stability window for an idle latest-turn reopen', () => {
+    expect(shouldStartTurnStableWindow({ sessionStatus: 'idle', previousStatus: 'idle', phase: 'rendering', reopened: true, continuing: false })).toBe(true)
+    expect(shouldStartTurnStableWindow({ sessionStatus: 'idle', previousStatus: 'idle', phase: 'rendering', reopened: false, continuing: false })).toBe(false)
+    expect(shouldStartTurnStableWindow({ sessionStatus: 'idle', previousStatus: 'busy', phase: 'rendering', reopened: false, continuing: false })).toBe(true)
+    expect(shouldStartTurnStableWindow({ sessionStatus: 'idle', previousStatus: 'idle', phase: 'settled', reopened: true, continuing: true })).toBe(false)
+  })
+
+  it('tokens only projected visible data and changes for visible notifications', () => {
+    const settled = { ...userTurn('turn-1'), durationMs: 100, blocks: projectTimelineTurn(userTurn('turn-1')) }
+    const rawOnly = { ...settled, messages: [...settled.messages, { type: 'result' }] }
+    const notification = { id: 'notification', kind: 'assistant.task_notification', sourceEventIds: ['notification-1'], data: {} } as TimelineBlock
+    expect(turnVisibleDataToken(rawOnly)).toBe(turnVisibleDataToken(settled))
+    expect(turnVisibleDataToken({ ...rawOnly, blocks: [...settled.blocks, notification] })).not.toBe(turnVisibleDataToken(settled))
+  })
+
+  it('lets observed rendering or settlement supersede an optimistic phase', () => {
+    expect(authoritativeTurnPhase('submitted', 'settled')).toBe('settled')
+    expect(authoritativeTurnPhase('submitted', 'rendering')).toBe('rendering')
+    expect(authoritativeTurnPhase('submitting', null)).toBe('submitting')
+    expect(authoritativeTurnPhase('submitting', 'submitted')).toBe('submitting')
+  })
+
+  it('derives submit states from requests, session status, and latest turn phase', () => {
+    expect(submitStateFor({ submitting: true, stopping: false, sessionIdle: true, latestPhase: 'settled' })).toBe('submitting')
+    expect(submitStateFor({ submitting: false, stopping: true, sessionIdle: false, latestPhase: 'rendering' })).toBe('stopping')
+    expect(submitStateFor({ submitting: false, stopping: false, sessionIdle: true, latestPhase: 'settled' })).toBe('ready')
+    expect(submitStateFor({ submitting: false, stopping: false, sessionIdle: true, latestPhase: 'rendering' })).toBe('busy')
+    expect(submitStateFor({ submitting: false, stopping: false, sessionIdle: false, latestPhase: 'settled' })).toBe('busy')
   })
 
   it('selects the latest unfinished primary turn when CLI is active', () => {
@@ -412,16 +457,6 @@ describe('timeline response frame grouping', () => {
     expect(activeTimelineTurnId(turns, { phase: 'requires_action', activeUserMessageUuid: 'turn-2', lastTurn: null })).toBe('turn-2')
     expect(activeTimelineTurnId(turns, { phase: 'idle', activeUserMessageUuid: null })).toBeNull()
     expect(activeTimelineTurnId(turns, { phase: 'running', activeUserMessageUuid: 'missing', lastTurn: null })).toBeNull()
-  })
-
-  it('keeps the assistant skeleton until a just-finished response frame arrives', () => {
-    const turn = userTurn('turn-1')
-    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, runState: { phase: 'idle', activeUserMessageUuid: null } })).toBe(true)
-    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: true, lastAssistantFrameId: 'frame-1', runState: { phase: 'idle', activeUserMessageUuid: null } })).toBe(false)
-    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'success' } } })).toBe(true)
-    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, fallbackTurnId: 'turn-1', runState: { phase: 'idle', activeUserMessageUuid: null } })).toBe(true)
-    expect(shouldShowAssistantResponseSkeleton({ turn, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'error' } } })).toBe(false)
-    expect(shouldShowAssistantResponseSkeleton({ turn: { ...turn, durationMs: 1000 }, cooking: false, runState: { phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'turn-1', outcome: 'success' } } })).toBe(false)
   })
 
   it('hides Task management tool cards without leaving empty response frames', () => {
@@ -444,13 +479,15 @@ describe('timeline response frame grouping', () => {
     const display = groupAssistantResponseFrames(groupTimelineBlocks([
       { id: 'primary:user', kind: 'user.message', sourceEventIds: ['primary'], data: { text: 'prompt', primaryTimelineUserMessage: true } },
       { id: 'assistant:text', kind: 'assistant.text', sourceEventIds: ['assistant'], data: { text: 'answer' } },
+      { id: 'assistant:text:2', kind: 'assistant.text', sourceEventIds: ['assistant-2'], data: { text: 'more' } },
       { id: 'non-primary:user', kind: 'user.message', sourceEventIds: ['non-primary'], data: { text: 'debug user event' } },
     ]))
 
     expect(display).toHaveLength(2)
     expect(display[0]).toMatchObject({ type: 'item', item: { type: 'block', block: { id: 'primary:user' } } })
     expect(display[1]).toMatchObject({ type: 'assistant-response-frame' })
-    expect(display[1]?.type === 'assistant-response-frame' ? display[1].items.map((item) => item.type === 'block' ? item.block.id : item.toolUseId) : []).toEqual(['assistant:text', 'non-primary:user'])
+    expect(display[1]?.type === 'assistant-response-frame' ? display[1].items.map((item) => item.type === 'block' ? item.block.id : item.toolUseId) : []).toEqual(['assistant:text', 'assistant:text:2', 'non-primary:user'])
+    expect(display[1]?.type === 'assistant-response-frame' ? assistantResponseText(display[1].items) : null).toBe('answer\nmore')
   })
 
   it('uses the last response frame source event as fork target', () => {

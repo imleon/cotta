@@ -285,6 +285,56 @@ describe('LiveTurnManager', () => {
     expect(setModel).toHaveBeenCalledWith('default')
   })
 
+  it('replaces an idle runtime when its session moves projects', async () => {
+    const close = vi.fn()
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectA = Buffer.from('/repo/a').toString('base64url')
+    const projectB = Buffer.from('/repo/b').toString('base64url')
+
+    await manager.ensureRuntime({ projectId: projectA, sessionId: 'session-1' })
+    await expect(manager.ensureRuntime({ projectId: projectB, sessionId: 'session-1' })).resolves.toBeUndefined()
+
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({ options: expect.objectContaining({ cwd: '/repo/b', resume: 'session-1' }) }))
+    await expect(manager.ensureRuntime({ projectId: projectB, sessionId: 'session-1' })).resolves.toBeUndefined()
+    expect(queryMock).toHaveBeenCalledTimes(2)
+    manager.closeAll()
+  })
+
+  it('does not replace an active runtime when another project claims its session', async () => {
+    const close = vi.fn()
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+    const manager = new LiveTurnManager()
+    const projectA = Buffer.from('/repo/a').toString('base64url')
+    const projectB = Buffer.from('/repo/b').toString('base64url')
+    await manager.startTurn({ projectId: projectA, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
+
+    await expect(manager.ensureRuntime({ projectId: projectB, sessionId: 'session-1' })).rejects.toThrow('Session runtime project mismatch')
+    expect(close).not.toHaveBeenCalled()
+    expect(queryMock).toHaveBeenCalledTimes(1)
+    manager.closeAll()
+  })
+
+  it('rebuilds an idle runtime after its session moves projects', async () => {
+    const close = vi.fn()
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectA = Buffer.from('/repo/a').toString('base64url')
+    const projectB = Buffer.from('/repo/b').toString('base64url')
+    await manager.ensureRuntime({ projectId: projectA, sessionId: 'session-1' })
+
+    await expect(manager.rebuildRuntimeAfterCliIdle({ projectId: projectB, sessionId: 'session-1', permissionMode: 'plan', model: 'default', effort: null })).resolves.toBe(true)
+
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({ options: expect.objectContaining({ cwd: '/repo/b', resume: 'session-1', permissionMode: 'plan' }) }))
+    manager.closeAll()
+  })
+
   it('rebuilds an opened runtime after CLI idle and preserves current options', async () => {
     const close = vi.fn()
     queryMock

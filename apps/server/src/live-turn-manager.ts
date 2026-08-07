@@ -213,14 +213,15 @@ export class LiveTurnManager {
     await this.externalOwnerCloses.get(input.sessionId)
     if ((this.externalOwnerGenerations.get(input.sessionId) ?? 0) !== externalOwnerGeneration) return false
     const current = this.runtimes.get(input.sessionId)
-    if (current?.rebuildingAfterCliIdle) {
+    if (current && current.projectId !== input.projectId) {
+      if (current.currentUserMessageUuid || current.startingTurnToken) throw new Error('Session runtime project mismatch')
+      current.stale = true
+      this.closeRuntime(current)
+    } else if (current?.rebuildingAfterCliIdle) {
       await current.ready
-      return true
-    }
-    if (current?.currentUserMessageUuid || current?.startingTurnToken) return false
-    if (current && current.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
-
-    if (current) {
+      return this.runtimes.get(input.sessionId) === current && !current.closed && !current.stale
+    } else if (current?.currentUserMessageUuid || current?.startingTurnToken) return false
+    else if (current) {
       current.stale = true
       this.closeRuntime(current)
     }
@@ -290,10 +291,18 @@ export class LiveTurnManager {
 
   private async ensureRuntimeInternal(input: { projectId: string; sessionId: string; resume: boolean; permissionMode: PermissionMode; model?: ModelSelection | DefaultTurnOption; effort?: EffortLevel | null }): Promise<SessionRuntime> {
     for (;;) {
-      const runtime = this.runtimes.get(input.sessionId) ?? this.createRuntime(input)
-      if (runtime.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
+      let runtime = this.runtimes.get(input.sessionId)
+      if (runtime && runtime.projectId !== input.projectId) {
+        if (runtime.currentUserMessageUuid || runtime.startingTurnToken) throw new Error('Session runtime project mismatch')
+        runtime.stale = true
+        this.closeRuntime(runtime)
+        runtime = undefined
+      }
+      runtime ??= this.createRuntime(input)
       await runtime.ready
-      if (this.runtimes.get(input.sessionId) === runtime && !runtime.stale && !runtime.closed) return runtime
+      const current = this.runtimes.get(input.sessionId)
+      if (current === runtime && !runtime.stale && !runtime.closed) return runtime
+      if (current && current.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
     }
   }
 

@@ -109,6 +109,7 @@ function toSessionSummary(activity: SessionActivityTracker, projectId: string, s
     hasRunningShell: false,
     kind: null,
     entrypoint: null,
+    gitBranch: session.gitBranch,
   }
 }
 

@@ -82,6 +82,7 @@ export const sessionSummarySchema = z.object({
   hasRunningShell: z.boolean().optional(),
   kind: z.string().nullable(),
   entrypoint: z.string().nullable(),
+  gitBranch: z.string().optional(),
 })
 
 export type SessionSummary = z.infer<typeof sessionSummarySchema>

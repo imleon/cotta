@@ -308,6 +308,17 @@ function isNearScrollEnd(element: HTMLElement): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= LOAD_MORE_SCROLL_THRESHOLD_PX
 }
 
+type ProjectVisualGroup = { id: string; name: string; path?: string }
+
+type ProjectSessionRailGroup = {
+  group: ProjectVisualGroup
+  projects: ProjectSummary[]
+}
+
+function projectVisualGroup(project: ProjectSummary): ProjectVisualGroup {
+  return project.projectGroup ?? project
+}
+
 function ProjectSessionBranch({
   project,
   selectedProjectId,
@@ -469,7 +480,17 @@ export function ProjectSessionRail({
   const [renameDialog, setRenameDialog] = useState<{ projectId: string; sessionId: string; title: string; value: string; error: string | null; saving: boolean } | null>(null)
   const deleteDialogRef = useRef<HTMLDialogElement | null>(null)
   const renameDialogRef = useRef<HTMLDialogElement | null>(null)
-  const renderedProjects = useSidebarListMotion(projects, (project) => project.id)
+  const projectGroups = useMemo<ProjectSessionRailGroup[]>(() => {
+    const groups = new Map<string, ProjectSessionRailGroup>()
+    for (const project of projects) {
+      const group = projectVisualGroup(project)
+      const current = groups.get(group.id)
+      if (current) current.projects.push(project)
+      else groups.set(group.id, { group, projects: [project] })
+    }
+    return [...groups.values()]
+  }, [projects])
+  const renderedProjectGroups = useSidebarListMotion(projectGroups, (group) => group.group.id)
 
   function expandProject(projectId: string) {
     setExpandedProjectIds((current) => {
@@ -607,27 +628,33 @@ export function ProjectSessionRail({
       <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions" onScroll={handleProjectRailScroll}>
         <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
         <div className="project-tree">
-          {renderedProjects.map(({ key, item: project, motionState }) => (
-            <ProjectSessionBranch
-              key={key}
-              motionState={motionState}
-              project={project}
-              selectedProjectId={selectedProjectId}
-              selectedSessionId={selectedSessionId}
-              pendingProjectId={pendingProjectId}
-              pendingSessionId={pendingSessionId}
-              highlightedProjectId={highlightedProjectId}
-              highlightedSessionId={highlightedSessionId}
-              expanded={expandedProjectIds.has(project.id)}
-              visibleSessionState={visibleSessionStates[project.id]}
-              onToggleExpanded={() => toggleProject(project.id)}
-              onSelectProject={() => onSelectProject(project.id)}
-              onSelectSession={selectSession}
-              onOpenSessionMenu={openSessionMenu}
-              openMenuSessionId={openMenu?.projectId === project.id ? openMenu.session.id : null}
-              onCursorStale={onSessionCursorStale}
-              onHighlightedSessionSeen={onHighlightedSessionSeen}
-            />
+          {renderedProjectGroups.map(({ key, item: projectGroup, motionState }) => (
+            <div className={`project-tree-group sidebar-motion-item${motionStateClass(motionState)}`} key={key}>
+              {projectGroup.projects.some((project) => project.projectGroup) ? <div className="project-group-label">{projectGroup.group.name}</div> : null}
+              <div className="project-group-items">
+                {projectGroup.projects.map((project) => (
+                  <ProjectSessionBranch
+                    key={project.id}
+                    project={project}
+                    selectedProjectId={selectedProjectId}
+                    selectedSessionId={selectedSessionId}
+                    pendingProjectId={pendingProjectId}
+                    pendingSessionId={pendingSessionId}
+                    highlightedProjectId={highlightedProjectId}
+                    highlightedSessionId={highlightedSessionId}
+                    expanded={expandedProjectIds.has(project.id)}
+                    visibleSessionState={visibleSessionStates[project.id]}
+                    onToggleExpanded={() => toggleProject(project.id)}
+                    onSelectProject={() => onSelectProject(project.id)}
+                    onSelectSession={selectSession}
+                    onOpenSessionMenu={openSessionMenu}
+                    openMenuSessionId={openMenu?.projectId === project.id ? openMenu.session.id : null}
+                    onCursorStale={onSessionCursorStale}
+                    onHighlightedSessionSeen={onHighlightedSessionSeen}
+                  />
+                ))}
+              </div>
+            </div>
           ))}
           {projectsHasMore ? (
             <button className="load-more-sessions" type="button" onClick={onLoadMoreProjects} disabled={projectsLoadingMore}>

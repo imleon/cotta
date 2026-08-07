@@ -41,6 +41,17 @@ function normalizeProjectPath(path: string): string {
   return path.replace(/\/+$/, '') || '/'
 }
 
+const WORKTREE_SEGMENT = '/.claude/worktrees/'
+
+function projectGroupFromPath(path: string): ProjectSummary['projectGroup'] {
+  const normalized = normalizeProjectPath(path)
+  const index = normalized.indexOf(WORKTREE_SEGMENT)
+  if (index < 0) return undefined
+  const basePath = normalizeProjectPath(normalized.slice(0, index))
+  if (!basePath || basePath === normalized) return undefined
+  return { id: projectIdFromPath(basePath), name: projectNameFromPath(basePath), path: basePath }
+}
+
 function isExactProjectPath(projectPath: string, sessionPath: string | undefined): boolean {
   return !!sessionPath && normalizeProjectPath(sessionPath) === normalizeProjectPath(projectPath)
 }
@@ -68,6 +79,7 @@ function toProjectSummary(activity: SessionActivityTracker, path: string, sessio
     name: projectNameFromPath(path),
     path,
     lastActivityAt: Math.max(...sessions.map((session) => activity.get(session))),
+    projectGroup: projectGroupFromPath(path),
   }
 }
 

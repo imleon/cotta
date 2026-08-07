@@ -9,6 +9,7 @@ type SummaryCacheProject = {
   name: string
   path: string
   lastActivityAt: number
+  projectGroup?: ProjectSummary['projectGroup']
 }
 
 type RefreshReason = 'background' | 'manual' | 'session-created' | 'session-stale' | 'focus' | 'load-more'
@@ -105,6 +106,21 @@ function normalizeProjectPath(path: string): string {
   return path.replace(/\/+$/, '') || '/'
 }
 
+const WORKTREE_SEGMENT = '/.claude/worktrees/'
+
+function projectGroupFromPath(path: string): ProjectSummary['projectGroup'] {
+  const normalized = normalizeProjectPath(path)
+  const index = normalized.indexOf(WORKTREE_SEGMENT)
+  if (index < 0) return undefined
+  const basePath = normalizeProjectPath(normalized.slice(0, index))
+  if (!basePath || basePath === normalized) return undefined
+  return { id: projectIdFromPath(basePath), name: projectNameFromPath(basePath), path: basePath }
+}
+
+function sameProjectGroup(left: ProjectSummary['projectGroup'], right: ProjectSummary['projectGroup']): boolean {
+  return (left?.id ?? null) === (right?.id ?? null) && (left?.name ?? null) === (right?.name ?? null) && (left?.path ?? null) === (right?.path ?? null)
+}
+
 function compareProjects(left: SummaryCacheProject, right: SummaryCacheProject): number {
   const byTime = right.lastActivityAt - left.lastActivityAt
   if (byTime !== 0) return byTime
@@ -118,7 +134,7 @@ function compareSessions(activity: SessionActivityTracker, left: SDKSessionInfo,
 }
 
 function sameProject(left: SummaryCacheProject, right: SummaryCacheProject): boolean {
-  return left.id === right.id && left.name === right.name && left.path === right.path && left.lastActivityAt === right.lastActivityAt
+  return left.id === right.id && left.name === right.name && left.path === right.path && left.lastActivityAt === right.lastActivityAt && sameProjectGroup(left.projectGroup, right.projectGroup)
 }
 
 function defaultRunState(): SessionRunState {
@@ -428,11 +444,12 @@ export class SessionSummaryCache {
     const hasMore = start + limit < ordered.length || !this.projectsFullyScanned
     const offset = start + page.length
     return {
-      projects: page.map(({ id, name, path, lastActivityAt }) => ({
+      projects: page.map(({ id, name, path, lastActivityAt, projectGroup }) => ({
         id,
         name,
         path,
         lastActivityAt,
+        projectGroup,
       })),
       hasMore,
       nextCursor:
@@ -460,6 +477,7 @@ export class SessionSummaryCache {
       name: project.name,
       path: project.path,
       lastActivityAt: project.lastActivityAt,
+      projectGroup: project.projectGroup,
     }
   }
 
@@ -536,6 +554,7 @@ export class SessionSummaryCache {
         name: refreshedProject.name,
         path: refreshedProject.path,
         lastActivityAt: refreshedProject.lastActivityAt,
+        projectGroup: refreshedProject.projectGroup,
       },
       sessions: window.sessions,
       defaultSessionId: sessions[0]?.sessionId ?? null,
@@ -708,6 +727,7 @@ export class SessionSummaryCache {
               name: projectNameFromPath(path),
               path,
               lastActivityAt,
+              projectGroup: projectGroupFromPath(path),
             }
         projectsById.set(projectId, nextProject)
       }
@@ -873,11 +893,13 @@ export class SessionSummaryCache {
   private updateProjectFromSessions(projectPath: string, sessions: SDKSessionInfo[]): boolean {
     if (sessions.length === 0) return false
     const projectId = projectIdFromPath(projectPath)
+    const path = normalizeProjectPath(projectPath)
     const nextProject: SummaryCacheProject = {
       id: projectId,
       name: projectNameFromPath(projectPath),
-      path: normalizeProjectPath(projectPath),
+      path,
       lastActivityAt: Math.max(...sessions.map((session) => this.activity.get(session))),
+      projectGroup: projectGroupFromPath(path),
     }
     return setIfChanged(this.projectsById, projectId, nextProject, sameProject)
   }

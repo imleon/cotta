@@ -64,6 +64,40 @@ describe('SessionSummaryCache', () => {
     await expect(cache.listProjectSessions(projectId('/repo/a'), { limit: 10 })).resolves.toMatchObject({ sessions: [{ id: 's2' }] })
   })
 
+  it('adds a display-only project group for Claude worktree projects', async () => {
+    const cache = new SessionSummaryCache(10)
+    const worktreePath = '/repo/base/.claude/worktrees/feature-a'
+    listSessionsMock.mockResolvedValueOnce([
+      session('base', '/repo/base', 2),
+      session('worktree', worktreePath, 3),
+    ])
+
+    await cache.requestScan('global')
+
+    await expect(cache.listProjects({ limit: 10 })).resolves.toMatchObject({
+      projects: expect.arrayContaining([
+        expect.objectContaining({
+          id: projectId('/repo/base'),
+          path: '/repo/base',
+          projectGroup: undefined,
+        }),
+        expect.objectContaining({
+          id: projectId(worktreePath),
+          path: worktreePath,
+          projectGroup: {
+            id: projectId('/repo/base'),
+            name: 'base',
+            path: '/repo/base',
+          },
+        }),
+      ]),
+    })
+    await expect(cache.listProjectSessions(projectId(worktreePath), { limit: 10 })).resolves.toMatchObject({
+      project: expect.objectContaining({ id: projectId(worktreePath), path: worktreePath }),
+      sessions: [expect.objectContaining({ id: 'worktree', projectId: projectId(worktreePath) })],
+    })
+  })
+
   it('upgrades unknown project scans to global discovery', async () => {
     const cache = new SessionSummaryCache(10)
 

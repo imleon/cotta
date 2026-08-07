@@ -586,10 +586,21 @@ h2 {
   gap: 14px;
 }
 
-.project-tree-item {
+.project-tree-item,
+.project-tree-group,
+.project-group-items {
   display: grid;
   min-width: 0;
   gap: 6px;
+}
+
+.project-group-label {
+  padding: 0 4px;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .session-row-wrap {

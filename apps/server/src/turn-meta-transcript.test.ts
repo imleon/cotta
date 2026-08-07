@@ -84,6 +84,21 @@ describe('TurnMetaTranscriptStore', () => {
     expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 42]]))
   })
 
+  it('uses live result duration until transcript duration arrives', async () => {
+    const { projectDir, store } = await setup()
+    await writeFile(join(projectDir, 'session.jsonl'), jsonl(primary('session', 'user')))
+    await store.syncSessions([changed('session')])
+    const before = store.timelineVersion('project', 'session', 'base')
+
+    store.recordLiveResult('project', 'session', 'user', { type: 'result', uuid: 'result', subtype: 'success', is_error: false, duration_ms: 123, duration_api_ms: 999, terminal_reason: 'completed' } as never)
+
+    expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 123]]))
+    expect(store.timelineVersion('project', 'session', 'base')).not.toBe(before)
+    await appendFile(join(projectDir, 'session.jsonl'), jsonl(duration('session', 'duration', 'user', 42)))
+    await store.syncSessions([changed('session')])
+    expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 42]]))
+  })
+
   it('inserts a primary immediately and completes it from appended bytes', async () => {
     const { projectDir, store, db } = await setup()
     const path = join(projectDir, 'session.jsonl')
@@ -440,7 +455,7 @@ describe('TurnMetaTranscriptStore', () => {
     await store.syncSessions([changed('session')])
     expect(durationMsOnly(store.loadTimelineMetadata('project', 'session').turnMetadata)).toEqual(new Map([['user', 42]]))
     expect(store.loadTimelineMetadata('other-project', 'session')).toEqual({ turnMetadata: new Map(), sessionMeta: { permissionMode: null, model: null, effort: null } })
-    expect(store.timelineVersion('project', 'session', 'base')).toMatch(/^base:turn-meta=\d+:\d+:session-meta=\d+$/)
-    expect(store.timelineVersion('other-project', 'session', 'base')).toBe('base:turn-meta=0:0:session-meta=0')
+    expect(store.timelineVersion('project', 'session', 'base')).toMatch(/^base:turn-meta=\d+:\d+:session-meta=\d+:live-results=0:0$/)
+    expect(store.timelineVersion('other-project', 'session', 'base')).toBe('base:turn-meta=0:0:session-meta=0:live-results=0:0')
   })
 })

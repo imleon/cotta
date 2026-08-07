@@ -30,14 +30,14 @@ export function createApp(input: {
   sessionObservationReader?: ProjectRoutesSessionObservationReader
   claudeSessionRegistry?: Pick<Awaited<ReturnType<typeof createClaudeSessionRegistry>>, 'cliSessionMetadata'>
   timelineMetadataReader?: ProjectRoutesTimelineMetadataReader
-  turnMetaTranscriptReader?: Pick<TurnMetaTranscriptStore, 'listEntries'>
+  turnMetaTranscriptReader?: Pick<TurnMetaTranscriptStore, 'listEntries'> & Partial<Pick<TurnMetaTranscriptStore, 'recordLiveResult'>>
   auth?: CottaAuth
 } = {}): Hono {
   const app = new Hono()
   const liveEventStore = input.liveEventStore ?? (process.env.NODE_ENV === 'test' ? undefined : createLiveEventStore())
   const sessionSummaryCache = input.sessionSummaryCache ?? (input.claudeCodeApi || input.liveTurnManager ? undefined : new SessionSummaryCache())
   const claudeCodeApi = input.claudeCodeApi ?? createClaudeCodeApi(sessionSummaryCache)
-  const liveTurnManager = input.liveTurnManager ?? new LiveTurnManager(liveEventStore, sessionSummaryCache)
+  const liveTurnManager = input.liveTurnManager ?? new LiveTurnManager(liveEventStore, sessionSummaryCache, input.turnMetaTranscriptReader?.recordLiveResult ? input.turnMetaTranscriptReader as Pick<TurnMetaTranscriptStore, 'recordLiveResult'> : undefined)
   const modelCatalogProvider = input.modelCatalogProvider ?? defaultModelCatalogProvider
   const settingsStore = input.settingsStore
   const auth = input.auth ?? (process.env.NODE_ENV === 'test' ? createAuth({ github: { clientId: '' }, settingsStore }) : createAuth({ settingsStore }))
@@ -66,7 +66,7 @@ if (process.env.NODE_ENV !== 'test') {
   const claudeCodeApi = createClaudeCodeApi(sessionSummaryCache, {
     timelineVersionProvider: (projectId, sessionId, baseVersion) => turnMetaStore.timelineVersion(projectId, sessionId, baseVersion),
   })
-  const liveTurnManager = new LiveTurnManager(liveEventStore, sessionSummaryCache)
+  const liveTurnManager = new LiveTurnManager(liveEventStore, sessionSummaryCache, turnMetaStore)
   const claudeSessionRegistry = await createClaudeSessionRegistry().catch((error) => {
     console.error('claude-session-registry:start failed', error)
     return null
@@ -82,7 +82,7 @@ if (process.env.NODE_ENV !== 'test') {
       void liveTurnManager.closeForExternalOwner(sessionId).catch((error) => console.error(`live-runtime:external owner close failed for ${sessionId}`, error))
     }
     for (const sessionId of idleSessionIds) {
-      const projectId = projectIdsBySessionId.get(sessionId) ?? liveTurnManager.projectIdForSession(sessionId)
+      const projectId = projectIdsBySessionId.get(sessionId)
       if (!projectId) continue
       const options = resolveTurnOptions({ projectId, sessionId, settingsStore, sessionMetaStore })
       const validation = validateTurnOptions(options, settingsStore)
@@ -90,7 +90,9 @@ if (process.env.NODE_ENV !== 'test') {
         console.error(`live-runtime:CLI idle rebuild skipped for ${sessionId}: ${validation.error}`)
         continue
       }
-      void liveTurnManager.rebuildRuntimeAfterCliIdle(sessionId, {
+      void liveTurnManager.rebuildRuntimeAfterCliIdle({
+        projectId,
+        sessionId,
         permissionMode: options.permissionMode,
         model: options.model,
         effort: options.effort,

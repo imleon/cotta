@@ -2,7 +2,7 @@ import { open, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
+import type { SDKMessage, SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk'
 import { isPrimaryTimelineUserMessage, permissionModeSchema, effortLevelSchema, type EffortLevel, type PermissionMode, type SessionTimelineResponse, type TurnMetaTranscriptResponse, type TurnMetaTranscriptRow, type TurnSummary } from '@cotta/shared'
 import { SessionMetaStore } from './session-meta-store.js'
 import type { SettingsStore } from './settings-store.js'
@@ -64,6 +64,10 @@ function awaySummary(value: JsonRecord): string | null {
   return value.type === 'system' && value.subtype === 'away_summary' && typeof value.content === 'string'
     ? value.content.replace(AWAY_SUMMARY_CONFIG_HINT, '')
     : null
+}
+
+function nonNegativeNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
 export class TurnMetaTranscriptStore {
@@ -132,6 +136,32 @@ export class TurnMetaTranscriptStore {
     return { entries, sessionIds, limit: input.limit, offset: input.offset, hasMore: rows.length > input.limit }
   }
 
+  recordLiveResult(projectKey: string, sessionId: string, userMessageUuid: string, message: SDKMessage): void {
+    if (!record(message) || message.type !== 'result' || !userMessageUuid) return
+    const durationMs = nonNegativeNumber(message.duration_ms)
+    const durationApiMs = nonNegativeNumber(message.duration_api_ms)
+    if (durationMs === null || typeof message.uuid !== 'string' || typeof message.subtype !== 'string') return
+    const now = Date.now()
+    this.db.prepare(`
+      INSERT INTO live_turn_results (
+        project_key, session_id, primary_user_uuid, result_uuid, result_subtype, is_error, terminal_reason,
+        duration_ms, duration_api_ms, result_recorded_at_ms, payload_json, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_key, session_id, primary_user_uuid) DO UPDATE SET
+        result_uuid = excluded.result_uuid,
+        result_subtype = excluded.result_subtype,
+        is_error = excluded.is_error,
+        terminal_reason = excluded.terminal_reason,
+        duration_ms = excluded.duration_ms,
+        duration_api_ms = excluded.duration_api_ms,
+        result_recorded_at_ms = excluded.result_recorded_at_ms,
+        payload_json = excluded.payload_json,
+        updated_at_ms = excluded.updated_at_ms
+    `).run(projectKey, sessionId, userMessageUuid, message.uuid, message.subtype, message.is_error === true ? 1 : 0,
+      typeof message.terminal_reason === 'string' ? message.terminal_reason : null,
+      durationMs, durationApiMs, now, JSON.stringify(message), now)
+  }
+
   loadTimelineMetadata(projectKey: string, sessionId: string): {
     turnMetadata: ReadonlyMap<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>>
     sessionMeta: SessionTimelineResponse['sessionMeta']
@@ -151,14 +181,20 @@ export class TurnMetaTranscriptStore {
       model: string | null
       effort: EffortLevel | null
     }>
+    const liveDurations = new Map((this.db.prepare(`
+      SELECT primary_user_uuid, duration_ms
+      FROM live_turn_results
+      WHERE project_key = ? AND session_id = ?
+    `).all(projectKey, sessionId) as Array<{ primary_user_uuid: string; duration_ms: number }>).map((row) => [row.primary_user_uuid, row.duration_ms]))
     const turnMetadata = new Map<string, Pick<TurnSummary, 'durationMs' | 'durationTimestampMs' | 'pendingBackgroundAgentCount' | 'awaySummary'>>()
     const storedSessionMeta = this.sessionMetaStore.getSessionMeta(projectKey, sessionId)
     const sessionMeta: SessionTimelineResponse['sessionMeta'] = storedSessionMeta ?? { permissionMode: null, model: null, effort: null }
     let transcriptModelFound = false
     for (const row of rows) {
       if (!turnMetadata.has(row.primary_user_uuid)) {
+        const durationMs = row.duration_ms ?? liveDurations.get(row.primary_user_uuid)
         turnMetadata.set(row.primary_user_uuid, {
-          ...(row.duration_ms !== null ? { durationMs: row.duration_ms } : {}),
+          ...(durationMs !== undefined ? { durationMs } : {}),
           ...(row.duration_timestamp_ms !== null ? { durationTimestampMs: row.duration_timestamp_ms } : {}),
           ...(row.duration_pending_background_agent_count !== null ? { pendingBackgroundAgentCount: row.duration_pending_background_agent_count } : {}),
           awaySummary: row.away_summary,
@@ -182,7 +218,12 @@ export class TurnMetaTranscriptStore {
       FROM turn_meta_transcript
       WHERE project_key = ? AND session_id = ?
     `).get(projectKey, sessionId) as { scan_byte_offset: number | null; file_size: number | null }
-    return `${baseVersion}:turn-meta=${row.scan_byte_offset ?? 0}:${row.file_size ?? 0}:${this.sessionMetaStore.timelineVersion(projectKey, sessionId)}`
+    const live = this.db.prepare(`
+      SELECT COUNT(*) AS count, MAX(result_recorded_at_ms) AS result_recorded_at_ms
+      FROM live_turn_results
+      WHERE project_key = ? AND session_id = ?
+    `).get(projectKey, sessionId) as { count: number; result_recorded_at_ms: number | null }
+    return `${baseVersion}:turn-meta=${row.scan_byte_offset ?? 0}:${row.file_size ?? 0}:${this.sessionMetaStore.timelineVersion(projectKey, sessionId)}:live-results=${live.count}:${live.result_recorded_at_ms ?? 0}`
   }
 
   close(): void {

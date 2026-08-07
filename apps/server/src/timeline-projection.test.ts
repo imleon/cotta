@@ -173,6 +173,8 @@ describe('projectSessionTimeline', () => {
     ['sidechain', {}, null, { isSidechain: true }],
     ['peer', {}, null, { origin: { kind: 'peer' } }],
     ['task notification origin', {}, null, { origin: { kind: 'task-notification' }, promptSource: 'sdk' }],
+    ['parent tool use', {}, null, { parent_tool_use_id: 'call-1', promptSource: 'sdk', subagent_type: 'Explore', task_description: 'Inspect dependencies' }],
+    ['parent agent', {}, 'agent-1'],
   ])('does not start a new turn for %s user messages', (_, metadata, parentAgentId, entryMetadata = {}) => {
     const timeline = projectSessionTimeline('session-1', [
       messages[0]!,
@@ -206,7 +208,6 @@ describe('projectSessionTimeline', () => {
   })
 
   it.each([
-    ['parent ids', { parent_tool_use_id: 'call-1', parent_agent_id: 'agent-1' }, { role: 'user', content: 'Nested reply' }],
     ['nested flags', {}, { role: 'user', content: 'Nested reply', isSynthetic: true, shouldQuery: false }],
     ['incomplete task wrapper', {}, { role: 'user', content: '<task-notification><summary>Looks like one</summary></task-notification>' }],
   ])('starts a new turn for %s when the scheme A predicate matches', (_, entryMetadata, message) => {

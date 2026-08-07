@@ -74,9 +74,10 @@ describe('Cotta database', () => {
     db.close()
     const reopened = createCottaDatabase(path.file, join(await tempRoot('cotta-missing-settings-'), 'settings.sqlite'))
 
-    expect((reopened.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
+    expect((reopened.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
     expect(reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()).toEqual([
       { name: 'auth_sessions' },
+      { name: 'live_turn_results' },
       { name: 'session_meta' },
       { name: 'settings' },
       { name: 'turn_meta_transcript' },
@@ -97,7 +98,7 @@ describe('Cotta database', () => {
 
     const db = createCottaDatabase(dbPath, legacyPath)
 
-    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
     expect(db.prepare('SELECT scope, key, value_json, updated_at_ms FROM settings ORDER BY key').all()).toEqual([
       { scope: 'global', key: 'defaultModel', value_json: '"sonnet"', updated_at_ms: 2 },
       { scope: 'global', key: 'showDebugNav', value_json: 'false', updated_at_ms: 1 },
@@ -147,11 +148,11 @@ describe('Cotta database', () => {
     const root = await tempRoot('cotta-database-')
     const dbPath = join(root, 'cotta.sqlite')
     const missing = createCottaDatabase(dbPath, join(root, 'missing-settings.sqlite'))
-    expect((missing.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
+    expect((missing.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
     missing.close()
 
     const samePath = createCottaDatabase(dbPath, dbPath)
-    expect((samePath.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
+    expect((samePath.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
     samePath.close()
   })
 
@@ -169,7 +170,7 @@ describe('Cotta database', () => {
     db.close()
 
     const migrated = createCottaDatabase(path, join(await tempRoot('cotta-missing-settings-'), 'settings.sqlite'))
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
     expect(migrated.prepare(`
       SELECT transcript_path, primary_user_uuid, scan_byte_offset, scan_line_no
       FROM turn_meta_transcript ORDER BY transcript_path, primary_user_uuid
@@ -179,6 +180,19 @@ describe('Cotta database', () => {
       { transcript_path: '/incomplete-cli.jsonl', primary_user_uuid: 'open', scan_byte_offset: 0, scan_line_no: 0 },
       { transcript_path: '/incomplete-sdk.jsonl', primary_user_uuid: 'sdk', scan_byte_offset: 400, scan_line_no: 0 },
     ])
+    migrated.close()
+  })
+
+  it('adds live turn results to existing v8 databases', async () => {
+    const db = await database()
+    const path = (db.prepare('PRAGMA database_list').get() as { file: string }).file
+    db.exec('DROP TABLE live_turn_results; PRAGMA user_version = 8;')
+    db.close()
+
+    const migrated = createCottaDatabase(path, join(await tempRoot('cotta-missing-settings-'), 'settings.sqlite'))
+
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
+    expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_turn_results'").all()).toEqual([{ name: 'live_turn_results' }])
     migrated.close()
   })
 
@@ -217,7 +231,7 @@ describe('Cotta database', () => {
 
     const migrated = createCottaDatabase(path, join(await tempRoot('cotta-missing-settings-'), 'settings.sqlite'))
 
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(8)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(9)
     expect(migrated.prepare("SELECT name FROM pragma_table_info('turn_meta_transcript') WHERE name = 'away_summary'").all()).toEqual([{ name: 'away_summary' }])
     expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_meta'").all()).toEqual([{ name: 'session_meta' }])
     migrated.close()

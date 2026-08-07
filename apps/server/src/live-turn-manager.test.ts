@@ -73,23 +73,11 @@ describe('LiveTurnManager', () => {
     queryMock.mockReset()
   })
 
-  it('returns the project id for an existing runtime', async () => {
-    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => resultOnlyQuery(prompt))
-    const manager = new LiveTurnManager()
-    const projectId = Buffer.from('/repo/a').toString('base64url')
-
-    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
-
-    expect(manager.projectIdForSession('session-1')).toBe(projectId)
-    expect(manager.projectIdForSession('missing')).toBeNull()
-    manager.close('session-1')
-    expect(manager.projectIdForSession('session-1')).toBeNull()
-  })
-
   it('creates a new SDK session with the client-provided session id', async () => {
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => resultOnlyQuery(prompt))
     const persisted: unknown[] = []
-    const manager = new LiveTurnManager(recordingStore(persisted))
+    const recordLiveResult = vi.fn()
+    const manager = new LiveTurnManager(recordingStore(persisted), undefined, { recordLiveResult })
     const events: LiveTurnEvent[] = []
     manager.subscribe('session-1', (event) => events.push(event))
 
@@ -117,6 +105,7 @@ describe('LiveTurnManager', () => {
       timestamp: expect.any(String),
     })
     expect(persisted[1]).toMatchObject({ type: 'result', subtype: 'success' })
+    expect(recordLiveResult).toHaveBeenCalledWith(Buffer.from('/repo/a').toString('base64url'), 'session-1', 'user-1', expect.objectContaining({ type: 'result', subtype: 'success' }))
     expect(events).toEqual([expect.objectContaining({ type: 'result', subtype: 'success' })])
   })
 
@@ -263,7 +252,7 @@ describe('LiveTurnManager', () => {
     expect(setModel).toHaveBeenCalledWith('claude-sonnet-5')
     expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'xhigh' })
     await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-2', outcome: 'success' } }))
-    await manager.rebuildRuntimeAfterCliIdle('session-1')
+    await manager.rebuildRuntimeAfterCliIdle({ projectId: Buffer.from('/repo/a').toString('base64url'), sessionId: 'session-1', permissionMode: 'plan', model: 'claude-sonnet-5', effort: 'xhigh' })
     expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({
       options: expect.objectContaining({ permissionMode: 'plan', model: 'claude-sonnet-5', effort: 'xhigh' }),
     }))
@@ -305,13 +294,75 @@ describe('LiveTurnManager', () => {
     const projectId = Buffer.from('/repo/a').toString('base64url')
 
     await manager.ensureRuntime({ projectId, sessionId: 'session-1', permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })
-    await expect(manager.rebuildRuntimeAfterCliIdle('session-1')).resolves.toBe(true)
+    await expect(manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })).resolves.toBe(true)
 
     expect(close).toHaveBeenCalledTimes(1)
     expect(queryMock).toHaveBeenCalledTimes(2)
     expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({
       options: expect.objectContaining({ resume: 'session-1', permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' }),
     }))
+    manager.closeAll()
+  })
+
+  it('recreates a runtime after external ownership closes it', async () => {
+    const close = vi.fn()
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+    await manager.closeForExternalOwner('session-1')
+    await expect(manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' })).resolves.toBe(true)
+
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(queryMock).toHaveBeenCalledTimes(2)
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ cwd: '/repo/a', resume: 'session-1', permissionMode: 'plan', model: 'claude-opus-5', effort: 'high' }),
+    }))
+    manager.closeAll()
+  })
+
+  it('waits for external ownership to close before rebuilding', async () => {
+    let resolveInterrupt!: () => void
+    const interrupt = vi.fn(() => new Promise<undefined>((resolve) => { resolveInterrupt = () => resolve(undefined) }))
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { interrupt }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
+
+    const closing = manager.closeForExternalOwner('session-1')
+    const rebuild = manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'default', model: 'default', effort: null })
+    await Promise.resolve()
+    expect(queryMock).toHaveBeenCalledTimes(1)
+
+    resolveInterrupt()
+    await expect(closing).resolves.toBe(true)
+    await expect(rebuild).resolves.toBe(true)
+    expect(queryMock).toHaveBeenCalledTimes(2)
+    manager.closeAll()
+  })
+
+  it('does not rebuild when CLI ownership becomes active again during close', async () => {
+    let resolveInterrupt!: () => void
+    const interrupt = vi.fn(() => new Promise<undefined>((resolve) => { resolveInterrupt = () => resolve(undefined) }))
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { interrupt }))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
+
+    const closing = manager.closeForExternalOwner('session-1')
+    const rebuild = manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'default', model: 'default', effort: null })
+    const secondActive = manager.closeForExternalOwner('session-1')
+    resolveInterrupt()
+
+    await expect(closing).resolves.toBe(true)
+    await expect(secondActive).resolves.toBe(true)
+    await expect(rebuild).resolves.toBe(false)
+    expect(queryMock).toHaveBeenCalledTimes(1)
     manager.closeAll()
   })
 
@@ -327,7 +378,7 @@ describe('LiveTurnManager', () => {
     const projectId = Buffer.from('/repo/a').toString('base64url')
     await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
 
-    const rebuild = manager.rebuildRuntimeAfterCliIdle('session-1')
+    const rebuild = manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'default', model: 'default', effort: null })
     let started = false
     const start = manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'latest', userMessageUuid: 'user-1', permissionMode: 'default' }).then(() => { started = true })
     await Promise.resolve()
@@ -353,7 +404,7 @@ describe('LiveTurnManager', () => {
     const projectId = Buffer.from('/repo/a').toString('base64url')
     await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
 
-    await expect(manager.rebuildRuntimeAfterCliIdle('session-1')).rejects.toThrow('setup failed')
+    await expect(manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'default', model: 'default', effort: null })).rejects.toThrow('setup failed')
     expect(replacementClose).toHaveBeenCalledTimes(1)
     await expect(manager.ensureRuntime({ projectId, sessionId: 'session-1' })).resolves.toBeUndefined()
     expect(queryMock).toHaveBeenCalledTimes(3)
@@ -366,7 +417,7 @@ describe('LiveTurnManager', () => {
     const projectId = Buffer.from('/repo/a').toString('base64url')
     await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
 
-    await expect(manager.rebuildRuntimeAfterCliIdle('session-1')).resolves.toBe(false)
+    await expect(manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'default', model: 'default', effort: null })).resolves.toBe(false)
     expect(queryMock).toHaveBeenCalledTimes(1)
     manager.closeAll()
   })
@@ -386,13 +437,9 @@ describe('LiveTurnManager', () => {
 
     expect(interrupt).toHaveBeenCalledTimes(1)
     expect(close).toHaveBeenCalledTimes(1)
-    expect(events).toEqual([
-      { type: 'cotta_live_turn_failed', error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.', session_id: 'session-1' },
-    ])
-    expect(persisted).toEqual([
-      expect.objectContaining({ type: 'user', uuid: 'user-1' }),
-      { type: 'cotta_live_turn_failed', error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.', session_id: 'session-1' },
-    ])
+    expect(events).toContainEqual({ type: 'cotta_live_turn_failed', error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.', session_id: 'session-1' })
+    expect(persisted[0]).toMatchObject({ type: 'user', uuid: 'user-1' })
+    expect(persisted).toContainEqual({ type: 'cotta_live_turn_failed', error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.', session_id: 'session-1' })
     expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
   })
 

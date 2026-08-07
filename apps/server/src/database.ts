@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-const SCHEMA_VERSION = 8
+const SCHEMA_VERSION = 9
 
 function databasePath(): string {
   return resolve(process.cwd(), process.env.COTTA_DB_PATH ?? 'data/cotta.sqlite')
@@ -60,6 +60,27 @@ function createSettingsTables(db: DatabaseSync): void {
       avatar_url TEXT,
       expires_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL
+    );
+  `)
+}
+
+function createLiveTurnResultsTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS live_turn_results (
+      project_key TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      primary_user_uuid TEXT NOT NULL,
+      result_uuid TEXT NOT NULL,
+      result_subtype TEXT NOT NULL,
+      is_error INTEGER NOT NULL CHECK (is_error IN (0, 1)),
+      terminal_reason TEXT,
+      duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+      duration_api_ms INTEGER CHECK (duration_api_ms IS NULL OR duration_api_ms >= 0),
+      result_recorded_at_ms INTEGER NOT NULL CHECK (result_recorded_at_ms >= 0),
+      payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+      updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+      PRIMARY KEY (project_key, session_id, primary_user_uuid),
+      UNIQUE (session_id, result_uuid)
     );
   `)
 }
@@ -135,6 +156,7 @@ function migrate(db: DatabaseSync, dbPath: string, legacySettingsDbPath: string)
   if (version >= SCHEMA_VERSION) {
     ensureSessionMetaAllowsPartialObservations(db)
     createSettingsTables(db)
+    createLiveTurnResultsTable(db)
     return
   }
   if (version === 1) {
@@ -235,5 +257,6 @@ function migrate(db: DatabaseSync, dbPath: string, legacySettingsDbPath: string)
     createSessionMetaTable(db)
   }
   ensureSessionMetaAllowsPartialObservations(db)
+  createLiveTurnResultsTable(db)
   migrateSettingsSchema(db, dbPath, legacySettingsDbPath)
 }

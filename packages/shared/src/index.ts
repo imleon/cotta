@@ -307,7 +307,7 @@ export function isPrimaryTimelineUserMessage(value: unknown): boolean {
   if (!isRecord(value) || value.type !== 'user' || !isRecord(value.message)) return false
   const message = value.message
   const originKind = timelineOriginKind(value)
-  if (message.role !== 'user' || value.isSynthetic === true || value.shouldQuery === false || originKind === 'task-notification' || containsToolResult(message.content) || value.isSidechain === true) return false
+  if (message.role !== 'user' || value.parent_tool_use_id != null || value.parent_agent_id != null || value.isSynthetic === true || value.shouldQuery === false || originKind === 'task-notification' || containsToolResult(message.content) || value.isSidechain === true) return false
   return originKind === 'human'
     || value.promptSource === 'typed'
     || value.promptSource === 'sdk'

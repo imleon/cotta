@@ -10,6 +10,10 @@ type SessionSummaryObserver = {
   notifySessionRunStateActive?(sessionId: string): unknown
 }
 
+type LiveResultRecorder = {
+  recordLiveResult(projectId: string, sessionId: string, userMessageUuid: string, message: SDKMessage): void
+}
+
 function sdkUserMessage(input: { uuid: SDKUserMessage['uuid']; text: string; sessionId: string; startedAt: number }): SDKUserMessage {
   return {
     type: 'user',
@@ -83,18 +87,17 @@ export class LiveTurnManager {
   private readonly subscribers = new Map<string, Set<LiveTurnSubscriber>>()
   private readonly runtimes = new Map<string, SessionRuntime>()
   private readonly runStateBySession = new Map<string, SessionRunState>()
+  private readonly externalOwnerCloses = new Map<string, Promise<boolean>>()
+  private readonly externalOwnerGenerations = new Map<string, number>()
 
   constructor(
     private readonly liveEventStore?: LiveEventStore,
     private readonly sessionSummaryCache?: SessionSummaryObserver,
+    private readonly liveResultRecorder?: LiveResultRecorder,
   ) {}
 
   sessionRunState(sessionId: string): SessionRunState | null {
     return this.runStateBySession.get(sessionId) ?? null
-  }
-
-  projectIdForSession(sessionId: string): string | null {
-    return this.runtimes.get(sessionId)?.projectId ?? null
   }
 
   close(sessionId: string): boolean {
@@ -104,32 +107,45 @@ export class LiveTurnManager {
     return true
   }
 
-  async closeForExternalOwner(sessionId: string): Promise<boolean> {
+  closeForExternalOwner(sessionId: string): Promise<boolean> {
+    this.externalOwnerGenerations.set(sessionId, (this.externalOwnerGenerations.get(sessionId) ?? 0) + 1)
+    const pending = this.externalOwnerCloses.get(sessionId)
+    if (pending) return pending
     const runtime = this.runtimes.get(sessionId)
-    if (!runtime) return false
-    if (runtime.currentUserMessageUuid !== null) {
-      const userMessageUuid = runtime.currentUserMessageUuid
-      try {
-        await runtime.query.interrupt()
-      } catch (error) {
-        console.error('live-runtime:external-owner interrupt failed', error)
+    if (!runtime) return Promise.resolve(false)
+    const closing = (async () => {
+      if (runtime.currentUserMessageUuid !== null) {
+        const userMessageUuid = runtime.currentUserMessageUuid
+        try {
+          await runtime.query.interrupt()
+        } catch (error) {
+          console.error('live-runtime:external-owner interrupt failed', error)
+        }
+        if (runtime.currentUserMessageUuid === userMessageUuid) {
+          this.publish(runtime, cottaLiveTurnFailed({
+            error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.',
+            sessionId: runtime.sessionId,
+          }))
+          this.finishTurn(runtime, userMessageUuid, 'error')
+          runtime.currentUserMessageUuid = null
+        }
       }
-      if (runtime.currentUserMessageUuid === userMessageUuid) {
-        this.publish(runtime, cottaLiveTurnFailed({
-          error: 'Session was interrupted because it was taken over by Claude Code CLI/background agent.',
-          sessionId: runtime.sessionId,
-        }))
-        this.finishTurn(runtime, userMessageUuid, 'error')
-        runtime.currentUserMessageUuid = null
-      }
+      runtime.startingTurnToken = null
+      runtime.stale = true
+      this.closeRuntime(runtime)
+      return true
+    })()
+    this.externalOwnerCloses.set(sessionId, closing)
+    const clearClosing = () => {
+      if (this.externalOwnerCloses.get(sessionId) === closing) this.externalOwnerCloses.delete(sessionId)
     }
-    runtime.startingTurnToken = null
-    runtime.stale = true
-    this.closeRuntime(runtime)
-    return true
+    void closing.then(clearClosing, clearClosing)
+    return closing
   }
 
   closeAll(): void {
+    this.externalOwnerCloses.clear()
+    this.externalOwnerGenerations.clear()
     for (const runtime of Array.from(this.runtimes.values())) this.closeRuntime(runtime)
   }
 
@@ -192,30 +208,27 @@ export class LiveTurnManager {
     await this.ensureRuntimeInternal({ ...input, resume: true, permissionMode: input.permissionMode ?? 'default' })
   }
 
-  async rebuildRuntimeAfterCliIdle(sessionId: string, options?: { permissionMode?: PermissionMode; model?: ModelSelection | DefaultTurnOption; effort?: EffortLevel | null }): Promise<boolean> {
-    const current = this.runtimes.get(sessionId)
-    if (!current) return false
-    if (current.rebuildingAfterCliIdle) {
+  async rebuildRuntimeAfterCliIdle(input: { projectId: string; sessionId: string; permissionMode: PermissionMode; model: ModelSelection | DefaultTurnOption; effort: EffortLevel | null }): Promise<boolean> {
+    const externalOwnerGeneration = this.externalOwnerGenerations.get(input.sessionId) ?? 0
+    await this.externalOwnerCloses.get(input.sessionId)
+    if ((this.externalOwnerGenerations.get(input.sessionId) ?? 0) !== externalOwnerGeneration) return false
+    const current = this.runtimes.get(input.sessionId)
+    if (current?.rebuildingAfterCliIdle) {
       await current.ready
       return true
     }
-    if (current.currentUserMessageUuid || current.startingTurnToken) return false
+    if (current?.currentUserMessageUuid || current?.startingTurnToken) return false
+    if (current && current.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
 
-    const input = {
-      projectId: current.projectId,
-      sessionId,
-      resume: true,
-      permissionMode: options?.permissionMode ?? current.permissionMode,
-      model: options?.model ?? current.model,
-      effort: options && 'effort' in options ? options.effort : current.effort,
+    if (current) {
+      current.stale = true
+      this.closeRuntime(current)
     }
-    current.stale = true
-    this.closeRuntime(current)
-    const replacement = this.createRuntime(input)
+    const replacement = this.createRuntime({ ...input, resume: true })
     replacement.rebuildingAfterCliIdle = true
     try {
       await replacement.ready
-      return true
+      return this.runtimes.get(input.sessionId) === replacement && !replacement.closed && !replacement.stale
     } finally {
       replacement.rebuildingAfterCliIdle = false
     }
@@ -342,7 +355,13 @@ export class LiveTurnManager {
         this.publish(runtime, message)
 
         if (message.type === 'result') {
-          this.finishTurn(runtime, runtime.currentUserMessageUuid, message.subtype === 'success' ? 'success' : 'error')
+          const userMessageUuid = runtime.currentUserMessageUuid
+          try {
+            this.liveResultRecorder?.recordLiveResult(runtime.projectId, runtime.sessionId, userMessageUuid, message)
+          } catch (error) {
+            console.error('live-result:record failed', error)
+          }
+          this.finishTurn(runtime, userMessageUuid, message.subtype === 'success' ? 'success' : 'error')
           runtime.currentUserMessageUuid = null
           this.scheduleIdleClose(runtime)
         }

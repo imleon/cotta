@@ -6,7 +6,7 @@ continue, and manage sessions from the browser.
 
 ## Prerequisites
 
-- **Node.js ≥ 22** — Cotta uses the built-in `node:sqlite` module.
+- **Node.js ≥ 22.5** — Cotta uses the built-in `node:sqlite` module, added in 22.5.0.
 - **Claude Code CLI, installed and logged in** — Cotta drives sessions through the Claude Agent SDK
   using your machine's existing Claude Code credentials (`~/.claude`). Install and sign in to
   Claude Code first.

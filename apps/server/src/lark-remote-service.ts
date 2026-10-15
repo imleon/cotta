@@ -189,7 +189,7 @@ export class LarkRemoteService {
     const branch = git?.branch ?? null
     const settings = readSettings(this.readInput.settingsStore)
     const selectedSession = current ? this.selectedSessionState(bot, project.id).session : undefined
-    const projected = projectLarkSessionCard(response, projects, this.identity(bot, project.id), branch, settings.showDebugNav !== false, selectedSession, settings.timeZone)
+    const projected = projectLarkSessionCard(response, projects, this.identity(bot, project.id), branch, settings.showDebugNav, selectedSession, settings.timeZone)
     const messageId = await this.client.sendCard(chatId, projected.card, eventId)
     return { ok: true, messageId }
   }
@@ -208,7 +208,7 @@ export class LarkRemoteService {
         projects,
         this.identity(bot, action.projectId, action.createdAtMs),
         git?.branch ?? null,
-        settings.showDebugNav !== false,
+        settings.showDebugNav,
         session,
         settings.timeZone,
       ).card
@@ -222,7 +222,7 @@ export class LarkRemoteService {
           this.identity(bot, action.projectId),
           settings.timeZone,
           this.navigation(session.id, response.turns.at(-1)?.primaryUserUuid),
-          settings.showDebugNav !== false,
+          settings.showDebugNav,
         ).card,
         event.eventId,
       )
@@ -245,7 +245,7 @@ export class LarkRemoteService {
       projects,
       this.identity(bot, action.projectId, action.createdAtMs),
       git?.branch ?? null,
-      settings.showDebugNav !== false,
+      settings.showDebugNav,
       selectedSession,
       settings.timeZone,
     ).card
@@ -275,7 +275,7 @@ export class LarkRemoteService {
               session,
               response,
               timeZone: readSettings(this.readInput.settingsStore).timeZone,
-              showDebugNav: readSettings(this.readInput.settingsStore).showDebugNav !== false,
+              showDebugNav: readSettings(this.readInput.settingsStore).showDebugNav,
             }),
           },
         },
@@ -312,7 +312,7 @@ export class LarkRemoteService {
       this.identity(bot, action.projectId, action.createdAtMs),
       settings.timeZone,
       this.navigation(session.id, turnId),
-      settings.showDebugNav !== false,
+      settings.showDebugNav,
     ).card
     return { ok: true, callback: { card: { type: 'raw', data: card } } }
   }
@@ -470,7 +470,7 @@ export class LarkRemoteService {
             finalReplies,
             identity,
             false,
-            response ? { session: finalSession, response, timeZone: settings.timeZone, showDebugNav: settings.showDebugNav !== false } : undefined,
+            response ? { session: finalSession, response, timeZone: settings.timeZone, showDebugNav: settings.showDebugNav } : undefined,
           ),
           `${uuidPrefix}:${currentSequence}`,
           currentSequence,

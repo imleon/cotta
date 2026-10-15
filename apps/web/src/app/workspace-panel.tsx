@@ -334,7 +334,7 @@ export function WorkspacePanel({
               historyEnabled={historyEnabled}
               transcriptSignal={transcriptSignal}
               timelineControlSignal={timelineControlSignal}
-              showDebugSource={settings.showDebugNav !== false}
+              showDebugSource={settings.showDebugNav}
               pendingTurn={selectedPendingTurn}
               provisionalSlash={provisionalSlash}
               pendingPhase={selectedPending?.phase}

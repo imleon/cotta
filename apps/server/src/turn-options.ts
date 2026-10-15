@@ -6,7 +6,6 @@ import type { SettingsStore } from './settings-store.js'
 import type { TurnOptionsStore } from './turn-options-store.js'
 
 const DEFAULT_MODEL: DefaultTurnOption = 'default'
-const DEFAULT_PERMISSION_MODE: PermissionMode = 'default'
 const DEFAULT_EFFORT: EffortLevel = 'medium'
 
 export function readSettings(settingsStore?: SettingsStore): AppSettings {
@@ -26,7 +25,7 @@ export function resolveTurnOptions(input: { sessionId?: string; settingsStore?: 
   const sessionTurnOptions = input.sessionId ? input.turnOptionsStore?.getSessionTurnOptions(input.sessionId) : null
   const sessionModelSet = sessionTurnOptions?.model != null
   return {
-    permissionMode: sessionTurnOptions?.permissionMode ?? globalSettings.defaultPermissionMode ?? DEFAULT_PERMISSION_MODE,
+    permissionMode: sessionTurnOptions?.permissionMode ?? globalSettings.defaultPermissionMode,
     model: sessionModelSet ? sessionTurnOptions.model! : (globalSettings.defaultModel ?? DEFAULT_MODEL),
     effort: sessionModelSet ? (sessionTurnOptions.effort ?? (sessionTurnOptions.model === DEFAULT_MODEL ? DEFAULT_EFFORT : null)) : globalSettings.defaultEffort,
   }

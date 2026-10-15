@@ -22,7 +22,7 @@ afterEach(() => {
 })
 
 const authedSession = { authenticated: true as const, user: { login: 'imleon', name: null, avatarUrl: null }, githubConfigured: true }
-const baseSettings = { timeZone: 'UTC', defaultModel: 'default' as const, defaultEffort: 'medium' as const, useOneMillionContext: true, autoCompactPercent: undefined }
+const baseSettings = { timeZone: 'UTC', defaultPermissionMode: 'default' as const, defaultModel: 'default' as const, defaultEffort: 'medium' as const, useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }
 
 describe('SettingsPanel', () => {
   it('lists IANA time zones and saves the selected value', async () => {

@@ -67,7 +67,7 @@ function PermissionShieldIcon({ name }: { name: PermissionMode }) {
 
 export function SettingsPanel({ settings, authSession, onLogout }: { settings: AppSettings; authSession: AuthSessionResponse | undefined; onLogout: () => Promise<void> }) {
   const queryClient = useQueryClient()
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode ?? 'default')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode)
   const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
   const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
   const [publicBaseUrl, setPublicBaseUrl] = useState<string>(settings.publicBaseUrl ?? '')
@@ -92,7 +92,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
   const triggerModelLabel = selectedModel?.displayName || selectedModel?.value || model
 
   useEffect(() => {
-    setPermissionMode(settings.defaultPermissionMode ?? 'default')
+    setPermissionMode(settings.defaultPermissionMode)
     setModel(settings.defaultModel ?? DEFAULT_TURN_OPTION)
     setEffort(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
   }, [settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort])
@@ -299,9 +299,9 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
               type="button"
               className="settings-switch"
               role="switch"
-              aria-checked={settings.showDebugNav !== false}
+              aria-checked={settings.showDebugNav}
               disabled={saving}
-              onClick={() => void saveShowDebugNav(settings.showDebugNav === false)}
+              onClick={() => void saveShowDebugNav(!settings.showDebugNav)}
             >
               <span className="settings-switch-thumb" />
             </button>

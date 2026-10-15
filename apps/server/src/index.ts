@@ -41,7 +41,7 @@ import { SessionSubagentStore } from './session-subagent-store.js'
 import { SessionWatcherRegistry } from './session-watcher-registry.js'
 import { type SettingsStore, SqliteSettingsStore } from './settings-store.js'
 import { ShareStore } from './share-store.js'
-import { ensureGithubConfig } from './startup-config.js'
+import { ensureGithubConfig, ensureModelCatalog } from './startup-config.js'
 import { TerminalRegistry } from './terminal-registry.js'
 import { attachTerminalWebSocket, isAllowedTerminalOrigin, parseTerminalOrigin } from './terminal-websocket.js'
 import { TokenUsageStore } from './token-usage-store.js'
@@ -337,6 +337,7 @@ if (process.env.NODE_ENV !== 'test') {
   const indexChangeNotifier = new IndexChangeNotifier()
   const settingsStore = new SqliteSettingsStore(cottaDb)
   await ensureGithubConfig(settingsStore, { force: process.argv.includes('--reconfigure-github') })
+  await ensureModelCatalog(settingsStore, defaultModelCatalogProvider)
   const detailTokenKey = loadDetailTokenKey(settingsStore)
   const shareStore = new ShareStore(cottaDb)
   const turnOptionsStore = new TurnOptionsStore(cottaDb)

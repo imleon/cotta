@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { loadGithubConfig, saveGithubConfig } from './auth.js'
 import { createCottaDatabase } from './database.js'
 import { SqliteSettingsStore } from './settings-store.js'
-import { ensureGithubConfig } from './startup-config.js'
+import { ensureGithubConfig, ensureModelCatalog } from './startup-config.js'
 
 describe('GitHub config persistence', () => {
   it('round-trips client id and allowed user through the secrets scope', () => {
@@ -139,6 +139,54 @@ describe('ensureGithubConfig', () => {
     } finally {
       error.mockRestore()
       exit.mockRestore()
+      db.close()
+    }
+  })
+})
+
+describe('ensureModelCatalog', () => {
+  const catalog = { models: [{ value: 'default', displayName: 'Claude Code default', description: 'Default model' }] }
+
+  it('seeds the catalog when missing', async () => {
+    const db = createCottaDatabase(':memory:')
+    try {
+      const store = new SqliteSettingsStore(db)
+      const provider = vi.fn(async () => catalog)
+      await ensureModelCatalog(store, provider)
+      expect(provider).toHaveBeenCalledTimes(1)
+      expect(store.getAll('global').modelCatalog).toEqual(catalog)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('skips the provider when a catalog already exists', async () => {
+    const db = createCottaDatabase(':memory:')
+    try {
+      const store = new SqliteSettingsStore(db)
+      store.setMany('global', { modelCatalog: catalog })
+      const provider = vi.fn(async () => ({ models: [] }))
+      await ensureModelCatalog(store, provider)
+      expect(provider).not.toHaveBeenCalled()
+      expect(store.getAll('global').modelCatalog).toEqual(catalog)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('lets a provider failure surface instead of swallowing it', async () => {
+    const db = createCottaDatabase(':memory:')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const store = new SqliteSettingsStore(db)
+      const provider = vi.fn(async () => {
+        throw new Error('sdk unavailable')
+      })
+      await expect(ensureModelCatalog(store, provider)).rejects.toThrow('sdk unavailable')
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('model catalog'))
+      expect(store.getAll('global').modelCatalog).toBeUndefined()
+    } finally {
+      error.mockRestore()
       db.close()
     }
   })

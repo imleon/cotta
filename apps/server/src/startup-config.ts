@@ -2,9 +2,31 @@ import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import { isSingleUser } from '@cotta/shared'
 import { loadGithubConfig, saveGithubConfig } from './auth.js'
+import type { ModelCatalogProvider } from './model-catalog.js'
 import type { SettingsStore } from './settings-store.js'
+import { readSettings } from './turn-options.js'
 
 type Prompt = (question: string) => Promise<string>
+
+/**
+ * Seeds the model catalog on first startup so the composer and Settings show real model
+ * display names immediately instead of the raw `default` sentinel. The catalog is a hard
+ * startup dependency: if the SDK can't produce it here, the web client's lazy refresh would
+ * fail the same way, so we let the error surface at boot rather than hide it.
+ */
+export async function ensureModelCatalog(store: SettingsStore, provider: ModelCatalogProvider): Promise<void> {
+  if (readSettings(store).modelCatalog) return
+  try {
+    store.setMany('global', { modelCatalog: await provider() })
+  } catch (error) {
+    console.error(
+      'Failed to load the model catalog from the Claude Agent SDK on startup. ' +
+        'This usually means the SDK is unauthenticated or the claude binary is unavailable. ' +
+        'Fix SDK access and restart Cotta.',
+    )
+    throw error
+  }
+}
 
 /**
  * Ensures GitHub login config exists before the server starts. Cotta is GitHub-login-only

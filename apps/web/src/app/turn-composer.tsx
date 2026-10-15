@@ -304,7 +304,7 @@ export function TurnComposer({
   const [interrupting, setInterrupting] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const [unknownSubmission, setUnknownSubmission] = useState<{ userMessageUuid: string; optimisticSessionId: string | null; recoverAt: number } | null>(null)
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode ?? 'default')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const permissionMenuRef = useRef<HTMLDivElement | null>(null)
   const [contextOpen, setContextOpen] = useState(false)
@@ -332,7 +332,7 @@ export function TurnComposer({
   const turnOptionsSaveRef = useRef<{ key: string; promise: Promise<void> } | null>(null)
   const [turnOptionsSaveRevision, setTurnOptionsSaveRevision] = useState(0)
   const permissionOptions = PERMISSION_MODE_OPTIONS
-  const displayedPermissionMode = projectId ? permissionMode : (settings.defaultPermissionMode ?? 'default')
+  const displayedPermissionMode = projectId ? permissionMode : settings.defaultPermissionMode
   const displayedModel = projectId ? model : (settings.defaultModel ?? DEFAULT_TURN_OPTION)
   const displayedEffort = projectId ? effort : settings.defaultModel != null ? (settings.defaultEffort ?? DEFAULT_TURN_OPTION) : DEFAULT_TURN_OPTION
   const permissionLabel = permissionOptions.find((option) => option.value === displayedPermissionMode)?.label ?? displayedPermissionMode
@@ -395,7 +395,7 @@ export function TurnComposer({
         : settings.defaultModel != null
           ? (settings.defaultEffort ?? DEFAULT_TURN_OPTION)
           : DEFAULT_TURN_OPTION
-    setPermissionMode(selectedSessionId ? (turnOptions?.permissionMode ?? settings.defaultPermissionMode ?? 'default') : (settings.defaultPermissionMode ?? 'default'))
+    setPermissionMode(selectedSessionId ? (turnOptions?.permissionMode ?? settings.defaultPermissionMode) : settings.defaultPermissionMode)
     setModel(nextModel)
     setEffort(nextEffort)
   }, [composerScopeKey, selectedSessionId, turnOptions, settings.defaultPermissionMode, settings.defaultModel, settings.defaultEffort, turnOptionsSaveRevision])

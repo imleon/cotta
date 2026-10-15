@@ -54,7 +54,7 @@ describe('TurnComposer session selection', () => {
         setPendingTurn={vi.fn()}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
-        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined }}
+        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }}
         sessionRuntime={{
           ok: true,
           projectId: 'project-1',
@@ -129,7 +129,7 @@ describe('TurnComposer session selection', () => {
         setPendingTurn={vi.fn()}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
-        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined }}
+        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }}
         sessionRuntime={null}
         projectDirectoryUnavailable={false}
         turnOptions={null}
@@ -164,7 +164,7 @@ describe('TurnComposer session selection', () => {
         setPendingTurn={vi.fn()}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
-        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined }}
+        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }}
         sessionRuntime={null}
         projectDirectoryUnavailable={false}
         turnOptions={null}
@@ -193,7 +193,7 @@ describe('TurnComposer session selection', () => {
       setPendingTurn: vi.fn(),
       refreshSessionLists: vi.fn(),
       onSessionCreated: vi.fn(),
-      settings: { timeZone: 'Asia/Shanghai', defaultPermissionMode: 'plan', defaultModel: 'claude-test', defaultEffort: 'high', useOneMillionContext: true, autoCompactPercent: undefined },
+      settings: { timeZone: 'Asia/Shanghai', defaultPermissionMode: 'plan', defaultModel: 'claude-test', defaultEffort: 'high', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false },
       sessionRuntime: null,
       projectDirectoryUnavailable: false,
       turnOptions: null,
@@ -230,7 +230,7 @@ describe('TurnComposer session selection', () => {
         setPendingTurn={vi.fn()}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
-        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined }}
+        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }}
         sessionRuntime={null}
         projectDirectoryUnavailable={false}
         turnOptions={null}
@@ -274,7 +274,7 @@ describe('TurnComposer session selection', () => {
         setPendingTurn={setPendingTurn}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
-        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined }}
+        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }}
         sessionRuntime={null}
         projectDirectoryUnavailable={false}
         turnOptions={null}
@@ -317,7 +317,7 @@ describe('TurnComposer session selection', () => {
         setPendingTurn={vi.fn()}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
-        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined }}
+        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }}
         sessionRuntime={null}
         projectDirectoryUnavailable={false}
         turnOptions={null}
@@ -349,7 +349,7 @@ describe('TurnComposer session selection', () => {
         setPendingTurn={vi.fn()}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
-        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined }}
+        settings={{ timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }}
         sessionRuntime={null}
         projectDirectoryUnavailable={false}
         turnOptions={null}
@@ -405,7 +405,7 @@ describe('TurnComposer session selection', () => {
       setPendingTurn: vi.fn(),
       refreshSessionLists,
       onSessionCreated: vi.fn(),
-      settings: { timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined },
+      settings: { timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false },
       sessionRuntime: null,
       projectDirectoryUnavailable: false,
       turnOptions: { permissionMode: 'default', model: null, effort: null },
@@ -467,7 +467,7 @@ describe('TurnComposer session selection', () => {
       setPendingTurn: vi.fn(),
       refreshSessionLists: vi.fn(),
       onSessionCreated: vi.fn(),
-      settings: { timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined },
+      settings: { timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false },
       sessionRuntime: null,
       projectDirectoryUnavailable: false,
       turnOptions: { permissionMode: 'default', model: null, effort: null },
@@ -526,9 +526,11 @@ describe('TurnComposer session selection', () => {
       settings: {
         timeZone: 'Asia/Shanghai',
         defaultModel: null,
+        defaultPermissionMode: 'default' as const,
         defaultEffort: 'medium' as const,
         useOneMillionContext: true,
         autoCompactPercent: undefined,
+        showDebugNav: false,
         modelCatalog: {
           models: [
             { value: 'model-a', displayName: 'Model A', description: '', supportsEffort: true, supportedEffortLevels: ['medium' as const, 'high' as const] },
@@ -575,9 +577,11 @@ describe('TurnComposer session selection', () => {
       settings: {
         timeZone: 'Asia/Shanghai',
         defaultModel: null,
+        defaultPermissionMode: 'default' as const,
         defaultEffort: 'medium' as const,
         useOneMillionContext: true,
         autoCompactPercent: undefined,
+        showDebugNav: false,
         modelCatalog: {
           models: [
             { value: 'model-a', displayName: 'Model A', description: '', supportsEffort: true, supportedEffortLevels: ['medium' as const] },
@@ -635,9 +639,11 @@ describe('TurnComposer session selection', () => {
       settings: {
         timeZone: 'Asia/Shanghai',
         defaultModel: null,
+        defaultPermissionMode: 'default' as const,
         defaultEffort: 'medium' as const,
         useOneMillionContext: true,
         autoCompactPercent: undefined,
+        showDebugNav: false,
         modelCatalog: {
           models: [
             { value: 'model-a', displayName: 'Model A', description: '', supportsEffort: true, supportedEffortLevels: ['medium' as const] },
@@ -695,7 +701,7 @@ describe('TurnComposer session selection', () => {
       setPendingTurn: vi.fn(),
       refreshSessionLists: vi.fn(),
       onSessionCreated,
-      settings: { timeZone: 'Asia/Shanghai', defaultModel: null, defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined },
+      settings: { timeZone: 'Asia/Shanghai', defaultModel: null, defaultPermissionMode: 'default', defaultEffort: 'medium', useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false },
       sessionRuntime: null,
       projectDirectoryUnavailable: false,
       turnOptions: null,

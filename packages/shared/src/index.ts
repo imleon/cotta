@@ -1723,8 +1723,9 @@ const allowedOriginSchema = z.string().superRefine((value, context) => {
 
 export const appSettingsSchema = z
   .object({
-    timeZone: timeZoneSchema.default('Asia/Shanghai'),
-    defaultPermissionMode: permissionModeSchema.optional(),
+    // When unset in the DB, fall back to the host's own IANA time zone rather than a hardcoded region.
+    timeZone: timeZoneSchema.default(() => Intl.DateTimeFormat().resolvedOptions().timeZone),
+    defaultPermissionMode: permissionModeSchema.default('default'),
     defaultModel: z.preprocess((value) => (value === undefined ? 'default' : value), modelSelectionSchema.nullable()),
     defaultEffort: z.preprocess((value) => (value === undefined ? 'medium' : value), effortLevelSchema.nullable()),
     modelCatalog: modelCatalogResponseSchema.optional(),
@@ -1737,7 +1738,7 @@ export const appSettingsSchema = z
       .nullable()
       .optional()
       .transform((value) => value ?? undefined),
-    showDebugNav: z.boolean().optional(),
+    showDebugNav: z.boolean().default(false),
     publicBaseUrl: allowedOriginSchema.optional(),
   })
   .catchall(z.unknown())

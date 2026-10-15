@@ -14,7 +14,9 @@ export default defineConfig({
   target: 'node22',
   noExternal: ['@cotta/shared'],
   external: ['zod', 'saxes', 'micromark-util-sanitize-uri'],
-  banner: { js: '#!/usr/bin/env node' },
+  // node:sqlite is stable-enough but still flagged experimental, so Node prints an ExperimentalWarning
+  // on every start. Silence just that category in the shebang; other warnings still surface.
+  banner: { js: '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning' },
   clean: true,
   sourcemap: false,
   splitting: false,

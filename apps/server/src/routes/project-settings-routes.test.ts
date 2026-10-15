@@ -247,7 +247,7 @@ describe('project settings routes', () => {
 
   it('reads, validates, and persists GitHub login config', async () => {
     const settingsStore = memorySettingsStore()
-    saveGithubConfig(settingsStore, { clientId: 'client-123', allowedUsers: 'imleon' })
+    saveGithubConfig(settingsStore, { allowedUsers: 'imleon' })
     const seedSessions = () => {
       settingsStore.setAuthSession('device-a', { user: { login: 'imleon', name: null, avatarUrl: null }, expiresAt: Date.now() + 60_000 })
       settingsStore.setAuthSession('device-b', { user: { login: 'imleon', name: null, avatarUrl: null }, expiresAt: Date.now() + 60_000 })
@@ -263,36 +263,36 @@ describe('project settings routes', () => {
 
     const current = await app.request('/api/settings/github')
     expect(current.status).toBe(200)
-    expect(await current.json()).toEqual({ clientId: 'client-123', allowedUsers: 'imleon' })
+    expect(await current.json()).toEqual({ allowedUsers: 'imleon' })
 
     // Changing the allowed user revokes every session on all devices, atomically with the config write.
     seedSessions()
     const saved = await app.request('/api/settings/github', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId: '  new-client  ', allowedUsers: '  teammate  ' }),
+      body: JSON.stringify({ allowedUsers: '  teammate  ' }),
     })
     expect(saved.status).toBe(200)
-    expect(await saved.json()).toEqual({ clientId: 'new-client', allowedUsers: 'teammate' })
-    expect(loadGithubConfig(settingsStore)).toEqual({ clientId: 'new-client', allowedUsers: 'teammate' })
+    expect(await saved.json()).toEqual({ allowedUsers: 'teammate' })
+    expect(loadGithubConfig(settingsStore)).toEqual({ allowedUsers: 'teammate' })
     expect(settingsStore.getAuthSession('device-a')).toBeNull()
     expect(settingsStore.getAuthSession('device-b')).toBeNull()
 
-    // Editing only the client id keeps the same allowed user, so existing sessions survive.
+    // Re-saving the same allowed user keeps existing sessions.
     seedSessions()
-    const clientOnly = await app.request('/api/settings/github', {
+    const unchanged = await app.request('/api/settings/github', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId: 'another-client', allowedUsers: 'teammate' }),
+      body: JSON.stringify({ allowedUsers: 'teammate' }),
     })
-    expect(clientOnly.status).toBe(200)
+    expect(unchanged.status).toBe(200)
     expect(settingsStore.getAuthSession('device-a')).not.toBeNull()
     expect(settingsStore.getAuthSession('device-b')).not.toBeNull()
 
     const multiUser = await app.request('/api/settings/github', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId: 'client', allowedUsers: 'imleon,teammate' }),
+      body: JSON.stringify({ allowedUsers: 'imleon,teammate' }),
     })
     expect(multiUser.status).toBe(400)
     expect(await multiUser.json()).toEqual({ error: 'invalid_github_config' })
@@ -300,21 +300,21 @@ describe('project settings routes', () => {
     const spaced = await app.request('/api/settings/github', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId: 'client', allowedUsers: 'imleon teammate' }),
+      body: JSON.stringify({ allowedUsers: 'imleon teammate' }),
     })
     expect(spaced.status).toBe(400)
 
     const trailingComma = await app.request('/api/settings/github', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId: 'client', allowedUsers: 'imleon,' }),
+      body: JSON.stringify({ allowedUsers: 'imleon,' }),
     })
     expect(trailingComma.status).toBe(400)
 
     const blank = await app.request('/api/settings/github', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId: '', allowedUsers: 'imleon' }),
+      body: JSON.stringify({ allowedUsers: '' }),
     })
     expect(blank.status).toBe(400)
 
@@ -327,7 +327,7 @@ describe('project settings routes', () => {
     expect(await malformed.json()).toEqual({ error: 'invalid_github_config' })
 
     // A rejected update neither persists nor touches sessions.
-    expect(loadGithubConfig(settingsStore)).toEqual({ clientId: 'another-client', allowedUsers: 'teammate' })
+    expect(loadGithubConfig(settingsStore)).toEqual({ allowedUsers: 'teammate' })
     expect(settingsStore.getAuthSession('device-a')).not.toBeNull()
   })
 })

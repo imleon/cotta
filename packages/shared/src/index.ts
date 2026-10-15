@@ -1776,7 +1776,6 @@ export type AuthUser = z.infer<typeof authUserSchema>
 export const authSessionResponseSchema = z.object({
   authenticated: z.boolean(),
   user: authUserSchema.nullable(),
-  githubConfigured: z.boolean(),
 })
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>
 
@@ -1800,7 +1799,7 @@ export type GitHubDevicePollResponse = z.infer<typeof githubDevicePollResponseSc
 export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>
 
-export const githubConfigSchema = z.object({ clientId: z.string(), allowedUsers: z.string() })
+export const githubConfigSchema = z.object({ allowedUsers: z.string() })
 export type GitHubConfig = z.infer<typeof githubConfigSchema>
 
 /** Cotta allows exactly one GitHub user: one non-blank token without whitespace or commas. */

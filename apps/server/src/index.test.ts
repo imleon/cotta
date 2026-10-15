@@ -307,7 +307,7 @@ describe('server routes', () => {
     const response = await createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     }).request('/api/projects')
     expect(response.status).toBe(401)
     expect(await response.json()).toEqual({ error: 'unauthorized' })
@@ -317,16 +317,18 @@ describe('server routes', () => {
     const response = await createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     }).request('/api/auth/session')
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ authenticated: false, user: null, githubConfigured: true })
+    expect(await response.json()).toEqual({ authenticated: false, user: null })
   })
 
   it('accepts GitHub device login session cookies for protected API requests', async () => {
+    const bodies: Record<string, Record<string, string>> = {}
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.body instanceof URLSearchParams) bodies[new URL(url).pathname] = Object.fromEntries(init.body)
         if (url.includes('/device/code'))
           return new Response(JSON.stringify({ device_code: 'device-1', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }))
         if (url.includes('/oauth/access_token')) return new Response(JSON.stringify({ access_token: 'gho_token' }))
@@ -338,7 +340,7 @@ describe('server routes', () => {
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
 
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
       claudeCodeApi: emptyClaudeCodeApi(),
     })
     const start = await authedApp.request('/api/auth/github/device/start', { method: 'POST' })
@@ -347,6 +349,13 @@ describe('server routes', () => {
     const cookie = poll.headers.get('set-cookie')!
     expect(cookie).toContain('cotta_session=')
     expect(cookie).toContain('HttpOnly')
+    // Identity-only login: the built-in client id on both calls, and no scope requested.
+    expect(bodies['/login/device/code']).toEqual({ client_id: 'Ov23liMLUPsdQ154njI3' })
+    expect(bodies['/login/oauth/access_token']).toEqual({
+      client_id: 'Ov23liMLUPsdQ154njI3',
+      device_code: 'device-1',
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    })
     const response = await authedApp.request('/api/projects', { headers: { cookie } })
     expect(response.status).toBe(200)
   })
@@ -363,7 +372,7 @@ describe('server routes', () => {
       }),
     )
     const settingsStore = memorySettingsStore()
-    const authConfig = { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' }
+    const authConfig = { allowedUsers: 'imleon', sessionSecret: 'test-secret' }
     const firstApp = createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
@@ -400,7 +409,7 @@ describe('server routes', () => {
     const app = createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     })
     const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
     const { flowId } = (await start.json()) as { flowId: string }
@@ -408,42 +417,6 @@ describe('server routes', () => {
 
     expect(poll.status).toBe(403)
     expect(await poll.json()).toEqual({ error: 'forbidden' })
-  })
-
-  it('polls the device flow against the OAuth client id captured at start, not a later reconfiguration', async () => {
-    const tokenClientIds: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init?: RequestInit) => {
-        if (url.includes('/device/code'))
-          return new Response(JSON.stringify({ device_code: 'device-1', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }))
-        if (url.includes('/oauth/access_token')) {
-          tokenClientIds.push(new URLSearchParams(init?.body as string).get('client_id') ?? '')
-          return new Response(JSON.stringify({ access_token: 'gho_token' }))
-        }
-        if (url.includes('/user')) return new Response(JSON.stringify({ login: 'imleon', name: null, avatar_url: null }))
-        return new Response('{}', { status: 404 })
-      }),
-    )
-    const database = createCottaDatabase(':memory:')
-    try {
-      const settingsStore = new SqliteSettingsStore(database)
-      saveGithubConfig(settingsStore, { clientId: 'client-a', allowedUsers: 'imleon' })
-      const auth = createAuth({ github: { sessionSecret: 'test-secret' }, settingsStore })
-      const app = createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing', auth, claudeCodeApi: emptyClaudeCodeApi() })
-
-      const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
-      const { flowId } = (await start.json()) as { flowId: string }
-
-      // Reconfigure to a different OAuth app after the flow started; the pending poll must still use client-a.
-      saveGithubConfig(settingsStore, { clientId: 'client-b', allowedUsers: 'imleon' })
-
-      const poll = await app.request('/api/auth/github/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) })
-      expect(poll.status).toBe(200)
-      expect(tokenClientIds).toEqual(['client-a'])
-    } finally {
-      database.close()
-    }
   })
 
   it('reads the allowed user fresh from the store so a changed user can log in without a restart', async () => {
@@ -460,12 +433,12 @@ describe('server routes', () => {
     const database = createCottaDatabase(':memory:')
     try {
       const settingsStore = new SqliteSettingsStore(database)
-      saveGithubConfig(settingsStore, { clientId: 'client', allowedUsers: 'imleon' })
+      saveGithubConfig(settingsStore, { allowedUsers: 'imleon' })
       const auth = createAuth({ github: { sessionSecret: 'test-secret' }, settingsStore })
       const app = createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing', auth, claudeCodeApi: emptyClaudeCodeApi() })
 
       // Change the allowed user in the store — same auth instance, no restart.
-      saveGithubConfig(settingsStore, { clientId: 'client', allowedUsers: 'teammate' })
+      saveGithubConfig(settingsStore, { allowedUsers: 'teammate' })
 
       const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
       const { flowId } = (await start.json()) as { flowId: string }
@@ -482,32 +455,13 @@ describe('server routes', () => {
     const database = createCottaDatabase(':memory:')
     try {
       const settingsStore = new SqliteSettingsStore(database)
-      saveGithubConfig(settingsStore, { clientId: 'client', allowedUsers: 'imleon' })
+      saveGithubConfig(settingsStore, { allowedUsers: 'imleon' })
       const auth = createAuth({ github: { sessionSecret: 'test-secret' }, settingsStore })
       const app = createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing', auth, claudeCodeApi: emptyClaudeCodeApi() })
 
       const poll = await app.request('/api/auth/github/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{not json' })
       expect(poll.status).toBe(400)
       expect(await poll.json()).toEqual({ error: 'invalid_request' })
-    } finally {
-      database.close()
-    }
-  })
-
-  it('returns 502 from device start when the client id is cleared at runtime', async () => {
-    vi.stubGlobal('fetch', vi.fn())
-    const database = createCottaDatabase(':memory:')
-    try {
-      const settingsStore = new SqliteSettingsStore(database)
-      saveGithubConfig(settingsStore, { clientId: 'client', allowedUsers: 'imleon' })
-      const auth = createAuth({ github: { sessionSecret: 'test-secret' }, settingsStore })
-      const app = createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing', auth, claudeCodeApi: emptyClaudeCodeApi() })
-
-      settingsStore.setMany('secrets', { githubClientId: undefined })
-
-      const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
-      expect(start.status).toBe(502)
-      expect(await start.json()).toEqual({ error: 'github_not_configured' })
     } finally {
       database.close()
     }
@@ -522,7 +476,7 @@ describe('server routes', () => {
     const app = createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     })
     const response = await app.request('/api/auth/github/device/start', { method: 'POST' })
 
@@ -538,7 +492,7 @@ describe('server routes', () => {
     const app = createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     })
     const response = await app.request('/api/auth/github/device/start', { method: 'POST' })
 
@@ -555,7 +509,7 @@ describe('server routes', () => {
     const app = createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     })
     const response = await app.request('/api/auth/github/device/start', { method: 'POST' })
 
@@ -577,7 +531,7 @@ describe('server routes', () => {
     const app = createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
       claudeCodeApi: emptyClaudeCodeApi(),
     })
     const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
@@ -592,10 +546,9 @@ describe('server routes', () => {
     expect((await app.request('/api/projects', { headers: { cookie } })).status).toBe(401)
   })
 
-  it('refuses to construct without GitHub client id or exactly one allowed user', () => {
-    expect(() => createAuth({ github: { clientId: '', sessionSecret: 'test-secret' } })).toThrow('GitHub client id is required')
-    expect(() => createAuth({ github: { clientId: 'client', allowedUsers: '', sessionSecret: 'test-secret' } })).toThrow('exactly one allowed user')
-    expect(() => createAuth({ github: { clientId: 'client', allowedUsers: 'imleon,teammate', sessionSecret: 'test-secret' } })).toThrow('exactly one allowed user')
+  it('refuses to construct without exactly one allowed user', () => {
+    expect(() => createAuth({ github: { allowedUsers: '', sessionSecret: 'test-secret' } })).toThrow('exactly one allowed user')
+    expect(() => createAuth({ github: { allowedUsers: 'imleon,teammate', sessionSecret: 'test-secret' } })).toThrow('exactly one allowed user')
   })
 
   it('persists a generated session secret in the settings store', () => {
@@ -609,7 +562,7 @@ describe('server routes', () => {
       setAuthSession: () => {},
       deleteAuthSession: () => {},
     }
-    const github = { clientId: 'client', allowedUsers: 'imleon' }
+    const github = { allowedUsers: 'imleon' }
     createAuth({ github, settingsStore: store as never })
     const generated = secrets.get('sessionSecret')
     expect(typeof generated).toBe('string')
@@ -634,7 +587,7 @@ describe('server routes', () => {
       const app = createApp({
         transcriptIndex: emptyTranscriptIndex(),
         timelineVersionReader: () => 'timeline-missing',
-        auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' }, settingsStore: memorySettingsStore() }),
+        auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' }, settingsStore: memorySettingsStore() }),
         claudeCodeApi: emptyClaudeCodeApi(),
       })
       const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
@@ -669,7 +622,7 @@ describe('server routes', () => {
     const app = createApp({
       transcriptIndex: emptyTranscriptIndex(),
       timelineVersionReader: () => 'timeline-missing',
-      auth: createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     })
     const start = await app.request('/api/auth/github/device/start', { method: 'POST' })
     const { flowId } = (await start.json()) as { flowId: string }
@@ -692,7 +645,7 @@ describe('bundled web serving', () => {
 
   function appWithWeb() {
     // Real auth so an unauthenticated request is actually gated; proves static bypasses auth, API does not.
-    const auth = createAuth({ github: { clientId: 'client', allowedUsers: 'imleon', sessionSecret: 'test-secret' } })
+    const auth = createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } })
     return createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing', auth, claudeCodeApi: emptyClaudeCodeApi(), webRoot })
   }
 

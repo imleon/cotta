@@ -9,6 +9,8 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SESSION_MAX_AGE_SECONDS = SESSION_TTL_MS / 1000
 const SESSION_RENEW_THRESHOLD_MS = 24 * 60 * 60 * 1000
 const GITHUB_RETRY_DELAYS_MS = [500, 1000]
+// Cotta's own OAuth App (identity-only, no scope). Hardcoded so operators never create or paste one.
+const GITHUB_CLIENT_ID = 'Ov23liMLUPsdQ154njI3'
 
 type Session = {
   user: AuthUser
@@ -16,14 +18,12 @@ type Session = {
 }
 
 type DeviceFlow = {
-  clientId: string
   deviceCode: string
   expiresAt: number
   interval: number
 }
 
 type GitHubAuthConfig = {
-  clientId?: string
   allowedUsers?: string
   sessionSecret?: string
   cookieSecure?: string
@@ -66,20 +66,19 @@ function loadSessionSecret(store: SettingsStore): string {
 }
 
 /** GitHub login config lives in the private 'secrets' scope (never reaches the client via readSettings). */
-export function loadGithubConfig(store: SettingsStore): { clientId: string | null; allowedUsers: string | null } {
+export function loadGithubConfig(store: SettingsStore): { allowedUsers: string | null } {
   const secrets = store.getAll('secrets')
   return {
-    clientId: typeof secrets.githubClientId === 'string' && secrets.githubClientId ? secrets.githubClientId : null,
     allowedUsers: typeof secrets.githubAllowedUsers === 'string' && secrets.githubAllowedUsers ? secrets.githubAllowedUsers : null,
   }
 }
 
-export function saveGithubConfig(store: SettingsStore, config: { clientId: string; allowedUsers: string }): void {
+export function saveGithubConfig(store: SettingsStore, config: { allowedUsers: string }): void {
   // The allowed login is the whole security boundary: whenever it changes, every stored auth session
   // (snapshotted at login) becomes stale and is revoked atomically with the config write. Connections
   // already established (terminal WebSocket, SSE streams) were authorized at open and are not torn down.
   const allowedUserChanged = normalizeAllowedUser(loadGithubConfig(store).allowedUsers) !== normalizeAllowedUser(config.allowedUsers)
-  store.setMany('secrets', { githubClientId: config.clientId, githubAllowedUsers: config.allowedUsers }, { clearAuthSessions: allowedUserChanged })
+  store.setMany('secrets', { githubAllowedUsers: config.allowedUsers }, { clearAuthSessions: allowedUserChanged })
 }
 
 export type CottaAuth = ReturnType<typeof createAuth>
@@ -104,15 +103,13 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
 
   // Read GitHub config fresh on every use so Settings-UI edits take effect without a restart.
   // The explicit `input.github` wins (tests / direct injection); otherwise the store is the source of truth.
-  function currentGithubConfig(): { clientId: string | null; allowedUser: string | null } {
-    const stored = input.settingsStore ? loadGithubConfig(input.settingsStore) : { clientId: null, allowedUsers: null }
-    const clientId = input.github?.clientId ?? stored.clientId ?? null
+  function currentGithubConfig(): { allowedUser: string | null } {
+    const stored = input.settingsStore ? loadGithubConfig(input.settingsStore) : { allowedUsers: null }
     const allowedUser = normalizeAllowedUser(input.github?.allowedUsers ?? stored.allowedUsers)
-    return { clientId, allowedUser }
+    return { allowedUser }
   }
 
   const startupConfig = currentGithubConfig()
-  if (!startupConfig.clientId) throw new Error('GitHub client id is required')
   if (!isSingleUser(startupConfig.allowedUser)) throw new Error('GitHub login requires exactly one allowed user')
   const resolvedSecret = input.github?.sessionSecret ?? (input.settingsStore ? loadSessionSecret(input.settingsStore) : undefined)
   if (!resolvedSecret) throw new Error('session secret unavailable: provide settingsStore or github.sessionSecret')
@@ -263,20 +260,18 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
       return c.json({
         authenticated: Boolean(user),
         user,
-        githubConfigured: true,
       })
     })
 
     app.post('/api/auth/github/device/start', async (c) => {
       try {
         cleanupExpiredFlows()
-        const clientId = currentGithubConfig().clientId
-        if (!clientId) return c.json({ error: 'github_not_configured' }, 502)
-        const scope = 'read:user'
+        // No scope: identity-only login. GET /user returns the public `login` we match against the
+        // allowlist without any scope, so the consent screen grants no extra access.
         const body = await githubJson('https://github.com/login/device/code', {
           method: 'POST',
           headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ client_id: clientId, scope }),
+          body: new URLSearchParams({ client_id: GITHUB_CLIENT_ID }),
         })
         if (typeof body.device_code !== 'string' || typeof body.user_code !== 'string' || typeof body.verification_uri !== 'string') {
           return c.json({ error: 'github_device_start_failed' }, 502)
@@ -284,7 +279,7 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
         const flowId = randomId()
         const expiresIn = Number(body.expires_in ?? 900)
         const interval = Number(body.interval ?? 5)
-        deviceFlows.set(flowId, { clientId, deviceCode: body.device_code, expiresAt: Date.now() + expiresIn * 1000, interval })
+        deviceFlows.set(flowId, { deviceCode: body.device_code, expiresAt: Date.now() + expiresIn * 1000, interval })
         return c.json({
           flowId,
           userCode: body.user_code,
@@ -313,7 +308,7 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
         const body = await githubJson('https://github.com/login/oauth/access_token', {
           method: 'POST',
           headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ client_id: flow.clientId, device_code: flow.deviceCode, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' }),
+          body: new URLSearchParams({ client_id: GITHUB_CLIENT_ID, device_code: flow.deviceCode, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' }),
         })
         if (body.error === 'authorization_pending') return c.json({ status: 'pending', interval: flow.interval }, 202)
         if (body.error === 'slow_down') {

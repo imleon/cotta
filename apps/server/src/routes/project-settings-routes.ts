@@ -12,7 +12,7 @@ export function registerProjectSettingsRoutes(app: Hono, input: ProjectRoutesInp
   app.get('/api/settings/github', (c) => {
     if (!input.settingsStore) return c.json({ error: 'settings_store_unavailable' }, 500)
     const cfg = loadGithubConfig(input.settingsStore)
-    return c.json(githubConfigSchema.parse({ clientId: cfg.clientId ?? '', allowedUsers: cfg.allowedUsers ?? '' }))
+    return c.json(githubConfigSchema.parse({ allowedUsers: cfg.allowedUsers ?? '' }))
   })
 
   app.put('/api/settings/github', async (c) => {
@@ -20,12 +20,11 @@ export function registerProjectSettingsRoutes(app: Hono, input: ProjectRoutesInp
       if (!input.settingsStore) return c.json({ error: 'settings_store_unavailable' }, 500)
       const body = githubConfigSchema.safeParse(await c.req.json().catch(() => null))
       if (!body.success) return c.json({ error: 'invalid_github_config' }, 400)
-      const clientId = body.data.clientId.trim()
       const allowedUsers = body.data.allowedUsers.trim()
-      if (!clientId || !isSingleUser(allowedUsers)) return c.json({ error: 'invalid_github_config' }, 400)
+      if (!isSingleUser(allowedUsers)) return c.json({ error: 'invalid_github_config' }, 400)
       // saveGithubConfig persists the config and revokes every stored auth session atomically when the allowed login changes.
-      saveGithubConfig(input.settingsStore, { clientId, allowedUsers })
-      return c.json(githubConfigSchema.parse({ clientId, allowedUsers }))
+      saveGithubConfig(input.settingsStore, { allowedUsers })
+      return c.json(githubConfigSchema.parse({ allowedUsers }))
     } catch (error) {
       console.error('settings:github-update failed', error)
       return c.json({ error: 'github_config_update_failed' }, 500)

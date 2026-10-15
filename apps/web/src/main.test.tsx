@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: mocks.mount }) }))
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
-  fetchAuthSession: async () => ({ authenticated: true, githubConfigured: false }),
+  fetchAuthSession: async () => ({ authenticated: true, user: { login: 'imleon', name: null, avatarUrl: null } }),
   fetchSettings: async () => ({ settings: { defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true } }),
   fetchProjects: mocks.projects,
   fetchSessionPins: mocks.pins,

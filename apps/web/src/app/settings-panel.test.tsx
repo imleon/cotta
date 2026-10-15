@@ -21,7 +21,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const authedSession = { authenticated: true as const, user: { login: 'imleon', name: null, avatarUrl: null }, githubConfigured: true }
+const authedSession = { authenticated: true as const, user: { login: 'imleon', name: null, avatarUrl: null } }
 const baseSettings = { timeZone: 'UTC', defaultPermissionMode: 'default' as const, defaultModel: 'default' as const, defaultEffort: 'medium' as const, useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }
 
 describe('SettingsPanel', () => {
@@ -54,7 +54,7 @@ describe('SettingsPanel', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const queryClient = new QueryClient()
-    queryClient.setQueryData(['github-config'], { clientId: 'stale-client', allowedUsers: 'stale-user' })
+    queryClient.setQueryData(['github-config'], { allowedUsers: 'stale-user' })
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -64,16 +64,16 @@ describe('SettingsPanel', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Change account' }))
     const save = screen.getByRole('button', { name: 'Save' })
-    const clientInput = screen.getByLabelText('Client ID') as HTMLInputElement
+    const allowedInput = screen.getByLabelText('Allowed user') as HTMLInputElement
 
     // Refetch is in flight: inputs and save are disabled, so stale cache cannot be submitted.
-    expect(clientInput.disabled).toBe(true)
+    expect(allowedInput.disabled).toBe(true)
     expect((save as HTMLButtonElement).disabled).toBe(true)
     await userEvent.click(save)
     expect(fetchMock).not.toHaveBeenCalledWith('/api/settings/github', expect.objectContaining({ method: 'PUT' }))
 
-    resolveConfig?.(new Response(JSON.stringify({ clientId: 'fresh-client', allowedUsers: 'fresh-user' }), { status: 200 }))
-    await waitFor(() => expect((screen.getByLabelText('Client ID') as HTMLInputElement).value).toBe('fresh-client'))
+    resolveConfig?.(new Response(JSON.stringify({ allowedUsers: 'fresh-user' }), { status: 200 }))
+    await waitFor(() => expect((screen.getByLabelText('Allowed user') as HTMLInputElement).value).toBe('fresh-user'))
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -81,11 +81,11 @@ describe('SettingsPanel', () => {
     const onLogout = vi.fn()
     const authFetches: string[] = []
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
-      if (url === '/api/settings/github' && init?.method === 'PUT') return Promise.resolve(new Response(JSON.stringify({ clientId: 'c', allowedUsers: 'teammate' }), { status: 200 }))
-      if (url === '/api/settings/github') return Promise.resolve(new Response(JSON.stringify({ clientId: 'c', allowedUsers: 'imleon' }), { status: 200 }))
+      if (url === '/api/settings/github' && init?.method === 'PUT') return Promise.resolve(new Response(JSON.stringify({ allowedUsers: 'teammate' }), { status: 200 }))
+      if (url === '/api/settings/github') return Promise.resolve(new Response(JSON.stringify({ allowedUsers: 'imleon' }), { status: 200 }))
       if (url === '/api/auth/session') {
         authFetches.push(url)
-        return Promise.resolve(new Response(JSON.stringify({ authenticated: false, user: null, githubConfigured: true }), { status: 200 }))
+        return Promise.resolve(new Response(JSON.stringify({ authenticated: false, user: null }), { status: 200 }))
       }
       return Promise.resolve(new Response('{}', { status: 200 }))
     })
@@ -115,7 +115,7 @@ describe('SettingsPanel', () => {
   it('discards cancelled edits on reopen and blocks multi-word users', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ clientId: 'client', allowedUsers: 'imleon' }), { status: 200 }))),
+      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ allowedUsers: 'imleon' }), { status: 200 }))),
     )
     render(
       <QueryClientProvider client={new QueryClient()}>
@@ -124,12 +124,12 @@ describe('SettingsPanel', () => {
     )
 
     await userEvent.click(screen.getByRole('button', { name: 'Change account' }))
-    await waitFor(() => expect((screen.getByLabelText('Client ID') as HTMLInputElement).value).toBe('client'))
-    await userEvent.type(screen.getByLabelText('Client ID'), '-garbage')
+    await waitFor(() => expect((screen.getByLabelText('Allowed user') as HTMLInputElement).value).toBe('imleon'))
+    await userEvent.type(screen.getByLabelText('Allowed user'), '-garbage')
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await userEvent.click(screen.getByRole('button', { name: 'Change account' }))
-    await waitFor(() => expect((screen.getByLabelText('Client ID') as HTMLInputElement).value).toBe('client'))
+    await waitFor(() => expect((screen.getByLabelText('Allowed user') as HTMLInputElement).value).toBe('imleon'))
 
     const allowed = screen.getByLabelText('Allowed user')
     await userEvent.type(allowed, ' teammate')
@@ -144,7 +144,7 @@ describe('SettingsPanel', () => {
         Promise.resolve(
           init?.method === 'PUT'
             ? new Response(JSON.stringify({ error: 'github_config_update_failed' }), { status: 500 })
-            : new Response(JSON.stringify({ clientId: 'client', allowedUsers: 'imleon' }), { status: 200 }),
+            : new Response(JSON.stringify({ allowedUsers: 'imleon' }), { status: 200 }),
         ),
       ),
     )

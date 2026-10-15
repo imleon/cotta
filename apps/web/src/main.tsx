@@ -1138,7 +1138,7 @@ function WorkspaceShell() {
 function AuthenticatedApp() {
   const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
   const session = authSession.data
-  const authenticated = Boolean(session?.authenticated || (session && !session.githubConfigured))
+  const authenticated = Boolean(session?.authenticated)
 
   if (authSession.isLoading)
     return (

@@ -78,7 +78,6 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
   const [menuModelValue, setMenuModelValue] = useState<ModelSelection | null>(null)
   const [effortMenuPosition, setEffortMenuPosition] = useState<CSSProperties>()
   const [githubEditing, setGithubEditing] = useState(false)
-  const [githubClientId, setGithubClientId] = useState('')
   const [githubAllowedUsers, setGithubAllowedUsers] = useState('')
   const [githubError, setGithubError] = useState<string | null>(null)
   const permissionMenuRef = useRef<HTMLDivElement | null>(null)
@@ -192,7 +191,6 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
   const githubConfigQuery = useQuery({ queryKey: ['github-config'], queryFn: fetchGitHubConfig, enabled: githubEditing, retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false })
   useEffect(() => {
     if (githubEditing && githubConfigQuery.data) {
-      setGithubClientId(githubConfigQuery.data.clientId)
       setGithubAllowedUsers(githubConfigQuery.data.allowedUsers)
     }
   }, [githubEditing, githubConfigQuery.data])
@@ -216,7 +214,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
     setSaving(true)
     setGithubError(null)
     try {
-      await saveGitHubConfig({ clientId: githubClientId.trim(), allowedUsers: githubAllowedUsers.trim() })
+      await saveGitHubConfig({ allowedUsers: githubAllowedUsers.trim() })
       setGithubEditing(false)
       // When the allowed login changes the server revokes every session, so re-reading the shared auth
       // query drives the app back to the login gate; when it doesn't, the panel stays mounted and we must
@@ -564,20 +562,9 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
                 <div className="settings-card-copy">
                   <h3 id="settings-github-title">Change account</h3>
                   <p className="muted">
-                    Sign in is restricted to one GitHub user via your own OAuth App. Paste the OAuth App's Client ID and the username allowed to sign in. Changing the allowed user signs out every
-                    session on all devices — sign in again as that user.
+                    Sign in is restricted to one GitHub user. Enter the username allowed to sign in. Changing the allowed user signs out every session on all devices — sign in again as that user.
                   </p>
                 </div>
-                <label className="settings-github-field">
-                  Client ID
-                  <input
-                    className="settings-text-input"
-                    placeholder="Ov23li…"
-                    value={githubClientId}
-                    disabled={saving || githubConfigQuery.isFetching}
-                    onChange={(event) => setGithubClientId(event.target.value)}
-                  />
-                </label>
                 <label className="settings-github-field">
                   Allowed user
                   <input

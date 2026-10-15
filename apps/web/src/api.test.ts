@@ -67,7 +67,7 @@ describe('auth', () => {
   it('uses auth endpoints without appending the URL token', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ authenticated: false, user: null, githubConfigured: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ authenticated: false, user: null }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ flowId: 'flow', userCode: 'ABCD-EFGH', verificationUri: 'https://github.com/login/device', expiresIn: 900, interval: 5 }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', interval: 5 }), { status: 202 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))

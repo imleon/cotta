@@ -15,8 +15,10 @@ export default defineConfig({
   noExternal: ['@cotta/shared'],
   external: ['zod', 'saxes', 'micromark-util-sanitize-uri'],
   // node:sqlite is stable-enough but still flagged experimental, so Node prints an ExperimentalWarning
-  // on every start. Silence just that category in the shebang; other warnings still surface.
-  banner: { js: '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning' },
+  // on every start. The Agent SDK warns on every query() that canUseTool is shadowed under
+  // bypassPermissions, but Cotta relies on it there for AskUserQuestion / ExitPlanMode prompts.
+  // Silence just those two; other warnings still surface.
+  banner: { js: '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED' },
   clean: true,
   sourcemap: false,
   splitting: false,

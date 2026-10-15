@@ -28,6 +28,7 @@ const IDLE_RUNTIME_TTL_MS = 10 * 60 * 1000
 export class ProjectDirectoryUnavailableError extends Error {}
 export class SessionExternallyOwnedError extends Error {}
 export class SessionTurnInProgressError extends Error {}
+export class SessionProjectMismatchError extends Error {}
 
 type SessionActivityObserver = {
   signalSessionActivity?(input: { sessionId: string; projectId?: string }): unknown
@@ -641,7 +642,7 @@ export class LiveTurnManager {
       if (!externalOwnerGenerationCurrent()) return false
       const current = this.runtimes.get(input.sessionId)
       if (current && current.projectId !== input.projectId) {
-        if (current.currentUserMessageUuid || current.startingTurnToken) throw new Error('Session runtime project mismatch')
+        if (current.currentUserMessageUuid || current.startingTurnToken) throw new SessionProjectMismatchError('Session runtime project mismatch')
         current.stale = true
         this.closeRuntime(current)
       } else if (current?.rebuildingAfterCliIdle) {
@@ -784,7 +785,7 @@ export class LiveTurnManager {
     for (;;) {
       let runtime = this.runtimes.get(input.sessionId)
       if (runtime && runtime.projectId !== input.projectId) {
-        if (runtime.currentUserMessageUuid || runtime.startingTurnToken) throw new Error('Session runtime project mismatch')
+        if (runtime.currentUserMessageUuid || runtime.startingTurnToken) throw new SessionProjectMismatchError('Session runtime project mismatch')
         runtime.stale = true
         this.closeRuntime(runtime)
         runtime = undefined
@@ -793,7 +794,7 @@ export class LiveTurnManager {
       await runtime.ready
       const current = this.runtimes.get(input.sessionId)
       if (current === runtime && !runtime.stale && !runtime.closed) return runtime
-      if (current && current.projectId !== input.projectId) throw new Error('Session runtime project mismatch')
+      if (current && current.projectId !== input.projectId) throw new SessionProjectMismatchError('Session runtime project mismatch')
       if (input.recreateClosed === false) return runtime
     }
   }

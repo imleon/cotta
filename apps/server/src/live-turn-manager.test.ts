@@ -11,7 +11,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }))
 vi.mock('node:fs/promises', () => ({ stat: statMock }))
 
-import { type LiveTurnEvent, LiveTurnManager, ProjectDirectoryUnavailableError, SessionExternallyOwnedError, SessionTurnInProgressError } from './live-turn-manager.js'
+import { type LiveTurnEvent, LiveTurnManager, ProjectDirectoryUnavailableError, SessionExternallyOwnedError, SessionProjectMismatchError, SessionTurnInProgressError } from './live-turn-manager.js'
 
 function queryFromGenerator(generator: AsyncGenerator<SDKMessage>, overrides: Partial<Query> = {}): Query {
   return Object.assign(generator, {
@@ -1326,7 +1326,7 @@ describe('LiveTurnManager', () => {
     const projectB = Buffer.from('/repo/b').toString('base64url')
     await manager.startTurn({ projectId: projectA, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
 
-    await expect(manager.ensureRuntime({ projectId: projectB, sessionId: 'session-1' })).rejects.toThrow('Session runtime project mismatch')
+    await expect(manager.ensureRuntime({ projectId: projectB, sessionId: 'session-1' })).rejects.toThrow(SessionProjectMismatchError)
     expect(close).not.toHaveBeenCalled()
     expect(queryMock).toHaveBeenCalledTimes(1)
     manager.closeAll()

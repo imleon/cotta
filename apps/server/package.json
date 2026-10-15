@@ -16,8 +16,8 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "dev": "tsx --tsconfig tsconfig.dev.json src/index.ts",
-    "dev:watch": "tsx watch --tsconfig tsconfig.dev.json src/index.ts",
+    "dev": "tsx --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/index.ts",
+    "dev:watch": "tsx watch --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/index.ts",
     "build": "tsc -b tsconfig.json",
     "bundle": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",

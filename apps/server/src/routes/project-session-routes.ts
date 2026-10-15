@@ -21,7 +21,7 @@ import {
 import type { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { shareAssetsRoot } from '../database.js'
-import { ProjectDirectoryUnavailableError, SessionExternallyOwnedError, SessionTurnInProgressError } from '../live-turn-manager.js'
+import { ProjectDirectoryUnavailableError, SessionExternallyOwnedError, SessionProjectMismatchError, SessionTurnInProgressError } from '../live-turn-manager.js'
 import { SubmitTurnError, submitTurn } from '../submit-turn.js'
 import { normalizeModelEffortSelection, persistedTurnOptions, readSettings, resolveTurnOptions, validateTurnOptions } from '../turn-options.js'
 import { locateSession, type ProjectRoutesInput, resolveSessionProject, type SessionMetadata } from './project-routes-shared.js'
@@ -67,6 +67,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
     } catch (error) {
       if (error instanceof SubmitTurnError) return c.json({ error: error.code }, error.code === 'session_not_found' ? 404 : 400)
       if (error instanceof ProjectDirectoryUnavailableError) return c.json({ error: 'project_directory_unavailable' }, 409)
+      if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
       if (error instanceof SessionExternallyOwnedError) return c.json({ error: 'session_externally_owned' }, 409)
       if (error instanceof SessionTurnInProgressError) return c.json({ error: 'session_turn_in_progress' }, 409)
       console.error('sessions:create failed', error)
@@ -85,6 +86,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
     } catch (error) {
       if (error instanceof SubmitTurnError) return c.json({ error: error.code }, error.code === 'session_not_found' ? 404 : 400)
       if (error instanceof ProjectDirectoryUnavailableError) return c.json({ error: 'project_directory_unavailable' }, 409)
+      if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
       if (error instanceof SessionExternallyOwnedError) return c.json({ error: 'session_externally_owned' }, 409)
       if (error instanceof SessionTurnInProgressError) return c.json({ error: 'session_turn_in_progress' }, 409)
       console.error('turns:create failed', error)
@@ -308,6 +310,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       return c.json(restartSessionRuntimeResponseSchema.parse({ ok: true, restarted }))
     } catch (error) {
       if (error instanceof ProjectDirectoryUnavailableError) return c.json({ error: 'project_directory_unavailable' }, 409)
+      if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
       console.error('session:restart failed', error)
       return c.json({ error: 'session_restart_failed' }, 500)
     }
@@ -352,6 +355,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       )
     } catch (error) {
       if (error instanceof ProjectDirectoryUnavailableError) return c.json({ error: 'project_directory_unavailable' }, 409)
+      if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
       console.error('session:runtime failed', error)
       return c.json({ error: 'session_runtime_failed' }, 500)
     }

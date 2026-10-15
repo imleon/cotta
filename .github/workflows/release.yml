@@ -21,7 +21,10 @@ jobs:
       # Pack from the repo root with --workspace cotta: `npm pack` inside apps/server fails with
       # ENOWORKSPACES, and prepack's `--prefix ../..` builds assume this root-relative layout.
       - name: Build tarball
-        run: npm pack --workspace cotta --pack-destination dist-release
+        run: |
+          # npm pack won't create the destination dir; make it first or it ENOENTs.
+          mkdir -p dist-release
+          npm pack --workspace cotta --pack-destination dist-release
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -18,7 +18,7 @@ Cotta 以 Claude Code 作为底层运行时，Session 仍是 Claude Code 原生�
 需要 Linux 或 macOS、Node.js >= 22.13，以及本机已能正常使用的 Claude Code CLI（订阅账户或第三方模型网关均可）。
 
 ```bash
-npm i -g https://github.com/imleon/cotta/releases/download/v0.1.1-alpha.1/cotta-0.1.1-alpha.1.tgz
+npm i -g https://github.com/imleon/cotta/releases/download/v0.1.1-alpha.2/cotta-0.1.1-alpha.2.tgz
 cotta start
 ```
 

@@ -418,17 +418,46 @@ function MarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) {
   return <>{children}</>
 }
 
+function MermaidBlock({ code, fallback }: { code: string; fallback: ReactNode }) {
+  const [svg, setSvg] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setSvg(null)
+    setFailed(false)
+    void import('mermaid')
+      .then((m) => {
+        m.default.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' })
+        return m.default.render(`mermaid-${crypto.randomUUID()}`, code)
+      })
+      .then(({ svg }) => {
+        if (!cancelled) setSvg(svg)
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [code])
+  if (failed) return <>{fallback}</>
+  if (!svg) return null
+  // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid renders trusted transcript content with securityLevel 'strict'
+  return <div className="markdown-mermaid" data-timeline-content="mermaid" dangerouslySetInnerHTML={{ __html: svg }} />
+}
+
 function MarkdownCode({ className, children }: ComponentPropsWithoutRef<'code'>) {
   const { codeActions } = useContext(markdownRenderContext)
   const childList = Children.toArray(children)
   const inline = !className && childList.every((child) => typeof child === 'string' && !child.includes('\n'))
-  return inline ? (
-    <code className={className}>{children}</code>
-  ) : (
+  if (inline) return <code className={className}>{children}</code>
+  const highlighted = (
     <HighlightedCode className={className} actions={codeActions}>
       {children}
     </HighlightedCode>
   )
+  if (className === 'language-mermaid') return <MermaidBlock code={textFromReactNode(children).replace(/\n$/, '')} fallback={highlighted} />
+  return highlighted
 }
 
 const markdownComponents = { a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, code: MarkdownCode }

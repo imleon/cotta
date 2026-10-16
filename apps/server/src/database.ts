@@ -1,12 +1,9 @@
 import { chmodSync, mkdirSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { databasePath } from './cotta-home.js'
 
 const SCHEMA_VERSION = 44
-
-function databasePath(): string {
-  return resolve(process.cwd(), process.env.COTTA_DB_PATH ?? 'data/cotta.sqlite')
-}
 
 /** On-disk root for a share's frozen image assets, co-located with the database file. */
 export function shareAssetsRoot(token: string): string {

@@ -23,21 +23,34 @@ prebuilt binaries.
 
 ## First run
 
-Run `cotta` in an interactive terminal. On first launch it prompts for the single GitHub username
-allowed to sign in, then stores it (in the local database, not env):
+Run `cotta start` in an interactive terminal. On first launch it prompts for the single GitHub
+username allowed to sign in, stores it (in the local database, not env), then starts the server in
+the background:
 
 ```bash
-cotta
+cotta start
 ```
 
-When it prints `Cotta server listening on http://127.0.0.1:3000`, open that URL, sign in via the
+When it prints `Cotta started at http://127.0.0.1:3000`, open that URL, sign in via the
 GitHub device flow, and you're in.
 
 To change the allowed user later, either use **Settings → Change account** in the UI,
 or restart with:
 
 ```bash
-cotta --reconfigure-github
+cotta stop
+cotta start --reconfigure-github
+```
+
+## Commands
+
+```bash
+cotta start            # start in the background
+cotta start -f         # run in the foreground
+cotta status           # show status (exit 3 when not running)
+cotta stop             # stop the server
+cotta restart          # restart in the background
+cotta uninstall        # stop, delete ~/.cotta, and run npm uninstall -g cotta (refuses while COTTA_DB_PATH is set)
 ```
 
 ## Configuration
@@ -48,7 +61,7 @@ Environment variables (all optional):
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Bind address. Set `0.0.0.0` to expose Cotta to other machines. |
 | `PORT` | `3000` | Listen port. |
-| `COTTA_DB_PATH` | `data/cotta.sqlite` (relative to cwd) | SQLite read-model path. **Set an absolute path** so the database doesn't move when you run `cotta` from different directories. |
+| `COTTA_DB_PATH` | `~/.cotta/cotta.sqlite` | SQLite read-model path. The pidfile (`cotta.pid`), daemon log (`cotta.log`) and share assets live in the same directory. |
 | `COTTA_COOKIE_SECURE` | unset | Set `true` when serving over HTTPS so the session cookie is marked Secure. |
 | `COTTA_TERMINAL_ORIGIN` | unset | Allowed Origin for the terminal WebSocket. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where Cotta reads Claude Code transcripts and session state. |

@@ -4,9 +4,9 @@
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
-    "cotta": "dist/index.js"
+    "cotta": "dist/cli.js"
   },
-  "main": "dist/index.js",
+  "main": "dist/cli.js",
   "files": [
     "dist",
     "web",
@@ -16,14 +16,14 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "dev": "tsx --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/index.ts",
-    "dev:watch": "tsx watch --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/index.ts",
+    "dev": "COTTA_DB_PATH=data/cotta.sqlite tsx --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/cli.ts start -f",
+    "dev:watch": "COTTA_DB_PATH=data/cotta.sqlite tsx watch --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/cli.ts start -f",
     "build": "tsc -b tsconfig.json",
     "bundle": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "start": "node dist/index.js",
-    "repair:transcript-ownership": "tsx --tsconfig tsconfig.dev.json src/repair-transcript-ownership.ts",
-    "test": "vitest run src",
+    "start": "node dist/cli.js start -f",
+    "repair:transcript-ownership": "COTTA_DB_PATH=data/cotta.sqlite tsx --tsconfig tsconfig.dev.json src/repair-transcript-ownership.ts",
+    "test": "COTTA_DB_PATH=data/cotta.sqlite vitest run src",
     "prepack": "npm --prefix ../.. run build --workspace @cotta/shared && npm --prefix ../.. run build --workspace @cotta/web && node -e \"const fs=require('node:fs');fs.cpSync('../web/dist','web',{recursive:true});fs.copyFileSync('../../LICENSE','LICENSE')\" && tsup"
   },
   "dependencies": {
@@ -32,7 +32,6 @@
     "@hono/node-server": "^2.1.1",
     "@larksuiteoapi/node-sdk": "^1.74.0",
     "chokidar": "^4.0.3",
-    "dotenv": "^18.0.0",
     "hono": "^4.13.8",
     "mdast-util-from-markdown": "^2.0.3",
     "micromark-util-sanitize-uri": "^2.0.1",

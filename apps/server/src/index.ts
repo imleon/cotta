@@ -1,4 +1,3 @@
-import 'dotenv/config'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,6 +9,7 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici'
 import { type CottaAuth, createAuth, noopAuth } from './auth.js'
 import { type ClaudeCodeApi, createClaudeCodeApi, projectIdFromPath, projectPathFromId } from './claude-code-api.js'
 import { createClaudeSessionRegistry } from './claude-session-registry.js'
+import { acquireServerLock, assertNoLegacyDatabase, serverUrl, writePidRecord } from './cotta-home.js'
 import { createCottaDatabase } from './database.js'
 import { loadDetailTokenKey } from './detail-token.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
@@ -327,16 +327,21 @@ export function subscribeCliSessionOwnership({
   })
 }
 
-const host = process.env.HOST ?? '127.0.0.1'
-const port = Number(process.env.PORT ?? 3000)
-const terminalOrigin = parseTerminalOrigin(process.env.COTTA_TERMINAL_ORIGIN)
-
-if (process.env.NODE_ENV !== 'test') {
+export async function runServer(opts: { reconfigureGithub: boolean }): Promise<boolean> {
+  const host = process.env.HOST ?? '127.0.0.1'
+  const port = Number(process.env.PORT ?? 3000)
+  const terminalOrigin = parseTerminalOrigin(process.env.COTTA_TERMINAL_ORIGIN)
+  // Take the single-instance lock before touching the database, so a second server never indexes or writes.
+  // False means another server holds it; the caller reports that.
+  if (!acquireServerLock()) return false
+  // Write the pid now, not on listen, so `cotta stop` can still kill a server stuck in setup; readiness is probed over HTTP.
+  writePidRecord({ pid: process.pid, host, port, startedAt: Date.now() })
   const claudeSessionRegistry = await createClaudeSessionRegistry()
+  assertNoLegacyDatabase()
   const cottaDb = createCottaDatabase()
   const indexChangeNotifier = new IndexChangeNotifier()
   const settingsStore = new SqliteSettingsStore(cottaDb)
-  await ensureGithubConfig(settingsStore, { force: process.argv.includes('--reconfigure-github') })
+  await ensureGithubConfig(settingsStore, { force: opts.reconfigureGithub })
   await ensureModelCatalog(settingsStore, defaultModelCatalogProvider)
   const detailTokenKey = loadDetailTokenKey(settingsStore)
   const shareStore = new ShareStore(cottaDb)
@@ -480,7 +485,7 @@ if (process.env.NODE_ENV !== 'test') {
   const server = createAdaptorServer({ fetch: app.fetch })
   attachTerminalWebSocket({ server: server as import('node:http').Server, auth, registry: terminalRegistry, terminalOrigin })
   server.listen(port, host, () => {
-    console.log(`Cotta server listening on http://${host}:${port}`)
+    console.log(`Cotta server listening on ${serverUrl({ host, port })}`)
   })
   rawTranscriptCoordinator
     .ensureReady()
@@ -519,14 +524,14 @@ if (process.env.NODE_ENV !== 'test') {
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code === 'EADDRINUSE') {
-      console.error(`Cotta server failed to start: http://${host}:${port} is already in use.`)
+      console.error(`Cotta server failed to start: ${serverUrl({ host, port })} is already in use.`)
       console.error('Stop the process using that port, or start Cotta with a different PORT.')
-      void closeServerResources(resources).finally(() => {
-        process.exitCode = 1
-      })
+      // Exit outright like shutdown(): a lingering handle would otherwise keep the single-instance lock held.
+      void closeServerResources(resources).finally(() => process.exit(1))
       return
     }
 
     throw error
   })
+  return true
 }

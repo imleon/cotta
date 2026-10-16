@@ -7,7 +7,7 @@ import { defineConfig } from 'tsup'
 // Keep those three versions in sync with packages/shared/package.json — they ship inlined shared code,
 // so a drift to a different major could change that code's runtime behavior.
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/cli.ts'],
   outDir: 'dist',
   format: ['esm'],
   platform: 'node',

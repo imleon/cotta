@@ -1,47 +1,35 @@
-# Cotta v2
+# Cotta：把 Claude Code 搬进 Web 和 Lark
 
-Cotta v2 是一个 Web-first 的 Claude Code Project Dashboard。
+Cotta 是一个运行在本地的服务，它把终端里 Claude Code 的工作内容搬进浏览器和飞书。离开终端，你依然可以浏览历史、翻看每个 Turn、继续对话，让 Claude Code 的工作不因为你离开电脑或远程终端而中断。
 
-## 数据库恢复
+Cotta 以 Claude Code 作为底层运行时，Session 仍是 Claude Code 原生的，终端和 Cotta 可以混用，在一边开始，在另一边继续。所有数据和运行时都在你本机，登录只放行你指定的一个 GitHub 账号。
 
-Cotta 默认把派生 SQLite read model 保存在当前工作目录的 `data/cotta.sqlite`；可用 `COTTA_DB_PATH` 指定其他路径。Cotta 启动时会自动执行受支持的事务化数据库升级。遇到不受支持的 schema 时，先根据错误中的当前版本和目标版本编写并执行一次性、事务化迁移；不要删除数据库。
+## 产品功能
 
-只有确认数据库已经损坏、无法迁移，并且接受丢失其中不可重建的数据时，才停止 Cotta，删除实际数据库文件及同目录下对应的 `-wal`、`-shm` 文件，再重启：
+- **与 CLI 共享 session：** 在终端开始的任务，可以在 Cotta 里浏览和接续，反过来也一样。
+- **Timeline：** 按 Turn 流式呈现消息，工具调用、思考、Plan 可展开；主 Agent 与 Subagent 轨迹分开。
+- **Composer：** 支持文本和图片，可切换模型、Effort、Permission，运行中随时打断；权限确认和提问直接在 Timeline 里处理。
+- **飞书：** 在卡片里浏览 session、翻看 Turn、发消息续聊，权限确认也在卡片内完成。
+- **搜索与 Share：** 跨 Project 全文搜索 session；把 Turn 生成公开链接或导出 Markdown、长图。
+- **工作区：** 文件浏览、Git Diff、内置 Terminal、Token 用量统计。
+
+## 安装使用
+
+需要 Linux 或 macOS、Node.js >= 22.13，以及本机已能正常使用的 Claude Code CLI（订阅账户或第三方模型网关均可）。
 
 ```bash
-rm -f data/cotta.sqlite data/cotta.sqlite-wal data/cotta.sqlite-shm
-npm run dev
+npm i -g https://github.com/imleon/cotta/releases/download/v0.1.1-alpha.1/cotta-0.1.1-alpha.1.tgz
+cotta start
 ```
 
-重启会从 Claude Code transcript 和仍存在的源文件重新扫描可恢复的 Project、session、raw Timeline、Turn metadata、task 与 subagent 信息，但会永久丢失 Web/global preferences、auth session、pin、session turn-option override、context usage，以及尚未写入 transcript 的 live-only cache。此操作不会删除 Claude Code transcript；若设置了 `COTTA_DB_PATH`，请替换命令中的默认路径。
+首次启动时输入唯一允许登录的 **GitHub 用户名**（不是邮箱）。然后访问 `http://localhost:3000`，通过 GitHub Device Flow 授权登录。
 
-它的目标不是替代终端，而是把 Claude Code 的 project / session 工作流延伸到 Web：
+```bash
+cotta status      # 查看状态
+cotta stop        # 停止
+cotta restart     # 重启
+cotta start -f    # 前台运行
+cotta uninstall   # 停止服务、删除 ~/.cotta 数据并卸载
+```
 
-- 让历史 session 更容易发现、浏览和继续
-- 让 live turn 的状态和时间线更清晰
-- 让长任务可以脱离终端窗口继续观察和操作
-- 遵循 Claude Code 的真实数据边界：Agent SDK 负责 command 与 live event，transcript JSONL 负责持久化的 session 历史
-
-核心理念：
-
-1. **Web 是延伸层，不是第二套 Claude Code**
-   - 终端仍然是 Claude Code 的核心入口。
-   - Web 负责可视化、继续会话、查看历史和处理运行中的状态。
-
-2. **事实源遵循 Claude Code 的真实数据边界**
-   - Agent SDK 负责 command 执行和 live event；Claude Code transcript JSONL 负责持久化的 session 历史事实。
-   - JSONL 是必须显式管理的私有格式依赖，但其原始结构不是 Cotta 对外承诺的稳定产品契约。
-   - SQLite、cache 和前端状态只是派生读模型；不维护一套和 Claude Code 分叉的项目/session 真相。
-
-3. **Timeline 是主要产品体验**
-   - 用户关心的是一次 session 发生了什么、现在卡在哪里、下一步能做什么。
-   - 原始事件可以复杂，但界面应该把它们整理成可读的工作流。
-
-4. **列表侧用 cache + version + pull**
-   - 后端维护统一 summary cache。
-   - SSE 只推 version，不推完整数据。
-   - 前端按当前已加载窗口拉取最新列表。
-
-5. **少做平台，先做好一个清晰工作台**
-   - 不急着做复杂配置系统、权限模型或多入口编排。
-   - 先把 Claude Code project/session 的发现、查看、继续、打断做好。
+监听地址和端口可通过 `HOST`、`PORT` 环境变量设置。

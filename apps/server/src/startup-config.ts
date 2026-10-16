@@ -34,7 +34,7 @@ export async function ensureModelCatalog(store: SettingsStore, provider: ModelCa
  * persist it; without a TTY, abort with guidance. The createAuth guard is the final backstop.
  *
  * With `force`, re-run the interactive prompt even when config already exists (the
- * `--reconfigure-github` startup flag), pre-filling the current user so a blank answer keeps
+ * `cotta start --reconfigure-github` flag), pre-filling the current user so a blank answer keeps
  * it — this is also the recovery path if an operator locks themselves out of the allowlist.
  */
 export async function ensureGithubConfig(store: SettingsStore, opts: { force?: boolean; prompt?: Prompt; isTTY?: boolean } = {}): Promise<void> {
@@ -45,10 +45,10 @@ export async function ensureGithubConfig(store: SettingsStore, opts: { force?: b
   if (!opts.prompt && !isTTY) {
     console.error(
       opts.force
-        ? 'Cannot reconfigure GitHub login without an interactive terminal. Run with --reconfigure-github from a TTY.'
+        ? 'Cannot reconfigure GitHub login without an interactive terminal. Run `cotta start --reconfigure-github` from a TTY.'
         : existing.allowedUsers && !validUser
-          ? `Stored GitHub allowed user "${existing.allowedUsers}" is invalid: Cotta now allows exactly one GitHub user. Run with --reconfigure-github from an interactive terminal to fix it.`
-          : 'GitHub login is not configured. Run Cotta once in an interactive terminal to set it up.',
+          ? `Stored GitHub allowed user "${existing.allowedUsers}" is invalid: Cotta now allows exactly one GitHub user. Run \`cotta start --reconfigure-github\` from an interactive terminal to fix it.`
+          : 'GitHub login is not configured. Run `cotta start` in an interactive terminal to set it up.',
     )
     process.exit(1)
   }

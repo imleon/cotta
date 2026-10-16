@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
+import { databasePath } from './cotta-home.js'
 import { createCottaDatabase } from './database.js'
 import { SessionSearchStore } from './session-search-store.js'
 import { type RepairTranscriptOwnershipResult, repairTranscriptOwnershipRows } from './transcript-ownership-repair.js'
@@ -23,12 +23,8 @@ export function repairTranscriptOwnership(db: DatabaseSync): RepairTranscriptOwn
   }
 }
 
-function defaultDatabasePath(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), '../data/cotta.sqlite')
-}
-
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const dbPath = resolve(process.env.COTTA_DB_PATH ?? defaultDatabasePath())
+  const dbPath = databasePath()
   if (!existsSync(dbPath)) {
     console.error(`Database not found: ${dbPath}`)
     process.exitCode = 1

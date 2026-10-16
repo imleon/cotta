@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@cotta/shared": ["../../packages/shared/src/index.ts"]
+    }
+  }
+}

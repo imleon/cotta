@@ -1,0 +1,53 @@
+{
+  "name": "cotta",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "cotta": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "web",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx --tsconfig tsconfig.dev.json src/index.ts",
+    "dev:watch": "tsx watch --tsconfig tsconfig.dev.json src/index.ts",
+    "build": "tsc -b tsconfig.json",
+    "bundle": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "repair:transcript-ownership": "tsx --tsconfig tsconfig.dev.json src/repair-transcript-ownership.ts",
+    "test": "vitest run src",
+    "prepack": "npm --prefix ../.. run build --workspace @cotta/shared && npm --prefix ../.. run build --workspace @cotta/web && node -e \"const fs=require('node:fs');fs.cpSync('../web/dist','web',{recursive:true});fs.copyFileSync('../../LICENSE','LICENSE')\" && tsup"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.296",
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.14.1",
+    "@hono/node-server": "^2.1.1",
+    "@larksuiteoapi/node-sdk": "^1.74.0",
+    "chokidar": "^4.0.3",
+    "dotenv": "^18.0.0",
+    "hono": "^4.13.8",
+    "mdast-util-from-markdown": "^2.0.3",
+    "micromark-util-sanitize-uri": "^2.0.1",
+    "saxes": "^6.0.0",
+    "undici": "^8.10.2",
+    "ws": "^8.21.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cotta/shared": "*",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsup": "^9.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.1"
+  }
+}

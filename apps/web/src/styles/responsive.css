@@ -1,0 +1,101 @@
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .sidebar-motion-entering .project-card,
+  .sidebar-motion-entering .session-row,
+  .sidebar-motion-exiting .project-card,
+  .sidebar-motion-exiting .session-row {
+    animation: none !important;
+  }
+
+  .composer-lottie-button {
+    display: none;
+  }
+
+  .cli-cooking-mark svg,
+  .cli-cooking-label {
+    animation: none;
+  }
+
+  .cli-cooking-label {
+    background: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+@media (max-width: 640px) {
+  .detail-header {
+    grid-template-columns: 1fr;
+  }
+
+  .project-title-block {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .workspace-explorer-resize-handle {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .workspace-main-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .project-session-title {
+    --project-title-min: 0px;
+  }
+  .shell {
+    padding: 14px;
+  }
+  .hero,
+  .detail-panel {
+    padding: 16px;
+    border-radius: var(--radius-xl);
+  }
+  .workspace-panel,
+  .workspace-main-panel {
+    padding: 0;
+    border-radius: var(--radius-xl);
+  }
+  .workspace-panel-header,
+  .workspace-chat-column .composer-card-bottom,
+  .workspace-chat-column .session-workspace-view .timeline-panel,
+  .app-sidebar {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .app-layout[data-sidebar-collapsed="true"] .app-sidebar {
+    padding-left: 5px;
+    padding-right: 5px;
+  }
+  .workspace-chat-column .composer-card-bottom {
+    padding-bottom: 16px;
+  }
+  .session-row,
+  .turn-card,
+  .timeline-block {
+    padding: 12px;
+  }
+  .session-workspace-view .turn-card {
+    padding: 0 0 16px;
+  }
+  .session-row,
+  .turn-card header,
+  .timeline-block-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .turn-actions button {
+    width: 100%;
+  }
+}

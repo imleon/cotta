@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="474 148 1165 311" role="img" aria-label="Cotta">
+  <defs>
+    <linearGradient id="cotta-ribbon" x1="1111" y1="0" x2="1272" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0.2" stop-color="#D88A48"/>
+      <stop offset="0.9" stop-color="#D97757"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-width="54" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#D88A48">
+      <path d="M703 230A118 118 0 1 0 703 396"/>
+      <circle cx="900" cy="333" r="98"/>
+      <path d="M1111 175V375Q1111 432 1165 432H1195M1053 233H1111"/>
+    </g>
+    <g stroke="#D97757">
+      <path d="M1272 175V375Q1272 432 1326 432H1356M1190 233H1352"/>
+      <circle cx="1512" cy="333" r="98"/>
+      <path d="M1612 235V431"/>
+    </g>
+    <path stroke="url(#cotta-ribbon)" d="M1111 300Q1111 233 1190 233Q1272 233 1272 300"/>
+  </g>
+</svg>

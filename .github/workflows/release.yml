@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # prepack builds shared + web, copies assets, and bundles the server into one ESM file.
+      # Pack from the repo root with --workspace cotta: `npm pack` inside apps/server fails with
+      # ENOWORKSPACES, and prepack's `--prefix ../..` builds assume this root-relative layout.
+      - name: Build tarball
+        run: npm pack --workspace cotta --pack-destination dist-release
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Semver prereleases (tag contains a hyphen, e.g. v1.0.0-alpha.1) are marked prerelease so
+          # they stay out of "Latest" and don't pollute the default download.
+          prerelease_flag=""
+          case "$TAG" in *-*) prerelease_flag="--prerelease" ;; esac
+          gh release create "$TAG" dist-release/*.tgz \
+            --title "$TAG" \
+            --generate-notes \
+            $prerelease_flag

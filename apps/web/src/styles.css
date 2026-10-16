@@ -1,0 +1,10 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "./styles/base.css";
+@import "./styles/app.css";
+@import "./styles/workspace.css";
+@import "./styles/settings.css";
+@import "./styles/usage.css";
+@import "./styles/timeline.css";
+@import "./styles/responsive.css";

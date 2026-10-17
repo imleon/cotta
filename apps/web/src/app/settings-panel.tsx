@@ -13,7 +13,7 @@ import {
 } from '@cotta/shared'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, useEffect, useRef, useState } from 'react'
-import { fetchGitHubConfig, refreshModelCatalog, saveGitHubConfig, saveSettings } from '../api'
+import { fetchBuildInfo, fetchGitHubConfig, refreshModelCatalog, saveGitHubConfig, saveSettings } from '../api'
 import { DEFAULT_TURN_OPTION, effortLabel, ModelIcon, PERMISSION_MODE_OPTIONS } from './turn-option-controls'
 
 const SETTINGS_MODEL_CATALOG_QUERY_KEY = ['settings-model-catalog'] as const
@@ -46,6 +46,16 @@ const TIME_ZONES = ['UTC', ...Intl.supportedValuesOf('timeZone')]
 
 type ToastState = { message: string; tone: 'success' | 'error' }
 
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  if (d) return `${d}d ${h}h`
+  if (h) return `${h}h ${m}m`
+  if (m) return `${m}m`
+  return `${seconds}s`
+}
+
 /** Permission icons for Settings: one shared shield outline with a mode-specific glyph inside. */
 const PERMISSION_SHIELD_GLYPH: Record<PermissionMode, string> = {
   plan: 'M8.5 10h7M8.5 12.6h4.5',
@@ -67,6 +77,7 @@ function PermissionShieldIcon({ name }: { name: PermissionMode }) {
 
 export function SettingsPanel({ settings, authSession, onLogout }: { settings: AppSettings; authSession: AuthSessionResponse | undefined; onLogout: () => Promise<void> }) {
   const queryClient = useQueryClient()
+  const buildInfo = useQuery({ queryKey: ['build-info'], queryFn: fetchBuildInfo, retry: false })
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode)
   const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
   const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
@@ -293,14 +304,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
             <p className="muted">Show the Debug entry in the app navigation.</p>
           </div>
           <div className="settings-card-controls">
-            <button
-              type="button"
-              className="settings-switch"
-              role="switch"
-              aria-checked={settings.showDebugNav}
-              disabled={saving}
-              onClick={() => void saveShowDebugNav(!settings.showDebugNav)}
-            >
+            <button type="button" className="settings-switch" role="switch" aria-checked={settings.showDebugNav} disabled={saving} onClick={() => void saveShowDebugNav(!settings.showDebugNav)}>
               <span className="settings-switch-thumb" />
             </button>
           </div>
@@ -601,6 +605,22 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
         <div className={`settings-toast settings-toast-${status.tone}`} role="status">
           {status.message}
         </div>
+      ) : null}
+
+      {buildInfo.data ? (
+        <footer className="settings-build-info">
+          <span>
+            Cotta version {buildInfo.data.version}
+            {buildInfo.data.commit ? (
+              <>
+                {' (commit '}
+                <code>{buildInfo.data.commit}</code>)
+              </>
+            ) : null}
+          </span>
+          {buildInfo.data.agentSdkVersion ? <span>Claude Agent SDK version {buildInfo.data.agentSdkVersion}</span> : null}
+          <span>Uptime {formatUptime(buildInfo.data.uptimeSeconds)}</span>
+        </footer>
       ) : null}
     </section>
   )

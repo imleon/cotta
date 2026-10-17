@@ -203,15 +203,7 @@ export class LarkRemoteService {
       if (!session) return { ok: false, reason: 'session_not_found' }
       const sessions = await readProjectSessions(this.readInput, { projectId: action.projectId, limit: action.loadedCount || SESSION_PAGE_SIZE, cursor: null })
       const settings = readSettings(this.readInput.settingsStore)
-      const card = projectLarkSessionCard(
-        sessions,
-        projects,
-        this.identity(bot, action.projectId, action.createdAtMs),
-        git?.branch ?? null,
-        settings.showDebugNav,
-        session,
-        settings.timeZone,
-      ).card
+      const card = projectLarkSessionCard(sessions, projects, this.identity(bot, action.projectId, action.createdAtMs), git?.branch ?? null, settings.showDebugNav, session, settings.timeZone).card
       this.store.setSelection(bot.botId, action.projectId, action.sessionId, this.now())
       const messageId = await this.client.sendCard(
         event.chatId,

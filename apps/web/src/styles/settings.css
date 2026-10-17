@@ -1126,3 +1126,25 @@
   background: #fef2f2;
   color: #991b1b;
 }
+
+.settings-build-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin-top: 28px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.settings-build-info > :first-child {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.settings-build-info code {
+  font-family: var(--font-mono);
+}

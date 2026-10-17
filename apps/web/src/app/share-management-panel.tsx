@@ -19,7 +19,9 @@ function relativeAge(ms: number): string {
   return `${Math.floor(s / 31536000)}y ago`
 }
 
-function ShareRow({ share, onRevoked, onOpenSession }: { share: ShareSummary; onRevoked: (token: string) => void; onOpenSession: (projectId: string, sessionId: string) => void }) {
+type OpenTurn = (sessionId: string, turnId: string) => void
+
+function ShareRow({ share, onRevoked, onOpenTurn }: { share: ShareSummary; onRevoked: (token: string) => void; onOpenTurn: OpenTurn }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null)
   const [revoking, setRevoking] = useState(false)
 
@@ -39,7 +41,7 @@ function ShareRow({ share, onRevoked, onOpenSession }: { share: ShareSummary; on
 
   return (
     <li className="share-row">
-      <button type="button" className="share-row-link" onClick={() => onOpenSession(share.projectId, share.sessionId)}>
+      <button type="button" className="share-row-link" onClick={() => onOpenTurn(share.sessionId, share.turnId)}>
         <span className="share-row-icon" aria-hidden="true">
           <ProjectFolderIcon open={false} />
         </span>
@@ -100,7 +102,7 @@ function ShareRow({ share, onRevoked, onOpenSession }: { share: ShareSummary; on
   )
 }
 
-export function ShareManagementPanel({ onOpenSession }: { onOpenSession: (projectId: string, sessionId: string) => void }) {
+export function ShareManagementPanel({ onOpenTurn }: { onOpenTurn: OpenTurn }) {
   const [cursor, setCursor] = useState<string | null>(null)
   const [items, setItems] = useState<ShareSummary[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -132,7 +134,7 @@ export function ShareManagementPanel({ onOpenSession }: { onOpenSession: (projec
       ) : (
         <ul className="share-list">
           {items.map((share) => (
-            <ShareRow share={share} onRevoked={onRevoked} onOpenSession={onOpenSession} key={share.token} />
+            <ShareRow share={share} onRevoked={onRevoked} onOpenTurn={onOpenTurn} key={share.token} />
           ))}
         </ul>
       )}

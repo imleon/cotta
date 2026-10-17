@@ -231,7 +231,7 @@ describe('workspace header', () => {
       selectSession: mocks.selectSession,
     })
 
-    window.history.replaceState(null, '', '/')
+    window.history.replaceState(null, '', '/s/session')
     render(app)
 
     await waitFor(() => expect(document.querySelector('.project-session-title')?.getAttribute('title')).toBe('coconut / A long session title'))

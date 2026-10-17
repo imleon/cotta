@@ -8,6 +8,7 @@ import {
   ensureSessionRuntime,
   fetchAuthSession,
   fetchSessionPins,
+  fetchSessionProject,
   fetchSessionTimeline,
   fetchSettings,
   forkSession,
@@ -37,9 +38,12 @@ import {
   AppSidebar,
   appNavKeyFromPath,
   appNavPath,
+  chatPath,
   clampAppSidebarWidth,
   LEGACY_APP_SIDEBAR_LAST_EXPANDED_WIDTH_STORAGE_KEY,
   LEGACY_APP_SIDEBAR_WIDTH_STORAGE_KEY,
+  type SessionLocation,
+  sessionLocationFromPath,
   terminalOpenFromLocation,
 } from './app/app-layout'
 import { appsLayout, TOOL_PANEL_MIN_HEIGHT, TOOL_PANEL_MIN_WIDTH, type ToolLayout, terminalHeightMax, terminalWidthMax } from './app/apps-layout'
@@ -83,9 +87,15 @@ function PlaceholderPage({ title }: { title: string }) {
   )
 }
 
+/** Project recorded on the current `/` history entry by the URL sync; null means home (no Project). */
+function historyProjectId(): string | null {
+  const projectId = (history.state as { projectId?: unknown } | null)?.projectId
+  return typeof projectId === 'string' ? projectId : null
+}
+
 type SearchSelection = { kind: 'metadata'; result: ProjectSessionSearchResult } | { kind: 'message'; result: ProjectSessionSearchResult; match: ProjectSessionSearchMatch }
 
-type SearchTarget = { kind: 'message'; turnId: string; messageUuid: string; blockIndex: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number }
+type SearchTarget = { kind: 'message'; turnId: string; messageUuid: string; blockIndex?: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number }
 
 function WorkspaceShell() {
   const queryClient = useQueryClient()
@@ -139,14 +149,40 @@ function WorkspaceShell() {
   const projectLoadMoreInFlightRef = useRef(false)
   const searchTriggerRef = useRef<HTMLButtonElement | null>(null)
   const searchQueryNonceRef = useRef(0)
+  // Intent id of an in-flight URL → selection resolution; selection → URL sync waits while it is current.
+  const urlResolvingIntentRef = useRef<number | null>(null)
+  // Set by user navigation (showChat, session created); the URL sync in the same render pushes instead of replacing.
+  const pushNextUrlRef = useRef(false)
+  const [, setUrlResolvedTick] = useState(0)
+  const applyLocationSessionRef = useRef<(location: SessionLocation | null) => Promise<void>>(async () => {})
+  const urlTurnId = searchNavigation?.sessionId === selectedSessionId ? searchNavigation.anchorTurnId : null
+  const currentChatPath = chatPath(selectedSessionId ? { sessionId: selectedSessionId, turnId: urlTurnId } : null)
   useEffect(() => {
+    void applyLocationSessionRef.current(sessionLocationFromPath())
     function syncLocation() {
-      setActiveAppNav(appNavKeyFromPath())
+      const nav = appNavKeyFromPath()
+      setActiveAppNav(nav)
       setTerminalOpen(terminalOpenFromLocation())
+      if (nav === 'chat') void applyLocationSessionRef.current(sessionLocationFromPath())
     }
     window.addEventListener('popstate', syncLocation)
     return () => window.removeEventListener('popstate', syncLocation)
   }, [])
+  // Runs after every render: user navigation pushes, derived selection changes (reconcile, jump to latest,
+  // failed or superseded URL resolution) replace so history only holds places the user navigated to.
+  // `/` entries record the selected Project so back/forward tells home apart from a pending new session.
+  useEffect(() => {
+    if (activeAppNav !== 'chat') return
+    if (urlResolvingIntentRef.current !== null && urlResolvingIntentRef.current === pendingSessionRequestRef.current) return
+    const push = pushNextUrlRef.current
+    pushNextUrlRef.current = false
+    const state = currentChatPath === '/' ? { projectId: selectedProjectId } : null
+    if (window.location.pathname === currentChatPath) {
+      if (state && historyProjectId() !== state.projectId) history.replaceState(state, '', window.location.href)
+      return
+    }
+    history[push ? 'pushState' : 'replaceState'](state, '', `${currentChatPath}${window.location.search}`)
+  })
   useEffect(() => {
     if (!workspaceActive || !terminalOpen || shellSize.width <= 0) return
     setTerminalLayout(
@@ -191,16 +227,14 @@ function WorkspaceShell() {
   }
 
   function showChat() {
-    if (activeAppNav !== 'chat') {
-      history.pushState(null, '', `${appNavPath('chat')}${window.location.search}`)
-      setActiveAppNav('chat')
-    }
+    pushNextUrlRef.current = true
+    setActiveAppNav('chat')
   }
 
   function openTerminal() {
     const search = new URLSearchParams(window.location.search)
     search.set('terminal', '1')
-    history.pushState(null, '', `/?${search}`)
+    history.pushState(null, '', `${currentChatPath}?${search}`)
     setActiveAppNav('chat')
     setTerminalOpen(true)
   }
@@ -251,6 +285,7 @@ function WorkspaceShell() {
 
   function handleSessionCreated(projectId: string, sessionId: string) {
     beginSelectionIntent()
+    pushNextUrlRef.current = true
     setSelectedRailContext(null)
     pendingCreatedSelectionRef.current = { projectId, sessionId }
     selection.selectSession(projectId, sessionId)
@@ -644,6 +679,67 @@ function WorkspaceShell() {
     showChat()
   }
 
+  function openSessionTurn(projectId: string, location: SessionLocation) {
+    if (projectId !== selectedProjectId || location.sessionId !== selectedSessionId) {
+      setSelectedRailContext(null)
+      setSelectedSessionRuntime(null)
+      setUnavailableProjectId(null)
+      selectSessionOwner(projectId, location.sessionId)
+      revealRailSession(projectId, location.sessionId)
+    }
+    const queryNonce = searchQueryNonceRef.current + 1
+    searchQueryNonceRef.current = queryNonce
+    setSearchNavigation(
+      location.turnId ? { sessionId: location.sessionId, anchorTurnId: location.turnId, target: { kind: 'message', turnId: location.turnId, messageUuid: location.turnId, queryNonce } } : null,
+    )
+  }
+
+  function handleOpenSharedTurn(sessionId: string, turnId: string) {
+    showChat()
+    void openSessionLocation({ sessionId, turnId })
+  }
+
+  applyLocationSessionRef.current = async (location) => {
+    if (!location) {
+      // Back/forward to `/` restores the Project recorded on that entry: none is home, otherwise a pending new session.
+      const projectId = historyProjectId()
+      if (currentChatPath === '/' && projectId === selectedProjectId) return
+      beginSelectionIntent()
+      setSelectedRailContext(null)
+      setSelectedSessionRuntime(null)
+      setSearchNavigation(null)
+      if (projectId) selectProject(projectId)
+      else clearSelection()
+      return
+    }
+    if (chatPath(location) !== currentChatPath) await openSessionLocation(location)
+  }
+
+  // The session's current Project is resolved by the server (a share or URL may predate a relocation).
+  async function openSessionLocation(location: SessionLocation) {
+    const intentId = beginSelectionIntent()
+    if (location.sessionId === selectedSessionId && selectedProjectId) {
+      openSessionTurn(selectedProjectId, location)
+      return
+    }
+    urlResolvingIntentRef.current = intentId
+    try {
+      const resolved = await fetchSessionProject(location.sessionId)
+      if (pendingSessionRequestRef.current !== intentId) return
+      if (!resolved) {
+        setToast({ message: 'Session is no longer available.', tone: 'error' })
+        return
+      }
+      openSessionTurn(resolved.projectId, location)
+    } catch (error) {
+      if (pendingSessionRequestRef.current === intentId) setToast({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
+    } finally {
+      // Unresolved or superseded: the next render's URL sync replaces the URL with the current selection.
+      if (urlResolvingIntentRef.current === intentId) urlResolvingIntentRef.current = null
+      setUrlResolvedTick((tick) => tick + 1)
+    }
+  }
+
   async function resolveSearchSelection(searchSelection: SearchSelection) {
     const intentId = beginSelectionIntent()
     const sessionId = searchSelection.result.session.id
@@ -901,6 +997,7 @@ function WorkspaceShell() {
       onVisibleProjectIdsChange={setVisibleProjectIds}
       onSelectProject={(projectId) => {
         beginSelectionIntent()
+        pushNextUrlRef.current = true
         setSelectedRailContext(null)
         setSelectedSessionRuntime(null)
         selection.selectProject(projectId)
@@ -1095,7 +1192,7 @@ function WorkspaceShell() {
           ) : activeAppNav === 'settings' ? (
             <SettingsPanel settings={settings} authSession={authSession.data} onLogout={handleLogout} />
           ) : activeAppNav === 'shares' ? (
-            <ShareManagementPanel onOpenSession={handleSelectSession} />
+            <ShareManagementPanel onOpenTurn={handleOpenSharedTurn} />
           ) : (
             <PlaceholderPage title={APP_NAV_ITEMS.find((item) => item.key === activeAppNav)?.label ?? 'Page'} />
           )}

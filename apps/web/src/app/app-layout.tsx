@@ -23,14 +23,32 @@ export function appNavPath(key: AppNavKey): string {
 }
 
 export function appNavKeyFromPath(): AppNavKey {
+  if (sessionLocationFromPath()) return 'chat'
   const pathKey = APP_NAV_ITEMS.find((item) => item.path === window.location.pathname)?.key
   if (pathKey) return pathKey
   const hashKey = window.location.pathname === '/' ? window.location.hash.slice(1) : ''
   return APP_NAV_ITEMS.some((item) => item.key === hashKey) ? (hashKey as AppNavKey) : 'chat'
 }
 
+export type SessionLocation = { sessionId: string; turnId: string | null }
+
+export function sessionLocationFromPath(pathname = window.location.pathname): SessionLocation | null {
+  const match = /^\/s\/([^/]+)(?:\/([^/]+))?\/?$/.exec(pathname)
+  if (!match) return null
+  try {
+    return { sessionId: decodeURIComponent(match[1]!), turnId: match[2] ? decodeURIComponent(match[2]) : null }
+  } catch {
+    return null
+  }
+}
+
+export function chatPath(location: SessionLocation | null): string {
+  if (!location) return '/'
+  return `/s/${encodeURIComponent(location.sessionId)}${location.turnId ? `/${encodeURIComponent(location.turnId)}` : ''}`
+}
+
 export function terminalOpenFromLocation(): boolean {
-  return window.location.pathname === '/' && new URLSearchParams(window.location.search).get('terminal') === '1'
+  return (window.location.pathname === '/' || sessionLocationFromPath() !== null) && new URLSearchParams(window.location.search).get('terminal') === '1'
 }
 
 function AppNavIcon({ itemKey }: { itemKey: AppNavKey | 'terminal' }) {
@@ -163,13 +181,22 @@ export function AppSidebar({
 
   return (
     <aside className="app-sidebar" id="app-sidebar" aria-label="App navigation">
-      <div className="app-sidebar-brand">
+      <a
+        className="app-sidebar-brand"
+        href="/"
+        aria-label="Cotta home"
+        onClick={(event) => {
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+          event.preventDefault()
+          onOpenStats()
+        }}
+      >
         <img className="app-sidebar-brand-mark" src={faviconUrl} alt="" />
         <span className="app-sidebar-brand-lockup">
           <img className="app-sidebar-brand-logo" src={logoUrl} alt="Cotta" />
           <span className="app-sidebar-brand-tagline">Claude Code on Web</span>
         </span>
-      </div>
+      </a>
       <nav className="app-sidebar-links" aria-label="Workspace sections">
         <div className="app-sidebar-actions">
           <button ref={searchTriggerRef} className="app-sidebar-search" type="button" aria-label="Search" title="Search" onClick={onOpenSearch}>

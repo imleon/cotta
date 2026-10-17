@@ -1263,6 +1263,17 @@ describe('project timeline routes', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1)
   })
 
+  it('resolves a session id to its current project', async () => {
+    const app = createTestApp()
+    const found = await app.request('/api/sessions/session-newest/project')
+    expect(found.status).toBe(200)
+    expect(await found.json()).toEqual({ projectId: project.id })
+
+    const missing = await app.request('/api/sessions/session-unknown/project')
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'session_not_found' })
+  })
+
   it.each([
     ['', '/raw-messages'],
     ['blank', '/raw-messages?turnId=%20%20'],

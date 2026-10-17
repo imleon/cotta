@@ -1,6 +1,13 @@
 import { stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
-import { localImageDestinationPathname, type SessionRawMessagesResponse, type TurnSubagentsTreeResponse, type TurnSubagentTranscriptResponse, unwrapMarkdownPayloadFences } from '@cotta/shared'
+import {
+  localImageDestinationPathname,
+  type SessionProjectResponse,
+  type SessionRawMessagesResponse,
+  type TurnSubagentsTreeResponse,
+  type TurnSubagentTranscriptResponse,
+  unwrapMarkdownPayloadFences,
+} from '@cotta/shared'
 import type { Context, Hono } from 'hono'
 import { markdownImageDestinations } from '../local-image-turn.js'
 import { ProjectReadModelError, readProjectTimeline, TimelineAnchorStaleError, TranscriptUnavailableError } from '../project-read-model.js'
@@ -168,6 +175,12 @@ export function registerProjectTimelineRoutes(app: Hono, input: ProjectRoutesInp
       console.error('session:timeline failed', error)
       return c.json({ error: 'session_timeline_failed' }, 500)
     }
+  })
+
+  app.get('/api/sessions/:sessionId/project', (c) => {
+    const session = locateSession(input, c.req.param('sessionId'))
+    if (!session?.currentProjectId) return c.json({ error: 'session_not_found' }, 404)
+    return c.json({ projectId: session.currentProjectId } satisfies SessionProjectResponse)
   })
 
   async function sessionRawMessages(c: Context, locatedSession: IndexedSession) {

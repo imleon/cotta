@@ -197,7 +197,15 @@ describe('settings', () => {
       settings: { timeZone: 'Asia/Shanghai', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
     })
     await expect(refreshModelCatalog('p1')).resolves.toEqual({
-      settings: { timeZone: 'Asia/Shanghai', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false, modelCatalog: { models: [] } },
+      settings: {
+        timeZone: 'Asia/Shanghai',
+        defaultPermissionMode: 'default',
+        defaultModel: 'default',
+        defaultEffort: 'medium',
+        useOneMillionContext: true,
+        showDebugNav: false,
+        modelCatalog: { models: [] },
+      },
     })
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/settings')
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ settings: { defaultPermissionMode: 'default' } }) }))

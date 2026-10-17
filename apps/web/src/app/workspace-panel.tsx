@@ -90,7 +90,7 @@ export function WorkspacePanel({
   setSelectedSessionId: (sessionId: string | null) => void
   refreshSessionLists: (projectIds: string[], selectedSessionId?: string | null) => void
   searchAnchorTurnId?: string | null
-  searchTarget?: { kind: 'message'; turnId: string; messageUuid: string; blockIndex: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number } | null
+  searchTarget?: { kind: 'message'; turnId: string; messageUuid: string; blockIndex?: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number } | null
   onSearchTargetHandled?: () => void
   onJumpToLatest?: () => void
   onSessionCreated: (projectId: string, sessionId: string) => void

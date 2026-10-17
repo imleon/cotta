@@ -98,7 +98,9 @@ describe('project settings routes', () => {
       body: JSON.stringify({ settings: { defaultPermissionMode: 'default' } }),
     })
     expect(permission.status).toBe(200)
-    expect(await permission.json()).toEqual({ settings: { timeZone: 'UTC', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false } })
+    expect(await permission.json()).toEqual({
+      settings: { timeZone: 'UTC', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
+    })
 
     const timeZone = await app.request('/api/settings', {
       method: 'PUT',
@@ -157,7 +159,9 @@ describe('project settings routes', () => {
       body: JSON.stringify({ settings: { defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true } }),
     })
     expect(explicitDefault.status).toBe(200)
-    expect(await explicitDefault.json()).toEqual({ settings: { timeZone: 'UTC', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false } })
+    expect(await explicitDefault.json()).toEqual({
+      settings: { timeZone: 'UTC', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
+    })
 
     const reset = await app.request('/api/settings', {
       method: 'PUT',
@@ -165,7 +169,9 @@ describe('project settings routes', () => {
       body: JSON.stringify({ settings: { defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true } }),
     })
     expect(reset.status).toBe(200)
-    expect(await reset.json()).toEqual({ settings: { timeZone: 'UTC', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false } })
+    expect(await reset.json()).toEqual({
+      settings: { timeZone: 'UTC', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
+    })
     expect(await (await app.request('/api/settings')).json()).toEqual({
       settings: { timeZone: 'UTC', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
     })

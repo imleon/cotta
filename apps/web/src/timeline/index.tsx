@@ -934,7 +934,7 @@ export function SessionTimeline({
   onActivityChange?: (activity: SessionTimelineResponse['activity']) => void
   onTasksChange?: (tasks: SessionTimelineResponse['tasks']) => void
   searchAnchorTurnId?: string | null
-  searchTarget?: { kind: 'message'; turnId: string; messageUuid: string; blockIndex: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number } | null
+  searchTarget?: { kind: 'message'; turnId: string; messageUuid: string; blockIndex?: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number } | null
   onSearchTargetHandled?: () => void
   onJumpToLatest?: () => void
   onForkSession?: (upToMessageId: string) => Promise<unknown>
@@ -1091,17 +1091,25 @@ export function SessionTimeline({
     setScrollButtonVisible(false)
   }, [setScrollButtonVisible, shouldScrollToBottomRef])
 
+  const scrollTargetIntoView = useCallback(
+    (panel: HTMLElement, target: HTMLElement, block: ScrollLogicalPosition) => {
+      shouldScrollToBottomRef.current = false
+      target.scrollIntoView({ block })
+      programmaticScrollRef.current = { scrollTop: panel.scrollTop, scrollHeight: panel.scrollHeight }
+      setScrollButtonVisible(true)
+    },
+    [setScrollButtonVisible, shouldScrollToBottomRef],
+  )
+
   const scrollToMessageAnchor = useCallback(
-    (messageUuid: string, blockIndex: number) => {
+    (messageUuid: string, requestedBlockIndex: number | undefined) => {
       const panel = timelinePanelRef.current
       if (!panel) return false
-      const target = panel.querySelector<HTMLElement>(`[data-message-uuid="${CSS.escape(messageUuid)}"][data-content-block-index="${blockIndex}"]`)
+      const blockSelector = requestedBlockIndex === undefined ? '' : `[data-content-block-index="${requestedBlockIndex}"]`
+      const target = panel.querySelector<HTMLElement>(`[data-message-uuid="${CSS.escape(messageUuid)}"]${blockSelector}`)
       if (!target) return false
-      shouldScrollToBottomRef.current = false
-      target.scrollIntoView({ block: 'center' })
-      const nextScrollTop = panel.scrollTop
-      programmaticScrollRef.current = { scrollTop: nextScrollTop, scrollHeight: panel.scrollHeight }
-      setScrollButtonVisible(true)
+      const blockIndex = requestedBlockIndex ?? Number(target.dataset.contentBlockIndex ?? 0)
+      scrollTargetIntoView(panel, target, 'center')
       if (searchHighlightTimeoutRef.current !== null) window.clearTimeout(searchHighlightTimeoutRef.current)
       setHighlightedMessage({ uuid: messageUuid, blockIndex })
       searchHighlightTimeoutRef.current = window.setTimeout(() => {
@@ -1110,7 +1118,18 @@ export function SessionTimeline({
       }, 1600)
       return true
     },
-    [shouldScrollToBottomRef],
+    [scrollTargetIntoView],
+  )
+
+  const scrollToTurnCard = useCallback(
+    (turnId: string) => {
+      const panel = timelinePanelRef.current
+      const target = panel?.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(turnId)}"]`)
+      if (!panel || !target) return false
+      scrollTargetIntoView(panel, target, 'start')
+      return true
+    },
+    [scrollTargetIntoView],
   )
 
   useLayoutEffect(() => {
@@ -1216,10 +1235,11 @@ export function SessionTimeline({
     }
     if (!historyReady || visibleTurns.length === 0) return
     if (!visibleTurns.some((turn) => turn.primaryUserUuid === searchTarget.turnId)) return
-    if (!scrollToMessageAnchor(searchTarget.messageUuid, searchTarget.blockIndex)) return
+    // Turn-only targets (URL / share) fall back to the turn card when the primary message renders no anchor.
+    if (!scrollToMessageAnchor(searchTarget.messageUuid, searchTarget.blockIndex) && (searchTarget.blockIndex !== undefined || !scrollToTurnCard(searchTarget.turnId))) return
     handledSearchTargetRef.current = searchTarget.queryNonce
     onSearchTargetHandled?.()
-  }, [historyReady, onSearchTargetHandled, scrollToMessageAnchor, scrollToTimelineBottom, searchTarget, visibleTurns])
+  }, [historyReady, onSearchTargetHandled, scrollToMessageAnchor, scrollToTimelineBottom, scrollToTurnCard, searchTarget, visibleTurns])
 
   useEffect(
     () => () => {
@@ -1318,7 +1338,7 @@ export function SessionTimeline({
             (shouldShowResponseSkeleton({ phase, hasVisibleResponse }) ||
               shouldHoldResponseSkeleton({ awaitingTurnId: awaitingResponseTurnIdRef.current, turnId: turn.primaryUserUuid, hasVisibleResponse, terminal }))
           return (
-            <article className="turn-card" key={turn.primaryUserUuid}>
+            <article className="turn-card" key={turn.primaryUserUuid} data-turn-id={turn.primaryUserUuid}>
               <div className="timeline-blocks">
                 {displayItems.map((item) =>
                   item.type === 'assistant-response-frame' ? (

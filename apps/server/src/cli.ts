@@ -1,6 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { dirname, relative } from 'node:path'
 import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
@@ -10,6 +9,7 @@ import {
   acquireServerLock,
   assertNoLegacyDatabase,
   cottaHome,
+  cottaVersion,
   databasePath,
   isServerLocked,
   lockFilePath,
@@ -42,10 +42,6 @@ const STOP_TIMEOUT_MS = 5_000
 
 function sleep(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms))
-}
-
-function version(): string {
-  return (createRequire(import.meta.url)('../package.json') as { version: string }).version
 }
 
 function logTail(lines = 20): string {
@@ -258,7 +254,7 @@ export async function main(argv: string[]): Promise<number> {
     },
   })
   if (values.version) {
-    console.log(version())
+    console.log(cottaVersion())
     return 0
   }
   const [command] = positionals

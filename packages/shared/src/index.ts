@@ -85,6 +85,15 @@ export const healthResponseSchema = z.object({
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>
 
+export const buildInfoResponseSchema = z.object({
+  version: z.string(),
+  commit: z.string().nullable(),
+  agentSdkVersion: z.string().nullable(),
+  uptimeSeconds: z.number(),
+})
+
+export type BuildInfoResponse = z.infer<typeof buildInfoResponseSchema>
+
 export const projectSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -1959,6 +1968,9 @@ export const sessionRuntimeResponseSchema = z.object({
 })
 
 export type SessionRuntimeResponse = z.infer<typeof sessionRuntimeResponseSchema>
+
+export const sessionProjectResponseSchema = z.object({ projectId: z.string() })
+export type SessionProjectResponse = z.infer<typeof sessionProjectResponseSchema>
 
 export const restartSessionRuntimeResponseSchema = z.object({ ok: z.literal(true), restarted: z.boolean() })
 export type RestartSessionRuntimeResponse = z.infer<typeof restartSessionRuntimeResponseSchema>

@@ -22,7 +22,15 @@ afterEach(() => {
 })
 
 const authedSession = { authenticated: true as const, user: { login: 'imleon', name: null, avatarUrl: null } }
-const baseSettings = { timeZone: 'UTC', defaultPermissionMode: 'default' as const, defaultModel: 'default' as const, defaultEffort: 'medium' as const, useOneMillionContext: true, autoCompactPercent: undefined, showDebugNav: false }
+const baseSettings = {
+  timeZone: 'UTC',
+  defaultPermissionMode: 'default' as const,
+  defaultModel: 'default' as const,
+  defaultEffort: 'medium' as const,
+  useOneMillionContext: true,
+  autoCompactPercent: undefined,
+  showDebugNav: false,
+}
 
 describe('SettingsPanel', () => {
   it('lists IANA time zones and saves the selected value', async () => {
@@ -142,9 +150,7 @@ describe('SettingsPanel', () => {
       'fetch',
       vi.fn((_url: string, init?: RequestInit) =>
         Promise.resolve(
-          init?.method === 'PUT'
-            ? new Response(JSON.stringify({ error: 'github_config_update_failed' }), { status: 500 })
-            : new Response(JSON.stringify({ allowedUsers: 'imleon' }), { status: 200 }),
+          init?.method === 'PUT' ? new Response(JSON.stringify({ error: 'github_config_update_failed' }), { status: 500 }) : new Response(JSON.stringify({ allowedUsers: 'imleon' }), { status: 200 }),
         ),
       ),
     )

@@ -1,7 +1,7 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { healthResponseSchema } from '@cotta/shared'
+import { buildInfoResponseSchema, healthResponseSchema } from '@cotta/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAuth, saveGithubConfig } from './auth.js'
 import type { ClaudeSessionRegistryChange, CliSessionMetadata } from './claude-session-registry.js'
@@ -279,6 +279,24 @@ describe('server routes', () => {
       ok: true,
       service: 'cotta-server',
     })
+  })
+
+  it('serves build info including the bundled Agent SDK version', async () => {
+    const response = await createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing' }).request('/api/build-info')
+    expect(response.status).toBe(200)
+    const info = buildInfoResponseSchema.parse(await response.json())
+    expect(info.version).toMatch(/\d/)
+    expect(info.agentSdkVersion).toMatch(/^\d+\.\d+\.\d+/)
+  })
+
+  it('keeps build info behind auth while health stays public', async () => {
+    const app = createApp({
+      transcriptIndex: emptyTranscriptIndex(),
+      timelineVersionReader: () => 'timeline-missing',
+      auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
+    })
+    expect((await app.request('/api/health')).status).toBe(200)
+    expect((await app.request('/api/build-info')).status).toBe(401)
   })
 
   it('generates a request ID and returns structured errors for uncaught failures', async () => {

@@ -4,6 +4,8 @@ import {
   type AuthSessionResponse,
   askUserQuestionDecisionRequestSchema,
   authSessionResponseSchema,
+  type BuildInfoResponse,
+  buildInfoResponseSchema,
   type CreateRemoteBotRequest,
   type CreateShareResponse,
   createShareResponseSchema,
@@ -53,6 +55,7 @@ import {
   restartSessionRuntimeResponseSchema,
   type SessionPinsResponse,
   type SessionPinUpdateResponse,
+  type SessionProjectResponse,
   type SessionRawMessagesResponse,
   type SessionRuntimeResponse,
   type SessionTimelineControlResponse,
@@ -61,6 +64,7 @@ import {
   type ShareListResponse,
   sessionPinsResponseSchema,
   sessionPinUpdateResponseSchema,
+  sessionProjectResponseSchema,
   sessionRawMessagesResponseSchema,
   sessionRuntimeResponseSchema,
   sessionTimelineControlResponseSchema,
@@ -101,6 +105,12 @@ export class LocalImageHttpError extends Error {
   ) {
     super(`Local image request failed: ${code ?? status}`)
   }
+}
+
+export async function fetchBuildInfo(): Promise<BuildInfoResponse> {
+  const response = await fetch('/api/build-info')
+  if (!response.ok) throw new Error(`Build info request failed: ${response.status}`)
+  return buildInfoResponseSchema.parse(await response.json())
 }
 
 export async function fetchUsage(range: TokenUsageRange, timeZone: string): Promise<TokenUsageResponse> {
@@ -385,6 +395,13 @@ export async function fetchSessionTimeline(
     throw new Error(`Session timeline request failed: ${response.status}`)
   }
   return sessionTimelineResponseSchema.parse(await response.json())
+}
+
+export async function fetchSessionProject(sessionId: string): Promise<SessionProjectResponse | null> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/project`)
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`Session project request failed: ${response.status}`)
+  return sessionProjectResponseSchema.parse(await response.json())
 }
 
 export async function fetchSessionTimelineControl(sessionId: string, options: { waitContext?: boolean } = {}): Promise<SessionTimelineControlResponse> {

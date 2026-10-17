@@ -15,6 +15,9 @@ describe('modelIconKind', () => {
   it('maps doubao family to doubao', () => {
     expect(modelIconKind('claude-doubao-seed-evolving-dev[1m]')).toBe('doubao')
   })
+  it('maps deepseek family to deepseek', () => {
+    expect(modelIconKind('claude-deepseek-v4-1-flash-max[1m]')).toBe('deepseek')
+  })
   it('falls back to generic for unknown providers', () => {
     expect(modelIconKind('claude-mystery-model')).toBe('generic')
   })

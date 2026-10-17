@@ -2117,7 +2117,7 @@ iframe.project-file-image {
   grid-auto-flow: column;
   grid-auto-columns: max-content;
   width: auto;
-  padding: 0 3px;
+  padding: 0 8px;
   gap: 7px;
   border: 0;
   border-radius: var(--radius-sm);
@@ -2135,10 +2135,6 @@ iframe.project-file-image {
 .model-effort-picker {
   position: relative;
   max-width: 100%;
-}
-
-.turn-tool-button + .model-effort-picker {
-  margin-left: 2px;
 }
 
 .permission-mode-menu {
@@ -2451,7 +2447,7 @@ iframe.project-file-image {
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  padding: 0 3px;
+  padding: 0 8px;
   color: var(--text-primary);
   font: inherit;
   cursor: pointer;

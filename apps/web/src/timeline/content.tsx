@@ -418,32 +418,39 @@ function MarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) {
   return <>{children}</>
 }
 
+let mermaidLoader: Promise<typeof import('mermaid')['default']> | null = null
+let mermaidRenderCount = 0
+
+function loadMermaid() {
+  mermaidLoader ??= import('mermaid').then((m) => {
+    m.default.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict', suppressErrorRendering: true })
+    return m.default
+  })
+  return mermaidLoader
+}
+
+// Keeps the last settled result (diagram or fallback) while a new `code` renders, so streaming fences don't flash.
 function MermaidBlock({ code, fallback }: { code: string; fallback: ReactNode }) {
-  const [svg, setSvg] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
+  const [result, setResult] = useState<{ svg: string } | 'failed' | null>(null)
   useEffect(() => {
     let cancelled = false
-    setSvg(null)
-    setFailed(false)
-    void import('mermaid')
-      .then((m) => {
-        m.default.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' })
-        return m.default.render(`mermaid-${crypto.randomUUID()}`, code)
-      })
+    // crypto.randomUUID is unavailable outside secure contexts (plain-HTTP LAN access).
+    const id = `mermaid-${++mermaidRenderCount}`
+    void loadMermaid()
+      .then((mermaid) => mermaid.render(id, code))
       .then(({ svg }) => {
-        if (!cancelled) setSvg(svg)
+        if (!cancelled) setResult({ svg })
       })
       .catch(() => {
-        if (!cancelled) setFailed(true)
+        if (!cancelled) setResult('failed')
       })
     return () => {
       cancelled = true
     }
   }, [code])
-  if (failed) return <>{fallback}</>
-  if (!svg) return null
+  if (result === null || result === 'failed') return <>{fallback}</>
   // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid renders trusted transcript content with securityLevel 'strict'
-  return <div className="markdown-mermaid" data-timeline-content="mermaid" dangerouslySetInnerHTML={{ __html: svg }} />
+  return <div className="markdown-mermaid" data-timeline-content="mermaid" dangerouslySetInnerHTML={{ __html: result.svg }} />
 }
 
 function MarkdownCode({ className, children }: ComponentPropsWithoutRef<'code'>) {

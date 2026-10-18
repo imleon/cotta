@@ -882,6 +882,10 @@
   max-width: 100%;
   margin: 8px 0;
   overflow-x: auto;
+  border: 1px solid var(--tl-border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  padding: 12px;
 }
 
 .timeline-file-result-details[open] > .timeline-tool-content-stack {

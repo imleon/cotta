@@ -259,7 +259,7 @@ describe('server routes', () => {
       transcriptIndex: { getSession: () => null },
       timelineVersionReader: () => 'timeline-missing',
       terminalRegistry: { available: () => true, terminate },
-      terminalOrigin: 'https://terminal.example.com',
+      terminalOrigin: () => 'https://terminal.example.com',
     })
 
     const rejected = await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'http://localhost:5173' } })

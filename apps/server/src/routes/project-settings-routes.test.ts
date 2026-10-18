@@ -337,3 +337,111 @@ describe('project settings routes', () => {
     expect(settingsStore.getAuthSession('device-a')).not.toBeNull()
   })
 })
+
+describe('terminal origin settings', () => {
+  function makeApp(settingsStore: ReturnType<typeof memorySettingsStore>, auth?: Parameters<typeof createApp>[0]['auth']) {
+    return createApp({
+      transcriptIndex: { getSession: () => null },
+      timelineVersionReader: () => 'timeline-missing',
+      settingsStore,
+      modelCatalogProvider: vi.fn(async () => modelCatalog),
+      liveTurnManager: liveTurnManagerStub,
+      claudeCodeApi: claudeCodeApiStub,
+      ...(auth ? { auth } : {}),
+    })
+  }
+
+  it('is not writable through the generic PUT /api/settings', async () => {
+    const settingsStore = memorySettingsStore({})
+    const app = makeApp(settingsStore)
+    const res = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { terminalOrigin: 'https://evil.example.com' } }),
+    })
+    expect(res.status).toBe(200)
+    expect(settingsStore.getAll().terminalOrigin).toBeUndefined()
+  })
+
+  it('round-trips publicBaseUrl: null without breaking the next GET', async () => {
+    const settingsStore = memorySettingsStore({ publicBaseUrl: 'https://cotta.example.com' })
+    const app = makeApp(settingsStore)
+    const put = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { publicBaseUrl: null } }),
+    })
+    expect(put.status).toBe(200)
+    const get = await app.request('/api/settings')
+    expect(get.status).toBe(200)
+    expect((await get.json()).settings.publicBaseUrl).toBeUndefined()
+  })
+
+  it('gated endpoint rejects without a session', async () => {
+    const app = makeApp(memorySettingsStore({}), {
+      middleware: async (_c, next) => void (await next()),
+      registerRoutes: () => {},
+      currentUser: () => null,
+      consumeStepUpToken: () => false,
+      terminalAuthorized: () => true,
+    })
+    const res = await app.request('/api/settings/terminal-origin', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: 'https://cotta.example.com', stepUpToken: 't' }),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it('gated endpoint rejects a bad/consumed step-up token', async () => {
+    const settingsStore = memorySettingsStore({})
+    const user = { login: 'imleon', name: null, avatarUrl: null }
+    const app = makeApp(settingsStore, {
+      middleware: async (_c, next) => void (await next()),
+      registerRoutes: () => {},
+      currentUser: () => user,
+      consumeStepUpToken: () => false,
+      terminalAuthorized: () => true,
+    })
+    const res = await app.request('/api/settings/terminal-origin', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: 'https://cotta.example.com', stepUpToken: 'stale' }),
+    })
+    expect(res.status).toBe(403)
+    expect(settingsStore.getAll().terminalOrigin).toBeUndefined()
+  })
+
+  it('gated endpoint persists with a valid token and clears on null', async () => {
+    const settingsStore = memorySettingsStore({})
+    const user = { login: 'imleon', name: null, avatarUrl: null }
+    let token: string | null = 'good'
+    const app = makeApp(settingsStore, {
+      middleware: async (_c, next) => void (await next()),
+      registerRoutes: () => {},
+      currentUser: () => user,
+      consumeStepUpToken: (_c, t) => {
+        if (t !== token) return false
+        token = null
+        return true
+      },
+      terminalAuthorized: () => true,
+    })
+    const set = await app.request('/api/settings/terminal-origin', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: 'https://cotta.example.com', stepUpToken: 'good' }),
+    })
+    expect(set.status).toBe(200)
+    expect(settingsStore.getAll().terminalOrigin).toBe('https://cotta.example.com')
+
+    token = 'good2'
+    const clear = await app.request('/api/settings/terminal-origin', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: null, stepUpToken: 'good2' }),
+    })
+    expect(clear.status).toBe(200)
+    expect(settingsStore.getAll().terminalOrigin).toBeUndefined()
+  })
+})

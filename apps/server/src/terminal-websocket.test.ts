@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
-import { type CottaAuth } from './auth.js'
+import type { CottaAuth } from './auth.js'
 import { type Pty, TerminalRegistry } from './terminal-registry.js'
 import { attachTerminalWebSocket, parseTerminalOrigin } from './terminal-websocket.js'
 
@@ -18,7 +18,7 @@ function pty(): Pty {
 async function start(
   origin: string | undefined,
   path = '/api/terminal',
-  options: { terminalOrigin?: string; auth?: Pick<CottaAuth, 'terminalAuthorized'>; cookie?: string; available?: boolean } = {},
+  options: { terminalOrigin?: string | (() => string | undefined); auth?: Pick<CottaAuth, 'terminalAuthorized'>; cookie?: string; available?: boolean } = {},
 ) {
   const server = createServer()
   servers.push(server)
@@ -32,11 +32,12 @@ async function start(
     () => process.cwd(),
     () => options.available ?? true,
   )
+  const terminalOrigin = typeof options.terminalOrigin === 'function' ? options.terminalOrigin : () => options.terminalOrigin as string | undefined
   attachTerminalWebSocket({
     server,
     auth: options.auth ?? { terminalAuthorized: () => true },
     registry,
-    terminalOrigin: options.terminalOrigin,
+    terminalOrigin,
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as import('node:net').AddressInfo
@@ -86,8 +87,21 @@ describe('terminal websocket upgrade', () => {
     expect(parseTerminalOrigin(undefined)).toBeUndefined()
     expect(parseTerminalOrigin('https://terminal.example.com')).toBe('https://terminal.example.com')
     for (const value of ['ftp://terminal.example.com', 'https://terminal.example.com/', 'https://user@terminal.example.com', 'https://terminal.example.com?x=1', 'https://terminal.example.com#x']) {
-      expect(() => parseTerminalOrigin(value)).toThrow('COTTA_TERMINAL_ORIGIN must be a canonical http(s) origin')
+      expect(() => parseTerminalOrigin(value)).toThrow('terminal origin must be a canonical http(s) origin')
     }
+  })
+
+  it('reads the terminal origin fresh per handshake (runtime override)', async () => {
+    const auth = { terminalAuthorized: () => true }
+    let allowed: string | undefined
+    const options = { terminalOrigin: () => allowed, auth }
+    // No override set → loopback-only; a non-loopback origin is rejected.
+    expect(await start('https://terminal.example.com', undefined, options)).toEqual({ code: 403 })
+    // Flip the getter → the same origin is now accepted on the next handshake, no restart.
+    allowed = 'https://terminal.example.com'
+    const accepted = await start('https://terminal.example.com', undefined, options)
+    if (!('client' in accepted)) throw new Error('terminal upgrade was rejected after override')
+    accepted.client.close()
   })
 
   it('rejects project terminal paths', async () => {

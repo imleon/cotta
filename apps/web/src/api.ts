@@ -18,9 +18,11 @@ import {
   type GitHubConfig,
   type GitHubDevicePollResponse,
   type GitHubDeviceStartResponse,
+  type GitHubStepUpPollResponse,
   githubConfigSchema,
   githubDevicePollResponseSchema,
   githubDeviceStartResponseSchema,
+  githubStepUpPollResponseSchema,
   type ListVersionsEvent,
   type LogoutResponse,
   listVersionsEventSchema,
@@ -202,8 +204,8 @@ export async function revokeShare(token: string): Promise<void> {
   if (!response.ok) throw new Error(`Revoke failed: ${response.status}`)
 }
 
-export async function startGitHubDeviceLogin(): Promise<GitHubDeviceStartResponse> {
-  const response = await fetch('/api/auth/github/device/start', { method: 'POST' })
+export async function startGitHubDeviceLogin(purpose: 'login' | 'stepup' = 'login'): Promise<GitHubDeviceStartResponse> {
+  const response = await fetch(purpose === 'stepup' ? '/api/auth/github/device/start?purpose=stepup' : '/api/auth/github/device/start', { method: 'POST' })
   if (!response.ok) throw new Error(`GitHub login start failed: ${response.status}`)
   return githubDeviceStartResponseSchema.parse(await response.json())
 }
@@ -220,6 +222,21 @@ export async function pollGitHubDeviceLogin(flowId: string): Promise<GitHubDevic
     throw new Error(`GitHub login poll failed: ${body?.error ?? response.status}`)
   }
   return githubDevicePollResponseSchema.parse(await response.json())
+}
+
+export async function pollGitHubStepUp(flowId: string): Promise<GitHubStepUpPollResponse> {
+  const response = await fetch('/api/auth/github/stepup/poll', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flowId }),
+  })
+  if (response.status !== 202 && !response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null
+    if (body?.error === 'user_mismatch') throw new Error('Step-up must be approved by the signed-in GitHub user.')
+    if (body?.error === 'forbidden') throw new Error('This GitHub account is not the allowed Cotta user.')
+    throw new Error(`Step-up poll failed: ${body?.error ?? response.status}`)
+  }
+  return githubStepUpPollResponseSchema.parse(await response.json())
 }
 
 export async function logout(): Promise<LogoutResponse> {
@@ -347,6 +364,21 @@ export async function saveSettings(settings: AppSettingsUpdate): Promise<Setting
     body: JSON.stringify({ settings }),
   })
   if (!response.ok) throw new Error(`Settings save failed: ${response.status}`)
+  return settingsResponseSchema.parse(await response.json())
+}
+
+export async function saveTerminalOrigin(origin: string | null, stepUpToken: string): Promise<SettingsResponse> {
+  const response = await fetch('/api/settings/terminal-origin', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ origin, stepUpToken }),
+  })
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null
+    if (body?.error === 'stepup_required') throw new Error('Verification expired. Verify on GitHub again.')
+    if (body?.error === 'invalid_terminal_origin') throw new Error('Invalid origin: use scheme, host and optional port only, e.g. https://cotta.example.com')
+    throw new Error(`Terminal origin save failed: ${body?.error ?? response.status}`)
+  }
   return settingsResponseSchema.parse(await response.json())
 }
 

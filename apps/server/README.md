@@ -63,7 +63,6 @@ Environment variables (all optional):
 | `PORT` | `3000` | Listen port. |
 | `COTTA_DB_PATH` | `~/.cotta/cotta.sqlite` | SQLite read-model path. The pidfile (`cotta.pid`), daemon log (`cotta.log`) and share assets live in the same directory. |
 | `COTTA_COOKIE_SECURE` | unset | Set `true` when serving over HTTPS so the session cookie is marked Secure. |
-| `COTTA_TERMINAL_ORIGIN` | unset | Allowed Origin for the terminal WebSocket. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where Cotta reads Claude Code transcripts and session state. |
 
 Cotta creates the database and its directory on first start; no manual migration is needed.

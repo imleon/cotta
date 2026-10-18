@@ -1148,3 +1148,35 @@
 .settings-build-info code {
   font-family: var(--font-mono);
 }
+
+.settings-stepup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--text-primary) 36%, transparent);
+}
+
+.settings-stepup-card {
+  display: flex;
+  width: min(420px, calc(100vw - 32px));
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface-default);
+  padding: 20px;
+  color: var(--text-primary);
+}
+
+.settings-stepup-card h3 {
+  margin: 0;
+}
+
+.settings-stepup-actions {
+  display: flex;
+  justify-content: flex-end;
+}

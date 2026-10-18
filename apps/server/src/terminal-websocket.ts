@@ -22,7 +22,7 @@ export function parseTerminalOrigin(value: string | undefined): string | undefin
     if ((origin.protocol !== 'http:' && origin.protocol !== 'https:') || origin.origin !== value || origin.username || origin.password || origin.search || origin.hash) throw new Error()
     return value
   } catch {
-    throw new Error('COTTA_TERMINAL_ORIGIN must be a canonical http(s) origin')
+    throw new Error('terminal origin must be a canonical http(s) origin')
   }
 }
 
@@ -66,7 +66,12 @@ function dimensions(value: unknown): value is TerminalDimensions {
   )
 }
 
-export function attachTerminalWebSocket(input: { server: import('node:http').Server; auth: Pick<CottaAuth, 'terminalAuthorized'>; registry: TerminalRegistry; terminalOrigin?: string }): void {
+export function attachTerminalWebSocket(input: {
+  server: import('node:http').Server
+  auth: Pick<CottaAuth, 'terminalAuthorized'>
+  registry: TerminalRegistry
+  terminalOrigin?: () => string | undefined
+}): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INPUT_BYTES })
   input.server.on('upgrade', (request, socket, head) => {
     void upgrade(request, socket, head)
@@ -77,7 +82,7 @@ export function attachTerminalWebSocket(input: { server: import('node:http').Ser
     const url = new URL(request.url ?? '/', 'http://localhost')
     if (url.pathname !== '/api/terminal') return reject(socket, 404, 'Not Found')
     if (!isLoopback((socket as import('node:net').Socket).remoteAddress)) return reject(socket, 403, 'Forbidden')
-    if (!isAllowedTerminalOrigin(request.headers.origin, input.terminalOrigin)) return reject(socket, 403, 'Forbidden')
+    if (!isAllowedTerminalOrigin(request.headers.origin, input.terminalOrigin?.())) return reject(socket, 403, 'Forbidden')
     if (!input.auth.terminalAuthorized(request.headers.cookie)) return reject(socket, 401, 'Unauthorized')
     wss.handleUpgrade(request, socket, head, (websocket) => {
       let reservation: ReturnType<TerminalRegistry['reserve']>

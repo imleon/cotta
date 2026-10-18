@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { settingsResponseSchema, terminalOriginUpdateRequestSchema } from '@cotta/shared'
 import { createAdaptorServer } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
@@ -43,11 +44,11 @@ import { type SettingsStore, SqliteSettingsStore } from './settings-store.js'
 import { ShareStore } from './share-store.js'
 import { ensureGithubConfig, ensureModelCatalog } from './startup-config.js'
 import { TerminalRegistry } from './terminal-registry.js'
-import { attachTerminalWebSocket, isAllowedTerminalOrigin, parseTerminalOrigin } from './terminal-websocket.js'
+import { attachTerminalWebSocket, isAllowedTerminalOrigin } from './terminal-websocket.js'
 import { TokenUsageStore } from './token-usage-store.js'
 import type { TranscriptIndexStore } from './transcript-index-store.js'
 import { TurnMetaTranscriptStore } from './turn-meta-transcript.js'
-import { resolveTurnOptions, validateTurnOptions } from './turn-options.js'
+import { readSettings, resolveTurnOptions, validateTurnOptions } from './turn-options.js'
 import { TurnOptionsStore } from './turn-options-store.js'
 
 setGlobalDispatcher(new EnvHttpProxyAgent())
@@ -80,7 +81,7 @@ type CreateAppOptions = {
   tokenUsageRefresh?: () => Promise<void>
   projectFilesWatcherRegistry?: Pick<ProjectFilesWatcherRegistry, 'acquire'>
   terminalRegistry?: Pick<TerminalRegistry, 'available' | 'terminate'>
-  terminalOrigin?: string
+  terminalOrigin?: () => string | undefined
   remoteBotStore?: ReturnType<typeof createRemoteBotStore>
   reconcileRemoteBots?: RemoteBotReconcile
   remoteBotConnectionStatus?: RemoteBotConnectionStatus
@@ -159,11 +160,24 @@ export function createApp(input: CreateAppInput): Hono {
   if (input.terminalRegistry) {
     app.get('/api/terminal', (context) => context.json({ available: input.terminalRegistry!.available() }))
     app.delete('/api/terminal', (context) => {
-      if (!isAllowedTerminalOrigin(context.req.header('Origin'), input.terminalOrigin)) return context.json({ error: 'forbidden' }, 403)
+      if (!isAllowedTerminalOrigin(context.req.header('Origin'), input.terminalOrigin?.())) return context.json({ error: 'forbidden' }, 403)
       if (!input.terminalRegistry!.terminate()) return context.json({ error: 'terminal_not_found' }, 404)
       return context.json({ ok: true })
     })
   }
+  // Gated write of the terminal Origin: the only path that can set it (the generic PUT /api/settings strips
+  // terminalOrigin, which is absent from appSettingsUpdateSchema). Requires a fresh, one-time GitHub step-up token.
+  app.put('/api/settings/terminal-origin', async (c) => {
+    const user = auth.currentUser(c)
+    if (!user) return c.json({ error: 'unauthorized' }, 401)
+    // Parse before consuming the token so a malformed body never burns the one-time token.
+    const parsed = terminalOriginUpdateRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'invalid_terminal_origin' }, 400)
+    if (!settingsStore) return c.json({ error: 'settings_unavailable' }, 500)
+    if (!auth.consumeStepUpToken(c, parsed.data.stepUpToken)) return c.json({ error: 'stepup_required' }, 403)
+    settingsStore.setMany('global', { terminalOrigin: parsed.data.origin ?? undefined })
+    return c.json(settingsResponseSchema.parse({ settings: readSettings(settingsStore) }))
+  })
   registerTokenUsageRoutes(app, input.tokenUsageStore, input.tokenUsageReady, input.tokenUsageRefresh)
   if (input.remoteBotStore) registerRemoteBotRoutes(app, input.remoteBotStore, input.reconcileRemoteBots, input.remoteBotConnectionStatus, input.remoteBotProjectExists)
   const projectRoutesInput = {
@@ -330,7 +344,6 @@ export function subscribeCliSessionOwnership({
 export async function runServer(opts: { reconfigureGithub: boolean }): Promise<boolean> {
   const host = process.env.HOST ?? '127.0.0.1'
   const port = Number(process.env.PORT ?? 3000)
-  const terminalOrigin = parseTerminalOrigin(process.env.COTTA_TERMINAL_ORIGIN)
   // Take the single-instance lock before touching the database, so a second server never indexes or writes.
   // False means another server holds it; the caller reports that.
   if (!acquireServerLock()) return false
@@ -341,6 +354,11 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
   const cottaDb = createCottaDatabase()
   const indexChangeNotifier = new IndexChangeNotifier()
   const settingsStore = new SqliteSettingsStore(cottaDb)
+  // Effective terminal Origin, read fresh per handshake: a step-up-gated Settings override, else loopback-only.
+  const effectiveTerminalOrigin = (): string | undefined => {
+    const stored = settingsStore.getAll('global').terminalOrigin
+    return typeof stored === 'string' && stored ? stored : undefined
+  }
   await ensureGithubConfig(settingsStore, { force: opts.reconfigureGithub })
   await ensureModelCatalog(settingsStore, defaultModelCatalogProvider)
   const detailTokenKey = loadDetailTokenKey(settingsStore)
@@ -478,12 +496,12 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     remoteBotProjectExists: async (projectId) => (await claudeCodeApi.getProject(projectId)) !== null,
     auth,
     terminalRegistry,
-    terminalOrigin,
+    terminalOrigin: effectiveTerminalOrigin,
     webRoot: resolveWebRoot(),
   })
 
   const server = createAdaptorServer({ fetch: app.fetch })
-  attachTerminalWebSocket({ server: server as import('node:http').Server, auth, registry: terminalRegistry, terminalOrigin })
+  attachTerminalWebSocket({ server: server as import('node:http').Server, auth, registry: terminalRegistry, terminalOrigin: effectiveTerminalOrigin })
   server.listen(port, host, () => {
     console.log(`Cotta server listening on ${serverUrl({ host, port })}`)
   })

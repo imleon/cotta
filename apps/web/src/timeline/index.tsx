@@ -908,6 +908,7 @@ export function SessionTimeline({
   onJumpToLatest,
   onForkSession,
   onNotify,
+  sharingEnabled = false,
 }: {
   projectId: string
   projectName?: string | null
@@ -939,6 +940,7 @@ export function SessionTimeline({
   onJumpToLatest?: () => void
   onForkSession?: (upToMessageId: string) => Promise<unknown>
   onNotify?: (toast: ToastNotification) => void
+  sharingEnabled?: boolean
 }) {
   const timelinePanelRef = useRef<HTMLElement | null>(null)
   const programmaticScrollRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
@@ -1369,7 +1371,7 @@ export function SessionTimeline({
                       onForkSession={item.id === lastAssistantFrameId ? onForkSession : undefined}
                       onNotify={onNotify}
                       onShare={
-                        item.id === lastAssistantFrameId && turn.shareEligible && projectId && sessionId
+                        item.id === lastAssistantFrameId && sharingEnabled && turn.shareEligible && projectId && sessionId
                           ? () => void openShareInNewTab(projectId, sessionId, turn.primaryUserUuid, onNotify)
                           : undefined
                       }

@@ -1721,7 +1721,7 @@ const timeZoneSchema = z.string().transform((timeZone, context) => {
 })
 
 /** Canonical http(s) Origin: scheme + host + optional port only. Rejects path, query, fragment and credentials. */
-const allowedOriginSchema = z.string().superRefine((value, context) => {
+export const allowedOriginSchema = z.string().superRefine((value, context) => {
   try {
     const url = new URL(value)
     if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.origin !== value || url.username || url.password || url.search || url.hash) throw new Error()
@@ -1749,7 +1749,6 @@ export const appSettingsSchema = z
       .transform((value) => value ?? undefined),
     showDebugNav: z.boolean().default(false),
     publicBaseUrl: allowedOriginSchema.optional(),
-    terminalOrigin: allowedOriginSchema.optional(),
   })
   .catchall(z.unknown())
 export type AppSettings = z.infer<typeof appSettingsSchema>
@@ -1805,21 +1804,6 @@ export const githubDevicePollResponseSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('authorized'), user: authUserSchema }),
 ])
 export type GitHubDevicePollResponse = z.infer<typeof githubDevicePollResponseSchema>
-
-/** Step-up poll: like device poll, but authorizes a one-time token for a sensitive config write instead of a session. */
-export const githubStepUpPollResponseSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('pending'), interval: z.number() }),
-  z.object({ status: z.literal('slow_down'), interval: z.number() }),
-  z.object({ status: z.literal('authorized'), stepUpToken: z.string() }),
-])
-export type GitHubStepUpPollResponse = z.infer<typeof githubStepUpPollResponseSchema>
-
-/** Gated write of the terminal WebSocket allowed Origin. null/empty clears the override (falls back to env/loopback). Requires a fresh step-up token. */
-export const terminalOriginUpdateRequestSchema = z.object({
-  origin: allowedOriginSchema.nullable(),
-  stepUpToken: z.string().min(1),
-})
-export type TerminalOriginUpdateRequest = z.infer<typeof terminalOriginUpdateRequestSchema>
 
 export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>

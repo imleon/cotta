@@ -102,7 +102,7 @@ function ShareRow({ share, onRevoked, onOpenTurn }: { share: ShareSummary; onRev
   )
 }
 
-export function ShareManagementPanel({ onOpenTurn }: { onOpenTurn: OpenTurn }) {
+export function ShareManagementPanel({ onOpenTurn, sharingEnabled }: { onOpenTurn: OpenTurn; sharingEnabled: boolean }) {
   const [cursor, setCursor] = useState<string | null>(null)
   const [items, setItems] = useState<ShareSummary[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -129,6 +129,9 @@ export function ShareManagementPanel({ onOpenTurn }: { onOpenTurn: OpenTurn }) {
         <h2>Shares</h2>
         <p className="muted">Share a turn with anyone through a public link, and revoke access the moment you need to.</p>
       </div>
+      {!sharingEnabled ? (
+        <p className="settings-notice">Sharing is turned off, so these links open an unavailable page. Set a public base URL in Settings to restore them.</p>
+      ) : null}
       {loaded && items.length === 0 ? (
         <p className="muted">No active shares.</p>
       ) : (

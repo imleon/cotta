@@ -335,6 +335,7 @@ export function WorkspacePanel({
               transcriptSignal={transcriptSignal}
               timelineControlSignal={timelineControlSignal}
               showDebugSource={settings.showDebugNav}
+              sharingEnabled={!!settings.publicBaseUrl}
               pendingTurn={selectedPendingTurn}
               provisionalSlash={provisionalSlash}
               pendingPhase={selectedPending?.phase}

@@ -63,7 +63,6 @@ export function AnonTurnTimeline({ turn, imageEndpoint }: { turn: TurnSummary; i
 export function AnonUnavailable() {
   return (
     <div className="detail-anon-unavailable">
-      <img className="app-sidebar-brand-logo" src={logoUrl} alt="Cotta" />
       <p>This link is unavailable.</p>
     </div>
   )

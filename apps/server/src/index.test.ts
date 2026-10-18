@@ -243,30 +243,31 @@ describe('server routes', () => {
 
     expect(await (await app.request('/api/terminal')).json()).toEqual({ available: true })
     expect(available).toHaveBeenCalledWith()
-    expect(await (await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'http://localhost:5173' } })).json()).toEqual({ ok: true })
+    expect(await (await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'http://localhost:5173', Host: 'localhost:5173' } })).json()).toEqual({ ok: true })
     expect(terminate).toHaveBeenCalledWith()
 
     available.mockReturnValue(false)
     expect(await (await app.request('/api/terminal')).json()).toEqual({ available: false })
     terminate.mockReturnValue(false)
-    expect(await (await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'http://localhost:5173' } })).json()).toEqual({ error: 'terminal_not_found' })
+    expect(await (await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'http://localhost:5173', Host: 'localhost:5173' } })).json()).toEqual({ error: 'terminal_not_found' })
   })
 
-  it('requires the configured terminal Origin before termination', async () => {
+  it('requires the DELETE Origin to match the request host before termination', async () => {
     const terminate = vi.fn(() => true)
     const app = createApp({
       claudeCodeApi: emptyClaudeCodeApi(),
       transcriptIndex: { getSession: () => null },
       timelineVersionReader: () => 'timeline-missing',
       terminalRegistry: { available: () => true, terminate },
-      terminalOrigin: () => 'https://terminal.example.com',
     })
 
-    const rejected = await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'http://localhost:5173' } })
+    // Cross-origin: Origin host differs from Host → forbidden.
+    const rejected = await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'https://evil.example.com', Host: 'cotta.example.com' } })
     expect(rejected.status).toBe(403)
     expect(await rejected.json()).toEqual({ error: 'forbidden' })
     expect(terminate).not.toHaveBeenCalled()
-    expect(await (await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'https://terminal.example.com' } })).json()).toEqual({ ok: true })
+    // Same-origin: Origin host matches Host → allowed.
+    expect(await (await app.request('/api/terminal', { method: 'DELETE', headers: { Origin: 'https://cotta.example.com', Host: 'cotta.example.com' } })).json()).toEqual({ ok: true })
   })
 
   it('returns the service health payload with a request ID', async () => {

@@ -377,6 +377,8 @@ export function createTestApp(liveStates: Record<string, SessionRunState> = {}, 
         return timelineState
       },
     },
+    // Sharing/Detail are gated on a configured public base URL; default it on so route tests exercise the happy path.
+    settingsStore: memorySettingsStore({ publicBaseUrl: 'https://cotta.example.com' }) as unknown as Parameters<typeof createApp>[0]['settingsStore'],
     ...overrides,
   })
 }

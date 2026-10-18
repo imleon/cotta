@@ -8,6 +8,7 @@ import { shareAssetsRoot } from '../database.js'
 import { decodeDetailToken } from '../detail-token.js'
 import { projectPathFromId } from '../project-path.js'
 import { ProjectReadModelError, readProjectTimeline, TimelineAnchorStaleError, TranscriptUnavailableError } from '../project-read-model.js'
+import { readSettings } from '../turn-options.js'
 import { materializeShareAssets } from '../share-assets.js'
 import { newShareToken, type ShareStore } from '../share-store.js'
 import type { TranscriptIndexStore } from '../transcript-index-store.js'
@@ -42,8 +43,12 @@ async function eligibleTurn(input: ProjectRoutesInput, projectId: string, sessio
 
 /** Anonymous share surfaces: read a snapshot, and create (reusing an active share) by Detail token or (session,turn). */
 export function registerShareRoutes(app: Hono, input: ProjectRoutesInput, auth: CottaAuth): void {
+  // Sharing is off unless a public base URL is configured; the same switch gates create, read, the Detail routes, and the Lark button.
+  const sharingEnabled = () => !!readSettings(input.settingsStore).publicBaseUrl
+
   app.get('/api/share/:token', (c) => {
     const unavailable = () => c.json({ error: 'share_unavailable' }, 404, NO_STORE)
+    if (!sharingEnabled()) return unavailable()
     const record = input.shareStore?.getByToken(c.req.param('token'))
     if (!record) return unavailable()
     return c.json({ turn: record.snapshot } satisfies DetailResponse, 200, NO_STORE)
@@ -53,6 +58,7 @@ export function registerShareRoutes(app: Hono, input: ProjectRoutesInput, auth: 
   // authorization: only index-named files that were materialized at create time are reachable; src never hits the fs.
   app.get('/api/share/:token/asset', async (c) => {
     const unavailable = () => c.json({ error: 'share_unavailable' }, 404, NO_STORE)
+    if (!sharingEnabled()) return unavailable()
     const token = c.req.param('token')
     const src = c.req.query('src')
     const record = src ? input.shareStore?.getByToken(token) : null
@@ -69,6 +75,7 @@ export function registerShareRoutes(app: Hono, input: ProjectRoutesInput, auth: 
 
   app.post('/api/share', async (c) => {
     if (!input.shareStore) return c.json({ error: 'share_unavailable' }, 503, NO_STORE)
+    if (!sharingEnabled()) return c.json({ error: 'sharing_disabled' }, 403, NO_STORE)
     let body: { detailToken?: unknown; projectId?: unknown; sessionId?: unknown; turnId?: unknown }
     try {
       body = (await c.req.json()) as typeof body

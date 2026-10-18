@@ -173,4 +173,94 @@ describe('SettingsPanel', () => {
       vi.useRealTimers()
     }
   })
+
+  it('hides the public base URL input until sharing is enabled', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))))
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsPanel settings={baseSettings} authSession={undefined} onLogout={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+    const toggle = screen.getByRole('switch', { name: 'Enable sharing' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByLabelText('Public base URL')).toBeNull()
+
+    await userEvent.click(toggle)
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    const input = screen.getByLabelText('Public base URL')
+    expect(input).toBeTruthy()
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('switches sharing back off when the URL is left empty on blur', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ settings: {} }), { status: 200 }))))
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsPanel settings={baseSettings} authSession={undefined} onLogout={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+    const toggle = screen.getByRole('switch', { name: 'Enable sharing' })
+    await userEvent.click(toggle)
+    const input = screen.getByLabelText('Public base URL')
+    await userEvent.click(input)
+    await userEvent.tab() // blur with no input
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByLabelText('Public base URL')).toBeNull()
+  })
+
+  it('flags an invalid public base URL on blur without saving it', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ settings: {} }), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsPanel settings={baseSettings} authSession={undefined} onLogout={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+    const toggle = screen.getByRole('switch', { name: 'Enable sharing' })
+    await userEvent.click(toggle)
+    const input = screen.getByLabelText('Public base URL') as HTMLInputElement
+    await userEvent.type(input, 'https://cotta.example.com/path')
+    await userEvent.tab()
+
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(screen.getByText(/canonical http\(s\) origin/)).toBeTruthy()
+    expect(toggle.getAttribute('aria-checked')).toBe('true') // stays on so the user can fix it
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/settings', expect.objectContaining({ method: 'PUT' }))
+
+    // Correcting the value clears the error and saves.
+    await userEvent.clear(input)
+    await userEvent.type(input, 'https://cotta.example.com')
+    await userEvent.tab()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ settings: { publicBaseUrl: 'https://cotta.example.com' } }) })))
+    expect(screen.queryByText(/canonical http\(s\) origin/)).toBeNull()
+  })
+
+  it('shows the URL pre-filled when a public base URL is already set', () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))))
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsPanel settings={{ ...baseSettings, publicBaseUrl: 'https://cotta.example.com' }} authSession={undefined} onLogout={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByRole('switch', { name: 'Enable sharing' }).getAttribute('aria-checked')).toBe('true')
+    expect((screen.getByLabelText('Public base URL') as HTMLInputElement).value).toBe('https://cotta.example.com')
+  })
+
+  it('clears the public base URL when sharing is turned off', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ settings: {} }), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsPanel settings={{ ...baseSettings, publicBaseUrl: 'https://cotta.example.com' }} authSession={undefined} onLogout={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+    await userEvent.click(screen.getByRole('switch', { name: 'Enable sharing' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ settings: { publicBaseUrl: null } }) })))
+    expect(screen.queryByLabelText('Public base URL')).toBeNull()
+  })
 })

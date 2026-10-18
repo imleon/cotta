@@ -26,17 +26,23 @@ export function parseTerminalOrigin(value: string | undefined): string | undefin
   }
 }
 
-function isLoopbackOrigin(origin: string): boolean {
-  const hostname = new URL(origin).hostname
-  const address = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
-  return address === 'localhost' || isLoopback(address)
+/** First comma token of a possibly-list-valued forwarded header, trimmed. */
+function firstHeaderToken(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value
+  return raw?.split(',')[0]?.trim() || undefined
 }
 
-export function isAllowedTerminalOrigin(origin: string | undefined, terminalOrigin: string | undefined): boolean {
+/**
+ * Same-origin WebSocket gate (CSWSH defense). A legitimate page is served by this host, so its browser-set
+ * Origin header's host matches the request's own Host. A cross-site page's Origin host never will. We compare
+ * the Origin's host against the request host (X-Forwarded-Host when a reverse proxy sets it, else Host) — no
+ * configured origin needed. Missing/malformed Origin or host fails closed.
+ */
+export function isAllowedTerminalOrigin(origin: string | undefined, requestHost: string | undefined): boolean {
+  if (!origin || !requestHost) return false
   try {
-    const canonicalOrigin = parseTerminalOrigin(origin)
-    if (!canonicalOrigin || (terminalOrigin ? canonicalOrigin !== terminalOrigin : !isLoopbackOrigin(canonicalOrigin))) return false
-    return true
+    const canonical = parseTerminalOrigin(origin)
+    return !!canonical && new URL(canonical).host === requestHost
   } catch {
     return false
   }
@@ -70,7 +76,6 @@ export function attachTerminalWebSocket(input: {
   server: import('node:http').Server
   auth: Pick<CottaAuth, 'terminalAuthorized'>
   registry: TerminalRegistry
-  terminalOrigin?: () => string | undefined
 }): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INPUT_BYTES })
   input.server.on('upgrade', (request, socket, head) => {
@@ -82,7 +87,8 @@ export function attachTerminalWebSocket(input: {
     const url = new URL(request.url ?? '/', 'http://localhost')
     if (url.pathname !== '/api/terminal') return reject(socket, 404, 'Not Found')
     if (!isLoopback((socket as import('node:net').Socket).remoteAddress)) return reject(socket, 403, 'Forbidden')
-    if (!isAllowedTerminalOrigin(request.headers.origin, input.terminalOrigin?.())) return reject(socket, 403, 'Forbidden')
+    const requestHost = firstHeaderToken(request.headers['x-forwarded-host']) ?? request.headers.host
+    if (!isAllowedTerminalOrigin(request.headers.origin, requestHost)) return reject(socket, 403, 'Forbidden')
     if (!input.auth.terminalAuthorized(request.headers.cookie)) return reject(socket, 401, 'Unauthorized')
     wss.handleUpgrade(request, socket, head, (websocket) => {
       let reservation: ReturnType<TerminalRegistry['reserve']>

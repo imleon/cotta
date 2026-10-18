@@ -434,7 +434,6 @@ function MermaidBlock({ code, fallback }: { code: string; fallback: ReactNode })
   const [result, setResult] = useState<{ svg: string } | 'failed' | null>(null)
   useEffect(() => {
     let cancelled = false
-    // crypto.randomUUID is unavailable outside secure contexts (plain-HTTP LAN access).
     const id = `mermaid-${++mermaidRenderCount}`
     void loadMermaid()
       .then((mermaid) => mermaid.render(id, code))
@@ -442,14 +441,15 @@ function MermaidBlock({ code, fallback }: { code: string; fallback: ReactNode })
         if (!cancelled) setResult({ svg })
       })
       .catch(() => {
-        if (!cancelled) setResult('failed')
+        // A half-streamed fence fails to parse; keep the last diagram instead of flipping back to code.
+        if (!cancelled) setResult((previous) => (previous && previous !== 'failed' ? previous : 'failed'))
       })
     return () => {
       cancelled = true
     }
   }, [code])
   if (result === null || result === 'failed') return <>{fallback}</>
-  // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid renders trusted transcript content with securityLevel 'strict'
+  // biome-ignore lint/security/noDangerouslySetInnerHtml: content is untrusted model output; safety relies on mermaid securityLevel 'strict' (DOMPurify-sanitized SVG)
   return <div className="markdown-mermaid" data-timeline-content="mermaid" dangerouslySetInnerHTML={{ __html: result.svg }} />
 }
 
@@ -463,7 +463,7 @@ function MarkdownCode({ className, children }: ComponentPropsWithoutRef<'code'>)
       {children}
     </HighlightedCode>
   )
-  if (className === 'language-mermaid') return <MermaidBlock code={textFromReactNode(children).replace(/\n$/, '')} fallback={highlighted} />
+  if (codeLanguage(className) === 'mermaid') return <MermaidBlock code={textFromReactNode(children).replace(/\n$/, '')} fallback={highlighted} />
   return highlighted
 }
 

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MarkdownContent } from './content'
 
@@ -27,11 +27,25 @@ describe('mermaid markdown rendering', () => {
     await waitFor(() => expect(mermaid.initialize).toHaveBeenCalledWith(expect.objectContaining({ suppressErrorRendering: true })))
   })
 
-  it('keeps the previous diagram visible while new code renders', async () => {
+  it('falls back to the code block when the first render fails', async () => {
+    const mermaid = (await import('mermaid')).default
+    vi.mocked(mermaid.render).mockRejectedValueOnce(new Error('parse error'))
+    const { container } = render(<MarkdownContent value={'```mermaid\nflowchart LR\n  A -->\n```'} />)
+    await act(async () => {})
+    expect(container.querySelector('.markdown-mermaid')).toBeNull()
+    expect(container.querySelector('.markdown-code-block')).not.toBeNull()
+  })
+
+  it('keeps the previous diagram when a later (half-streamed) render fails', async () => {
+    const mermaid = (await import('mermaid')).default
     const { container, rerender } = render(<MarkdownContent value={fence} />)
     await waitFor(() => expect(container.querySelector('.markdown-mermaid svg')).not.toBeNull())
-    rerender(<MarkdownContent value={'```mermaid\nflowchart LR\n  A --> C\n```'} />)
+    vi.mocked(mermaid.render).mockRejectedValueOnce(new Error('parse error'))
+    rerender(<MarkdownContent value={'```mermaid\nflowchart LR\n  A --> B\n  B -->\n```'} />)
+    await act(async () => {})
+    expect(mermaid.render).toHaveBeenLastCalledWith(expect.any(String), 'flowchart LR\n  A --> B\n  B -->')
     expect(container.querySelector('.markdown-mermaid svg')).not.toBeNull()
+    expect(container.querySelector('.markdown-code-block')).toBeNull()
   })
 
   it('renders without crypto.randomUUID (non-secure context)', async () => {

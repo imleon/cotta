@@ -72,11 +72,7 @@ function dimensions(value: unknown): value is TerminalDimensions {
   )
 }
 
-export function attachTerminalWebSocket(input: {
-  server: import('node:http').Server
-  auth: Pick<CottaAuth, 'terminalAuthorized'>
-  registry: TerminalRegistry
-}): void {
+export function attachTerminalWebSocket(input: { server: import('node:http').Server; auth: Pick<CottaAuth, 'terminalAuthorized'>; registry: TerminalRegistry }): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INPUT_BYTES })
   input.server.on('upgrade', (request, socket, head) => {
     void upgrade(request, socket, head)

@@ -520,7 +520,15 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
             <p className="muted">Turn on to share Turns through public links and show Detail links on Lark cards. Needs a public base URL below.</p>
           </div>
           <div className="settings-card-controls">
-            <button type="button" className="settings-switch" role="switch" aria-label="Enable sharing" aria-checked={sharingEnabled} disabled={saving} onClick={() => void toggleSharing(!sharingEnabled)}>
+            <button
+              type="button"
+              className="settings-switch"
+              role="switch"
+              aria-label="Enable sharing"
+              aria-checked={sharingEnabled}
+              disabled={saving}
+              onClick={() => void toggleSharing(!sharingEnabled)}
+            >
               <span className="settings-switch-thumb" />
             </button>
           </div>

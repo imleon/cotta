@@ -175,7 +175,10 @@ describe('SettingsPanel', () => {
   })
 
   it('hides the public base URL input until sharing is enabled', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))),
+    )
     render(
       <QueryClientProvider client={new QueryClient()}>
         <SettingsPanel settings={baseSettings} authSession={undefined} onLogout={vi.fn()} />
@@ -194,7 +197,10 @@ describe('SettingsPanel', () => {
   })
 
   it('switches sharing back off when the URL is left empty on blur', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ settings: {} }), { status: 200 }))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ settings: {} }), { status: 200 }))),
+    )
     render(
       <QueryClientProvider client={new QueryClient()}>
         <SettingsPanel settings={baseSettings} authSession={undefined} onLogout={vi.fn()} />
@@ -234,12 +240,17 @@ describe('SettingsPanel', () => {
     await userEvent.clear(input)
     await userEvent.type(input, 'https://cotta.example.com')
     await userEvent.tab()
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ settings: { publicBaseUrl: 'https://cotta.example.com' } }) })))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/settings', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ settings: { publicBaseUrl: 'https://cotta.example.com' } }) })),
+    )
     expect(screen.queryByText(/canonical http\(s\) origin/)).toBeNull()
   })
 
   it('shows the URL pre-filled when a public base URL is already set', () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('{}', { status: 200 }))),
+    )
     render(
       <QueryClientProvider client={new QueryClient()}>
         <SettingsPanel settings={{ ...baseSettings, publicBaseUrl: 'https://cotta.example.com' }} authSession={undefined} onLogout={vi.fn()} />

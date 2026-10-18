@@ -426,10 +426,78 @@
   gap: 8px;
 }
 
+/* Invalid URL input: red ring on blur, cleared on next edit. */
+.settings-text-input.settings-input-invalid {
+  border-color: var(--border-danger, #d64545);
+}
+
+.settings-input-error {
+  margin: 0;
+  color: var(--text-danger, #d64545);
+  font-size: var(--text-xs, var(--text-sm));
+}
+
+/* Inline advisory inside a settings panel (e.g. sharing suspended). */
+.settings-notice {
+  margin: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  padding: 12px 14px;
+  color: var(--text-secondary, var(--text-primary));
+  font-size: var(--text-sm);
+}
+
 .settings-origin-row {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* URL input with the autofill pill tucked inside its right edge. */
+.settings-origin-field {
+  position: relative;
+  display: flex;
+}
+
+.settings-origin-input {
+  width: 100%;
+  padding-right: 52%;
+}
+
+/* Pill button that autofills the URL with the browser's current origin. */
+.settings-origin-pill {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  max-width: 45%;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  padding: 3px 12px;
+  color: var(--text-secondary, var(--text-primary));
+  font: inherit;
+  font-size: var(--text-xs, var(--text-sm));
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-snap) var(--ease-standard),
+    background-color var(--duration-snap) var(--ease-standard),
+    color var(--duration-snap) var(--ease-standard);
+}
+
+.settings-origin-pill:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background-color: var(--surface-default);
+  color: var(--text-primary);
+}
+
+.settings-origin-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .settings-text-input:disabled {
@@ -1149,34 +1217,3 @@
   font-family: var(--font-mono);
 }
 
-.settings-stepup-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: color-mix(in srgb, var(--text-primary) 36%, transparent);
-}
-
-.settings-stepup-card {
-  display: flex;
-  width: min(420px, calc(100vw - 32px));
-  flex-direction: column;
-  gap: 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xl);
-  background: var(--surface-default);
-  padding: 20px;
-  color: var(--text-primary);
-}
-
-.settings-stepup-card h3 {
-  margin: 0;
-}
-
-.settings-stepup-actions {
-  display: flex;
-  justify-content: flex-end;
-}

@@ -8,7 +8,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/api': { target: apiProxyTarget, changeOrigin: true, ws: true },
+      // xfwd: send x-forwarded-host so the server's same-origin terminal gate sees the browser host (changeOrigin rewrites Host to the target).
+      '/api': { target: apiProxyTarget, changeOrigin: true, ws: true, xfwd: true },
     },
   },
 })

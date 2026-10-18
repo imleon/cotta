@@ -1192,7 +1192,7 @@ function WorkspaceShell() {
           ) : activeAppNav === 'settings' ? (
             <SettingsPanel settings={settings} authSession={authSession.data} onLogout={handleLogout} />
           ) : activeAppNav === 'shares' ? (
-            <ShareManagementPanel onOpenTurn={handleOpenSharedTurn} />
+            <ShareManagementPanel onOpenTurn={handleOpenSharedTurn} sharingEnabled={!!settings.publicBaseUrl} />
           ) : (
             <PlaceholderPage title={APP_NAV_ITEMS.find((item) => item.key === activeAppNav)?.label ?? 'Page'} />
           )}

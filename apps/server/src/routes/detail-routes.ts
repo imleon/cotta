@@ -4,6 +4,7 @@ import { decodeDetailToken } from '../detail-token.js'
 import { resolveTurnImagePath } from '../local-image-turn.js'
 import { ProjectReadModelError, readProjectTimeline, TimelineAnchorStaleError, TranscriptUnavailableError } from '../project-read-model.js'
 import { resolveProjectRoot } from '../project-root.js'
+import { readSettings } from '../turn-options.js'
 import { inspectLocalRasterImage, isInside, MAX_AUTO_IMAGE_BYTES, readInspectedLocalRasterImage } from './local-image-file.js'
 import type { ProjectRoutesInput } from './project-routes-shared.js'
 
@@ -12,6 +13,8 @@ const NO_STORE = { 'Cache-Control': 'no-store' } as const
 /** Reads the live source turn behind a Detail token, or null if the token is bad or the turn is gone. No persistence. */
 async function detailTurn(input: ProjectRoutesInput, token: string): Promise<{ projectId: string; turn: TurnSummary } | null> {
   if (!input.detailTokenKey) return null
+  // Detail shares the sharing switch: no public base URL configured means Detail is off, same as the Lark button.
+  if (!readSettings(input.settingsStore).publicBaseUrl) return null
   const identity = decodeDetailToken(token, input.detailTokenKey)
   if (!identity) return null
   try {

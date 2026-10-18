@@ -1,6 +1,7 @@
 import {
   type AppSettings,
   type AppSettingsUpdate,
+  allowedOriginSchema,
   type AuthSessionResponse,
   type DefaultTurnOption,
   type EffortLevel,
@@ -10,12 +11,10 @@ import {
   matchingCatalogModel,
   type PermissionMode,
   supportedEffortLevels,
-  terminalOriginUpdateRequestSchema,
 } from '@cotta/shared'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, useEffect, useRef, useState } from 'react'
-import { fetchBuildInfo, fetchGitHubConfig, pollGitHubStepUp, refreshModelCatalog, saveGitHubConfig, saveSettings, saveTerminalOrigin, startGitHubDeviceLogin } from '../api'
-import { writeClipboard } from '../timeline/content'
+import { fetchBuildInfo, fetchGitHubConfig, refreshModelCatalog, saveGitHubConfig, saveSettings } from '../api'
 import { DEFAULT_TURN_OPTION, effortLabel, ModelIcon, PERMISSION_MODE_OPTIONS } from './turn-option-controls'
 
 const SETTINGS_MODEL_CATALOG_QUERY_KEY = ['settings-model-catalog'] as const
@@ -77,94 +76,6 @@ function PermissionShieldIcon({ name }: { name: PermissionMode }) {
   )
 }
 
-/**
- * Modal that runs a GitHub device-flow step-up, then writes the terminal Origin through the gated endpoint.
- * Mirrors AccessRequired's poll loop, but authorizes a one-time token instead of a session, and saves on success.
- */
-function TerminalOriginStepUp({ origin, onClose, onSaved }: { origin: string | null; onClose: () => void; onSaved: (settings: AppSettings) => void }) {
-  const [flow, setFlow] = useState<{ flowId: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  // Latest onSaved via ref: the parent passes an inline callback, and re-running the poll effect on every parent
-  // render would drop an in-flight authorize/save result.
-  const onSavedRef = useRef(onSaved)
-  onSavedRef.current = onSaved
-
-  useEffect(() => {
-    let stopped = false
-    startGitHubDeviceLogin('stepup').then(
-      (f) => {
-        if (!stopped) setFlow(f)
-      },
-      (err) => {
-        if (!stopped) setError(err instanceof Error ? err.message : String(err))
-      },
-    )
-    return () => {
-      stopped = true
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!flow) return
-    let stopped = false
-    let timer: number
-    const poll = async () => {
-      try {
-        const response = await pollGitHubStepUp(flow.flowId)
-        if (stopped) return
-        if (response.status === 'authorized') {
-          const saved = await saveTerminalOrigin(origin, response.stepUpToken)
-          if (stopped) return
-          onSavedRef.current(saved.settings)
-          return
-        }
-        timer = window.setTimeout(poll, response.interval * 1000)
-      } catch (err) {
-        if (stopped) return
-        setError(err instanceof Error ? err.message : String(err))
-      }
-    }
-    timer = window.setTimeout(poll, flow.interval * 1000)
-    return () => {
-      stopped = true
-      window.clearTimeout(timer)
-    }
-  }, [flow, origin])
-
-  return (
-    <div className="settings-stepup-backdrop" role="dialog" aria-modal="true" aria-label="Verify to change terminal origin">
-      <div className="settings-stepup-card">
-        <h3>Verify to change terminal origin</h3>
-        <p className="muted">Changing the terminal access origin is a security-sensitive action. Approve it on GitHub as the signed-in user.</p>
-        {flow ? (
-          <div className="login-device-flow">
-            <p className="muted">Open GitHub and enter the code:</p>
-            <button type="button" className="login-code" onClick={() => void writeClipboard(flow.userCode)} title="Copy code">
-              <span>{flow.userCode}</span>
-            </button>
-            <a className="login-primary" href={flow.verificationUriComplete ?? flow.verificationUri} target="_blank" rel="noreferrer">
-              Open GitHub to authorize
-            </a>
-            <p className="muted login-waiting">
-              <span className="login-spinner" aria-hidden="true" /> Waiting for authorization…
-            </p>
-          </div>
-        ) : (
-          <p className="muted">
-            <span className="login-spinner" aria-hidden="true" /> Starting…
-          </p>
-        )}
-        {error ? <div className="panel error">{error}</div> : null}
-        <div className="settings-stepup-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export function SettingsPanel({ settings, authSession, onLogout }: { settings: AppSettings; authSession: AuthSessionResponse | undefined; onLogout: () => Promise<void> }) {
   const queryClient = useQueryClient()
   const buildInfo = useQuery({ queryKey: ['build-info'], queryFn: fetchBuildInfo, retry: false })
@@ -172,8 +83,9 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
   const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
   const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
   const [publicBaseUrl, setPublicBaseUrl] = useState<string>(settings.publicBaseUrl ?? '')
-  const [terminalOrigin, setTerminalOrigin] = useState<string>(settings.terminalOrigin ?? '')
-  const [stepUpOrigin, setStepUpOrigin] = useState<string | null | undefined>(undefined)
+  const [sharingEnabled, setSharingEnabled] = useState<boolean>(!!settings.publicBaseUrl)
+  const [publicBaseUrlError, setPublicBaseUrlError] = useState(false)
+  const focusPublicBaseUrlRef = useRef(false)
   const [status, setStatus] = useState<ToastState | null>(null)
   const [saving, setSaving] = useState(false)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
@@ -362,7 +274,33 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
   async function savePublicBaseUrl(next: string) {
     const trimmed = next.trim()
     setPublicBaseUrl(trimmed)
+    setPublicBaseUrlError(false)
     await save({ publicBaseUrl: trimmed || null })
+  }
+
+  async function toggleSharing(enabled: boolean) {
+    setSharingEnabled(enabled)
+    // Enabling reveals the input and focuses it so the user can type the URL straight away.
+    if (enabled) focusPublicBaseUrlRef.current = true
+    // Disabling clears the URL (an empty URL is the off state server-side).
+    else if (publicBaseUrl) await savePublicBaseUrl('')
+  }
+
+  async function handlePublicBaseUrlBlur() {
+    const trimmed = publicBaseUrl.trim()
+    // An empty field means the user backed out of enabling sharing — flip the switch back off.
+    if (!trimmed) {
+      setPublicBaseUrlError(false)
+      await savePublicBaseUrl('')
+      setSharingEnabled(false)
+      return
+    }
+    // Reject anything that is not a canonical http(s) origin before it reaches the server.
+    if (!allowedOriginSchema.safeParse(trimmed).success) {
+      setPublicBaseUrlError(true)
+      return
+    }
+    await savePublicBaseUrl(trimmed)
   }
 
   return (
@@ -576,74 +514,64 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
 
       <section className="settings-group">
         <h3 className="settings-group-title">Sharing</h3>
-        <form className="settings-row settings-row-stacked" onSubmit={(event) => event.preventDefault()}>
+        <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
           <div className="settings-card-copy">
-            <h3>Public base URL</h3>
-            <p className="muted">Origin used to build Lark Detail links. Leave empty to hide the Detail button on Lark cards.</p>
+            <h3>Enable sharing</h3>
+            <p className="muted">Turn on to share Turns through public links and show Detail links on Lark cards. Needs a public base URL below.</p>
           </div>
-          <div className="settings-origins">
-            <div className="settings-origin-row">
-              <input
-                type="text"
-                className="settings-text-input"
-                placeholder="https://cotta.example.com"
-                value={publicBaseUrl}
-                disabled={saving}
-                onChange={(event) => setPublicBaseUrl(event.target.value)}
-                onBlur={() => void savePublicBaseUrl(publicBaseUrl)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.currentTarget.blur()
-                }}
-              />
-            </div>
-            <button type="button" className="settings-origin-add" disabled={saving} onClick={() => void savePublicBaseUrl(window.location.origin)}>
-              Use current origin
+          <div className="settings-card-controls">
+            <button type="button" className="settings-switch" role="switch" aria-label="Enable sharing" aria-checked={sharingEnabled} disabled={saving} onClick={() => void toggleSharing(!sharingEnabled)}>
+              <span className="settings-switch-thumb" />
             </button>
           </div>
         </form>
-      </section>
-
-      <section className="settings-group">
-        <h3 className="settings-group-title">Terminal</h3>
-        <form className="settings-row settings-row-stacked" onSubmit={(event) => event.preventDefault()}>
-          <div className="settings-card-copy">
-            <h3>Access origin</h3>
-            <p className="muted">
-              {settings.terminalOrigin
-                ? `Override: ${settings.terminalOrigin}`
-                : 'Using loopback only. Set an origin to allow the terminal from a non-loopback deployment.'}
-            </p>
-            <p className="muted">Changing this is security-sensitive and requires GitHub verification before it saves.</p>
-          </div>
-          <div className="settings-origins">
-            <div className="settings-origin-row">
-              <input
-                type="text"
-                className="settings-text-input"
-                placeholder="https://cotta.example.com"
-                value={terminalOrigin}
-                disabled={saving || stepUpOrigin !== undefined}
-                onChange={(event) => setTerminalOrigin(event.target.value)}
-              />
+        {sharingEnabled ? (
+          <form className="settings-row settings-row-stacked" onSubmit={(event) => event.preventDefault()}>
+            <div className="settings-card-copy">
+              <h3>Public base URL</h3>
+              <p className="muted">Origin used to build Lark Detail links. Sharing stays off until this is set.</p>
             </div>
-            <button
-              type="button"
-              className="settings-origin-add"
-              disabled={saving || stepUpOrigin !== undefined}
-              onClick={() => {
-                const origin = terminalOrigin.trim() || null
-                // Validate before the GitHub round-trip so a typo doesn't cost a full approval.
-                if (!terminalOriginUpdateRequestSchema.shape.origin.safeParse(origin).success) {
-                  setStatus({ message: 'Invalid origin: use scheme, host and optional port only, e.g. https://cotta.example.com', tone: 'error' })
-                  return
-                }
-                setStepUpOrigin(origin)
-              }}
-            >
-              Verify & save
-            </button>
-          </div>
-        </form>
+            <div className="settings-origins">
+              <div className="settings-origin-field">
+                <input
+                  type="text"
+                  className={`settings-text-input settings-origin-input${publicBaseUrlError ? ' settings-input-invalid' : ''}`}
+                  aria-label="Public base URL"
+                  aria-invalid={publicBaseUrlError}
+                  placeholder="https://cotta.example.com"
+                  ref={(node) => {
+                    if (node && focusPublicBaseUrlRef.current) {
+                      focusPublicBaseUrlRef.current = false
+                      node.focus()
+                    }
+                  }}
+                  value={publicBaseUrl}
+                  disabled={saving}
+                  onChange={(event) => {
+                    setPublicBaseUrl(event.target.value)
+                    if (publicBaseUrlError) setPublicBaseUrlError(false)
+                  }}
+                  onBlur={() => void handlePublicBaseUrlBlur()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur()
+                  }}
+                />
+                <button
+                  type="button"
+                  className="settings-origin-pill"
+                  disabled={saving}
+                  // Keep focus on the input so its blur (which would flip the switch off on an empty field) never fires before this fills it.
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void savePublicBaseUrl(window.location.origin)}
+                  title={`Use ${window.location.origin}`}
+                >
+                  Use {window.location.origin}
+                </button>
+              </div>
+              {publicBaseUrlError ? <p className="settings-input-error">Enter a canonical http(s) origin, e.g. https://cotta.example.com — no path, query, or trailing slash.</p> : null}
+            </div>
+          </form>
+        ) : null}
       </section>
 
       {authSession?.authenticated && authSession.user ? (
@@ -756,19 +684,6 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
           {buildInfo.data.agentSdkVersion ? <span>Claude Agent SDK version {buildInfo.data.agentSdkVersion}</span> : null}
           <span>Uptime {formatUptime(buildInfo.data.uptimeSeconds)}</span>
         </footer>
-      ) : null}
-
-      {stepUpOrigin !== undefined ? (
-        <TerminalOriginStepUp
-          origin={stepUpOrigin}
-          onClose={() => setStepUpOrigin(undefined)}
-          onSaved={(saved) => {
-            queryClient.setQueryData(['settings'], { settings: saved })
-            setTerminalOrigin(saved.terminalOrigin ?? '')
-            setStepUpOrigin(undefined)
-            setStatus({ message: 'Saved', tone: 'success' })
-          }}
-        />
       ) : null}
     </section>
   )

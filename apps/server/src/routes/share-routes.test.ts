@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { createCottaDatabase } from '../database.js'
 import { encodeDetailToken } from '../detail-token.js'
 import { ShareStore } from '../share-store.js'
-import { createTestApp, messages, project } from './project-routes-test-helpers.js'
+import { createTestApp, memorySettingsStore, messages, project } from './project-routes-test-helpers.js'
 
 const key = randomBytes(32)
 
@@ -98,6 +98,49 @@ describe('share routes', () => {
       expect(((await read.json()) as { turn: { primaryUserUuid: string } }).turn.primaryUserUuid).toBe('user-1')
     } finally {
       await cleanup()
+    }
+  })
+
+  it('rejects create when sharing is off (no public base URL configured)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cotta-share-routes-'))
+    const shareStore = new ShareStore(createCottaDatabase(join(root, 'cotta.sqlite')))
+    const liveStates = { 'session-newest': { phase: 'idle' as const, activeUserMessageUuid: null, lastTurn: { id: 'user-2', outcome: 'success' as const } } }
+    const timelineMetadataReader = async () => ({
+      turnMetadata: new Map([['user-2', { durationMs: 12_345, durationTimestampMs: 1_752_470_490_000 }]]),
+      turnOptions: { permissionMode: null, model: null, effort: null },
+    })
+    const app = createTestApp(liveStates, messages, { detailTokenKey: key, shareStore, timelineMetadataReader, settingsStore: memorySettingsStore() } as never)
+    try {
+      const create = await app.request('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ detailToken: detailToken('user-2') }) })
+      expect(create.status).toBe(403)
+      expect(await create.json()).toEqual({ error: 'sharing_disabled' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('suspends access to an existing share when sharing is turned off', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cotta-share-routes-'))
+    const shareStore = new ShareStore(createCottaDatabase(join(root, 'cotta.sqlite')))
+    const liveStates = { 'session-newest': { phase: 'idle' as const, activeUserMessageUuid: null, lastTurn: { id: 'user-2', outcome: 'success' as const } } }
+    const timelineMetadataReader = async () => ({
+      turnMetadata: new Map([['user-2', { durationMs: 12_345, durationTimestampMs: 1_752_470_490_000 }]]),
+      turnOptions: { permissionMode: null, model: null, effort: null },
+    })
+    try {
+      const enabled = createTestApp(liveStates, messages, { detailTokenKey: key, shareStore, timelineMetadataReader })
+      const create = await enabled.request('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ detailToken: detailToken('user-2') }) })
+      expect(create.status).toBe(200)
+      const { token } = (await create.json()) as { token: string }
+      expect((await enabled.request(`/api/share/${token}`)).status).toBe(200)
+
+      // Same store, sharing now off → the already-shared page is suspended, not deleted.
+      const disabled = createTestApp(liveStates, messages, { detailTokenKey: key, shareStore, timelineMetadataReader, settingsStore: memorySettingsStore() } as never)
+      const read = await disabled.request(`/api/share/${token}`)
+      expect(read.status).toBe(404)
+      expect(await read.json()).toEqual({ error: 'share_unavailable' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 })

@@ -8,7 +8,6 @@ const SESSION_COOKIE = 'cotta_session'
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SESSION_MAX_AGE_SECONDS = SESSION_TTL_MS / 1000
 const SESSION_RENEW_THRESHOLD_MS = 24 * 60 * 60 * 1000
-const STEP_UP_TTL_MS = 5 * 60 * 1000
 const GITHUB_RETRY_DELAYS_MS = [500, 1000]
 // Cotta's own OAuth App (identity-only, no scope). Hardcoded so operators never create or paste one.
 const GITHUB_CLIENT_ID = 'Ov23liMLUPsdQ154njI3'
@@ -18,7 +17,7 @@ type Session = {
   expiresAt: number
 }
 
-type DeviceFlowPurpose = 'login' | 'stepup'
+type DeviceFlowPurpose = 'login'
 
 type DeviceFlow = {
   purpose: DeviceFlowPurpose
@@ -96,7 +95,6 @@ export function noopAuth(): CottaAuth {
     },
     registerRoutes: () => {},
     currentUser: () => null,
-    consumeStepUpToken: () => false,
     terminalAuthorized: () => true,
   }
 }
@@ -104,7 +102,6 @@ export function noopAuth(): CottaAuth {
 export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: SettingsStore } = {}) {
   const sessions = new Map<string, Session>()
   const deviceFlows = new Map<string, DeviceFlow>()
-  const stepUpTokens = new Map<string, { login: string; expiresAt: number }>()
   const cookieSecureOverride = input.github?.cookieSecure ?? process.env.COTTA_COOKIE_SECURE
 
   // Read GitHub config fresh on every use so Settings-UI edits take effect without a restart.
@@ -260,13 +257,8 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
     for (const [id, flow] of deviceFlows) if (flow.expiresAt <= now) deviceFlows.delete(id)
   }
 
-  function cleanupExpiredStepUp(): void {
-    const now = Date.now()
-    for (const [token, entry] of stepUpTokens) if (entry.expiresAt <= now) stepUpTokens.delete(token)
-  }
-
   /**
-   * Poll one device flow of the given purpose (a flow started for login can't be redeemed for step-up and vice versa).
+   * Poll one device flow of the given purpose.
    * Returns the authorized allowed GitHub user with the flow still stored, or the response to send as-is.
    */
   async function pollDeviceFlow(c: Context, purpose: DeviceFlowPurpose): Promise<{ flowId: string; user: AuthUser } | Response> {
@@ -304,20 +296,6 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
     return { flowId, user }
   }
 
-  /** One-time, short-lived step-up token bound to the current session user. Consumed on first use regardless of validity (no replay). */
-  function consumeStepUpToken(c: Context, token: string): boolean {
-    cleanupExpiredStepUp()
-    const user = currentUser(c)
-    if (!user || !token) return false
-    const entry = stepUpTokens.get(token)
-    if (!entry) return false
-    stepUpTokens.delete(token)
-    if (entry.expiresAt <= Date.now()) return false
-    const boundLogin = normalizeAllowedUser(entry.login)
-    const sessionLogin = normalizeAllowedUser(user.login)
-    return boundLogin !== null && sessionLogin !== null && safeEqual(boundLogin, sessionLogin)
-  }
-
   function registerRoutes(app: Hono): void {
     app.get('/api/auth/session', (c) => {
       const user = currentUser(c)
@@ -343,8 +321,7 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
         const flowId = randomId()
         const expiresIn = Number(body.expires_in ?? 900)
         const interval = Number(body.interval ?? 5)
-        const purpose: DeviceFlowPurpose = c.req.query('purpose') === 'stepup' ? 'stepup' : 'login'
-        deviceFlows.set(flowId, { purpose, deviceCode: body.device_code, expiresAt: Date.now() + expiresIn * 1000, interval })
+        deviceFlows.set(flowId, { purpose: 'login', deviceCode: body.device_code, expiresAt: Date.now() + expiresIn * 1000, interval })
         return c.json({
           flowId,
           userCode: body.user_code,
@@ -373,30 +350,6 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
       }
     })
 
-    // Step-up: re-verify the current user via a fresh device flow and mint a one-time token for a
-    // sensitive config write (changing the terminal Origin). Requires an existing session, re-checks the
-    // allowlist, and requires the freshly authorized GitHub login to match the session user. Mints a
-    // token instead of a session cookie — a hijacked front end cannot forge it without a real GitHub approval.
-    app.post('/api/auth/github/stepup/poll', async (c) => {
-      try {
-        const sessionUser = currentUser(c)
-        if (!sessionUser) return c.json({ error: 'unauthorized' }, 401)
-        const result = await pollDeviceFlow(c, 'stepup')
-        if (result instanceof Response) return result
-        const { flowId, user } = result
-        const stepUpLogin = normalizeAllowedUser(user.login)
-        const sessionLogin = normalizeAllowedUser(sessionUser.login)
-        if (stepUpLogin === null || sessionLogin === null || !safeEqual(stepUpLogin, sessionLogin)) return c.json({ error: 'user_mismatch' }, 403)
-        deviceFlows.delete(flowId)
-        const stepUpToken = randomId()
-        stepUpTokens.set(stepUpToken, { login: user.login, expiresAt: Date.now() + STEP_UP_TTL_MS })
-        return c.json({ status: 'authorized', stepUpToken })
-      } catch (error) {
-        if (error instanceof GitHubRequestError) return c.json({ error: error.message }, 502)
-        throw error
-      }
-    })
-
     app.post('/api/auth/logout', (c) => {
       clearSessionCookie(c)
       return c.json({ ok: true })
@@ -407,7 +360,6 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
     middleware,
     registerRoutes,
     currentUser,
-    consumeStepUpToken,
     terminalAuthorized: (cookie: string | undefined) => {
       const signedSession = cookie
         ?.split(';')

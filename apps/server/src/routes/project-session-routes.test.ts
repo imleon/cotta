@@ -12,7 +12,7 @@ const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQU
 describe('project session routes', () => {
   it('publishes a timeline change and syncs existing runtime after updating session turn options', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(123)
-    const turnOptionsStore = memoryTurnOptionsStore({ 'session-newest': { permissionMode: 'default', model: 'gateway/my-model', effort: 'high' } })
+    const turnOptionsStore = memoryTurnOptionsStore({ 'session-newest': { permissionMode: null, model: 'gateway/my-model', effort: 'high' } })
     const notifier = new IndexChangeNotifier()
     const publishSessionVersion = vi.spyOn(notifier, 'publishSessionVersion')
     const ensureRuntime = vi.fn()
@@ -20,7 +20,7 @@ describe('project session routes', () => {
     const app = createApp({
       transcriptIndex: memoryTranscriptIndex(),
       turnOptionsStore,
-      settingsStore: memorySettingsStore({ modelCatalog }),
+      settingsStore: memorySettingsStore({ modelCatalog, defaultPermissionMode: 'acceptEdits' }),
       indexChangeNotifier: notifier,
       timelineVersionReader: () => 'timeline-canonical-v2',
       liveTurnManager: {
@@ -68,6 +68,7 @@ describe('project session routes', () => {
     })
 
     expect(response.status).toBe(200)
+    expect(turnOptionsStore.getPrePlanPermissionMode('session-newest')).toBe('acceptEdits')
     expect(turnOptionsStore.observedAtMs).toEqual([123])
     expect(ensureRuntime).not.toHaveBeenCalled()
     expect(syncExistingRuntimeOptions).toHaveBeenCalledWith({ projectId: project.id, sessionId: 'session-newest', permissionMode: 'plan', model: 'gateway/my-model', effort: 'high' })

@@ -199,6 +199,41 @@ describe('LiveTurnManager', () => {
     }
   })
 
+  it('launches a plan runtime in the recorded pre-plan mode and switches to plan before the first message', async () => {
+    const order: string[] = []
+    const setPermissionMode = vi.fn(async (mode: string) => {
+      order.push(`setPermissionMode:${mode}`)
+    })
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+      queryFromGenerator(
+        (async function* () {
+          for await (const message of prompt) {
+            order.push(`message:${message.uuid}`)
+            yield { type: 'result', subtype: 'success', user_message_uuid: message.uuid } as unknown as SDKMessage
+          }
+        })(),
+        { setPermissionMode } as Partial<Query>,
+      ),
+    )
+    const onPermissionModeChanged = vi.fn()
+    const prePlanPermissionModeReader = vi.fn((sessionId: string) => (sessionId === 'session-1' ? ('bypassPermissions' as const) : null))
+    const manager = new LiveTurnManager({ onPermissionModeChanged }, undefined, undefined, undefined, undefined, prePlanPermissionModeReader)
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'plan it', userMessageUuid: 'user-1', permissionMode: 'plan' })
+    await vi.waitFor(() => expect(order).toEqual(['setPermissionMode:plan', 'message:user-1']))
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({ options: expect.objectContaining({ permissionMode: 'bypassPermissions' }) }))
+    expect(onPermissionModeChanged).toHaveBeenCalledWith({ sessionId: 'session-1', projectId, mode: 'plan', previousMode: 'bypassPermissions', observedAtMs: expect.any(Number) })
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-2', permissionMode: 'plan' })
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({ options: expect.objectContaining({ permissionMode: 'plan' }) }))
+    await manager.ensureRuntime({ projectId, sessionId: 'session-3', permissionMode: 'acceptEdits' })
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({ options: expect.objectContaining({ permissionMode: 'acceptEdits' }) }))
+    expect(setPermissionMode).toHaveBeenCalledOnce()
+    expect(prePlanPermissionModeReader.mock.calls).toEqual([['session-1'], ['session-2']])
+    manager.closeAll()
+  })
+
   it('updates session options when ensuring an existing runtime', async () => {
     const setPermissionMode = vi.fn()
     const setModel = vi.fn()
@@ -238,9 +273,9 @@ describe('LiveTurnManager', () => {
     await manager.ensureRuntime({ projectId, sessionId: 'session-1', permissionMode: 'default' })
     await vi.waitFor(() =>
       expect(onPermissionModeChanged.mock.calls.map(([input]) => input)).toEqual([
-        { sessionId: 'session-1', projectId, mode: 'auto', observedAtMs: 123 },
-        { sessionId: 'session-1', projectId, mode: 'plan', observedAtMs: 123 },
-        { sessionId: 'session-1', projectId, mode: 'auto', observedAtMs: 123 },
+        { sessionId: 'session-1', projectId, mode: 'auto', previousMode: 'default', observedAtMs: 123 },
+        { sessionId: 'session-1', projectId, mode: 'plan', previousMode: 'default', observedAtMs: 123 },
+        { sessionId: 'session-1', projectId, mode: 'auto', previousMode: 'plan', observedAtMs: 123 },
       ]),
     )
     setPermissionMode.mockClear()
@@ -271,7 +306,7 @@ describe('LiveTurnManager', () => {
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce())
 
     expect(onPermissionModeChanged).toHaveBeenCalledOnce()
-    expect(onPermissionModeChanged).toHaveBeenCalledWith({ sessionId: 'session-1', projectId, mode: 'plan', observedAtMs: expect.any(Number) })
+    expect(onPermissionModeChanged).toHaveBeenCalledWith({ sessionId: 'session-1', projectId, mode: 'plan', previousMode: 'default', observedAtMs: expect.any(Number) })
   })
 
   it('syncs options only when a runtime already exists', async () => {
@@ -1906,7 +1941,7 @@ describe('LiveTurnManager', () => {
     const projectId = Buffer.from('/repo/a').toString('base64url')
 
     await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'plan it', userMessageUuid: 'user-1', permissionMode: 'auto' })
-    await vi.waitFor(() => expect(onPermissionModeChanged).toHaveBeenCalledWith({ sessionId: 'session-1', projectId, mode: 'plan', observedAtMs: expect.any(Number) }))
+    await vi.waitFor(() => expect(onPermissionModeChanged).toHaveBeenCalledWith({ sessionId: 'session-1', projectId, mode: 'plan', previousMode: 'auto', observedAtMs: expect.any(Number) }))
     const canUseTool = queryMock.mock.calls[0]?.[0].options.canUseTool
     const sdkSuggestion = { type: 'addRules', behavior: 'allow', destination: 'session', rules: [{ toolName: 'Bash' }] }
     const nativeRestore = canUseTool(

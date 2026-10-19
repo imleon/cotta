@@ -33,7 +33,7 @@ export class SessionProjectMismatchError extends Error {}
 type SessionActivityObserver = {
   signalSessionActivity?(input: { sessionId: string; projectId?: string }): unknown
   notifySessionRunStateActive?(input: { sessionId: string; projectId: string; version: number }): unknown
-  onPermissionModeChanged?(input: { sessionId: string; projectId: string; mode: PermissionMode; observedAtMs: number }): unknown | Promise<unknown>
+  onPermissionModeChanged?(input: { sessionId: string; projectId: string; mode: PermissionMode; previousMode: PermissionMode; observedAtMs: number }): unknown | Promise<unknown>
 }
 
 type LiveTurnMetadataRecorder = {
@@ -196,6 +196,7 @@ export class LiveTurnManager {
     private readonly contextUsageStore?: SessionContextUsageStore,
     private readonly settingsStore?: SettingsStore,
     private readonly externalOwnershipReader?: (sessionId: string) => unknown | null,
+    private readonly prePlanPermissionModeReader?: (sessionId: string) => PermissionMode | null,
   ) {}
 
   sessionRunState(sessionId: string): SessionRunState | null {
@@ -752,10 +753,17 @@ export class LiveTurnManager {
       throw new ProjectDirectoryUnavailableError('Project directory is unavailable')
   }
 
-  private transitionPermissionMode(runtime: SessionRuntime, permissionMode: PermissionMode): boolean {
-    if (runtime.permissionMode === permissionMode) return false
+  private transitionPermissionMode(runtime: SessionRuntime, permissionMode: PermissionMode): PermissionMode | null {
+    if (runtime.permissionMode === permissionMode) return null
+    const previousMode = runtime.permissionMode
     runtime.permissionMode = permissionMode
-    return true
+    return previousMode
+  }
+
+  private async recordPermissionMode(runtime: SessionRuntime, permissionMode: PermissionMode, observedAtMs = Date.now()): Promise<void> {
+    const previousMode = this.transitionPermissionMode(runtime, permissionMode)
+    if (!previousMode) return
+    await this.sessionActivityObserver?.onPermissionModeChanged?.({ sessionId: runtime.sessionId, projectId: runtime.projectId, mode: permissionMode, previousMode, observedAtMs })
   }
 
   private async alignRuntimeOptions(runtime: SessionRuntime, input: RuntimeOptions): Promise<void> {
@@ -810,6 +818,9 @@ export class LiveTurnManager {
     const projectPath = projectPathFromId(input.projectId)
     if (!projectPath) throw new Error('Invalid project id')
     const autoCompactPercent = readSettings(this.settingsStore).autoCompactPercent
+    // Claude Code only records the mode to restore on ExitPlanMode when it transitions into plan, so a plan
+    // runtime is launched in the recorded pre-plan mode and switched to plan before it accepts any input.
+    const launchPermissionMode = (input.permissionMode === 'plan' ? this.prePlanPermissionModeReader?.(input.sessionId) : null) ?? input.permissionMode
     const runtimeInput = new AsyncQueue<SDKUserMessage>()
     let runtime!: SessionRuntime
     const sdkQuery = query({
@@ -818,7 +829,7 @@ export class LiveTurnManager {
         cwd: projectPath,
         ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
         includePartialMessages: true,
-        permissionMode: input.permissionMode,
+        permissionMode: launchPermissionMode,
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         env: {
@@ -851,7 +862,7 @@ export class LiveTurnManager {
       sessionId: input.sessionId,
       input: runtimeInput,
       query: sdkQuery,
-      permissionMode: input.permissionMode,
+      permissionMode: launchPermissionMode,
       model: input.model,
       effort: input.effort,
       currentUserMessageUuid: null,
@@ -868,18 +879,22 @@ export class LiveTurnManager {
       closed: false,
       idleTimer: null,
     }
-    runtime.ready = sdkQuery.initializationResult().then(
-      (result) => {
+    runtime.ready = sdkQuery
+      .initializationResult()
+      .then(async (result) => {
         runtime.initializationResult = result
+        if (runtime.permissionMode !== input.permissionMode) {
+          await sdkQuery.setPermissionMode(input.permissionMode)
+          await this.recordPermissionMode(runtime, input.permissionMode)
+        }
         if (input.resume) this.refreshContextUsage(runtime)
-      },
-      (error) => {
+      })
+      .catch((error: unknown) => {
         if (runtime.closed || runtime.stale) return
         runtime.stale = true
         this.closeRuntime(runtime)
         throw error
-      },
-    )
+      })
     this.runtimes.set(input.sessionId, runtime)
     this.signalRuntimeChange(runtime)
     this.scheduleIdleClose(runtime)
@@ -923,9 +938,7 @@ export class LiveTurnManager {
 
         const permissionMode = sdkPermissionMode(publishedMessage)
         if (permissionMode) {
-          const observedAtMs = Date.now()
-          this.transitionPermissionMode(runtime, permissionMode)
-          await this.sessionActivityObserver?.onPermissionModeChanged?.({ sessionId: runtime.sessionId, projectId: runtime.projectId, mode: permissionMode, observedAtMs })
+          await this.recordPermissionMode(runtime, permissionMode)
           if (!this.isCurrentRuntime(runtime)) break
         }
 

@@ -484,6 +484,7 @@ function LocalMarkdownImage({ src, alt, context }: { src: string; alt: string; c
   const loadingRef = useRef(false)
   const controllerRef = useRef<AbortController | null>(null)
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: image identity (src + message/session/agent/cwd/project context) is the reset trigger; a new identity aborts the old load and clears its confirmation/blob/error
   useLayoutEffect(() => {
     controllerRef.current?.abort()
     controllerRef.current = null

@@ -435,6 +435,7 @@ function useSessionTimelineData(
     setHistoryReady(true)
   }, [applyTimelineFullRefresh, materialize, pendingPrimaryTurnUuid, provisionalSlash, searchAnchorTurnId, sessionId, timeline.data, transcriptSignal])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: controlRetry is the retry trigger bumped by retryControl; it re-issues the control fetch for the same signal version
   useEffect(() => {
     if (!timelineControlSignal || !projectId || !sessionId || !historyEnabled || timelineControlSignal.version === lastAppliedControlVersionRef.current) return
     const request = controlRequestRef.current + 1
@@ -600,7 +601,7 @@ function useSessionTimelineData(
       }
     }
     void drain()
-  }, [applyTimelineFullRefresh, historyEnabled, materialize, pendingPrimaryTurnUuid, searchAnchorTurnId, sessionId, timeline.isFetching, transcriptSignal])
+  }, [applyTimelineFullRefresh, historyEnabled, materialize, pendingPrimaryTurnUuid, projectId, searchAnchorScope, searchAnchorTurnId, sessionId, timeline.isFetching, transcriptSignal])
 
   useEffect(() => {
     if (!sessionId) return
@@ -721,7 +722,7 @@ function useSessionTimelineData(
       active = false
       events.close()
     }
-  }, [searchAnchorTurnId, sessionId])
+  }, [searchAnchorTurnId, sessionId, timeline.refetch])
 
   const loadOlder = useCallback(async (): Promise<boolean> => {
     if (!historyEnabled || !sessionId || !nextCursor || loadingOlder) return false
@@ -752,7 +753,7 @@ function useSessionTimelineData(
     } finally {
       if (loadOlderRequestRef.current === requestId) setLoadingOlder(false)
     }
-  }, [historyEnabled, loadingOlder, materialize, nextCursor, searchAnchorTurnId, sessionId, timeline])
+  }, [historyEnabled, loadingOlder, materialize, nextCursor, searchAnchorScope, searchAnchorTurnId, sessionId, timeline])
 
   return {
     turns,
@@ -989,6 +990,7 @@ export function SessionTimeline({
       current?.selectedAgentId && !subagentTree.data.tree.some(({ agentId }) => agentId === current.selectedAgentId) ? { ...current, selectedAgentId: null } : current,
     )
   }, [subagentTree.data?.tree, subagentTree.isSuccess])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionId is the reset trigger; a subagent selection belongs to the previous session
   useEffect(() => setSubagentSelection(null), [sessionId])
   const isTimelineAtBottom = useCallback(() => {
     const panel = timelinePanelRef.current
@@ -1187,6 +1189,7 @@ export function SessionTimeline({
     onPendingPermissionChange?.(pendingPermission)
   }, [onPendingPermissionChange, pendingPermission])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restore the load-older scroll anchor after the prepended visibleTurns commit; the effect reads layout, not the array
   useLayoutEffect(() => {
     const anchor = olderScrollAnchorRef.current
     if (!anchor) return
@@ -1195,6 +1198,7 @@ export function SessionTimeline({
     if (panel) panel.scrollTop = anchor.scrollTop + panel.scrollHeight - anchor.scrollHeight
   }, [visibleTurns])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pendingApprovalToolUseId re-pins to bottom when a permission prompt appears or changes, since it grows the latest turn without changing visibleTurns
   useEffect(() => {
     if (!historyReady || visibleTurns.length === 0 || !shouldScrollToBottomRef.current) return
     const targetSessionId = sessionId
@@ -1239,6 +1243,7 @@ export function SessionTimeline({
     [],
   )
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure scroll-button visibility after visibleTurns changes; the effect reads layout, not the array
   useLayoutEffect(() => {
     setScrollButtonVisible(!shouldScrollToBottomRef.current && !isTimelineAtBottom())
   }, [isTimelineAtBottom, setScrollButtonVisible, shouldScrollToBottomRef, visibleTurns])

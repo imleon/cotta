@@ -166,7 +166,7 @@ function ActivityHeatmap({ values, loading, error, refreshError, onRetry }: { va
       setTabStopDate(next.date)
       calendarRef.current?.querySelector<HTMLElement>(`[data-cell-index="${nextIndex}"]`)?.focus()
     },
-    [calendar.cells],
+    [calendar.cells, calendar.rows],
   )
   const beginUserScroll = useCallback(() => {
     userScrollActiveRef.current = true
@@ -199,6 +199,7 @@ function ActivityHeatmap({ values, loading, error, refreshError, onRetry }: { va
     lastScrolledDateRef.current = newestDate
   }, [newestDate, scrollToNewest])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: newestDate is an intentional re-run trigger — re-attach the ResizeObserver (which fires keepNewestVisible on observe) when new data arrives so the newest column stays visible
   useLayoutEffect(() => {
     const scrollport = scrollportRef.current
     const calendarElement = calendarRef.current
@@ -410,7 +411,7 @@ export function UsageOverview({ timeZone }: { timeZone: string }) {
       window.clearInterval(interval)
       window.removeEventListener('focus', refreshBoundary)
     }
-  }, [timeZone])
+  }, [])
   const summaryQuery = useQuery({ queryKey: ['usage', range, timeZone, today], queryFn: () => fetchUsage(range, timeZone), retry: false, refetchOnMount: false })
   const calendarQuery = useQuery({ queryKey: ['usage-daily', calendarDayCount, timeZone, today], queryFn: () => fetchDailyUsage(calendarDayCount, timeZone), retry: false, refetchOnMount: false })
   const refreshMutation = useMutation({

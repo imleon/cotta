@@ -343,10 +343,12 @@ export function TurnComposer({
   const triggerModelLabel = selectedModel?.displayName || displayedModel
   const triggerEffortLabel = selectedModel?.supportsEffort && displayedEffort !== DEFAULT_TURN_OPTION ? effortLabel(displayedEffort) : null
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: projectId/selectedSessionId are intentional reset triggers — clear submit error and interrupting state when switching project or session
   useEffect(() => {
     setSubmitError(null)
     setInterrupting(false)
   }, [projectId, selectedSessionId])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: composerScopeKey is an intentional reset trigger — cancel in-flight image imports when the composer scope changes
   useEffect(() => {
     imageImportGenerationRef.current += 1
     importingImagesRef.current = false
@@ -374,6 +376,7 @@ export function TurnComposer({
     )
     return () => window.clearTimeout(timer)
   }, [pendingTurnId, selectedSessionId, setPendingTurn, setSelectedSessionId, unknownSubmission])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: composerScopeKey is an intentional reset trigger — reset manual-change tracking and close menus when the composer scope changes
   useEffect(() => {
     composerManuallyChangedRef.current = false
     manualModelEffortBaselineRef.current = null
@@ -381,6 +384,7 @@ export function TurnComposer({
     setSessionInfoOpen(false)
     setContextOpen(false)
   }, [composerScopeKey])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: composerScopeKey and turnOptionsSaveRevision are intentional re-run triggers — re-derive model/effort/permission defaults when the scope changes or a turn-options save settles
   useEffect(() => {
     if (composerManuallyChangedRef.current) {
       const modelEffort = JSON.stringify([turnOptions?.model ?? null, turnOptions?.effort ?? null])
@@ -403,6 +407,7 @@ export function TurnComposer({
   useEffect(() => {
     if (externalPermissionMode) setPermissionMode(externalPermissionMode)
   }, [externalPermissionMode])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: inputText is an intentional trigger — re-measure and auto-grow the textarea height when its content changes
   useEffect(() => {
     const input = inputRef.current
     if (!input) return

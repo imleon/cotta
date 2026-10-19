@@ -524,6 +524,7 @@ function ProjectSessionList({
   const pagedRows = rows.slice(0, displayLimit)
   const visibleRows = selectedSessionSummary && !pagedRows.some((session) => session.id === selectedSessionSummary.id) ? [...pagedRows, selectedSessionSummary] : pagedRows
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: project.id is an intentional reset trigger — reset pagination when the project changes
   useEffect(() => setDisplayLimit(RAIL_SESSION_PAGE_SIZE), [project.id])
 
   useEffect(() => {
@@ -536,6 +537,7 @@ function ProjectSessionList({
   const hasMore = rows.length > displayLimit || query.data?.hasMore
   const highlighted = visibleRows.some((session) => session.id === highlightedSessionId)
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: visibleRows.length is an intentional trigger — restore scrollTop after "load more" grows the list
   useLayoutEffect(() => {
     const scrollTop = loadMoreScrollTopRef.current
     if (scrollTop === null) return
@@ -774,6 +776,7 @@ export function ProjectSessionRail({
     })
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: expandProject is redefined every render; adding it would re-run this selection effect each render. It only calls setExpandedProjectIds with an updater (stable identity), so the latest closure is irrelevant — run only when the selection changes.
   useEffect(() => {
     const selectionKey = selectedSessionId ?? `${selectedProjectId ?? ''}\0`
     if (pendingSelectionRef.current === selectionKey) {
@@ -792,6 +795,7 @@ export function ProjectSessionRail({
     })
   }, [selectedProjectId, selectedSessionId])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: expandProject is redefined every render; adding it would re-run this effect each render. It only calls setExpandedProjectIds with an updater (stable identity) — run only when the highlighted session changes.
   useEffect(() => {
     if (highlightedSession) expandProject(highlightedSession.projectId)
   }, [highlightedSession])

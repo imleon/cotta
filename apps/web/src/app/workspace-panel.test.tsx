@@ -38,6 +38,7 @@ vi.mock('../timeline', () => ({
     provisionalSlash?: unknown
     sessionId?: string | null
   }) => {
+    // biome-ignore lint/correctness/useExhaustiveDependencies: onLiveTurnChange/onSessionListStale get a new identity on every WorkspacePanel render; listing them re-runs this effect, whose onTasksChange call re-renders the parent, in an endless loop
     useEffect(() => {
       timelineEffects.push(onPendingPermissionChange!)
       timelineTaskEffects.push(onTasksChange!)

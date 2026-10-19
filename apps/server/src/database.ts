@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { databasePath } from './cotta-home.js'
 
-const SCHEMA_VERSION = 44
+const SCHEMA_VERSION = 45
 
 /** On-disk root for a share's frozen image assets, co-located with the database file. */
 export function shareAssetsRoot(token: string): string {
@@ -185,6 +185,7 @@ function createTranscriptIndexTables(db: DatabaseSync): void {
       entrypoint TEXT,
       session_kind TEXT,
       permission_mode TEXT,
+      pre_plan_permission_mode TEXT,
       model TEXT,
       effort TEXT,
       turn_options_observed_at_ms INTEGER CHECK (turn_options_observed_at_ms IS NULL OR turn_options_observed_at_ms >= 0),
@@ -365,8 +366,9 @@ function initializeSchema(db: DatabaseSync): void {
       createRemoteBotTables(db)
       createShareTables(db)
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
-    } else if (version === 43) {
-      createShareTables(db)
+    } else if (version === 43 || version === 44) {
+      if (version === 43) createShareTables(db)
+      db.exec('ALTER TABLE session_index ADD COLUMN pre_plan_permission_mode TEXT')
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
     } else
       throw new Error(

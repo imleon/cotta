@@ -245,11 +245,13 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
         const settings = readSettings(input.settingsStore)
         const normalized = parsed.data.model === undefined ? parsed.data : { ...parsed.data, ...normalizeModelEffortSelection({ model: parsed.data.model, effort: parsed.data.effort! }, settings) }
         const current = input.turnOptionsStore!.getSessionTurnOptions(sessionId)
+        const prePlanPermissionMode =
+          normalized.permissionMode === 'plan' ? resolveTurnOptions({ sessionId, settingsStore: input.settingsStore, turnOptionsStore: input.turnOptionsStore }).permissionMode : null
         const candidate = { permissionMode: current?.permissionMode ?? null, model: current?.model ?? null, effort: current?.effort ?? null, ...normalized }
         const candidateOptions = resolveTurnOptions({ sessionId, settingsStore: input.settingsStore, turnOptionsStore: { getSessionTurnOptions: () => candidate } })
         const validation = validateTurnOptions(candidateOptions, input.settingsStore)
         if (!validation.ok) return validation.error
-        if (!input.turnOptionsStore!.setSessionTurnOptions(sessionId, normalized, Date.now())) throw new Error('Turn options update was superseded before commit')
+        if (!input.turnOptionsStore!.setSessionTurnOptions(sessionId, normalized, Date.now(), prePlanPermissionMode)) throw new Error('Turn options update was superseded before commit')
         const options = resolveTurnOptions({ sessionId, settingsStore: input.settingsStore, turnOptionsStore: input.turnOptionsStore })
         let projectId: string | undefined
         try {

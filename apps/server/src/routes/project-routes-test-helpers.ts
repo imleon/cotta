@@ -184,8 +184,11 @@ function rawLinesForTurn(lines: SessionRawTranscriptLine[], turnId: string): Ses
   return owned.length ? owned : null
 }
 
+type TestPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
+
 type TestStoredTurnOptions = {
-  permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto' | null
+  permissionMode: TestPermissionMode | null
+  prePlanPermissionMode?: TestPermissionMode | null
   model: string | null
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
 }
@@ -196,12 +199,25 @@ export function memoryTurnOptionsStore(initial: Record<string, TestStoredTurnOpt
   const store = {
     observedAtMs,
     acceptWrites: true,
-    getSessionTurnOptions: (sessionId: string) => sessionData.get(sessionId) ?? null,
-    setSessionTurnOptions: (sessionId: string, update: Partial<TestStoredTurnOptions>, observedAt = Date.now()) => {
+    getSessionTurnOptions: (sessionId: string) => {
+      const value = sessionData.get(sessionId)
+      return value ? { permissionMode: value.permissionMode, model: value.model, effort: value.effort } : null
+    },
+    getPrePlanPermissionMode: (sessionId: string) => sessionData.get(sessionId)?.prePlanPermissionMode ?? null,
+    setSessionTurnOptions: (sessionId: string, update: Partial<TestStoredTurnOptions>, observedAt = Date.now(), prePlanPermissionMode?: TestPermissionMode | null) => {
       observedAtMs.push(observedAt)
       if (!store.acceptWrites) return false
-      const current = sessionData.get(sessionId) ?? { permissionMode: null, model: null, effort: null }
-      sessionData.set(sessionId, { ...current, ...update })
+      const current = sessionData.get(sessionId) ?? { permissionMode: null, prePlanPermissionMode: null, model: null, effort: null }
+      const nextPermissionMode = update.permissionMode === undefined ? current.permissionMode : update.permissionMode
+      const nextPrePlanPermissionMode =
+        update.permissionMode === 'plan'
+          ? current.permissionMode === 'plan'
+            ? current.prePlanPermissionMode
+            : (current.permissionMode ?? (prePlanPermissionMode === 'plan' ? null : prePlanPermissionMode) ?? null)
+          : update.permissionMode === undefined
+            ? current.prePlanPermissionMode
+            : null
+      sessionData.set(sessionId, { ...current, ...update, permissionMode: nextPermissionMode, prePlanPermissionMode: nextPrePlanPermissionMode })
       return true
     },
     timelineVersion: (_projectId: string, sessionId: string) => `turn-options=${sessionData.has(sessionId) ? 1 : 0}`,

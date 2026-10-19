@@ -398,7 +398,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
         indexChangeNotifier.publishChange(version ? { projectId: input.projectId, sessionId: input.sessionId, selectedSessionVersion: version } : { projectId: input.projectId })
       },
       onPermissionModeChanged: (input) => {
-        if (!turnOptionsStore.setSessionTurnOptions(input.sessionId, { permissionMode: input.mode }, input.observedAtMs)) return
+        if (!turnOptionsStore.setSessionTurnOptions(input.sessionId, { permissionMode: input.mode }, input.observedAtMs, input.previousMode)) return
         indexChangeNotifier.publishSessionVersion(input.projectId, input.sessionId, timelineVersion(input.projectId, input.sessionId))
       },
     },
@@ -406,6 +406,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     sessionContextUsageStore,
     settingsStore,
     (sessionId) => claudeSessionRegistry.cliSessionMetadata(sessionId),
+    (sessionId) => turnOptionsStore.getPrePlanPermissionMode(sessionId),
   )
   activityVersion = (sessionId) => {
     const runState = liveTurnManager.sessionRunState(sessionId)

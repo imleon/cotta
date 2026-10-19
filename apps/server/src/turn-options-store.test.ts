@@ -70,4 +70,34 @@ describe('TurnOptionsStore', () => {
     expect(options.timelineVersion('project', 'session')).toBe('turn-options=100:acceptEdits::')
     db.close()
   })
+
+  it('records the mode left when entering plan and clears it when plan ends', async () => {
+    const { db, store: options } = await store()
+
+    options.setSessionTurnOptions('session', { permissionMode: 'plan' }, 100, 'acceptEdits')
+    expect(options.getPrePlanPermissionMode('session')).toBe('acceptEdits')
+
+    options.setSessionTurnOptions('session', { permissionMode: 'bypassPermissions' }, 101)
+    options.setSessionTurnOptions('session', { permissionMode: 'plan' }, 102)
+    expect(options.getPrePlanPermissionMode('session')).toBe('bypassPermissions')
+
+    options.setSessionTurnOptions('session', { permissionMode: 'plan' }, 103)
+    options.setSessionTurnOptions('session', { model: 'claude-opus-5', effort: 'high' }, 104)
+    expect(options.getPrePlanPermissionMode('session')).toBe('bypassPermissions')
+
+    expect(options.setSessionTurnOptions('session', { permissionMode: 'default' }, 99)).toBe(false)
+    expect(options.getPrePlanPermissionMode('session')).toBe('bypassPermissions')
+
+    options.setSessionTurnOptions('implicit', { model: 'claude-opus-5', effort: 'high' }, 100)
+    options.setSessionTurnOptions('implicit', { permissionMode: 'plan' }, 101, 'auto')
+    expect(options.getPrePlanPermissionMode('implicit')).toBe('auto')
+
+    options.setSessionTurnOptions('default-plan', { permissionMode: 'plan' }, 100, 'plan')
+    expect(options.getPrePlanPermissionMode('default-plan')).toBeNull()
+
+    options.setSessionTurnOptions('session', { permissionMode: 'acceptEdits' }, 105)
+    expect(options.getPrePlanPermissionMode('session')).toBeNull()
+    expect(options.getPrePlanPermissionMode('missing')).toBeNull()
+    db.close()
+  })
 })

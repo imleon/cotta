@@ -208,6 +208,7 @@ export function AppSidebar({
           </button>
           {createMenu}
         </div>
+        {/* biome-ignore lint/a11y/useSemanticElements: grid nav container; <fieldset> would add UA border, padding and min-width */}
         <div className="app-sidebar-quick-nav" role="group" aria-label="Apps and Tool Panels">
           {APP_QUICK_NAV_ITEMS.map((item) => {
             const key = item.key

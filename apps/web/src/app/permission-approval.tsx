@@ -31,8 +31,8 @@ export function PermissionApprovalCard({ approval, answering = false, onAnswer }
       <div className={`composer-approval-actions${approval.toolName === 'ExitPlanMode' ? ' composer-approval-actions-stacked' : ''}`}>
         {approval.toolName === 'ExitPlanMode' ? (
           <>
-            {exitPlanModeOptions.map(({ decision, label }, index) => (
-              <button className="composer-approval-action-suggestion" type="button" disabled={answering} onClick={() => onAnswer(approval, decision)} key={index}>
+            {exitPlanModeOptions.map(({ decision, label }) => (
+              <button className="composer-approval-action-suggestion" type="button" disabled={answering} onClick={() => onAnswer(approval, decision)} key={label}>
                 {label}
               </button>
             ))}

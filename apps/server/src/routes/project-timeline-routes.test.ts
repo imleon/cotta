@@ -6,6 +6,7 @@ import { Hono } from 'hono'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ClaudeCodeApi } from '../claude-code-api.js'
 import { createApp } from '../index.js'
+import type { SessionContextUsageStore } from '../session-context-usage-store.js'
 import { TimelineAnchorStaleError } from '../session-raw-transcript-cache.js'
 import type { SessionSubagentStore } from '../session-subagent-store.js'
 import { sessionActivityVersion } from './project-routes-shared.js'
@@ -582,7 +583,7 @@ describe('project timeline routes', () => {
     }
     const runtimeContextUsage = vi.fn()
     const response = await createTestApp({}, messages, {
-      sessionContextUsageStore: { getContextUsage: () => contextUsage, setContextUsage: () => {} } as any,
+      sessionContextUsageStore: { getContextUsage: () => contextUsage, setContextUsage: () => {} } as unknown as SessionContextUsageStore,
       liveTurnManager: {
         ensureRuntime: () => {},
         sessionRunState: () => null,
@@ -617,7 +618,7 @@ describe('project timeline routes', () => {
     } satisfies SessionContextUsage
     const runtimeContextUsage = vi.fn(async () => freshContextUsage)
     const response = await createTestApp({}, messages, {
-      sessionContextUsageStore: { getContextUsage: () => cachedContextUsage, setContextUsage: () => {} } as any,
+      sessionContextUsageStore: { getContextUsage: () => cachedContextUsage, setContextUsage: () => {} } as unknown as SessionContextUsageStore,
       liveTurnManager: {
         ensureRuntime: () => {},
         sessionRunState: () => null,
@@ -1174,7 +1175,7 @@ describe('project timeline routes', () => {
     }
     const backgroundTasks = { type: 'system', subtype: 'background_tasks_changed', uuid: 'background-live', session_id: 'session-live', tasks: [] }
     const live = { type: 'result', subtype: 'success' }
-    let subscriber: ((event: any) => void) | undefined
+    let subscriber: ((event: unknown) => void) | undefined
     const app = createApp({
       timelineVersionReader: () => 'timeline-missing',
 
@@ -1190,7 +1191,8 @@ describe('project timeline routes', () => {
         acknowledgeCompletedTurn: () => false,
         interrupt: async () => false,
         subscribe: (_sessionId, next) => {
-          subscriber = next
+          // Fixtures are partial SDK messages; the route only forwards them as JSON.
+          subscriber = next as (event: unknown) => void
           return () => {}
         },
       },

@@ -441,7 +441,7 @@ export function TimelineBlockView({
   if (fileMutation)
     return (
       <div className="timeline-file-result">
-        <FileToolResultValue block={block} fileMutation={fileMutation} />
+        <FileToolResultValue fileMutation={fileMutation} />
       </div>
     )
 
@@ -615,7 +615,6 @@ export const AssistantResponseFrameView = memo(function AssistantResponseFrameVi
   subagentCount = 0,
   highlightedMessage,
   onForkSession,
-  onNotify,
   onShare,
 }: {
   item: AssistantResponseFrameItem
@@ -637,7 +636,6 @@ export const AssistantResponseFrameView = memo(function AssistantResponseFrameVi
   subagentCount?: number
   highlightedMessage?: { uuid: string; blockIndex: number } | null
   onForkSession?: (upToMessageId: string) => Promise<unknown>
-  onNotify?: (toast: ToastNotification) => void
   onShare?: () => void
 } & QuestionResponseProps) {
   const copyText = assistantResponseText(item.items)
@@ -752,7 +750,7 @@ export const AssistantResponseFrameView = memo(function AssistantResponseFrameVi
 function CliSparkIcon({ className }: { className: string }) {
   return (
     <span className={className} aria-hidden="true">
-      <svg viewBox="0 0 100 800">
+      <svg viewBox="0 0 100 800" aria-hidden="true">
         <path d={CLI_SPARK_PATH} />
       </svg>
     </span>
@@ -992,6 +990,7 @@ export function SubagentsDialog({
   }, [])
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: onClick only handles backdrop clicks; keyboard dismissal is the native modal Escape via onCancel
     <dialog
       className="subagents-dialog"
       ref={dialogRef}
@@ -1125,6 +1124,7 @@ export function RawMessagesDialog({ lines, timeZone, loading, error, onClose }: 
   }, [])
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: onClick only handles backdrop clicks; keyboard dismissal is the native modal Escape via onCancel
     <dialog
       className="raw-messages-dialog"
       ref={dialogRef}

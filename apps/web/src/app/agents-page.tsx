@@ -162,7 +162,7 @@ export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => v
           </div>
           <div className="agents-list">
             {bots.isLoading ? (
-              <div className="agents-list-skeleton" aria-label="Loading agents">
+              <div className="agents-list-skeleton" role="status" aria-label="Loading agents">
                 <span />
                 <span />
                 <span />
@@ -209,7 +209,7 @@ export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => v
                 </button>
               </div>
             ) : selectedBotId === undefined ? (
-              <div className="agents-editor-loading" aria-label="Loading bot configuration">
+              <div className="agents-editor-loading" role="status" aria-label="Loading bot configuration">
                 <span />
                 <span />
               </div>

@@ -48,15 +48,15 @@ function highlightSnippet(snippet: string, ranges: ProjectSessionSearchMatch['ra
   if (safeRanges.length === 0) return snippet
   const parts: ReactNode[] = []
   let cursor = 0
-  safeRanges.forEach((range, index) => {
-    if (range.start > cursor) parts.push(<span key={`text-${index}`}>{snippet.slice(cursor, range.start)}</span>)
+  for (const range of safeRanges) {
+    if (range.start > cursor) parts.push(<span key={`text-${cursor}`}>{snippet.slice(cursor, range.start)}</span>)
     parts.push(
-      <mark className="session-search-highlight" key={`mark-${index}`}>
+      <mark className="session-search-highlight" key={`mark-${range.start}`}>
         {snippet.slice(range.start, range.end)}
       </mark>,
     )
     cursor = range.end
-  })
+  }
   if (cursor < snippet.length) parts.push(<span key="tail">{snippet.slice(cursor)}</span>)
   return parts
 }

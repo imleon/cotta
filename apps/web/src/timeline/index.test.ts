@@ -2386,7 +2386,6 @@ describe('raw timeline messages', () => {
   ])('renders the complete %s summary with Git-style counts', (_kind, title, fileMutation) => {
     const html = renderToStaticMarkup(
       createElement(FileToolResultValue, {
-        block: { id: 'result', kind: 'tool.result', sourceEventIds: ['result'], data: {} },
         fileMutation,
       }),
     )
@@ -2401,7 +2400,6 @@ describe('raw timeline messages', () => {
   it('keeps no textual changes neutral', () => {
     const html = renderToStaticMarkup(
       createElement(FileToolResultValue, {
-        block: { id: 'result', kind: 'tool.result', sourceEventIds: ['result'], data: {} },
         fileMutation: { type: 'update', filePath: 'src/empty.ts', hunks: [] },
       }),
     )
@@ -2414,30 +2412,6 @@ describe('raw timeline messages', () => {
   it('renders Edit structured patches as standalone file cards with line numbers', () => {
     const html = renderToStaticMarkup(
       createElement(FileToolResultValue, {
-        block: {
-          id: 'result-1:tool_result:0',
-          kind: 'tool.result',
-          sourceEventIds: ['result-1'],
-          toolUseId: 'tool-1',
-          data: {
-            type: 'tool_result',
-            tool_use_id: 'tool-1',
-            content: 'ok',
-            toolUseResult: {
-              filePath: 'apps/server/src/routes/projects.test.ts',
-              originalFile: 'before',
-              structuredPatch: [
-                {
-                  oldStart: 1905,
-                  oldLines: 6,
-                  newStart: 1905,
-                  newLines: 7,
-                  lines: ['    expect(response.status).toBe(200)', '+    expect(await response.json()).toMatchObject({ initializationResult: null })'],
-                },
-              ],
-            },
-          },
-        },
         fileMutation: {
           type: 'update',
           filePath: 'apps/server/src/routes/projects.test.ts',
@@ -2472,12 +2446,6 @@ describe('raw timeline messages', () => {
   it('defers separated inline diff bodies', () => {
     const html = renderToStaticMarkup(
       createElement(FileToolResultValue, {
-        block: {
-          id: 'result-1',
-          kind: 'tool.result',
-          sourceEventIds: ['result-1'],
-          data: { toolUseResult: { filePath: 'a.txt', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-alpha keep omega', '+beta keep theta'] }] } },
-        },
         fileMutation: { type: 'update', filePath: 'a.txt', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-alpha keep omega', '+beta keep theta'] }] },
       }),
     )
@@ -2490,17 +2458,6 @@ describe('raw timeline messages', () => {
   it('defers multi-line replacement diff bodies', () => {
     const html = renderToStaticMarkup(
       createElement(FileToolResultValue, {
-        block: {
-          id: 'result-1',
-          kind: 'tool.result',
-          sourceEventIds: ['result-1'],
-          data: {
-            toolUseResult: {
-              filePath: 'a.ts',
-              structuredPatch: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: ['-const first = oldOne', '-const second = oldTwo', '+const first = newOne', '+const second = newTwo'] }],
-            },
-          },
-        },
         fileMutation: {
           type: 'update',
           filePath: 'a.ts',
@@ -2541,7 +2498,6 @@ describe('raw timeline messages', () => {
   it('renders .md Create content with Markdown syntax', () => {
     const html = renderToStaticMarkup(
       createElement(FileToolResultValue, {
-        block: { id: 'result', kind: 'tool.result', sourceEventIds: ['result'], data: {} },
         fileMutation: { type: 'create', filePath: 'README.md', content: '# Heading', hunks: [] },
       }),
     )
@@ -2553,24 +2509,6 @@ describe('raw timeline messages', () => {
   it('renders Write create output as a Create card when patch is empty', () => {
     const html = renderToStaticMarkup(
       createElement(FileToolResultValue, {
-        block: {
-          id: 'result-1:tool_result:0',
-          kind: 'tool.result',
-          sourceEventIds: ['result-1'],
-          toolUseId: 'tool-1',
-          data: {
-            type: 'tool_result',
-            tool_use_id: 'tool-1',
-            content: 'ok',
-            toolUseResult: {
-              type: 'create',
-              filePath: 'apps/web/src/new.ts',
-              content: 'export const value = 1\n',
-              structuredPatch: [],
-              originalFile: null,
-            },
-          },
-        },
         fileMutation: { type: 'create', filePath: 'apps/web/src/new.ts', content: 'export const value = 1\n', hunks: [] },
       }),
     )

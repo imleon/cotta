@@ -261,7 +261,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
         {terminalActive ? (
           <div className="terminal-panel-controls">
             <div className="terminal-panel-status">
-              <span className="terminal-panel-input-status" data-focused={inputFocused} aria-label={inputFocused ? 'Terminal input focused' : 'Terminal input unfocused'} />
+              <span className="terminal-panel-input-status" data-focused={inputFocused} role="img" aria-label={inputFocused ? 'Terminal input focused' : 'Terminal input unfocused'} />
               <span data-state={connection}>{status ? status.replace(/^Terminal /, '') : connection}</span>
             </div>
             <div className="terminal-panel-controls-end">

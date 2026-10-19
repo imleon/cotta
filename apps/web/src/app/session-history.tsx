@@ -55,7 +55,7 @@ export function WorktreeBadge({ name }: { name: string }) {
 
 export function ProjectFolderIcon({ open }: { open: boolean }) {
   return (
-    <svg viewBox="0 0 640 640" className="project-card-folder-icon" focusable="false" data-icon="FolderOutlined">
+    <svg viewBox="0 0 640 640" className="project-card-folder-icon" focusable="false" aria-hidden="true" data-icon="FolderOutlined">
       <path
         d={
           open
@@ -105,7 +105,7 @@ function ProjectCard({
       <span className="project-card-end">
         {project.worktreeName ? <WorktreeBadge name={project.worktreeName} /> : null}
         <span className="project-card-chevron" aria-hidden="true">
-          <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false">
+          <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false" aria-hidden="true">
             <path d="M4 2.5 8 6 4 9.5" />
           </svg>
         </span>
@@ -118,7 +118,7 @@ export function StatusBadge({ session }: { session: SessionSummary }) {
   const tone = statusTone(session)
   const label = statusLabel(session)
   return (
-    <span className={`status-badge status-${tone}`} data-tooltip={label} title={label} aria-label={label}>
+    <span className={`status-badge status-${tone}`} data-tooltip={label} title={label} role="img" aria-label={label}>
       {statusIcon(session)}
     </span>
   )
@@ -126,7 +126,7 @@ export function StatusBadge({ session }: { session: SessionSummary }) {
 
 export function ProjectListSkeleton() {
   return (
-    <div className="project-tree project-list-skeleton" aria-label="Loading projects">
+    <div className="project-tree project-list-skeleton" role="status" aria-label="Loading projects">
       {[0, 1, 2, 3].map((item) => (
         <div className="project-card project-card-skeleton" key={item}>
           <span className="project-card-main">
@@ -358,6 +358,7 @@ export function SessionActions({
         </div>
       ) : null}
       {deleteDialog ? (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close; keyboard closes via Escape (onCancel) and the Cancel button
         <dialog
           ref={deleteDialogRef}
           className="rename-session-dialog delete-session-dialog"
@@ -397,6 +398,7 @@ export function SessionActions({
         </dialog>
       ) : null}
       {renameDialog ? (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close; keyboard closes via Escape (onCancel) and the Cancel button
         <dialog
           ref={renameDialogRef}
           className="rename-session-dialog"
@@ -553,6 +555,7 @@ function ProjectSessionList({
   }, [highlighted, highlightedSessionId, onHighlightedSessionSeen])
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: scrollable session list container; <fieldset> would add UA border, padding and min-width
     <div className="project-sessions" id={projectSessionsRegionId(project.id)} role="group" aria-label={`${project.name} sessions`} ref={sessionsRef}>
       {loading ? <SessionListSkeleton /> : null}
       {error ? <div className="rail-empty error-text">Failed to load sessions</div> : null}

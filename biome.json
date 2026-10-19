@@ -18,6 +18,9 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "complexity": {
+        "noImportantStyles": "off"
+      },
       "a11y": {
         "noNoninteractiveTabindex": "warn",
         "noStaticElementInteractions": "warn",
@@ -37,6 +40,7 @@
         "noDangerouslySetInnerHtml": "warn"
       },
       "style": {
+        "noDescendingSpecificity": "off",
         "noNonNullAssertion": "off"
       },
       "suspicious": {

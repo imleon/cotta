@@ -24,6 +24,16 @@ function gitStatusLabel(status: ProjectFileEntry['gitStatus']): string {
   return status === 'untracked' ? 'U' : status[0].toUpperCase()
 }
 
+function GitStatusMark({ status }: { status: ProjectFileEntry['gitStatus'] }) {
+  return status ? (
+    <span className="project-file-git-status" role="img" aria-label={status}>
+      {gitStatusLabel(status)}
+    </span>
+  ) : (
+    <span className="project-file-git-status" />
+  )
+}
+
 function FileIcon() {
   return (
     <svg viewBox="0 0 24 24" className="project-file-entry-icon" focusable="false" aria-hidden="true">
@@ -62,7 +72,7 @@ function DirectoryNode({
     <li>
       <button type="button" className="project-file-row" data-git-status={entry.gitStatus} aria-expanded={expanded} onClick={() => onToggle(entry.path)}>
         <span className="project-card-chevron" aria-hidden="true">
-          <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false">
+          <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false" aria-hidden="true">
             <path d="M4 2.5 8 6 4 9.5" />
           </svg>
         </span>
@@ -70,9 +80,7 @@ function DirectoryNode({
           <ProjectFolderIcon open={expanded} />
         </span>
         <span>{entry.name}</span>
-        <span className="project-file-git-status" aria-label={entry.gitStatus ?? undefined}>
-          {gitStatusLabel(entry.gitStatus)}
-        </span>
+        <GitStatusMark status={entry.gitStatus} />
       </button>
       {expanded ? (
         <ul className="project-file-tree-list">
@@ -108,9 +116,7 @@ function FileNode({ entry, onSelectFile }: { entry: ProjectFileEntry; onSelectFi
           <FileIcon />
         </span>
         <span>{entry.name}</span>
-        <span className="project-file-git-status" aria-label={entry.gitStatus ?? undefined}>
-          {gitStatusLabel(entry.gitStatus)}
-        </span>
+        <GitStatusMark status={entry.gitStatus} />
       </button>
     </li>
   )
@@ -141,15 +147,16 @@ function BranchIcon() {
 function ProjectFileContextBar({ branch, worktree }: { branch: string | null; worktree: ProjectGitWorktree | null }) {
   const worktreeName = worktree ? (worktree.name ?? worktree.path.split('/').filter(Boolean).at(-1) ?? worktree.path) : null
   return branch || worktreeName ? (
-    <div className="project-file-context-bar" aria-label="Files context">
+    // biome-ignore lint/a11y/useSemanticElements: flex chip bar, not a form control group; <fieldset> would add UA border, padding and min-width
+    <div className="project-file-context-bar" role="group" aria-label="Files context">
       {branch ? (
-        <span className="project-file-context-chip" title={`Branch: ${branch}`} aria-label={`Branch: ${branch}`}>
+        <span className="project-file-context-chip" title={`Branch: ${branch}`} role="img" aria-label={`Branch: ${branch}`}>
           <BranchIcon />
           <span>{branch}</span>
         </span>
       ) : null}
       {worktreeName ? (
-        <span className="project-file-context-chip" title={`Worktree: ${worktreeName}`} aria-label={`Worktree: ${worktreeName}`}>
+        <span className="project-file-context-chip" title={`Worktree: ${worktreeName}`} role="img" aria-label={`Worktree: ${worktreeName}`}>
           <WorktreeIcon />
           <span>{worktreeName}</span>
         </span>
@@ -272,7 +279,7 @@ function ProjectFileTree({
           <li>
             <button type="button" className="project-file-row" aria-expanded={rootExpanded} onClick={() => onRootExpandedChange(!rootExpanded)}>
               <span className="project-card-chevron" aria-hidden="true">
-                <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false">
+                <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false" aria-hidden="true">
                   <path d="M4 2.5 8 6 4 9.5" />
                 </svg>
               </span>
@@ -299,6 +306,7 @@ function ProjectFileTree({
           </li>
         </ul>
       </section>
+      {/* biome-ignore lint/a11y/useSemanticElements: pointer-driven resize handle; <hr> cannot carry the drag affordance */}
       <div className="project-file-section-resizer" role="separator" aria-label="Resize Directory and Changes" onPointerDown={resizeDirectorySections} />
       {git.data ? (
         <section className="project-file-changes">
@@ -818,6 +826,7 @@ export function ExplorerPanel({
             </div>
           ) : null}
           {hasPreview ? (
+            // biome-ignore lint/a11y/useSemanticElements: pointer-driven resize handle; <hr> cannot carry the drag affordance
             <div
               className="project-file-pane-resizer"
               role="separator"

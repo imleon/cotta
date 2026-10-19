@@ -244,6 +244,7 @@ export function ComposerLottieButton({ disabled = false }: { disabled?: boolean 
   if (disabled || reducedMotion) return null
   return (
     <button ref={buttonRef} type="button" className="composer-lottie-button" aria-label="Play composer animation" onClick={play}>
+      {/* biome-ignore lint/security/noDangerouslySetInnerHtml: COMPOSER_LOTTIE_SVG is a hard-coded module constant, no user input reaches it */}
       <span className="composer-lottie-art" dangerouslySetInnerHTML={COMPOSER_LOTTIE_HTML} />
     </button>
   )
@@ -730,6 +731,7 @@ export function TurnComposer({
         }}
       >
         {submitError ? <div className="panel error">{submitError}</div> : null}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: click-anywhere convenience that focuses the inner textarea, which is already keyboard-reachable */}
         <div
           className={`turn-composer${composerBlocked ? ' turn-composer-disabled' : ''}`}
           onClick={(event) => {
@@ -884,6 +886,7 @@ export function TurnComposer({
                 </button>
                 {modelMenuOpen ? (
                   <div className="model-effort-menu" role="menu" aria-label="Model and effort">
+                    {/* biome-ignore lint/a11y/useSemanticElements: menu item group inside role="menu"; <fieldset> adds UA border/padding/min-width */}
                     <div className="model-effort-models" role="group" aria-label="Models">
                       {catalogModels.map((option) => {
                         const active = menuModel?.value === option.value
@@ -913,6 +916,7 @@ export function TurnComposer({
                       })}
                     </div>
                     {menuModel?.supportsEffort && menuModel.supportedEffortLevels?.length ? (
+                      // biome-ignore lint/a11y/useSemanticElements: menu item group inside role="menu"; <fieldset> adds UA border/padding/min-width
                       <div className="model-effort-efforts" style={effortMenuPosition} role="group" aria-label={`${menuModel.displayName || menuModel.value} efforts`}>
                         {supportedEffortLevels(menuModel).map((level) => {
                           const selected = selectedModel?.value === menuModel.value && effort === level
@@ -1119,6 +1123,7 @@ export function TurnComposer({
           </div>
         </div>
       </form>
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close; keyboard closes via native dialog Escape (onClose) */}
       <dialog
         ref={sessionInfoDialogRef}
         className="session-search-dialog composer-session-info-dialog"

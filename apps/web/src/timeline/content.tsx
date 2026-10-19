@@ -1,4 +1,4 @@
-import { contentLineCount, decodeComposerImage, localImageDestinationPathname, type TimelineBlock, unwrapMarkdownPayloadFences } from '@cotta/shared'
+import { contentLineCount, decodeComposerImage, localImageDestinationPathname, unwrapMarkdownPayloadFences } from '@cotta/shared'
 import { diffWordsWithSpace } from 'diff'
 import {
   Children,
@@ -226,12 +226,14 @@ function HighlightedCode({
           <pre className="shiki github-light" style={{ backgroundColor: 'var(--surface-raised)', color: '#24292e' }}>
             <code>
               {code.split('\n').map((line, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional lines split from the code string; the index is the line number
                 <span className="line timeline-code-line" key={index}>
                   <span className="timeline-code-line-number" aria-hidden="true">
                     {index + 1}
                   </span>
                   <span className="timeline-code-line-content">
                     {(tokens?.[index] ?? [{ content: line }]).map((token, tokenIndex) => (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional segments of one tokenized line and are never reordered
                       <span style={tokenStyle(token)} key={tokenIndex}>
                         {token.content}
                       </span>
@@ -243,6 +245,7 @@ function HighlightedCode({
           </pre>
         </div>
       ) : html ? (
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: html comes only from Shiki codeToHtml (highlightCode), which HTML-escapes the code text
         <div className="shiki-code" dangerouslySetInnerHTML={{ __html: html }} />
       ) : (
         <pre>
@@ -1038,6 +1041,7 @@ export function TimelineQuestionFormContent({
           if (label === OTHER_OPTION ? !checked : !multi && selected.includes(OTHER_OPTION)) setOtherText((current) => ({ ...current, [questionIndex]: '' }))
         }
         return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: questions come from a fixed tool input and answer state is keyed by the same index
           <fieldset disabled={!enabled || submitting} key={questionIndex}>
             <legend>
               <span>{questionIndex + 1})</span>
@@ -1050,6 +1054,7 @@ export function TimelineQuestionFormContent({
                 const label = typeof item.label === 'string' ? item.label : `Option ${optionIndex + 1}`
                 const answer = typeof item.value === 'string' ? item.value : label
                 return (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: options come from a fixed tool input and are never reordered; labels may repeat
                   <label className="timeline-question-option" key={optionIndex}>
                     <input type={multi ? 'checkbox' : 'radio'} name={`question-${questionIndex}`} checked={selected.includes(answer)} onChange={(event) => choose(answer, event.target.checked)} />
                     <span>
@@ -1264,7 +1269,9 @@ function SearchResultContentBlock({ block, code }: { block: Record<string, unkno
 
 export function ContentBlockValue({ value, code = false }: { value: unknown; code?: boolean }): ReactNode {
   if (typeof value === 'string') return code ? <TimelineCodeContent value={value} /> : <TimelineTextContent value={value} />
-  if (Array.isArray(value)) return value.map((item, index) => <ContentBlockValue value={item} code={code} key={index} />)
+  if (Array.isArray(value))
+    // biome-ignore lint/suspicious/noArrayIndexKey: content blocks of a recorded message are immutable and positional; blocks carry no id
+    return value.map((item, index) => <ContentBlockValue value={item} code={code} key={index} />)
   if (!isRecord(value))
     return (
       <pre className={toolTimelineClass.resultCode} data-timeline-content="code">
@@ -1523,6 +1530,7 @@ export function TimelineDiffContent({
         <TimelineCodeActions language={displayLang} wrapped={wrapped} copyValue={copyText} onToggleWrap={() => (onWrappedChange ? onWrappedChange(!wrapped) : setInternalWrapped((value) => !value))} />
       ) : null}
       <div className="shiki-code">
+        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: horizontally scrollable diff pre must be focusable so keyboard users can scroll it */}
         <pre className="shiki github-light" style={{ backgroundColor: 'var(--surface-raised)', color: '#24292e' }} tabIndex={0}>
           <code>
             {rows.map((row, rowIndex) => (
@@ -1531,6 +1539,7 @@ export function TimelineDiffContent({
                 <span className="timeline-file-diff-marker">{row.marker}</span>
                 <span>
                   {tokenParts(row, row.kind === 'meta' ? undefined : tokens?.[rowIndex]).map((token, index) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional segments of one diff row and are never reordered
                     <span className={token.changed ? 'timeline-file-diff-delta' : undefined} style={tokenStyle(token)} key={index}>
                       {token.content}
                     </span>
@@ -1550,7 +1559,7 @@ export function relativeFilePath(filePath: string | null, cwd: unknown): string 
   return filePath.slice(cwd.replace(/\/$/, '').length + 1)
 }
 
-export function FileToolResultValue({ block, fileMutation }: { block: TimelineBlock; fileMutation: FileMutationResult }) {
+export function FileToolResultValue({ fileMutation }: { fileMutation: FileMutationResult }) {
   const displayPath = relativeFilePath(fileMutation.filePath, fileMutation.cwd)
   const title = fileMutation.type === 'create' ? 'Create' : fileMutation.type === 'overwrite' ? 'Overwrite' : 'Update'
   const counts = fileMutation.type === 'create' ? { added: contentLineCount(fileMutation.content), removed: 0 } : patchLineCounts(fileMutation.hunks)

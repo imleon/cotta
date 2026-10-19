@@ -1393,6 +1393,65 @@ describe('timeline EventSource lifecycle', () => {
     expect(screen.queryByRole('button', { name: 'Scroll to latest message' })).toBeNull()
   })
 
+  it('does not mark the previous settled turn active while a provisional slash command runs', async () => {
+    vi.stubGlobal('EventSource', EventSourceMock)
+    fetchSessionTimelineMock.mockResolvedValue({
+      ...emptyTimeline(),
+      runState: { phase: 'running', activeUserMessageUuid: 'slash-1', lastTurn: null },
+      activity: { owner: 'cotta', phase: 'busy', activeTurnId: 'slash-1' },
+      turns: [
+        {
+          primaryUserUuid: 'user-1',
+          messages: [
+            { type: 'user', uuid: 'user-1', message: { role: 'user', content: 'previous prompt' } },
+            { type: 'assistant', uuid: 'assistant-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'previous answer' }] } },
+            { type: 'result', subtype: 'success', uuid: 'result-1', duration_ms: 1000 },
+          ],
+        },
+      ],
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <SessionTimeline
+          timeZone="Asia/Shanghai"
+          projectId="project"
+          sessionId="session"
+          provisionalSlash={{ submissionUuid: 'slash-1', localKey: 'local', text: '/compact', timestamp: 1, phase: 'submitted' }}
+        />
+      </QueryClientProvider>,
+    )
+
+    await screen.findByText('previous answer')
+    await screen.findByText('/compact')
+    expect(container.querySelector('[aria-busy="true"]')).toBeNull()
+  })
+
+  it('pins a newly submitted slash command to the bottom after the user scrolled away', async () => {
+    vi.stubGlobal('EventSource', EventSourceMock)
+    vi.stubGlobal('ResizeObserver', undefined)
+    fetchSessionTimelineMock.mockResolvedValue(emptyTimeline())
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const slash = { submissionUuid: 'slash-1', localKey: 'local', text: '/compact', timestamp: 1, phase: 'submitted' as const }
+    const view = (provisionalSlash: typeof slash | null) => (
+      <QueryClientProvider client={queryClient}>
+        <SessionTimeline timeZone="Asia/Shanghai" projectId="project" sessionId="session" provisionalSlash={provisionalSlash} />
+      </QueryClientProvider>
+    )
+    const { container, rerender } = render(view(null))
+    await screen.findByText('What should we build?')
+    const panel = timelinePanel(container)
+    setPanelScroll(panel, { clientHeight: 100, scrollHeight: 300, scrollTop: 120 })
+    fireEvent.scroll(panel)
+    expect(screen.getByRole('button', { name: 'Scroll to latest message' })).toBeTruthy()
+
+    setPanelScroll(panel, { clientHeight: 100, scrollHeight: 380, scrollTop: panel.scrollTop })
+    rerender(view(slash))
+
+    expect(panel.scrollTop).toBe(380)
+    expect(screen.queryByRole('button', { name: 'Scroll to latest message' })).toBeNull()
+  })
+
   it('resets bottom follow when the same component switches sessions', async () => {
     vi.stubGlobal('EventSource', EventSourceMock)
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })

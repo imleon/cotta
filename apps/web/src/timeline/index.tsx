@@ -174,7 +174,6 @@ function useSessionTimelineData(
   const [controlError, setControlError] = useState<string | null>(null)
   const [controlRetry, setControlRetry] = useState(0)
   const [controlTerminalRefetchSubmission, setControlTerminalRefetchSubmission] = useState<{ submissionUuid: string } | null>(null)
-  const [liveActive, setLiveActive] = useState(false)
   const [historyReady, setHistoryReady] = useState(false)
   const [timelineControl, setTimelineControl] = useState<
     Pick<SessionTimelineResponse, 'pendingPermission' | 'runState' | 'activity'> & { liveBackgroundTasks: LiveBackgroundTask[] | null; tasks: RawSessionTask[] | null; known: boolean }
@@ -255,7 +254,6 @@ function useSessionTimelineData(
     const keepLive = activeTurnId === null && pendingPrimaryTurnUuidRef.current !== null
     if (!keepLive && liveUserMessageUuidRef.current !== activeTurnId) {
       liveUserMessageUuidRef.current = activeTurnId
-      setLiveActive(activeTurnId !== null)
       if (activeTurnId) completedLiveTurnIdRef.current = null
       onLiveTurnChangeRef.current?.(page.sessionId, activeTurnId)
     }
@@ -358,7 +356,6 @@ function useSessionTimelineData(
     controlTerminalRefetchSubmissionRef.current = null
     setControlTerminalRefetchSubmission(null)
     waitContextForNextTimelineRef.current = false
-    setLiveActive(false)
   }, [pendingPrimaryTurnUuid, searchAnchorTurnId, sessionId])
 
   useEffect(() => {
@@ -370,7 +367,6 @@ function useSessionTimelineData(
         if (liveUserMessageUuidRef.current !== provisionalSlash.submissionUuid) {
           shouldScrollToBottomRef.current = true
           liveUserMessageUuidRef.current = provisionalSlash.submissionUuid
-          setLiveActive(true)
           if (sessionId) onLiveTurnChangeRef.current?.(sessionId, provisionalSlash.submissionUuid)
         }
         return
@@ -389,7 +385,6 @@ function useSessionTimelineData(
       const pendingOwnedVisible = visibleUserMessageUuidRef.current === previousPending
       if (!provisionalSlash && liveUserMessageUuidRef.current === previousPending && pendingOwnedVisible && !pendingLive && activeUserMessageUuidRef.current !== previousPending) {
         liveUserMessageUuidRef.current = null
-        setLiveActive(false)
         if (sessionId) onLiveTurnChangeRef.current?.(sessionId, null)
       }
       materialize()
@@ -405,7 +400,6 @@ function useSessionTimelineData(
     if (liveUserMessageUuidRef.current !== pendingTurn.primaryUserUuid) {
       shouldScrollToBottomRef.current = true
       liveUserMessageUuidRef.current = pendingTurn.primaryUserUuid
-      setLiveActive(true)
       if (sessionId) onLiveTurnChangeRef.current?.(sessionId, pendingTurn.primaryUserUuid)
     }
     if (!turnsRef.current.some((turn) => turn.primaryUserUuid === pendingTurn.primaryUserUuid)) turnsRef.current = [...turnsRef.current, pendingTurn]
@@ -615,7 +609,6 @@ function useSessionTimelineData(
       } catch (error) {
         console.error('timeline:sse invalid event', error)
         setLiveConnectionError('Live connection sent an invalid event; waiting for history…')
-        setLiveActive(false)
         return
       }
       if (isRecord(raw) && typeof raw.session_id === 'string' && !belongsToTimelineSession(sessionId, raw.session_id)) return
@@ -640,7 +633,6 @@ function useSessionTimelineData(
         if (runtimeUserMessageUuid && runtimeUserMessageUuid !== liveUserMessageUuidRef.current) {
           completedLiveTurnIdRef.current = null
           liveUserMessageUuidRef.current = runtimeUserMessageUuid
-          setLiveActive(true)
           onLiveTurnChangeRef.current?.(sessionId, runtimeUserMessageUuid)
         }
         if (userMessageUuid && provisionalSlashRef.current?.submissionUuid === userMessageUuid) onPendingTurnReconciledRef.current?.(sessionId, userMessageUuid)
@@ -697,7 +689,6 @@ function useSessionTimelineData(
         liveUserMessageUuidRef.current = null
         visibleUserMessageUuidRef.current = null
         activeUserMessageUuidRef.current = null
-        setLiveActive(false)
         onLiveTurnChangeRef.current?.(sessionId, null)
         if (newlyCompleted) void timeline.refetch()
         onSessionListStaleRef.current?.()
@@ -708,15 +699,11 @@ function useSessionTimelineData(
       if (!active) return
       setLiveConnectionError(null)
       const owner = liveUserMessageUuidRef.current ?? pendingPrimaryTurnUuidRef.current ?? activeUserMessageUuidRef.current
-      if (owner) {
-        setLiveActive(true)
-        onLiveTurnChangeRef.current?.(sessionId, owner)
-      }
+      if (owner) onLiveTurnChangeRef.current?.(sessionId, owner)
     }
     events.onerror = () => {
       if (!active) return
       setLiveConnectionError('Live connection interrupted; waiting for history…')
-      setLiveActive(false)
     }
     return () => {
       active = false
@@ -1253,6 +1240,13 @@ export function SessionTimeline({
     scrollToTimelineBottom()
   }, [responseSkeletonScrollKey, scrollToTimelineBottom, shouldScrollToBottomRef])
 
+  // A submitted slash command renders as a provisional card without changing turns; pin it in the
+  // same commit so the bottom pin doesn't depend on a later re-render.
+  const provisionalSlashUuid = provisionalSlash?.submissionUuid ?? null
+  useLayoutEffect(() => {
+    if (provisionalSlashUuid) scrollToTimelineBottom()
+  }, [provisionalSlashUuid, scrollToTimelineBottom])
+
   if (timeline.isError && visibleTurns.length === 0 && !pendingQuestion && !provisionalSlash)
     return <div className="panel error">Failed to load timeline: {timeline.error instanceof Error ? timeline.error.message : 'unknown error'}</div>
   if (!historyReady && visibleTurns.length === 0 && !olderError && !pendingQuestion && !provisionalSlash) return <SessionTimelineSkeleton />
@@ -1305,7 +1299,12 @@ export function SessionTimeline({
           />
         ) : null}
         {visibleTurns.map((turn) => {
-          const phase = turn.primaryUserUuid === latestTurn?.primaryUserUuid && latestPhase ? latestPhase : turnPhase({ turn, overlayActive: overlayActive(turn), activeUserMessageUuid })
+          // An active turn not yet in the list (e.g. a provisional slash command) makes latestPhase 'submitted'
+          // for the composer; it must not repaint the previous, already-settled turn as cooking.
+          const phase =
+            turn.primaryUserUuid === latestTurn?.primaryUserUuid && latestPhase && (activeTurnVisible || !activeUserMessageUuid)
+              ? latestPhase
+              : turnPhase({ turn, overlayActive: overlayActive(turn), activeUserMessageUuid, pendingPhase: turn.primaryUserUuid === pendingPrimaryTurnUuid ? pendingPhase : undefined })
           const terminal = hasTerminalEvidence(turn)
           const activeToolCalls = !terminal && phase !== 'settled'
           const turnEndedAtMs = turn.durationTimestampMs ?? (turn.primaryUserTimestampMs !== undefined && turn.durationMs !== undefined ? turn.primaryUserTimestampMs + turn.durationMs : undefined)

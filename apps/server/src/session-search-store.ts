@@ -74,8 +74,9 @@ const PAGE_SIZE = 20
 const MATCHES_PER_SESSION = 5
 const SNAPSHOT_TTL_MS = 60_000
 const MAX_SNAPSHOTS = 32
-// Bump when Session Search document selection, text extraction, or normalization changes.
-const SEARCH_INDEX_RULES_VERSION = 3
+// Bump when Session Search document selection, text extraction, or normalization changes, or when a
+// one-time cache repair must run (prepareSearchIndex: transcript ownership rows, session owner cwd).
+const SEARCH_INDEX_RULES_VERSION = 4
 const SEARCH_INDEX_SETTINGS_SCOPE = 'session-search-store'
 const SEARCH_INDEX_SETTINGS_KEY = 'rules-version'
 

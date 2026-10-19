@@ -437,6 +437,26 @@ describe('SessionRawTranscriptCacheStore', () => {
     db.close()
   })
 
+  it('repairs subdirectory session owners when search rules change', async () => {
+    const { projectDir, projectId, db, store } = await setup()
+    await writeFile(
+      join(projectDir, 'session.jsonl'),
+      jsonl(
+        { type: 'user', uuid: 'user-1', sessionId: 'session', cwd: '/repo/cotta', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hi' } },
+        { type: 'user', uuid: 'user-2', sessionId: 'session', cwd: '/repo/cotta/apps', timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'user', content: 'cd' } },
+      ),
+    )
+    await store.ensureSessionCached('session')
+    store.index.setSessionCwd('session', '/repo/cotta/apps')
+    db.prepare('INSERT INTO settings (scope, key, value_json, updated_at_ms) VALUES (?, ?, ?, ?)').run('session-search-store', 'rules-version', '1', 1)
+
+    store.prepareSearchIndex()
+
+    expect(store.index.getSession('session')).toMatchObject({ currentProjectId: projectId, currentCwd: '/repo/cotta' })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM session_index WHERE current_project_id = ?').get(projectIdFromPath('/repo/cotta/apps'))).toEqual({ count: 0 })
+    db.close()
+  })
+
   it('orders sessions by visible timestamp and falls back to file mtime', async () => {
     const { projectDir, projectId, db, store } = await setup()
     const olderId = '00000000-0000-4000-8000-000000000001'
@@ -1023,6 +1043,19 @@ describe('SessionRawTranscriptCacheStore', () => {
     const result = await store.ensureSessionCached('session')
 
     expect(result).toMatchObject({ changed: true, projectId: projectIdFromPath('/repo/cotta-worktree'), previousProjectId: projectId })
+    db.close()
+  })
+
+  it('keeps the owner project when a later cwd moves into its subdirectory', async () => {
+    const { projectDir, projectId, db, store } = await setup()
+    const first = jsonl({ type: 'user', uuid: 'user-1', sessionId: 'session', cwd: '/repo/cotta', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hi' } })
+    const nested = jsonl({ type: 'user', uuid: 'user-2', sessionId: 'session', cwd: '/repo/cotta/apps/web', timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'user', content: 'cd' } })
+    await writeFile(join(projectDir, 'session.jsonl'), `${first}${nested}`)
+
+    const result = await store.ensureSessionCached('session')
+
+    expect(result).toMatchObject({ changed: true, projectId })
+    expect(store.index.getSession('session')).toMatchObject({ currentProjectId: projectId, currentCwd: '/repo/cotta' })
     db.close()
   })
 

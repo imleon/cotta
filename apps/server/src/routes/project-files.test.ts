@@ -143,6 +143,20 @@ describe('project files', () => {
     registry.close()
   })
 
+  it('notifies when a watched file is created right after acquire', async () => {
+    const { root } = await fixture()
+    await mkdir(join(root, '.git'))
+    const registry = new ProjectFilesWatcherRegistry()
+    const events: Array<{ version: number; contentOnly?: true }> = []
+    const subscription = await registry.acquire(join(root, '.git', 'index'), (event) => events.push(event))
+
+    await writeFile(join(root, '.git', 'index'), 'index')
+
+    await vi.waitFor(() => expect(events).toEqual([{ version: 1 }]))
+    subscription.release()
+    registry.close()
+  })
+
   it('marks listings as truncated after 1,000 entries', async () => {
     const { app, root } = await fixture()
     await Promise.all(Array.from({ length: 1_001 }, (_, index) => writeFile(join(root, `file-${index}`), '')))

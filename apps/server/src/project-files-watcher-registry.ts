@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { type FSWatcher, watch } from 'chokidar'
 
 export type ProjectFilesWatchEvent = { version: number; contentOnly?: true }
@@ -50,9 +52,14 @@ export class ProjectFilesWatcherRegistry {
         let entry = this.entries.get(path)
         if (!entry) {
           const watchGitMetadata = path.split(/[\\/]/).includes('.git')
-          const watcher = watch(path, { depth: 0, ignoreInitial: true, ignored: watchGitMetadata ? (candidate) => candidate.split(/[\\/]/).includes('node_modules') : ignored }).on('error', (error) =>
-            console.error(`project-files-watcher:watch failed for ${path}`, error),
-          )
+          // chokidar reports `ready` for a missing path before its parent-directory fallback is in place, so a file
+          // created right after acquire (e.g. the Git index on the first `git add`) would be missed. Watch the parent instead.
+          const missing = !existsSync(path)
+          const watcher = watch(missing ? dirname(path) : path, {
+            depth: 0,
+            ignoreInitial: true,
+            ignored: watchGitMetadata ? (candidate) => candidate.split(/[\\/]/).includes('node_modules') : ignored,
+          }).on('error', (error) => console.error(`project-files-watcher:watch failed for ${path}`, error))
           const nextEntry: Entry = {
             callbacks: new Set(),
             contentOnlyOnChange,
@@ -64,7 +71,8 @@ export class ProjectFilesWatcherRegistry {
             pendingContentOnly: false,
             watcher,
           }
-          watcher.on('all', (event) => {
+          watcher.on('all', (event, eventPath) => {
+            if (missing && eventPath !== path) return
             const contentOnly = nextEntry.contentOnlyOnChange && event === 'change'
             if (!contentOnly && !watchGitMetadata && event === 'change') return
             nextEntry.pendingContentOnly = nextEntry.timer ? nextEntry.pendingContentOnly && contentOnly : contentOnly

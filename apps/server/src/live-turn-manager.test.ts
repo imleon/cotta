@@ -51,6 +51,7 @@ function failingQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
 
 function endingQuery(prompt: AsyncIterable<SDKUserMessage>): Query {
   return queryFromGenerator(
+    // biome-ignore lint/correctness/useYield: simulates an SDK stream that consumes the first prompt and ends without emitting any message
     (async function* () {
       for await (const _message of prompt) return
     })(),
@@ -583,7 +584,7 @@ describe('LiveTurnManager', () => {
       ]),
     )
     expect(manager.sessionRunState('session-1')).toMatchObject({ phase: 'idle', activeUserMessageUuid: null })
-    expect(events.filter((event: any) => event.subtype === 'background_tasks_changed')).toHaveLength(2)
+    expect(events.filter((event) => 'subtype' in event && event.subtype === 'background_tasks_changed')).toHaveLength(2)
   })
 
   it('publishes session messages before and after an active turn', async () => {

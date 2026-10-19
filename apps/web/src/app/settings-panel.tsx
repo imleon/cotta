@@ -417,6 +417,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
                 <div className="model-effort-menu settings-menu" role="menu" aria-label="Default model and effort">
                   {catalogQuery.isFetching ? <div className="model-effort-hint">Loading model catalog…</div> : null}
                   {!catalogQuery.isFetching && !catalogModels.length ? <div className="model-effort-hint">No models found.</div> : null}
+                  {/* biome-ignore lint/a11y/useSemanticElements: menu item group inside role="menu"; <fieldset> adds UA border/padding/min-width */}
                   <div className="model-effort-models" role="group" aria-label="Models">
                     {catalogModels.map((option) => {
                       const active = menuModel?.value === option.value
@@ -446,6 +447,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
                     })}
                   </div>
                   {menuModel?.supportsEffort && menuModel.supportedEffortLevels?.length ? (
+                    // biome-ignore lint/a11y/useSemanticElements: menu item group inside role="menu"; <fieldset> adds UA border/padding/min-width
                     <div className="model-effort-efforts" style={effortMenuPosition} role="group" aria-label={`${menuModel.displayName || menuModel.value} efforts`}>
                       {supportedEffortLevels(menuModel).map((level) => {
                         const selected = selectedModel?.value === menuModel.value && effort === level
@@ -593,7 +595,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
                 {authSession.user.avatarUrl ? (
                   <img src={authSession.user.avatarUrl} alt="" />
                 ) : (
-                  <svg viewBox="0 0 20 20">
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
                     <circle cx="10" cy="7" r="3" />
                     <path d="M4.5 17a5.5 5.5 0 0 1 11 0" />
                   </svg>
@@ -621,6 +623,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
             </div>
           </div>
           {githubEditing ? (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close; keyboard closes via native dialog Escape (onCancel)
             <dialog
               ref={githubDialogRef}
               className="settings-github-dialog"

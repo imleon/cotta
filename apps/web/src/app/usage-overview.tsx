@@ -326,6 +326,7 @@ function ActivityHeatmap({ values, loading, error, refreshError, onRetry }: { va
               </span>
             ))}
           </div>
+          {/* biome-ignore lint/a11y/useSemanticElements: CSS-grid heatmap with roving-tabindex cells; <table> would replace the grid/subgrid layout */}
           <div
             className="usage-calendar"
             style={
@@ -342,8 +343,10 @@ function ActivityHeatmap({ values, loading, error, refreshError, onRetry }: { va
             ref={calendarRef}
           >
             {calendar.rows.map((row, rowIndex) => (
+              // biome-ignore lint/a11y/useSemanticElements lint/a11y/useFocusableInteractive lint/suspicious/noArrayIndexKey: subgrid row of the heatmap (<tr> breaks the CSS grid); focus lives on the roving-tabindex gridcells; rowIndex is the weekday of a fixed 7-row list
               <span className="usage-calendar-row" role="row" aria-rowindex={rowIndex + 1} style={{ gridRow: rowIndex + 1 }} key={rowIndex}>
                 {row.map(({ cell, index }) => (
+                  // biome-ignore lint/a11y/useSemanticElements: heatmap cell placed by CSS grid-column; <td> would break the subgrid layout
                   <span
                     className="usage-heatmap-cell"
                     data-level={activityLevel(cell.tokens)}
@@ -372,7 +375,8 @@ function ActivityHeatmap({ values, loading, error, refreshError, onRetry }: { va
           Failed to refresh activity
         </span>
       ) : null}
-      <div className="usage-heat-legend" aria-label="Token ranges">
+      {/* biome-ignore lint/a11y/useSemanticElements: flex legend row; <fieldset> adds UA border/padding/min-width */}
+      <div className="usage-heat-legend" role="group" aria-label="Token ranges">
         {['0', '<10M', '<100M', '<1B', '≥1B'].map((label, level) => (
           <span className="usage-heat-key" key={label}>
             <i data-level={level} />

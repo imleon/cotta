@@ -1358,7 +1358,6 @@ export function SessionTimeline({
                       onViewSubagents={item.id === lastAssistantFrameId ? () => openSubagents(turn.primaryUserUuid) : undefined}
                       subagentCount={item.id === lastAssistantFrameId ? (turn.subagentCount ?? 0) : 0}
                       onForkSession={item.id === lastAssistantFrameId ? onForkSession : undefined}
-                      onNotify={onNotify}
                       onShare={
                         item.id === lastAssistantFrameId && sharingEnabled && turn.shareEligible && projectId && sessionId
                           ? () => void openShareInNewTab(projectId, sessionId, turn.primaryUserUuid, onNotify)

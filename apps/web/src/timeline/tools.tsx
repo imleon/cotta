@@ -361,7 +361,8 @@ function toolInputFilePath(toolUse: TimelineBlock): string | null {
 function StaticLightToolRow({ toolName, title, detail, error = false, pendingPermission }: { toolName: string; title: string; detail?: string | null; error?: boolean; pendingPermission?: boolean }) {
   const summary = `${title}${detail ? ` ${detail}` : ''}${error ? ' ERROR' : ''}`
   return (
-    <div className="timeline-file-result-details timeline-file-result-static" aria-label={`Tool call ${toolName}`}>
+    // biome-ignore lint/a11y/useSemanticElements: static stand-in for the <details> tool card; <fieldset> would add form semantics and UA border/padding
+    <div className="timeline-file-result-details timeline-file-result-static" role="group" aria-label={`Tool call ${toolName}`}>
       <span className="timeline-file-result-summary" title={summary}>
         <span className="timeline-file-result-summary-text">
           <strong className="font-medium">{title}</strong>
@@ -634,6 +635,7 @@ function WebSearchResultsContent({ items }: { items: unknown[] }) {
         const { title, url, summary } = webSearchItemFields(item)
         const label = title || url || summary || safeDataPreview(item, 0)
         return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: results are a fixed list from one recorded WebSearch output and may lack unique urls
           <li className="timeline-web-search-result" key={index}>
             <div className="timeline-web-search-result-title">{label}</div>
             {url ? (

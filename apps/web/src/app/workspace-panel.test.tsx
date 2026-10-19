@@ -50,7 +50,7 @@ vi.mock('../timeline', () => ({
     }, [historyEnabled, onPendingPermissionChange, onTasksChange, pendingTurn, provisionalSlash, sessionId])
     return null
   },
-  SessionTaskList: ({ tasks }: { tasks: SessionTimelineResponse['tasks'] }) => <div aria-label="Session tasks">{tasks?.[0]?.subject}</div>,
+  SessionTaskList: ({ tasks }: { tasks: SessionTimelineResponse['tasks'] }) => <section aria-label="Session tasks">{tasks?.[0]?.subject}</section>,
 }))
 vi.mock('./permission-approval', () => ({ PermissionApprovalCard: () => null }))
 vi.mock('./project-files', () => ({

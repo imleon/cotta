@@ -69,6 +69,7 @@ function ShareRow({ share, onRevoked, onOpenTurn }: { share: ShareSummary; onRev
         <span className="share-row-time" title={createdAt.toLocaleString()}>
           shared {relativeAge(share.createdAtMs)}
         </span>
+        {/* biome-ignore lint/a11y/useAnchorContent: icon-only link; aria-label="Open share page" is the accessible name */}
         <a className="timeline-action-button" href={shareUrl(share.token)} target="_blank" rel="noreferrer noopener" aria-label="Open share page" data-tooltip="Open share page">
           <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="15" cy="4.5" r="2.2" />

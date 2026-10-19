@@ -42,7 +42,13 @@ function runGit(cwd: string, args: string[], input?: string): Promise<GitResult>
     stderrStream.on('data', read(stderr))
     child.once('error', reject)
     child.once('close', (code) => resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), code: code ?? 1, truncated }))
-    if (input !== undefined && stdinStream) stdinStream.end(input)
+    if (input !== undefined && stdinStream) {
+      // git may exit before reading stdin (e.g. not a repository); the exit code is authoritative, so EPIPE is expected.
+      stdinStream.once('error', (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EPIPE') reject(error)
+      })
+      stdinStream.end(input)
+    }
   })
 }
 

@@ -424,6 +424,16 @@ export class TranscriptIndexStore {
     if (projectId) this.recomputeProjectActivity(projectId)
   }
 
+  setSessionCwd(sessionId: string, cwd: string): void {
+    const previousProjectId = this.getSession(sessionId)?.currentProjectId
+    const normalizedCwd = normalizeProjectPath(cwd)
+    const projectId = projectIdFromPath(normalizedCwd)
+    this.upsertProject(normalizedCwd, null)
+    this.db.prepare('UPDATE session_index SET current_project_id = ?, current_cwd = ?, updated_at_ms = ? WHERE session_id = ?').run(projectId, normalizedCwd, Date.now(), sessionId)
+    if (previousProjectId) this.recomputeProjectActivity(previousProjectId)
+    this.recomputeProjectActivity(projectId)
+  }
+
   deleteSession(sessionId: string): void {
     const projectId = this.getSession(sessionId)?.currentProjectId
     this.db.prepare('DELETE FROM session_index WHERE session_id = ?').run(sessionId)

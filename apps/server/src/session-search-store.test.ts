@@ -163,7 +163,7 @@ describe('SessionSearchStore', () => {
     expect(store.prepareRulesVersion()).toBe(true)
     expect(db.prepare('SELECT * FROM session_search_documents').all()).toEqual([])
     expect(db.prepare('SELECT * FROM session_search_state').all()).toEqual([])
-    expect(db.prepare('SELECT value_json FROM settings WHERE scope = ? AND key = ?').get('session-search-store', 'rules-version')).toEqual({ value_json: '3' })
+    expect(db.prepare('SELECT value_json FROM settings WHERE scope = ? AND key = ?').get('session-search-store', 'rules-version')).toEqual({ value_json: '4' })
 
     store.rebuildSession('session-1')
     const documents = db.prepare('SELECT message_uuid, content FROM session_search_documents').all()

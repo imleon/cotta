@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { isPrimaryTimelineUserMessage, type SessionRawTranscriptLine, timelineLocalCommand, timelineToolUseResult } from '@cotta/shared'
-import { projectIdFromPath, projectTranscriptDirName } from './project-path.js'
+import { nextOwnerCwd, normalizeProjectPath, projectIdFromPath, projectTranscriptDirName } from './project-path.js'
 import { SessionSearchStore } from './session-search-store.js'
 import type { SessionSubagentStore } from './session-subagent-store.js'
 import type { TokenUsageStore } from './token-usage-store.js'
@@ -214,6 +214,7 @@ export class SessionRawTranscriptCacheStore {
       this.db.exec('BEGIN IMMEDIATE')
       try {
         repairTranscriptOwnershipRows(this.db)
+        this.repairSessionOwnerCwds()
         const roots = this.db
           .prepare(`
             SELECT session_id, COALESCE(json_extract(raw_json, '$.tool_use_result.agentId'), json_extract(raw_json, '$.toolUseResult.agentId')) AS subagent_id, owner_turn_id
@@ -238,6 +239,16 @@ export class SessionRawTranscriptCacheStore {
     const sessions = this.index.listTranscriptSessions()
     for (const sessionId of this.missingSearchIndexSessionIds()) this.sessionSearchStore.rebuildSession(sessionId)
     return sessions.length > 0
+  }
+
+  private repairSessionOwnerCwds(): void {
+    const rows = this.db.prepare('SELECT session_id, cwd FROM session_raw_transcript_lines WHERE cwd IS NOT NULL ORDER BY session_id, byte_offset').all() as Array<{ session_id: string; cwd: string }>
+    const ownerCwds = new Map<string, string>()
+    for (const row of rows) ownerCwds.set(row.session_id, nextOwnerCwd(ownerCwds.get(row.session_id) ?? null, row.cwd))
+    for (const [sessionId, cwd] of ownerCwds) {
+      const current = this.index.getSession(sessionId)?.currentCwd
+      if (current && current !== normalizeProjectPath(cwd)) this.index.setSessionCwd(sessionId, cwd)
+    }
   }
 
   timelineVersion(sessionId: string): string | null {
@@ -474,7 +485,7 @@ export class SessionRawTranscriptCacheStore {
       for (const line of lines) {
         const value = line.value
         if (typeof value.sessionId === 'string' && value.sessionId !== sessionId) throw new Error(`session id mismatch in ${transcriptPath}`)
-        if (typeof value.cwd === 'string') effectiveCwd = value.cwd
+        if (typeof value.cwd === 'string') effectiveCwd = nextOwnerCwd(effectiveCwd, value.cwd)
         lineNo += 1
         const timestamp = timestampMs(value.timestamp)
         if (typeof value.customTitle === 'string') customTitle = value.customTitle

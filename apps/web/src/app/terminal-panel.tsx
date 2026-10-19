@@ -47,6 +47,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
     setTerminating(false)
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the WebSocket lifecycle is keyed only on connectRequest. cleanupConnection/resetToIdle/onConnectedChange are redefined every render; adding them would tear down and reconnect the terminal on every render. The socket callbacks close over them via stable setState/refs and the onConnectedChange prop, so the connect-time version is intentional.
   useLayoutEffect(() => {
     if (!connectRequest) return
     const host = hostRef.current
@@ -234,6 +235,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
     }
   }, [open])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: unmount-only teardown. cleanupConnection is redefined every render; adding it would tear down the connection on every render. It reads cleanupRef.current, so the mount-time closure still cleans up the live socket.
   useEffect(() => () => cleanupConnection(), [])
 
   useLayoutEffect(() => {

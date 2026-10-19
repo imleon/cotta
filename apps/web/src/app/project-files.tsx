@@ -479,6 +479,7 @@ function FilePreview({
   const [imageDimensions, setImageDimensions] = useState<string | null>(null)
   const [sourceWrapped, setSourceWrapped] = useState(false)
   const [diffWrapped, setDiffWrapped] = useState(false)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: path is an intentional reset trigger — clear wrap state when the previewed file changes
   useEffect(() => {
     setSourceWrapped(false)
     setDiffWrapped(false)
@@ -627,6 +628,7 @@ export function ExplorerPanel({
   const update = (value: { tabs: ProjectFileEntry[]; selectedPath: string | null }) => {
     if (projectId) onOpenFilesChange({ ...openFiles, [projectId]: value })
   }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: update is redefined every render; adding it would re-run the consuming effect each render. Deps already capture this project's tabs/selectedPath/gitStatus, which is all update writes back for this projectId.
   const clearDeletedStatus = useCallback(() => {
     if (!projectId || !state.selectedPath || selectedEntry?.gitStatus !== 'deleted') return
     update({ tabs: state.tabs.map((entry) => (entry.path === state.selectedPath ? { ...entry, gitStatus: undefined } : entry)), selectedPath: state.selectedPath })
@@ -680,6 +682,7 @@ export function ExplorerPanel({
     window.addEventListener('pointerup', finish)
     window.addEventListener('pointercancel', finish)
   }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: projectId is an intentional reset trigger — collapse the tree when switching projects
   useEffect(() => {
     setRootExpanded(true)
     setExpandedPaths(new Set())
@@ -688,6 +691,7 @@ export function ExplorerPanel({
   useEffect(() => {
     if (state.selectedPath) setMode(defaultFileMode(state.selectedPath, selectedBinary, selectedJsonPreview, selectedEntry?.gitStatus))
   }, [selectedBinary, selectedEntry?.gitStatus, selectedJsonPreview, state.selectedPath])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: state.selectedPath is an intentional trigger — scroll the current tab into view and the breadcrumb to its end when the selection changes
   useEffect(() => {
     tabsRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     if (breadcrumbRef.current) breadcrumbRef.current.scrollLeft = breadcrumbRef.current.scrollWidth

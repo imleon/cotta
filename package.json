@@ -14,7 +14,7 @@
     "build": "npm run build --workspace @cotta/shared && npm run build --workspace cotta && npm run build --workspace @cotta/web",
     "test": "npm run build --workspace @cotta/shared && npm run test --workspaces --if-present",
     "typecheck": "npm run build --workspace @cotta/shared && npm run typecheck --workspace @cotta/shared && npm run typecheck --workspace cotta && npm run typecheck --workspace @cotta/web",
-    "lint": "biome lint .",
+    "lint": "biome lint --error-on-warnings .",
     "format": "biome format . --write",
     "format:check": "biome format ."
   },

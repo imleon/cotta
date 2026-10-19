@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { parseGitStatus, parseUnifiedDiff, projectGitContext, projectGitDiff, projectGitStatus } from './project-files-git.js'
+import { ignoredGitPaths, parseGitStatus, parseUnifiedDiff, projectGitContext, projectGitDiff, projectGitStatus } from './project-files-git.js'
 
 const execFileAsync = promisify(execFile)
 const roots: string[] = []
@@ -40,6 +40,13 @@ describe('project Git status', () => {
       { path: 'new.ts', index: 'renamed', worktree: null },
       { path: 'generated', index: null, worktree: 'untracked' },
     ])
+  })
+
+  it('treats stdin EPIPE as a normal git exit when git stops reading', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cotta-git-'))
+    roots.push(root)
+    const paths = Array.from({ length: 20000 }, (_, i) => `some/long/path/name/${i}`)
+    for (let i = 0; i < 5; i++) await expect(ignoredGitPaths(root, paths)).resolves.toEqual(new Set())
   })
 
   it('reports nested project status and diff with project-relative paths', async () => {

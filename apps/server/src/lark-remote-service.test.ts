@@ -755,7 +755,6 @@ describe('LarkRemoteService', () => {
       messageType: 'text',
       content: JSON.stringify({ text: 'continue' }),
     })
-    const turnId = (readInput.liveTurnManager.startTurn as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].userMessageUuid as string
     const main = (type: string, extra: object = {}) => ({ type, session_id: sessions[0]!.id, parent_tool_use_id: null, parent_agent_id: null, ...extra })
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     backgroundTasks = [{ taskId: 'task-1', taskType: 'agent' }]

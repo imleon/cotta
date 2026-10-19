@@ -60,7 +60,7 @@ function calendarDays(values: TokenUsageDay[]) {
     cells.push({ date, tokens, weekday: day.getUTCDay(), weekdayLabel, week, label: `${date}, ${weekdayLabel}, ${integer.format(tokens)} tokens` })
   }
   const rows: Array<Array<{ cell: (typeof cells)[number]; index: number }>> = Array.from({ length: 7 }, () => [])
-  cells.forEach((cell, index) => rows[cell.weekday]?.push({ cell, index }))
+  for (const [index, cell] of cells.entries()) rows[cell.weekday]?.push({ cell, index })
   return { cells, rows, weeks: calendarWeeks, months }
 }
 

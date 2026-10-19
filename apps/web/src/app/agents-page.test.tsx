@@ -23,7 +23,7 @@ describe('AgentsPage', () => {
   it('shows the create form for an empty list and creates a bot', async () => {
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
       if (url.startsWith('/api/projects?')) return Promise.resolve(new Response(JSON.stringify({ projects: [{ id: 'project-1', name: 'Cotta' }], hasMore: false, nextCursor: null }), { status: 200 }))
-      if (url === '/api/remote-bots' && (!init || !init.method)) return Promise.resolve(new Response(JSON.stringify({ bots: [] }), { status: 200 }))
+      if (url === '/api/remote-bots' && !init?.method) return Promise.resolve(new Response(JSON.stringify({ bots: [] }), { status: 200 }))
       return Promise.resolve(
         new Response(
           JSON.stringify({

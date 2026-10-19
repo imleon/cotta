@@ -145,7 +145,6 @@ export class TurnMetaTranscriptStore {
     let lastLineNo = 0
     const updateTurnMetadata = (
       owner: string,
-      projectKey: string,
       options: { permissionMode?: PermissionMode | null; model?: string | null; effort?: EffortLevel | null; awaySummary?: string | null },
       observedAtMs = now,
     ) => {
@@ -220,7 +219,7 @@ export class TurnMetaTranscriptStore {
 
       const summary = awaySummary(value)
       if (summary && value.sessionId === sessionId && row.owner_turn_id) {
-        updateTurnMetadata(row.owner_turn_id, projectKey, { awaySummary: summary })
+        updateTurnMetadata(row.owner_turn_id, { awaySummary: summary })
         continue
       }
 
@@ -253,12 +252,12 @@ export class TurnMetaTranscriptStore {
             now,
             now,
           )
-        updateTurnMetadata(value.uuid, projectKey, { permissionMode: permissionMode(value.permissionMode) }, primaryTimestamp)
+        updateTurnMetadata(value.uuid, { permissionMode: permissionMode(value.permissionMode) }, primaryTimestamp)
         continue
       }
 
       if (value.type === 'permission-mode' && value.sessionId === sessionId && row.owner_turn_id) {
-        updateTurnMetadata(row.owner_turn_id, projectKey, { permissionMode: permissionMode(value.permissionMode) }, timestampMs(value.timestamp) ?? now)
+        updateTurnMetadata(row.owner_turn_id, { permissionMode: permissionMode(value.permissionMode) }, timestampMs(value.timestamp) ?? now)
         continue
       }
 
@@ -266,7 +265,7 @@ export class TurnMetaTranscriptStore {
         const observedAtMs = timestampMs(value.timestamp)
         const model = assistantModel(value)
         const effort = effortLevel(value.effort)
-        updateTurnMetadata(row.owner_turn_id, projectKey, { ...(model !== null ? { model, effort } : effort !== null ? { effort } : {}) }, observedAtMs ?? now)
+        updateTurnMetadata(row.owner_turn_id, { ...(model !== null ? { model, effort } : effort !== null ? { effort } : {}) }, observedAtMs ?? now)
       }
 
       if (

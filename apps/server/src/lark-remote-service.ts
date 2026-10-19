@@ -329,7 +329,7 @@ export class LarkRemoteService {
       pending.toolName === 'AskUserQuestion'
         ? decision && this.readInput.liveTurnManager.respondToQuestion?.(action.sessionId, action.requestId, decision)
         : this.readInput.liveTurnManager.respondToPermission?.(action.sessionId, action.requestId, permissionDecision(action))
-    if (!answered || answered.status !== 'answered') return answered?.status === 'invalid_update' ? { ok: false, reason: 'invalid_action' } : stale
+    if (answered?.status !== 'answered') return answered?.status === 'invalid_update' ? { ok: false, reason: 'invalid_action' } : stale
     return { ok: true, callback: { toast: { type: 'success', content: 'Response submitted.' } } }
   }
 

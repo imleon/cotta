@@ -616,14 +616,6 @@ export function TurnComposer({
     }
   }
 
-  function currentTurnOptions() {
-    return {
-      permissionMode,
-      model,
-      effort: effort === DEFAULT_TURN_OPTION ? null : effort,
-    }
-  }
-
   function saveCurrentTurnOptions(update: TurnOptionsUpdateRequest, targetSessionId = selectedSessionId) {
     if (!targetSessionId) return
     const key = targetSessionId
@@ -1027,70 +1019,68 @@ export function TurnComposer({
                         <span className="composer-context-popover-percent">{contextPercentage === null ? '—' : `${Math.round(contextPercentage)}%`}</span>
                       </header>
                       {contextUsage ? (
-                        <>
-                          <div className="composer-context-categories">
-                            <div className="composer-context-stack-meter" aria-hidden="true">
-                              <div className="composer-context-stack">
-                                {contextBreakdownCategories.map((category) =>
-                                  category.tokens > 0 ? (
-                                    <span
-                                      key={category.name}
-                                      className="composer-context-stack-segment"
-                                      style={{ ...contextCategoryStyle(category.name), width: contextCategoryWidth(category.tokens, contextUsage.maxTokens) }}
-                                    />
-                                  ) : null,
-                                )}
-                              </div>
-                              {contextAutoCompactPercentage === null ? null : (
-                                <span className="composer-context-auto-compact-marker" style={{ left: contextCategoryWidth(contextUsage.autoCompactThreshold ?? 0, contextUsage.maxTokens) }} />
+                        <div className="composer-context-categories">
+                          <div className="composer-context-stack-meter" aria-hidden="true">
+                            <div className="composer-context-stack">
+                              {contextBreakdownCategories.map((category) =>
+                                category.tokens > 0 ? (
+                                  <span
+                                    key={category.name}
+                                    className="composer-context-stack-segment"
+                                    style={{ ...contextCategoryStyle(category.name), width: contextCategoryWidth(category.tokens, contextUsage.maxTokens) }}
+                                  />
+                                ) : null,
                               )}
                             </div>
-                            <div className="composer-context-breakdown">
-                              {contextBreakdownCategories.map((category) => (
-                                <div className="composer-context-breakdown-row" key={category.name}>
-                                  <span className="composer-context-breakdown-label">
-                                    {category.name}
-                                    {'isDeferred' in category && category.isDeferred ? ' (deferred)' : ''}
-                                  </span>
-                                  <span className="composer-context-breakdown-track" aria-hidden="true">
-                                    <span
-                                      className="composer-context-breakdown-fill"
-                                      style={{ ...contextCategoryStyle(category.name), width: contextCategoryWidth(category.tokens, contextUsage.maxTokens) }}
-                                    />
-                                  </span>
-                                  <strong className="composer-context-breakdown-value">{category.tokens.toLocaleString()}</strong>
-                                  <span className="composer-context-breakdown-percent">{contextPercentageLabel(category.tokens, contextUsage.maxTokens)}</span>
-                                </div>
-                              ))}
-                            </div>
-                            <dl className="composer-context-summary">
-                              <div>
-                                <dt>Total used</dt>
-                                <dd>{contextUsedTokens.toLocaleString()}</dd>
-                                <span className="composer-context-breakdown-percent">{contextPercentageLabel(contextUsedTokens, contextUsage.maxTokens)}</span>
-                              </div>
-                              <div>
-                                <dt>Free space</dt>
-                                <dd>{contextFreeSpaceTokens === null ? '—' : contextFreeSpaceTokens.toLocaleString()}</dd>
-                                <span className="composer-context-breakdown-percent">
-                                  {contextFreeSpaceTokens === null ? '—' : contextPercentageLabel(contextFreeSpaceTokens, contextUsage.maxTokens)}
-                                </span>
-                              </div>
-                              <div>
-                                <dt>Auto-compact</dt>
-                                <dd>{contextUsage.autoCompactThreshold === null ? '—' : contextUsage.autoCompactThreshold.toLocaleString()}</dd>
-                                <span className="composer-context-breakdown-percent">
-                                  {contextUsage.autoCompactThreshold === null ? '—' : contextPercentageLabel(contextUsage.autoCompactThreshold, contextUsage.maxTokens)}
-                                </span>
-                              </div>
-                              <div>
-                                <dt>Maximum</dt>
-                                <dd>{contextUsage.maxTokens.toLocaleString()}</dd>
-                                <span className="composer-context-breakdown-percent">{contextPercentageLabel(contextUsage.maxTokens, contextUsage.maxTokens)}</span>
-                              </div>
-                            </dl>
+                            {contextAutoCompactPercentage === null ? null : (
+                              <span className="composer-context-auto-compact-marker" style={{ left: contextCategoryWidth(contextUsage.autoCompactThreshold ?? 0, contextUsage.maxTokens) }} />
+                            )}
                           </div>
-                        </>
+                          <div className="composer-context-breakdown">
+                            {contextBreakdownCategories.map((category) => (
+                              <div className="composer-context-breakdown-row" key={category.name}>
+                                <span className="composer-context-breakdown-label">
+                                  {category.name}
+                                  {'isDeferred' in category && category.isDeferred ? ' (deferred)' : ''}
+                                </span>
+                                <span className="composer-context-breakdown-track" aria-hidden="true">
+                                  <span
+                                    className="composer-context-breakdown-fill"
+                                    style={{ ...contextCategoryStyle(category.name), width: contextCategoryWidth(category.tokens, contextUsage.maxTokens) }}
+                                  />
+                                </span>
+                                <strong className="composer-context-breakdown-value">{category.tokens.toLocaleString()}</strong>
+                                <span className="composer-context-breakdown-percent">{contextPercentageLabel(category.tokens, contextUsage.maxTokens)}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <dl className="composer-context-summary">
+                            <div>
+                              <dt>Total used</dt>
+                              <dd>{contextUsedTokens.toLocaleString()}</dd>
+                              <span className="composer-context-breakdown-percent">{contextPercentageLabel(contextUsedTokens, contextUsage.maxTokens)}</span>
+                            </div>
+                            <div>
+                              <dt>Free space</dt>
+                              <dd>{contextFreeSpaceTokens === null ? '—' : contextFreeSpaceTokens.toLocaleString()}</dd>
+                              <span className="composer-context-breakdown-percent">
+                                {contextFreeSpaceTokens === null ? '—' : contextPercentageLabel(contextFreeSpaceTokens, contextUsage.maxTokens)}
+                              </span>
+                            </div>
+                            <div>
+                              <dt>Auto-compact</dt>
+                              <dd>{contextUsage.autoCompactThreshold === null ? '—' : contextUsage.autoCompactThreshold.toLocaleString()}</dd>
+                              <span className="composer-context-breakdown-percent">
+                                {contextUsage.autoCompactThreshold === null ? '—' : contextPercentageLabel(contextUsage.autoCompactThreshold, contextUsage.maxTokens)}
+                              </span>
+                            </div>
+                            <div>
+                              <dt>Maximum</dt>
+                              <dd>{contextUsage.maxTokens.toLocaleString()}</dd>
+                              <span className="composer-context-breakdown-percent">{contextPercentageLabel(contextUsage.maxTokens, contextUsage.maxTokens)}</span>
+                            </div>
+                          </dl>
+                        </div>
                       ) : (
                         <div className="composer-context-empty">No context data yet.</div>
                       )}

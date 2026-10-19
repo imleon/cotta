@@ -834,7 +834,8 @@ export function SessionTaskList({ tasks }: { tasks: RawSessionTask[] }) {
   if (tasks.length === 0) return null
   const statusLabel = { pending: 'OPEN', in_progress: 'IN PROGRESS', completed: 'DONE' }
   const taskRefs = (taskIds: string[]) => taskIds.map((taskId) => `#${taskId}`).join(', ')
-  const counts = tasks.reduce((acc, task) => ({ ...acc, [task.status]: acc[task.status] + 1 }), { pending: 0, in_progress: 0, completed: 0 })
+  const counts = { pending: 0, in_progress: 0, completed: 0 }
+  for (const task of tasks) counts[task.status] += 1
   const countSummary = `${tasks.length} total (${counts.completed} done, ${counts.in_progress} in progress, ${counts.pending} open)`
   const visibleTasks = showCompleted ? tasks : tasks.filter((task) => task.status !== 'completed')
   const renderTask = (task: RawSessionTask) => (
@@ -1036,18 +1037,6 @@ export function SessionTimeline({
     isTimelineAtBottom,
   )
   const visibleTurns = useMemo<ProjectedTimelineTurn[]>(() => turns.map((turn) => ({ ...turn, blocks: projectTimelineTurn(turn) })), [turns])
-  const latestVisibleMessageUuid = useMemo(() => {
-    for (let turnIndex = visibleTurns.length - 1; turnIndex >= 0; turnIndex -= 1) {
-      const turn = visibleTurns[turnIndex]!
-      for (let messageIndex = turn.messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
-        const message = turn.messages[messageIndex]
-        if (typeof message === 'object' && message !== null && 'uuid' in message && typeof (message as { uuid?: unknown }).uuid === 'string') {
-          return (message as { uuid: string }).uuid
-        }
-      }
-    }
-    return null
-  }, [visibleTurns])
   if (pendingPrimaryTurnUuid && awaitingResponseTurnIdRef.current !== pendingPrimaryTurnUuid) awaitingResponseTurnIdRef.current = pendingPrimaryTurnUuid
   const openRawMessages = useCallback((turnId: string) => setRawMessageSelection({ turnId }), [])
   const openSubagents = useCallback((turnId: string) => setSubagentSelection({ turnId, selectedAgentId: null }), [])

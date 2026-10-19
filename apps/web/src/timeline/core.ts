@@ -1316,7 +1316,7 @@ export function localCommandRoot(raw: unknown): { uuid: string; message: Record<
 
 export function localCommandRootForSubmission(raw: unknown, submissionUuid: string): { uuid: string; message: Record<string, unknown> } | null {
   const root = localCommandRoot(raw)
-  if (!root || root.message.type !== 'assistant') return null
+  if (root?.message.type !== 'assistant') return null
   const linked = [root.message.user_message_uuid, ...(Array.isArray(root.message.user_message_uuids) ? root.message.user_message_uuids : [])]
   return linked.some((uuid) => uuid === submissionUuid) ? root : null
 }

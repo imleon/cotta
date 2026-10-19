@@ -843,109 +843,107 @@ export function ProjectSessionRail({
   }
 
   return (
-    <>
-      <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions" onScroll={handleProjectRailScroll}>
-        {pinnedGroups.length > 0 ? (
-          <section className="sidebar-section app-sidebar-pinned" aria-labelledby="pinned-sidebar-section-heading">
-            <header className="app-sidebar-projects-header">
-              <h2 className="app-sidebar-group-label" id="pinned-sidebar-section-heading">
-                PINNED
-              </h2>
-              <RefreshListsButton refreshing={refreshingProjects} reconnecting={listUpdatesReconnecting} onRefresh={onRefreshProjects} />
-            </header>
-            <div className="project-tree">
-              {pinnedGroups.map(({ project, pins: projectPins }) => {
-                const expanded = expandedPinnedProjectIds.has(project.id)
-                const regionId = `pinned-${projectSessionsRegionId(project.id)}`
-                return (
-                  <div className="project-card-wrap project-tree-item" key={project.id}>
-                    <ProjectCard
-                      project={project}
-                      selected={selectionSource === 'pinned' && selectedProjectId === project.id}
-                      expanded={expanded}
-                      sessionsRegionId={regionId}
-                      onToggleExpanded={() => {
-                        focusSection('pinned', project.id)
-                        togglePinnedProject(project.id)
-                      }}
-                      onSelectProject={() => {
-                        pendingSelectionRef.current = `${project.id}\0`
-                        onSelectProject(project.id)
-                      }}
-                    />
-                    {expanded ? (
-                      <div className="project-sessions" id={regionId}>
-                        <ul className="session-list rail-session-list">
-                          {projectPins.map((pin) => (
-                            <SessionRow
-                              key={pin.session.id}
-                              projectId={project.id}
-                              session={pin.session}
-                              selected={selectionSource === 'pinned' && selectedSessionId === pin.session.id}
-                              pinned
-                              onSelect={() => selectSession('pinned', project.id, pin.session.id)}
-                              onDeleteSession={onDeleteSession}
-                              onRenameSession={onRenameSession}
-                              onPinSession={onPinSession}
-                              onForkSession={onForkSession}
-                              onRestartSession={onRestartSession}
-                            />
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </div>
-                )
-              })}
-            </div>
-          </section>
-        ) : null}
-        <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
+    <aside className="project-rail" id="project-session-rail" aria-label="Projects and sessions" onScroll={handleProjectRailScroll}>
+      {pinnedGroups.length > 0 ? (
+        <section className="sidebar-section app-sidebar-pinned" aria-labelledby="pinned-sidebar-section-heading">
           <header className="app-sidebar-projects-header">
-            <h2 className="app-sidebar-group-label" id="projects-sidebar-section-heading">
-              PROJECTS
+            <h2 className="app-sidebar-group-label" id="pinned-sidebar-section-heading">
+              PINNED
             </h2>
             <RefreshListsButton refreshing={refreshingProjects} reconnecting={listUpdatesReconnecting} onRefresh={onRefreshProjects} />
           </header>
           <div className="project-tree">
-            {projectRows.map((project) => (
-              <ProjectSessionBranch
-                key={project.id}
-                project={project}
-                selectedProjectId={selectionSource === 'projects' ? selectedProjectId : null}
-                selectedSessionId={selectionSource === 'projects' ? selectedSessionId : null}
-                highlightedSessionId={highlightedSession?.projectId === project.id ? highlightedSession.sessionId : null}
-                selectedSessionSummary={selectedProjectId === project.id ? selectedSessionSummary : null}
-                expanded={expandedProjectIds.has(project.id)}
-                visibleSessionStates={visibleSessionStates}
-                onToggleExpanded={() => {
-                  focusSection('projects', project.id)
-                  toggleProject(project.id)
-                }}
-                onSelectProject={() => {
-                  pendingSelectionRef.current = `${project.id}\0`
-                  onSelectProject(project.id)
-                }}
-                onSelectSession={(projectId, sessionId) => selectSession('projects', projectId, sessionId)}
-                pinnedSessionKeys={pinnedSessionKeys}
-                onDeleteSession={onDeleteSession}
-                onRenameSession={onRenameSession}
-                onPinSession={onPinSession}
-                onForkSession={onForkSession}
-                onRestartSession={onRestartSession}
-                onSessionCursorStale={onSessionCursorStale}
-                onHighlightedSessionSeen={onHighlightedSessionSeen}
-              />
-            ))}
-            {projectsHasMore ? (
-              <button className="load-more-sessions" type="button" onClick={onLoadMoreProjects} disabled={projectsLoadingMore}>
-                {projectsLoadingMore ? 'Loading…' : 'Load more projects'}
-              </button>
-            ) : null}
+            {pinnedGroups.map(({ project, pins: projectPins }) => {
+              const expanded = expandedPinnedProjectIds.has(project.id)
+              const regionId = `pinned-${projectSessionsRegionId(project.id)}`
+              return (
+                <div className="project-card-wrap project-tree-item" key={project.id}>
+                  <ProjectCard
+                    project={project}
+                    selected={selectionSource === 'pinned' && selectedProjectId === project.id}
+                    expanded={expanded}
+                    sessionsRegionId={regionId}
+                    onToggleExpanded={() => {
+                      focusSection('pinned', project.id)
+                      togglePinnedProject(project.id)
+                    }}
+                    onSelectProject={() => {
+                      pendingSelectionRef.current = `${project.id}\0`
+                      onSelectProject(project.id)
+                    }}
+                  />
+                  {expanded ? (
+                    <div className="project-sessions" id={regionId}>
+                      <ul className="session-list rail-session-list">
+                        {projectPins.map((pin) => (
+                          <SessionRow
+                            key={pin.session.id}
+                            projectId={project.id}
+                            session={pin.session}
+                            selected={selectionSource === 'pinned' && selectedSessionId === pin.session.id}
+                            pinned
+                            onSelect={() => selectSession('pinned', project.id, pin.session.id)}
+                            onDeleteSession={onDeleteSession}
+                            onRenameSession={onRenameSession}
+                            onPinSession={onPinSession}
+                            onForkSession={onForkSession}
+                            onRestartSession={onRestartSession}
+                          />
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
           </div>
         </section>
-      </aside>
-    </>
+      ) : null}
+      <section className="sidebar-section" aria-labelledby="projects-sidebar-section-heading">
+        <header className="app-sidebar-projects-header">
+          <h2 className="app-sidebar-group-label" id="projects-sidebar-section-heading">
+            PROJECTS
+          </h2>
+          <RefreshListsButton refreshing={refreshingProjects} reconnecting={listUpdatesReconnecting} onRefresh={onRefreshProjects} />
+        </header>
+        <div className="project-tree">
+          {projectRows.map((project) => (
+            <ProjectSessionBranch
+              key={project.id}
+              project={project}
+              selectedProjectId={selectionSource === 'projects' ? selectedProjectId : null}
+              selectedSessionId={selectionSource === 'projects' ? selectedSessionId : null}
+              highlightedSessionId={highlightedSession?.projectId === project.id ? highlightedSession.sessionId : null}
+              selectedSessionSummary={selectedProjectId === project.id ? selectedSessionSummary : null}
+              expanded={expandedProjectIds.has(project.id)}
+              visibleSessionStates={visibleSessionStates}
+              onToggleExpanded={() => {
+                focusSection('projects', project.id)
+                toggleProject(project.id)
+              }}
+              onSelectProject={() => {
+                pendingSelectionRef.current = `${project.id}\0`
+                onSelectProject(project.id)
+              }}
+              onSelectSession={(projectId, sessionId) => selectSession('projects', projectId, sessionId)}
+              pinnedSessionKeys={pinnedSessionKeys}
+              onDeleteSession={onDeleteSession}
+              onRenameSession={onRenameSession}
+              onPinSession={onPinSession}
+              onForkSession={onForkSession}
+              onRestartSession={onRestartSession}
+              onSessionCursorStale={onSessionCursorStale}
+              onHighlightedSessionSeen={onHighlightedSessionSeen}
+            />
+          ))}
+          {projectsHasMore ? (
+            <button className="load-more-sessions" type="button" onClick={onLoadMoreProjects} disabled={projectsLoadingMore}>
+              {projectsLoadingMore ? 'Loading…' : 'Load more projects'}
+            </button>
+          ) : null}
+        </div>
+      </section>
+    </aside>
   )
 }
 

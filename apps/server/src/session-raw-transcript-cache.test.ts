@@ -205,7 +205,7 @@ describe('SessionRawTranscriptCacheStore', () => {
   })
 
   it('caches raw transcript lines', async () => {
-    const { projectDir, projectId, db, store } = await setup()
+    const { projectDir, db, store } = await setup()
     const transcript = jsonl(
       { type: 'user', uuid: 'user-1', sessionId: 'session', cwd: '/repo/cotta', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hi' } },
       {
@@ -401,7 +401,7 @@ describe('SessionRawTranscriptCacheStore', () => {
   })
 
   it('repairs command-chain ownership before rebuilding search documents', async () => {
-    const { config, projectDir, db, store } = await setup()
+    const { projectDir, db, store } = await setup()
     const transcriptPath = join(projectDir, 'session.jsonl')
     await writeFile(
       transcriptPath,
@@ -574,7 +574,7 @@ describe('SessionRawTranscriptCacheStore', () => {
   })
 
   it('loads sqlite rows for one primary turn until the next primary user message', async () => {
-    const { projectDir, projectId, db, store } = await setup()
+    const { projectDir, db, store } = await setup()
     await writeFile(
       join(projectDir, 'session.jsonl'),
       jsonl(
@@ -627,7 +627,7 @@ describe('SessionRawTranscriptCacheStore', () => {
   })
 
   it('only parses window rows and linked task notifications for timeline windows', async () => {
-    const { projectDir, projectId, db, store } = await setup()
+    const { projectDir, db, store } = await setup()
     const outsideRows = Array.from({ length: 20 }, (_, index) => ({
       type: 'assistant',
       uuid: `outside-${index}`,
@@ -848,7 +848,7 @@ describe('SessionRawTranscriptCacheStore', () => {
   })
 
   it('keeps the committed path when an unrelated smaller fork shares the session id', async () => {
-    const { config, projectDir, projectId, db, store } = await setup()
+    const { config, projectDir, db, store } = await setup()
     const full = jsonl(
       { type: 'user', uuid: 'user-1', sessionId: 'session', cwd: '/repo/cotta', message: { role: 'user', content: 'first' } },
       { type: 'assistant', uuid: 'assistant-1', sessionId: 'session', message: { role: 'assistant', content: 'done' } },
@@ -917,7 +917,7 @@ describe('SessionRawTranscriptCacheStore', () => {
   })
 
   it('chooses the append-only superset when duplicate session paths exist', async () => {
-    const { config, projectDir, projectId, db, store } = await setup()
+    const { config, projectDir, db, store } = await setup()
     const full = jsonl(
       { type: 'user', uuid: 'user-1', sessionId: 'session', cwd: '/repo/cotta', message: { role: 'user', content: 'first' } },
       { type: 'assistant', uuid: 'assistant-1', sessionId: 'session', message: { role: 'assistant', content: 'done' } },
@@ -1027,7 +1027,7 @@ describe('SessionRawTranscriptCacheStore', () => {
   })
 
   it('leaves incomplete trailing lines for a later scan', async () => {
-    const { projectDir, projectId, db, store } = await setup()
+    const { projectDir, db, store } = await setup()
     const complete = jsonl({ type: 'user', uuid: 'user-1', sessionId: 'session', cwd: '/repo/cotta', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hi' } })
     await writeFile(join(projectDir, 'session.jsonl'), `${complete}{"type":"user"`)
 

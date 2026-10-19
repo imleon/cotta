@@ -183,6 +183,8 @@ describe('settings', () => {
   })
 
   it('reads, saves, and refreshes settings', async () => {
+    // The schema defaults timeZone to the host zone, so the expectation must follow the runner (CI is UTC).
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ settings: { defaultPermissionMode: 'plan' } }), { status: 200 }))
@@ -191,14 +193,14 @@ describe('settings', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchSettings()).resolves.toEqual({
-      settings: { timeZone: 'Asia/Shanghai', defaultPermissionMode: 'plan', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
+      settings: { timeZone, defaultPermissionMode: 'plan', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
     })
     await expect(saveSettings({ defaultPermissionMode: 'default' })).resolves.toEqual({
-      settings: { timeZone: 'Asia/Shanghai', defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
+      settings: { timeZone, defaultPermissionMode: 'default', defaultModel: 'default', defaultEffort: 'medium', useOneMillionContext: true, showDebugNav: false },
     })
     await expect(refreshModelCatalog('p1')).resolves.toEqual({
       settings: {
-        timeZone: 'Asia/Shanghai',
+        timeZone,
         defaultPermissionMode: 'default',
         defaultModel: 'default',
         defaultEffort: 'medium',

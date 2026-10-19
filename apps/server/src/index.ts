@@ -47,7 +47,7 @@ import { attachTerminalWebSocket, isAllowedTerminalOrigin } from './terminal-web
 import { TokenUsageStore } from './token-usage-store.js'
 import type { TranscriptIndexStore } from './transcript-index-store.js'
 import { TurnMetaTranscriptStore } from './turn-meta-transcript.js'
-import { readSettings, resolveTurnOptions, validateTurnOptions } from './turn-options.js'
+import { resolveTurnOptions, validateTurnOptions } from './turn-options.js'
 import { TurnOptionsStore } from './turn-options-store.js'
 
 setGlobalDispatcher(new EnvHttpProxyAgent())

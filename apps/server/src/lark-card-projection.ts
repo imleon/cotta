@@ -516,7 +516,7 @@ export function askUserQuestionList(pending: ToolApprovalRequest): ParsedQuestio
   const keys = new Set<string>()
   for (const question of questions) {
     const entry = parseQuestion(question)
-    if (!entry || !entry.key || keys.has(entry.key)) return null
+    if (!entry?.key || keys.has(entry.key)) return null
     keys.add(entry.key)
     parsed.push(entry)
   }

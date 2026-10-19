@@ -145,7 +145,7 @@ export function parseLimit(value: string | undefined, fallback: number, max = 10
 }
 
 export function parseCursor(value: string | undefined): string | null {
-  return value && value.trim() ? value.trim() : null
+  return value?.trim() ? value.trim() : null
 }
 
 export const SSE_HEARTBEAT_INTERVAL_MS = 15_000

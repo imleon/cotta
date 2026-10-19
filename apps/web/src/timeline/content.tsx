@@ -20,7 +20,7 @@ import ReactMarkdown, { defaultUrlTransform, type ExtraProps } from 'react-markd
 import Zoom from 'react-medium-image-zoom'
 import remarkGfm from 'remark-gfm'
 import { fetchLocalMessageImage, type LocalImageConfirmation, LocalImageHttpError } from '../api'
-import { type FileMutationResult, isPrimaryInputBlock, isRecord, markdownText, type StructuredPatchHunk, shortText, type TimelineSource, textFromData, thinkingValue } from './core'
+import { type FileMutationResult, isRecord, type StructuredPatchHunk, shortText, type TimelineSource } from './core'
 import { highlightCode, resolveHighlightLanguage, tokenizeCode } from './highlight'
 
 export function safeDataPreview(value: unknown, space = 2): string {
@@ -957,12 +957,6 @@ export function toolInputSummary(value: unknown): string | null {
   return keyValueSummary(value)
 }
 
-function thinkingSummary(value: unknown): string | null {
-  if (value === undefined || value === null) return null
-  if (typeof value === 'string') return shortText(markdownText(value), 88)
-  return shortText(safeDataPreview(value, 0), 88)
-}
-
 export function TimelineKvContent({ value }: { value: Record<string, unknown> }) {
   return (
     <dl className={toolTimelineClass.inputKv} data-timeline-content="kv">
@@ -997,7 +991,7 @@ export function TimelineQuestionFormContent({
   const [notes, setNotes] = useState<Record<number, string>>({})
   const complete =
     items.length > 0 &&
-    items.every((question, index) => {
+    items.every((_question, index) => {
       const selected = answers[index] ?? []
       return selected.length > 0 && (!selected.includes(OTHER_OPTION) || Boolean(otherText[index]?.trim()))
     })

@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  clampProjectFilePreviewWidth,
-  PROJECT_FILE_PREVIEW_MIN_WIDTH,
-  PROJECT_FILE_RESIZE_HANDLE_WIDTH,
-  PROJECT_FILE_TREE_MIN_WIDTH,
-  PROJECT_FILES_PANE_MIN_WIDTH,
-  resizeProjectFilePreview,
-  resizeProjectFilesPane,
-} from './project-files-layout'
+import { clampProjectFilePreviewWidth, PROJECT_FILE_PREVIEW_MIN_WIDTH, PROJECT_FILES_PANE_MIN_WIDTH, resizeProjectFilePreview, resizeProjectFilesPane } from './project-files-layout'
 
 describe('project file pane layout', () => {
   const paneWidth = PROJECT_FILES_PANE_MIN_WIDTH + 200

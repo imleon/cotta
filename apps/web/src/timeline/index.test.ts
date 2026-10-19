@@ -10,7 +10,6 @@ import {
   FileToolResultValue,
   fileLanguage,
   TimelineCodeContent,
-  TimelineContentStack,
   TimelineDiffContent,
   TimelineKvContent,
   TimelineMarkdownContent,
@@ -36,7 +35,6 @@ import {
   fileMutationResult,
   groupAssistantResponseFrames,
   groupTimelineBlocks,
-  isPrimaryUserMessage,
   LiveAssistantStreamAccumulator,
   localCommandRootForSubmission,
   materializeTimelineTurns,
@@ -267,7 +265,7 @@ describe('timeline tool content components', () => {
   it.each(['md', 'markdown'])('unwraps nested %s payload fences before markdown rendering', (language) => {
     const html = renderToStaticMarkup(
       createElement(TimelineMarkdownContent, {
-        value: ['Before', '', '```' + language, '**Draft**', '', '```toml', 'command = ["tool"]', '```', '', 'After', '```', '', 'Outside'].join('\n'),
+        value: ['Before', '', `\`\`\`${language}`, '**Draft**', '', '```toml', 'command = ["tool"]', '```', '', 'After', '```', '', 'Outside'].join('\n'),
       }),
     )
 
@@ -1238,7 +1236,7 @@ describe('Skill tool call', () => {
     ])
     const skill = items.find((item) => item.type === 'tool-call')
     expect(skill?.type === 'tool-call' && skill.results.some((result) => result.kind === 'tool.result')).toBe(false)
-    if (!skill || skill.type !== 'tool-call') throw new Error('expected Skill tool call')
+    if (skill?.type !== 'tool-call') throw new Error('expected Skill tool call')
     const body = renderToStaticMarkup(createElement(SkillToolContent, { input: { skill: 'ponytail:ponytail' }, results: skill.results }))
     expect(body).toContain('Waiting for skill result…')
   })

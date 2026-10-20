@@ -1,8 +1,8 @@
 import {
   type AppSettings,
   type AppSettingsUpdate,
-  allowedOriginSchema,
   type AuthSessionResponse,
+  allowedOriginSchema,
   type DefaultTurnOption,
   type EffortLevel,
   isSingleUser,
@@ -607,16 +607,18 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
               </div>
             </div>
             <div className="settings-card-controls settings-account-actions">
-              <button
-                type="button"
-                className="settings-logout settings-secondary"
-                onClick={() => {
-                  setGithubError(null)
-                  setGithubEditing((open) => !open)
-                }}
-              >
-                Change account
-              </button>
+              {authSession.loginMethod === 'github' ? (
+                <button
+                  type="button"
+                  className="settings-logout settings-secondary"
+                  onClick={() => {
+                    setGithubError(null)
+                    setGithubEditing((open) => !open)
+                  }}
+                >
+                  Change account
+                </button>
+              ) : null}
               <button type="button" className="settings-logout" onClick={() => void onLogout()}>
                 Logout
               </button>

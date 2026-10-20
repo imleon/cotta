@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { pollGitHubDeviceLogin, startGitHubDeviceLogin } from '../api'
+import { pollGitHubDeviceLogin, pollProviderLogin, startGitHubDeviceLogin, startProviderLogin } from '../api'
 import logoUrl from '../assets/logo.svg'
 import { writeClipboard } from '../timeline/content'
 
@@ -29,7 +29,8 @@ function CheckIcon() {
   )
 }
 
-export function AccessRequired() {
+export function AccessRequired({ loginMethod = 'github' }: { loginMethod?: string }) {
+  const isGitHub = loginMethod === 'github'
   const queryClient = useQueryClient()
   const [flow, setFlow] = useState<{ flowId: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,7 +44,7 @@ export function AccessRequired() {
     let timer: number
     const poll = async () => {
       try {
-        const response = await pollGitHubDeviceLogin(flow.flowId)
+        const response = isGitHub ? await pollGitHubDeviceLogin(flow.flowId) : await pollProviderLogin(loginMethod, flow.flowId)
         if (stopped) return
         if (response.status === 'authorized') {
           await queryClient.invalidateQueries({ queryKey: ['auth-session'] })
@@ -61,7 +62,7 @@ export function AccessRequired() {
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [flow, queryClient])
+  }, [flow, queryClient, isGitHub, loginMethod])
 
   useEffect(() => () => window.clearTimeout(copyTimer.current), [])
 
@@ -69,7 +70,7 @@ export function AccessRequired() {
     setError(null)
     setStarting(true)
     try {
-      setFlow(await startGitHubDeviceLogin())
+      setFlow(isGitHub ? await startGitHubDeviceLogin() : await startProviderLogin(loginMethod))
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -104,8 +105,8 @@ export function AccessRequired() {
               </span>
             </button>
             <a className="login-primary" href={flow.verificationUriComplete ?? flow.verificationUri} target="_blank" rel="noreferrer">
-              <GitHubMark />
-              Open GitHub to authorize
+              {isGitHub ? <GitHubMark /> : null}
+              {isGitHub ? 'Open GitHub to authorize' : 'Open sign-in page'}
             </a>
             <p className="muted login-waiting">
               <span className="login-spinner" aria-hidden="true" /> Waiting for authorization…
@@ -113,8 +114,8 @@ export function AccessRequired() {
           </div>
         ) : (
           <button type="button" className="login-primary" onClick={startLogin} disabled={starting}>
-            {starting ? <span className="login-spinner" aria-hidden="true" /> : <GitHubMark />}
-            {starting ? 'Starting…' : 'Sign in with GitHub'}
+            {starting ? <span className="login-spinner" aria-hidden="true" /> : isGitHub ? <GitHubMark /> : null}
+            {starting ? 'Starting…' : isGitHub ? 'Sign in with GitHub' : 'Sign in'}
           </button>
         )}
         {error ? <div className="panel error">{error}</div> : null}

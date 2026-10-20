@@ -14,7 +14,8 @@ import { createCottaDatabase } from './database.js'
 import { loadDetailTokenKey } from './detail-token.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
 import { LiveTurnManager } from './live-turn-manager.js'
-import { defaultModelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
+import { defaultModelCatalogProvider, type ModelCatalogProvider, providerModelCatalogProvider } from './model-catalog.js'
+import { loadModelProvider } from './model-provider.js'
 import { ProjectFilesWatcherRegistry } from './project-files-watcher-registry.js'
 import { RawTranscriptCoordinator } from './raw-transcript-coordinator.js'
 import { RemoteBotManager } from './remote-bot-manager.js'
@@ -340,8 +341,15 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
   const cottaDb = createCottaDatabase()
   const indexChangeNotifier = new IndexChangeNotifier()
   const settingsStore = new SqliteSettingsStore(cottaDb)
-  await ensureGithubConfig(settingsStore, { force: opts.reconfigureGithub })
-  await ensureModelCatalog(settingsStore, defaultModelCatalogProvider)
+  const provider = await loadModelProvider()
+  // A provider that ships its own catalog source wins; otherwise, if it only redirects turns via env
+  // (gateway), query the default SDK catalog through that same env so the list matches what the gateway serves.
+  const catalogProvider = provider?.modelCatalogProvider ?? (provider ? providerModelCatalogProvider(await provider.envForTurn()) : defaultModelCatalogProvider)
+  // A provider's login replaces GitHub login; skip the GitHub config prompt in that case.
+  if (!provider?.registerAuthRoutes) await ensureGithubConfig(settingsStore, { force: opts.reconfigureGithub })
+  // Provider upstreams (e.g. a gateway) aren't authenticated until the user logs in via the web UI, so the
+  // boot-time catalog query would fail; defer to the post-login lazy refresh instead of crashing.
+  await ensureModelCatalog(settingsStore, catalogProvider, { required: !provider })
   const detailTokenKey = loadDetailTokenKey(settingsStore)
   const shareStore = new ShareStore(cottaDb)
   const turnOptionsStore = new TurnOptionsStore(cottaDb)
@@ -407,6 +415,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     settingsStore,
     (sessionId) => claudeSessionRegistry.cliSessionMetadata(sessionId),
     (sessionId) => turnOptionsStore.getPrePlanPermissionMode(sessionId),
+    provider ? (sessionId) => provider.envForTurn({ sessionId }) : undefined,
   )
   activityVersion = (sessionId) => {
     const runState = liveTurnManager.sessionRunState(sessionId)
@@ -435,7 +444,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     beforeList: () => rawTranscriptCoordinator.ensureReady(),
     timelineVersionProvider: timelineVersion,
   })
-  const auth = createAuth({ settingsStore })
+  const auth = createAuth({ settingsStore, provider: provider ?? undefined })
   const projectRoutesInput = {
     claudeCodeApi,
     liveTurnManager,
@@ -457,10 +466,11 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     transcriptIndex: rawTranscriptCache.index,
     sessionSearchStore,
     sessionSearchReady: () => rawTranscriptCoordinator.ensureReady(),
-    modelCatalogProvider: defaultModelCatalogProvider,
+    modelCatalogProvider: catalogProvider,
     sessionWatcherRegistry,
     detailTokenKey,
     shareStore,
+    providerLoginActive: Boolean(provider?.registerAuthRoutes),
   }
   const remoteBotStore = createRemoteBotStore(cottaDb)
   const remoteBotManager = new RemoteBotManager(remoteBotStore, projectRoutesInput)

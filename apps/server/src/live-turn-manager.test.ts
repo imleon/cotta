@@ -200,6 +200,35 @@ describe('LiveTurnManager', () => {
     }
   })
 
+  it('merges provider env into the SDK subprocess env, overriding base vars', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const providerEnv = vi.fn(async (sessionId: string) => ({ ANTHROPIC_BASE_URL: `http://127.0.0.1:9/${sessionId}`, ANTHROPIC_AUTH_TOKEN: 'tok' }))
+    const manager = new LiveTurnManager(undefined, undefined, undefined, undefined, undefined, undefined, providerEnv)
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+
+    expect(providerEnv).toHaveBeenCalledWith('session-1')
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          env: expect.objectContaining({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/session-1', ANTHROPIC_AUTH_TOKEN: 'tok' }),
+        }),
+      }),
+    )
+  })
+
+  it('injects no provider env by default (public path unchanged)', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+
+    const env = queryMock.mock.calls[0]?.[0]?.options?.env as Record<string, string>
+    expect(env.ANTHROPIC_BASE_URL).toBe(process.env.ANTHROPIC_BASE_URL)
+  })
+
   it('launches a plan runtime in the recorded pre-plan mode and switches to plan before the first message', async () => {
     const order: string[] = []
     const setPermissionMode = vi.fn(async (mode: string) => {

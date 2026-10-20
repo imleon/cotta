@@ -11,8 +11,12 @@ import {
   createShareResponseSchema,
   type DeleteSessionResponse,
   type DetailResponse,
+  type DeviceLoginPoll,
+  type DeviceLoginStart,
   deleteSessionResponseSchema,
   detailResponseSchema,
+  deviceLoginPollSchema,
+  deviceLoginStartSchema,
   type ForkSessionResponse,
   forkSessionResponseSchema,
   type GitHubConfig,
@@ -220,6 +224,27 @@ export async function pollGitHubDeviceLogin(flowId: string): Promise<GitHubDevic
     throw new Error(`GitHub login poll failed: ${body?.error ?? response.status}`)
   }
   return githubDevicePollResponseSchema.parse(await response.json())
+}
+
+// Generic provider login, same device-flow contract as GitHub (shared deviceLogin*Schema). The server
+// advertises the method id via /api/auth/session `loginMethod`; its routes live under /api/auth/<method>/.
+export async function startProviderLogin(method: string): Promise<DeviceLoginStart> {
+  const response = await fetch(`/api/auth/${encodeURIComponent(method)}/start`, { method: 'POST' })
+  if (!response.ok) throw new Error(`Login start failed: ${response.status}`)
+  return deviceLoginStartSchema.parse(await response.json())
+}
+
+export async function pollProviderLogin(method: string, flowId: string): Promise<DeviceLoginPoll> {
+  const response = await fetch(`/api/auth/${encodeURIComponent(method)}/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flowId }),
+  })
+  if (response.status !== 202 && !response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null
+    throw new Error(`Login poll failed: ${body?.error ?? response.status}`)
+  }
+  return deviceLoginPollSchema.parse(await response.json())
 }
 
 export async function logout(): Promise<LogoutResponse> {

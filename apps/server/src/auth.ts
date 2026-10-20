@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { type AuthUser, isSingleUser, normalizeAllowedUser } from '@cotta/shared'
 import type { Context, Hono, Next } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
+import type { ModelProvider } from './model-provider.js'
 import type { SettingsStore } from './settings-store.js'
 
 const SESSION_COOKIE = 'cotta_session'
@@ -99,10 +100,12 @@ export function noopAuth(): CottaAuth {
   }
 }
 
-export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: SettingsStore } = {}) {
+export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: SettingsStore; provider?: ModelProvider } = {}) {
   const sessions = new Map<string, Session>()
   const deviceFlows = new Map<string, DeviceFlow>()
   const cookieSecureOverride = input.github?.cookieSecure ?? process.env.COTTA_COOKIE_SECURE
+  // A provider supplies its own login flow; its identity gate replaces GitHub, so the GitHub allowlist is not required.
+  const providerLogin = input.provider?.registerAuthRoutes ? input.provider : null
 
   // Read GitHub config fresh on every use so Settings-UI edits take effect without a restart.
   // The explicit `input.github` wins (tests / direct injection); otherwise the store is the source of truth.
@@ -113,7 +116,7 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
   }
 
   const startupConfig = currentGithubConfig()
-  if (!isSingleUser(startupConfig.allowedUser)) throw new Error('GitHub login requires exactly one allowed user')
+  if (!providerLogin && !isSingleUser(startupConfig.allowedUser)) throw new Error('GitHub login requires exactly one allowed user')
   const resolvedSecret = input.github?.sessionSecret ?? (input.settingsStore ? loadSessionSecret(input.settingsStore) : undefined)
   if (!resolvedSecret) throw new Error('session secret unavailable: provide settingsStore or github.sessionSecret')
   const sessionSecret: string = resolvedSecret
@@ -302,8 +305,20 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
       return c.json({
         authenticated: Boolean(user),
         user,
+        loginMethod: providerLogin?.id ?? 'github',
       })
     })
+
+    app.post('/api/auth/logout', (c) => {
+      clearSessionCookie(c)
+      return c.json({ ok: true })
+    })
+
+    if (providerLogin) {
+      providerLogin.registerAuthRoutes?.(app, { establishSession: (c, user) => setSessionCookie(c, user) })
+      // A provider supplies its own login; the GitHub device-flow routes below are not mounted.
+      return
+    }
 
     app.post('/api/auth/github/device/start', async (c) => {
       try {
@@ -348,11 +363,6 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
         if (error instanceof GitHubRequestError) return c.json({ error: error.message }, 502)
         throw error
       }
-    })
-
-    app.post('/api/auth/logout', (c) => {
-      clearSessionCookie(c)
-      return c.json({ ok: true })
     })
   }
 

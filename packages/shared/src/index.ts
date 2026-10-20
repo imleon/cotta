@@ -1785,10 +1785,23 @@ export type AuthUser = z.infer<typeof authUserSchema>
 export const authSessionResponseSchema = z.object({
   authenticated: z.boolean(),
   user: authUserSchema.nullable(),
+  // Which login method the web client should render. 'github' is the built-in default; a provider
+  // plugin advertises its own id (e.g. 'coconut') so the login screen shows its flow instead.
+  loginMethod: z.string().default('github'),
 })
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>
 
-export const githubDeviceStartResponseSchema = z.object({
+/**
+ * Device-flow login contract shared by the built-in GitHub login and any ModelProvider login.
+ *
+ * A provider login MUST implement this shape to work with Cotta's web login screen:
+ *   - routes: POST /api/auth/<providerId>/start  and  POST /api/auth/<providerId>/poll
+ *   - `start` returns a code + verification URL the user opens (deviceLoginStartSchema)
+ *   - `poll` is called on `interval` until it returns `status: 'authorized'` (deviceLoginPollSchema)
+ * The web client parses responses against these schemas; a provider that returns a different shape
+ * or route breaks the login page. This is the only provider-login范式 Cotta Web supports.
+ */
+export const deviceLoginStartSchema = z.object({
   flowId: z.string(),
   userCode: z.string(),
   verificationUri: z.string(),
@@ -1796,14 +1809,21 @@ export const githubDeviceStartResponseSchema = z.object({
   expiresIn: z.number(),
   interval: z.number(),
 })
-export type GitHubDeviceStartResponse = z.infer<typeof githubDeviceStartResponseSchema>
+export type DeviceLoginStart = z.infer<typeof deviceLoginStartSchema>
 
-export const githubDevicePollResponseSchema = z.discriminatedUnion('status', [
+export const deviceLoginPollSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('pending'), interval: z.number() }),
   z.object({ status: z.literal('slow_down'), interval: z.number() }),
   z.object({ status: z.literal('authorized'), user: authUserSchema }),
 ])
-export type GitHubDevicePollResponse = z.infer<typeof githubDevicePollResponseSchema>
+export type DeviceLoginPoll = z.infer<typeof deviceLoginPollSchema>
+
+// GitHub login is one application of the device-flow contract above.
+export const githubDeviceStartResponseSchema = deviceLoginStartSchema
+export type GitHubDeviceStartResponse = DeviceLoginStart
+
+export const githubDevicePollResponseSchema = deviceLoginPollSchema
+export type GitHubDevicePollResponse = DeviceLoginPoll
 
 export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>

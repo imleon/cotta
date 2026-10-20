@@ -117,6 +117,8 @@ export type ProjectRoutesInput = {
   sessionSearchReady?: ProjectRoutesSessionSearchReady
   detailTokenKey?: Buffer
   shareStore?: ShareStore
+  // True when a model provider supplies its own login (no GitHub allowlist); the GitHub settings routes are then not mounted.
+  providerLoginActive?: boolean
 }
 
 export function locateSession(input: ProjectRoutesInput, sessionId: string): IndexedSession | null {

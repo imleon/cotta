@@ -339,7 +339,7 @@ describe('server routes', () => {
       auth: createAuth({ github: { allowedUsers: 'imleon', sessionSecret: 'test-secret' } }),
     }).request('/api/auth/session')
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ authenticated: false, user: null })
+    expect(await response.json()).toEqual({ authenticated: false, user: null, loginMethod: 'github' })
   })
 
   it('accepts GitHub device login session cookies for protected API requests', async () => {

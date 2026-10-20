@@ -15,6 +15,7 @@ import {
   logout,
   PaginationCursorStaleError,
   queryProjectSessions,
+  refreshModelCatalog,
   refreshProjects,
   renameSession,
   restartSessionRuntime,
@@ -110,6 +111,8 @@ function WorkspaceShell() {
   const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
   const sessionPins = useQuery({ queryKey: sessionQueryKeys.sessionPins, queryFn: fetchSessionPins, retry: false })
   const settings: AppSettings = settingsQuery.data?.settings ?? appSettingsSchema.parse({})
+  const catalogMissing = settingsQuery.isSuccess && !settings.modelCatalog
+  const authed = Boolean(authSession.data?.authenticated)
   const workspaceActive = activeAppNav === 'chat'
   const selection = useProjectSessionSelection({ selectInitialProject: false })
   const { selectedProjectId, selectedSessionId, clearSelection, selectProject, selectSession: selectSessionOwner, setSelectedSessionId } = selection
@@ -129,6 +132,26 @@ function WorkspaceShell() {
   const [selectedSessionRuntime, setSelectedSessionRuntime] = useState<SessionRuntimeResponse | null>(null)
   const [unavailableProjectId, setUnavailableProjectId] = useState<string | null>(null)
   const [toast, setToast] = useState<ToastState | null>(null)
+  // The catalog may be absent at boot when a model provider's upstream only authenticates after login
+  // (server defers it). Once authenticated with no catalog yet, fetch it once so the composer/Settings
+  // model menus aren't empty; refreshModelCatalog persists it, so this self-heals after one success. A
+  // failure means the model backend is unreachable — surface it instead of leaving empty menus silently.
+  useEffect(() => {
+    if (!authed || !catalogMissing) return
+    let cancelled = false
+    refreshModelCatalog(null)
+      .then((response) => {
+        if (!cancelled) queryClient.setQueryData(['settings'], response)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : String(error)
+        setToast({ message: `Model catalog unavailable: ${message}. Open Settings → Default model to retry.`, tone: 'error' })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [authed, catalogMissing, queryClient])
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchNavigation, setSearchNavigation] = useState<{ sessionId: string; anchorTurnId: string | null; target: SearchTarget | null } | null>(null)
   const [highlightedRailSession, setHighlightedRailSession] = useState<{ projectId: string; sessionId: string } | null>(null)
@@ -1243,7 +1266,7 @@ function AuthenticatedApp() {
         <div className="panel muted">Loading authentication…</div>
       </main>
     )
-  if (!authenticated) return <AccessRequired />
+  if (!authenticated) return <AccessRequired loginMethod={session?.loginMethod} />
   return (
     <main className="shell">
       <WorkspaceShell />

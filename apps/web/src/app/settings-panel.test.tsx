@@ -21,7 +21,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const authedSession = { authenticated: true as const, user: { login: 'imleon', name: null, avatarUrl: null } }
+const authedSession = { authenticated: true as const, user: { login: 'imleon', name: null, avatarUrl: null }, loginMethod: 'github' }
 const baseSettings = {
   timeZone: 'UTC',
   defaultPermissionMode: 'default' as const,

@@ -11,8 +11,12 @@ import {
   createShareResponseSchema,
   type DeleteSessionResponse,
   type DetailResponse,
+  type DeviceConnectPoll,
+  type DeviceConnectStart,
   deleteSessionResponseSchema,
   detailResponseSchema,
+  deviceConnectPollSchema,
+  deviceConnectStartSchema,
   type ForkSessionResponse,
   forkSessionResponseSchema,
   type GitHubConfig,
@@ -33,6 +37,7 @@ import {
   type ProjectSessionsQueryResponse,
   type ProjectSessionsResponse,
   type ProjectsResponse,
+  type ProvidersResponse,
   projectFileDiffResponseSchema,
   projectFileResponseSchema,
   projectFilesGitResponseSchema,
@@ -41,6 +46,7 @@ import {
   projectSessionsQueryResponseSchema,
   projectSessionsResponseSchema,
   projectsResponseSchema,
+  providersResponseSchema,
   type RemoteBotMutationResponse,
   type RemoteBotResolveResponse,
   type RemoteBotResponse,
@@ -220,6 +226,43 @@ export async function pollGitHubDeviceLogin(flowId: string): Promise<GitHubDevic
     throw new Error(`GitHub login poll failed: ${body?.error ?? response.status}`)
   }
   return githubDevicePollResponseSchema.parse(await response.json())
+}
+
+// Model-backend providers (COTTA_MODEL_PROVIDERS) and the connect flow. Connecting authenticates
+// the backend (not cotta) — same device-flow shape as GitHub login, but routes live under
+// /api/provider/<id>/connect/ and the authorized poll carries no cotta user (GitHub login owns that).
+export async function fetchProviders(): Promise<ProvidersResponse> {
+  const response = await fetch('/api/providers')
+  if (!response.ok) throw new Error(`Providers request failed: ${response.status}`)
+  return providersResponseSchema.parse(await response.json())
+}
+
+export async function setActiveProvider(id: string | null): Promise<void> {
+  const response = await fetch('/api/providers/active', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  })
+  if (!response.ok) throw new Error(`Set active provider failed: ${response.status}`)
+}
+
+export async function startProviderConnect(id: string): Promise<DeviceConnectStart> {
+  const response = await fetch(`/api/provider/${encodeURIComponent(id)}/connect/start`, { method: 'POST' })
+  if (!response.ok) throw new Error(`Connect start failed: ${response.status}`)
+  return deviceConnectStartSchema.parse(await response.json())
+}
+
+export async function pollProviderConnect(id: string, flowId: string): Promise<DeviceConnectPoll> {
+  const response = await fetch(`/api/provider/${encodeURIComponent(id)}/connect/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flowId }),
+  })
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null
+    throw new Error(`Connect poll failed: ${body?.error ?? response.status}`)
+  }
+  return deviceConnectPollSchema.parse(await response.json())
 }
 
 export async function logout(): Promise<LogoutResponse> {

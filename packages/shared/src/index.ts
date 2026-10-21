@@ -1749,6 +1749,9 @@ export const appSettingsSchema = z
       .transform((value) => value ?? undefined),
     showDebugNav: z.boolean().default(false),
     publicBaseUrl: allowedOriginSchema.optional(),
+    // Id of the active model-backend provider (from COTTA_MODEL_PROVIDERS). Not web-writable via
+    // the settings update schema — set through PUT /api/providers/active, validated against the loaded set.
+    activeProviderId: z.string().optional(),
   })
   .catchall(z.unknown())
 export type AppSettings = z.infer<typeof appSettingsSchema>
@@ -1788,6 +1791,11 @@ export const authSessionResponseSchema = z.object({
 })
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>
 
+/**
+ * GitHub device-flow login: gates access and mints a cotta session.
+ *   - `start` returns a code + verification URL the user opens
+ *   - `poll` is called on `interval` until it returns `status: 'authorized'` with the signed-in user
+ */
 export const githubDeviceStartResponseSchema = z.object({
   flowId: z.string(),
   userCode: z.string(),
@@ -1804,6 +1812,36 @@ export const githubDevicePollResponseSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('authorized'), user: authUserSchema }),
 ])
 export type GitHubDevicePollResponse = z.infer<typeof githubDevicePollResponseSchema>
+
+/**
+ * Model-backend connect flow: same device-flow mechanics as GitHub login, but it authenticates a
+ * ModelProvider's backend — routes under /api/provider/<id>/connect/, gated (the user is already
+ * GitHub-logged-in), and `authorized` carries no cotta user (connecting never mints a cotta session).
+ * The web client parses these; a flow returning a different shape or route breaks the UI.
+ */
+export const deviceConnectStartSchema = z.object({
+  flowId: z.string(),
+  userCode: z.string(),
+  verificationUri: z.string(),
+  verificationUriComplete: z.string().optional(),
+  expiresIn: z.number(),
+  interval: z.number(),
+})
+export type DeviceConnectStart = z.infer<typeof deviceConnectStartSchema>
+
+export const deviceConnectPollSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('pending'), interval: z.number() }),
+  z.object({ status: z.literal('slow_down'), interval: z.number() }),
+  z.object({ status: z.literal('authorized') }),
+])
+export type DeviceConnectPoll = z.infer<typeof deviceConnectPollSchema>
+
+// Model-backend providers advertised by the server (from COTTA_MODEL_PROVIDERS) + which is active.
+export const providersResponseSchema = z.object({
+  providers: z.array(z.object({ id: z.string(), label: z.string(), connected: z.boolean() })),
+  activeId: z.string().nullable(),
+})
+export type ProvidersResponse = z.infer<typeof providersResponseSchema>
 
 export const logoutResponseSchema = z.object({ ok: z.literal(true) })
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>

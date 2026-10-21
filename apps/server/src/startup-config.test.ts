@@ -168,7 +168,7 @@ describe('ensureModelCatalog', () => {
     }
   })
 
-  it('lets a provider failure surface instead of swallowing it', async () => {
+  it('lets a provider failure surface when required', async () => {
     const db = createCottaDatabase(':memory:')
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
@@ -176,11 +176,28 @@ describe('ensureModelCatalog', () => {
       const provider = vi.fn(async () => {
         throw new Error('sdk unavailable')
       })
-      await expect(ensureModelCatalog(store, provider)).rejects.toThrow('sdk unavailable')
+      await expect(ensureModelCatalog(store, provider, { required: true })).rejects.toThrow('sdk unavailable')
       expect(error).toHaveBeenCalledWith(expect.stringContaining('model catalog'))
       expect(store.getAll('global').modelCatalog).toBeUndefined()
     } finally {
       error.mockRestore()
+      db.close()
+    }
+  })
+
+  it('defers (warns, no throw) when not required', async () => {
+    const db = createCottaDatabase(':memory:')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const store = new SqliteSettingsStore(db)
+      const provider = vi.fn(async () => {
+        throw new Error('sdk unavailable')
+      })
+      await expect(ensureModelCatalog(store, provider, { required: false })).resolves.toBeUndefined()
+      expect(warn).toHaveBeenCalled()
+      expect(store.getAll('global').modelCatalog).toBeUndefined()
+    } finally {
+      warn.mockRestore()
       db.close()
     }
   })

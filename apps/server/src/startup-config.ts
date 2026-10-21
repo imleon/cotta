@@ -10,15 +10,23 @@ type Prompt = (question: string) => Promise<string>
 
 /**
  * Seeds the model catalog on first startup so the composer and Settings show real model
- * display names immediately instead of the raw `default` sentinel. The catalog is a hard
- * startup dependency: if the SDK can't produce it here, the web client's lazy refresh would
- * fail the same way, so we let the error surface at boot rather than hide it.
+ * display names immediately instead of the raw `default` sentinel.
+ *
+ * When `required` (the stock no-provider official-Anthropic path), a failure here is fatal: the web
+ * client's lazy refresh would fail the same way, so we surface it at boot. When a provider allowlist is
+ * configured the selected backend isn't authenticated until the user logs in via the web UI, so a boot
+ * failure is expected — warn and defer to the post-login lazy refresh (POST /api/settings/model-catalog/refresh).
  */
-export async function ensureModelCatalog(store: SettingsStore, provider: ModelCatalogProvider): Promise<void> {
+export async function ensureModelCatalog(store: SettingsStore, provider: ModelCatalogProvider, opts: { required?: boolean } = {}): Promise<void> {
+  const required = opts.required ?? true
   if (readSettings(store).modelCatalog) return
   try {
     store.setMany('global', { modelCatalog: await provider() })
   } catch (error) {
+    if (!required) {
+      console.warn('Model catalog unavailable at startup; deferring to post-login refresh.')
+      return
+    }
     console.error(
       'Failed to load the model catalog from the Claude Agent SDK on startup. ' +
         'This usually means the SDK is unauthenticated or the claude binary is unavailable. ' +

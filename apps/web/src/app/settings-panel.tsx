@@ -1,8 +1,8 @@
 import {
   type AppSettings,
   type AppSettingsUpdate,
-  allowedOriginSchema,
   type AuthSessionResponse,
+  allowedOriginSchema,
   type DefaultTurnOption,
   type EffortLevel,
   isSingleUser,
@@ -14,7 +14,7 @@ import {
 } from '@cotta/shared'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, useEffect, useRef, useState } from 'react'
-import { fetchBuildInfo, fetchGitHubConfig, refreshModelCatalog, saveGitHubConfig, saveSettings } from '../api'
+import { fetchBuildInfo, fetchGitHubConfig, fetchProviders, pollProviderConnect, refreshModelCatalog, saveGitHubConfig, saveSettings, setActiveProvider, startProviderConnect } from '../api'
 import { DEFAULT_TURN_OPTION, effortLabel, ModelIcon, PERMISSION_MODE_OPTIONS } from './turn-option-controls'
 
 const SETTINGS_MODEL_CATALOG_QUERY_KEY = ['settings-model-catalog'] as const
@@ -73,6 +73,135 @@ function PermissionShieldIcon({ name }: { name: PermissionMode }) {
       <path d="M12 3 5 5.7v5.3c0 4 2.9 7.2 7 8.3 4.1-1.1 7-4.3 7-8.3V5.7L12 3Z" />
       <path d={PERMISSION_SHIELD_GLYPH[name]} />
     </svg>
+  )
+}
+
+/**
+ * Model-backend provider selection + connect. Renders only when the server advertises an allowlist
+ * (GET /api/providers non-empty). Choosing a provider routes turns to its backend; connecting runs the
+ * provider's device flow (e.g. ByteCloud QR) to authenticate that backend — it never touches cotta's
+ * GitHub session. Hidden entirely on stock official-Anthropic deployments.
+ */
+function ProvidersSection() {
+  const queryClient = useQueryClient()
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: fetchProviders, retry: false })
+  const [flow, setFlow] = useState<{ id: string; flowId: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number } | null>(null)
+  const [connecting, setConnecting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!flow) return
+    let stopped = false
+    let timer: number
+    const poll = async () => {
+      try {
+        const response = await pollProviderConnect(flow.id, flow.flowId)
+        if (stopped) return
+        if (response.status === 'authorized') {
+          setFlow(null)
+          await queryClient.invalidateQueries({ queryKey: ['providers'] })
+          // A fresh connection may make the backend's catalog available; refresh so model menus fill.
+          refreshModelCatalog(null)
+            .then((settings) => queryClient.setQueryData(['settings'], settings))
+            .catch(() => {})
+          return
+        }
+        timer = window.setTimeout(poll, response.interval * 1000)
+      } catch (err) {
+        if (stopped) return
+        setError(err instanceof Error ? err.message : String(err))
+        setFlow(null)
+      }
+    }
+    timer = window.setTimeout(poll, flow.interval * 1000)
+    return () => {
+      stopped = true
+      window.clearTimeout(timer)
+    }
+  }, [flow, queryClient])
+
+  const providers = providersQuery.data?.providers ?? []
+  if (!providers.length) return null
+  const activeId = providersQuery.data?.activeId ?? null
+  const active = providers.find((p) => p.id === activeId) ?? null
+
+  async function selectProvider(id: string | null) {
+    setError(null)
+    try {
+      await setActiveProvider(id)
+      await queryClient.invalidateQueries({ queryKey: ['providers'] })
+      // The new backend serves its own model catalog; refresh so composer/Settings menus match it.
+      // The server only persisted activeProviderId — if this fails the catalog stays pointed at the old
+      // backend and every turn can fail unsupported_model, so surface it instead of swallowing.
+      const settings = await refreshModelCatalog(null)
+      queryClient.setQueryData(['settings'], settings)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function connect(id: string) {
+    setError(null)
+    setConnecting(true)
+    try {
+      setFlow({ id, ...(await startProviderConnect(id)) })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  return (
+    <section className="settings-group" aria-labelledby="settings-providers-heading">
+      <h3 className="settings-group-title" id="settings-providers-heading">
+        Model backend
+      </h3>
+      <div className="settings-row">
+        <div className="settings-card-copy">
+          <strong>Active backend</strong>
+          <p className="muted">Route turns to a configured model backend, or keep official Anthropic.</p>
+        </div>
+        <div className="settings-card-controls">
+          <select className="settings-text-input" value={activeId ?? ''} onChange={(event) => void selectProvider(event.target.value || null)}>
+            <option value="">Official Anthropic</option>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+                {p.connected ? ' ✓' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      {active && !active.connected ? (
+        <div className="settings-row">
+          <div className="settings-card-copy">
+            <strong>Connect {active.label}</strong>
+            <p className="muted">Authenticate the backend to list and use its models.</p>
+          </div>
+          <div className="settings-card-controls">
+            {flow ? (
+              <div className="login-device-flow">
+                <p className="muted">Open the sign-in page and enter the code:</p>
+                <span className="login-code">{flow.userCode}</span>
+                <a className="settings-primary-action" href={flow.verificationUriComplete ?? flow.verificationUri} target="_blank" rel="noreferrer">
+                  Open sign-in page
+                </a>
+                <p className="muted login-waiting">
+                  <span className="login-spinner" aria-hidden="true" /> Waiting for authorization…
+                </p>
+              </div>
+            ) : (
+              <button type="button" className="settings-primary-action" disabled={connecting} onClick={() => void connect(active.id)}>
+                {connecting ? 'Starting…' : 'Connect'}
+              </button>
+            )}
+          </div>
+        </div>
+      ) : null}
+      {error ? <p className="error-text">{error}</p> : null}
+    </section>
   )
 }
 
@@ -583,6 +712,8 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
           </form>
         ) : null}
       </section>
+
+      <ProvidersSection />
 
       {authSession?.authenticated && authSession.user ? (
         <section className="settings-group" aria-labelledby="settings-account-heading">

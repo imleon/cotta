@@ -14,7 +14,8 @@ import { createCottaDatabase } from './database.js'
 import { loadDetailTokenKey } from './detail-token.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
 import { LiveTurnManager } from './live-turn-manager.js'
-import { defaultModelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
+import { defaultModelCatalogProvider, modelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
+import { loadProviderAllowlist, type ModelProvider, registerProviderRoutes, resolveActiveProvider } from './model-provider.js'
 import { ProjectFilesWatcherRegistry } from './project-files-watcher-registry.js'
 import { RawTranscriptCoordinator } from './raw-transcript-coordinator.js'
 import { RemoteBotManager } from './remote-bot-manager.js'
@@ -87,6 +88,7 @@ type CreateAppOptions = {
   detailTokenKey?: Buffer
   shareStore?: ShareStore
   webRoot?: string
+  providerAllowlist?: Map<string, ModelProvider>
 }
 
 type CreateAppInput =
@@ -153,6 +155,7 @@ export function createApp(input: CreateAppInput): Hono {
   })
   registerHealthRoute(app)
   auth.registerRoutes(app)
+  if (input.providerAllowlist?.size) registerProviderRoutes(app, { allowlist: input.providerAllowlist, settingsStore })
   registerShareAdminRoutes(app, input.shareStore, auth, input.transcriptIndex)
   registerProjectFileRoutes(app, { claudeCodeApi, watcherRegistry: projectFilesWatcherRegistry })
   if (input.terminalRegistry) {
@@ -340,8 +343,21 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
   const cottaDb = createCottaDatabase()
   const indexChangeNotifier = new IndexChangeNotifier()
   const settingsStore = new SqliteSettingsStore(cottaDb)
+  const providerAllowlist = await loadProviderAllowlist()
+  // Resolve the active provider at call time: the operator can switch it at runtime via PUT /api/providers/active.
+  const activeProvider = () => resolveActiveProvider(providerAllowlist, settingsStore)
+  // catalog source follows the active provider: its own catalog wins; else if it only redirects turns
+  // via env, query the SDK catalog through that env so the list matches what the backend serves.
+  const catalogProvider: ModelCatalogProvider = async (cwd) => {
+    const active = activeProvider()
+    const resolved = active?.modelCatalogProvider ?? (active ? modelCatalogProvider(await active.envForTurn()) : defaultModelCatalogProvider)
+    return resolved(cwd)
+  }
   await ensureGithubConfig(settingsStore, { force: opts.reconfigureGithub })
-  await ensureModelCatalog(settingsStore, defaultModelCatalogProvider)
+  // With any provider configured, the selected backend isn't authenticated until the user connects via
+  // the web UI (and on a fresh DB none is even selected yet), so the boot-time catalog query would fail;
+  // defer to the post-connect lazy refresh instead of crashing. Only the stock no-provider path is fatal.
+  await ensureModelCatalog(settingsStore, catalogProvider, { required: providerAllowlist.size === 0 })
   const detailTokenKey = loadDetailTokenKey(settingsStore)
   const shareStore = new ShareStore(cottaDb)
   const turnOptionsStore = new TurnOptionsStore(cottaDb)
@@ -407,6 +423,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     settingsStore,
     (sessionId) => claudeSessionRegistry.cliSessionMetadata(sessionId),
     (sessionId) => turnOptionsStore.getPrePlanPermissionMode(sessionId),
+    providerAllowlist.size ? async (sessionId) => (await activeProvider()?.envForTurn({ sessionId })) ?? {} : undefined,
   )
   activityVersion = (sessionId) => {
     const runState = liveTurnManager.sessionRunState(sessionId)
@@ -457,7 +474,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     transcriptIndex: rawTranscriptCache.index,
     sessionSearchStore,
     sessionSearchReady: () => rawTranscriptCoordinator.ensureReady(),
-    modelCatalogProvider: defaultModelCatalogProvider,
+    modelCatalogProvider: catalogProvider,
     sessionWatcherRegistry,
     detailTokenKey,
     shareStore,
@@ -479,6 +496,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     auth,
     terminalRegistry,
     webRoot: resolveWebRoot(),
+    providerAllowlist,
   })
 
   const server = createAdaptorServer({ fetch: app.fetch })

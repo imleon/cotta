@@ -4,11 +4,21 @@ import type { ModelCatalogResponse } from '@cotta/shared'
 
 export type ModelCatalogProvider = (cwd?: string) => Promise<ModelCatalogResponse>
 
-export const defaultModelCatalogProvider: ModelCatalogProvider = async (cwd = homedir()) => {
-  const sdkQuery = query({ prompt: (async function* () {})(), options: { cwd } })
-  try {
-    return await sdkQuery.initializationResult()
-  } finally {
-    sdkQuery.close()
+/**
+ * Queries the SDK for the model catalog. With `env` (a provider's ANTHROPIC_BASE_URL/AUTH_TOKEN
+ * pointing at a gateway) it lists the models that backend serves instead of official Anthropic's;
+ * with no env it's the stock official-Anthropic catalog.
+ */
+export function modelCatalogProvider(env?: Record<string, string>): ModelCatalogProvider {
+  return async (cwd = homedir()) => {
+    const options = env ? { cwd, env: { ...process.env, ...env } } : { cwd }
+    const sdkQuery = query({ prompt: (async function* () {})(), options })
+    try {
+      return await sdkQuery.initializationResult()
+    } finally {
+      sdkQuery.close()
+    }
   }
 }
+
+export const defaultModelCatalogProvider: ModelCatalogProvider = modelCatalogProvider()

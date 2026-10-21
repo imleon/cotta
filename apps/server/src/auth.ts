@@ -305,6 +305,11 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
       })
     })
 
+    app.post('/api/auth/logout', (c) => {
+      clearSessionCookie(c)
+      return c.json({ ok: true })
+    })
+
     app.post('/api/auth/github/device/start', async (c) => {
       try {
         cleanupExpiredFlows()
@@ -348,11 +353,6 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
         if (error instanceof GitHubRequestError) return c.json({ error: error.message }, 502)
         throw error
       }
-    })
-
-    app.post('/api/auth/logout', (c) => {
-      clearSessionCookie(c)
-      return c.json({ ok: true })
     })
   }
 

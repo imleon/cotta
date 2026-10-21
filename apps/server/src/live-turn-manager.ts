@@ -197,7 +197,12 @@ export class LiveTurnManager {
     private readonly settingsStore?: SettingsStore,
     private readonly externalOwnershipReader?: (sessionId: string) => unknown | null,
     private readonly prePlanPermissionModeReader?: (sessionId: string) => PermissionMode | null,
+    private readonly providerEnv?: (sessionId: string) => Promise<Record<string, string>>,
   ) {}
+
+  private async resolveProviderEnv(sessionId: string): Promise<Record<string, string>> {
+    return this.providerEnv ? await this.providerEnv(sessionId) : {}
+  }
 
   sessionRunState(sessionId: string): SessionRunState | null {
     return this.runStateBySession.get(sessionId) ?? null
@@ -659,7 +664,7 @@ export class LiveTurnManager {
         current.stale = true
         this.closeRuntime(current)
       }
-      const replacement = this.createRuntime({ ...input, resume: true })
+      const replacement = this.createRuntime({ ...input, resume: true }, await this.resolveProviderEnv(input.sessionId))
       replacement.rebuildingAfterCliIdle = true
       try {
         await replacement.ready
@@ -798,7 +803,7 @@ export class LiveTurnManager {
         this.closeRuntime(runtime)
         runtime = undefined
       }
-      runtime ??= this.createRuntime(input)
+      runtime ??= this.createRuntime(input, await this.resolveProviderEnv(input.sessionId))
       await runtime.ready
       const current = this.runtimes.get(input.sessionId)
       if (current === runtime && !runtime.stale && !runtime.closed) return runtime
@@ -807,14 +812,17 @@ export class LiveTurnManager {
     }
   }
 
-  private createRuntime(input: {
-    projectId: string
-    sessionId: string
-    resume: boolean
-    permissionMode: PermissionMode
-    model?: ModelSelection | DefaultTurnOption
-    effort?: EffortLevel | null
-  }): SessionRuntime {
+  private createRuntime(
+    input: {
+      projectId: string
+      sessionId: string
+      resume: boolean
+      permissionMode: PermissionMode
+      model?: ModelSelection | DefaultTurnOption
+      effort?: EffortLevel | null
+    },
+    providerEnv: Record<string, string>,
+  ): SessionRuntime {
     const projectPath = projectPathFromId(input.projectId)
     if (!projectPath) throw new Error('Invalid project id')
     const autoCompactPercent = readSettings(this.settingsStore).autoCompactPercent
@@ -836,6 +844,8 @@ export class LiveTurnManager {
           ...process.env,
           CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
           ...(autoCompactPercent === undefined ? {} : { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(autoCompactPercent) }),
+          // Provider env last so it can point the CLI at a gateway (ANTHROPIC_BASE_URL/AUTH_TOKEN). Empty when no provider.
+          ...providerEnv,
         },
         allowDangerouslySkipPermissions: true,
         canUseTool: (toolName, toolInput, options) => {

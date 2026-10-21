@@ -13,7 +13,7 @@ import {
   supportedEffortLevels,
 } from '@cotta/shared'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { type CSSProperties, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { fetchBuildInfo, fetchGitHubConfig, fetchProviders, pollProviderConnect, refreshModelCatalog, saveGitHubConfig, saveSettings, setActiveProvider, startProviderConnect } from '../api'
 import { DEFAULT_TURN_OPTION, effortLabel, ModelIcon, PERMISSION_MODE_OPTIONS } from './turn-option-controls'
 
@@ -77,12 +77,13 @@ function PermissionShieldIcon({ name }: { name: PermissionMode }) {
 }
 
 /**
- * Model-backend provider selection + connect. Renders only when the server advertises an allowlist
- * (GET /api/providers non-empty). Choosing a provider routes turns to its backend; connecting runs the
- * provider's device flow (e.g. ByteCloud QR) to authenticate that backend — it never touches cotta's
- * GitHub session. Hidden entirely on stock official-Anthropic deployments.
+ * Model-backend provider selection + connect, always shown. With no server allowlist the dropdown
+ * holds only Claude Code CLI; operators add third-party backends via COTTA_MODEL_PROVIDERS, which
+ * then appear here. Choosing a provider routes turns to its backend; connecting runs the provider's
+ * device flow (e.g. ByteCloud QR) to authenticate that backend — it never touches cotta's GitHub
+ * session. `children` is the default model/effort picker, folded into this section.
  */
-function ProvidersSection() {
+function ProvidersSection({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: fetchProviders, retry: false })
   const [flow, setFlow] = useState<{ id: string; flowId: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number } | null>(null)
@@ -121,7 +122,6 @@ function ProvidersSection() {
   }, [flow, queryClient])
 
   const providers = providersQuery.data?.providers ?? []
-  if (!providers.length) return null
   const activeId = providersQuery.data?.activeId ?? null
   const active = providers.find((p) => p.id === activeId) ?? null
 
@@ -130,9 +130,11 @@ function ProvidersSection() {
     try {
       await setActiveProvider(id)
       await queryClient.invalidateQueries({ queryKey: ['providers'] })
-      // The new backend serves its own model catalog; refresh so composer/Settings menus match it.
-      // The server only persisted activeProviderId — if this fails the catalog stays pointed at the old
-      // backend and every turn can fail unsupported_model, so surface it instead of swallowing.
+      // Switching backend invalidates the stored default model/effort — the old model rarely exists in
+      // the new backend's catalog. Reset to default so the user re-picks from the new catalog; persist
+      // it before refreshing so the catalog refresh (which must run last, it is the only call that fills
+      // the new catalog) reads the already-reset defaults.
+      await saveSettings({ defaultModel: DEFAULT_TURN_OPTION, defaultEffort: 'medium' })
       const settings = await refreshModelCatalog(null)
       queryClient.setQueryData(['settings'], settings)
     } catch (err) {
@@ -155,16 +157,18 @@ function ProvidersSection() {
   return (
     <section className="settings-group" aria-labelledby="settings-providers-heading">
       <h3 className="settings-group-title" id="settings-providers-heading">
-        Model backend
+        Model
       </h3>
       <div className="settings-row">
         <div className="settings-card-copy">
-          <strong>Active backend</strong>
-          <p className="muted">Route turns to a configured model backend, or keep official Anthropic.</p>
+          <h3>Model backend</h3>
+          <p className="muted">
+            Route turns to a configured model backend, or follow the Claude Code CLI's own login. Add supported third-party backends via COTTA_MODEL_PROVIDERS to make them selectable here.
+          </p>
         </div>
         <div className="settings-card-controls">
-          <select className="settings-text-input" value={activeId ?? ''} onChange={(event) => void selectProvider(event.target.value || null)}>
-            <option value="">Official Anthropic</option>
+          <select className="settings-text-input" aria-label="Model backend" value={activeId ?? ''} onChange={(event) => void selectProvider(event.target.value || null)}>
+            <option value="">Claude Code CLI</option>
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
@@ -201,6 +205,7 @@ function ProvidersSection() {
         </div>
       ) : null}
       {error ? <p className="error-text">{error}</p> : null}
+      {children}
     </section>
   )
 }
@@ -439,84 +444,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
         <p className="muted">Tune how Cotta works so every session fits the way you work.</p>
       </div>
 
-      <section className="settings-group">
-        <h3 className="settings-group-title">General</h3>
-        <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
-          <div className="settings-card-copy">
-            <label htmlFor="settings-time-zone">Time zone</label>
-            <p className="muted">Used for all dates and times across Cotta.</p>
-          </div>
-          <div className="settings-card-controls">
-            <select id="settings-time-zone" className="settings-select" value={settings.timeZone} disabled={saving} onChange={(event) => void saveTimeZone(event.target.value)}>
-              {TIME_ZONES.map(({ value, label }) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </form>
-
-        <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
-          <div className="settings-card-copy">
-            <h3>Show Debug</h3>
-            <p className="muted">Show the Debug entry in the app navigation.</p>
-          </div>
-          <div className="settings-card-controls">
-            <button type="button" className="settings-switch" role="switch" aria-checked={settings.showDebugNav} disabled={saving} onClick={() => void saveShowDebugNav(!settings.showDebugNav)}>
-              <span className="settings-switch-thumb" />
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className="settings-group">
-        <h3 className="settings-group-title">Composer defaults</h3>
-
-        <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
-          <div className="settings-card-copy">
-            <h3>Default permission</h3>
-            <p className="muted">Starting permission mode for new composer turns.</p>
-          </div>
-          <div className="settings-card-controls">
-            <div className="permission-mode-picker settings-picker" ref={permissionMenuRef}>
-              <button
-                type="button"
-                className="turn-tool-button permission-mode-trigger settings-trigger"
-                aria-haspopup="menu"
-                aria-expanded={permissionMenuOpen}
-                onClick={() => setPermissionMenuOpen((open) => !open)}
-              >
-                <PermissionShieldIcon name={permissionMode} />
-                <span>{selectedPermission?.label ?? permissionMode}</span>
-              </button>
-              {permissionMenuOpen ? (
-                <div className="permission-mode-menu settings-menu" role="menu" aria-label="Default permission mode">
-                  {PERMISSION_MODE_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className="permission-mode-option"
-                      role="menuitemradio"
-                      aria-checked={permissionMode === option.value}
-                      onClick={() => void savePermissionDefault(option.value)}
-                    >
-                      <span className="permission-mode-option-icon" aria-hidden="true">
-                        <PermissionShieldIcon name={option.value} />
-                      </span>
-                      <span className="permission-mode-option-copy">
-                        <span className="permission-mode-option-title">{option.label}</span>
-                        <span className="permission-mode-option-description">{option.description}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            <p className="settings-picked-copy">{selectedPermission?.description}</p>
-          </div>
-        </form>
-
+      <ProvidersSection>
         <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
           <div className="settings-card-copy">
             <h3>Default model / effort</h3>
@@ -641,6 +569,85 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
             </select>
           </div>
         </form>
+      </ProvidersSection>
+
+      <section className="settings-group">
+        <h3 className="settings-group-title">Permission</h3>
+
+        <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
+          <div className="settings-card-copy">
+            <h3>Default permission</h3>
+            <p className="muted">Starting permission mode for new composer turns.</p>
+          </div>
+          <div className="settings-card-controls">
+            <div className="permission-mode-picker settings-picker" ref={permissionMenuRef}>
+              <button
+                type="button"
+                className="turn-tool-button permission-mode-trigger settings-trigger"
+                aria-haspopup="menu"
+                aria-expanded={permissionMenuOpen}
+                onClick={() => setPermissionMenuOpen((open) => !open)}
+              >
+                <PermissionShieldIcon name={permissionMode} />
+                <span>{selectedPermission?.label ?? permissionMode}</span>
+              </button>
+              {permissionMenuOpen ? (
+                <div className="permission-mode-menu settings-menu" role="menu" aria-label="Default permission mode">
+                  {PERMISSION_MODE_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className="permission-mode-option"
+                      role="menuitemradio"
+                      aria-checked={permissionMode === option.value}
+                      onClick={() => void savePermissionDefault(option.value)}
+                    >
+                      <span className="permission-mode-option-icon" aria-hidden="true">
+                        <PermissionShieldIcon name={option.value} />
+                      </span>
+                      <span className="permission-mode-option-copy">
+                        <span className="permission-mode-option-title">{option.label}</span>
+                        <span className="permission-mode-option-description">{option.description}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <p className="settings-picked-copy">{selectedPermission?.description}</p>
+          </div>
+        </form>
+      </section>
+
+      <section className="settings-group">
+        <h3 className="settings-group-title">General</h3>
+        <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
+          <div className="settings-card-copy">
+            <label htmlFor="settings-time-zone">Time zone</label>
+            <p className="muted">Used for all dates and times across Cotta.</p>
+          </div>
+          <div className="settings-card-controls">
+            <select id="settings-time-zone" className="settings-select" value={settings.timeZone} disabled={saving} onChange={(event) => void saveTimeZone(event.target.value)}>
+              {TIME_ZONES.map(({ value, label }) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </form>
+
+        <form className="settings-row" onSubmit={(event) => event.preventDefault()}>
+          <div className="settings-card-copy">
+            <h3>Show Debug</h3>
+            <p className="muted">Show the Debug entry in the app navigation.</p>
+          </div>
+          <div className="settings-card-controls">
+            <button type="button" className="settings-switch" role="switch" aria-checked={settings.showDebugNav} disabled={saving} onClick={() => void saveShowDebugNav(!settings.showDebugNav)}>
+              <span className="settings-switch-thumb" />
+            </button>
+          </div>
+        </form>
       </section>
 
       <section className="settings-group">
@@ -712,8 +719,6 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
           </form>
         ) : null}
       </section>
-
-      <ProvidersSection />
 
       {authSession?.authenticated && authSession.user ? (
         <section className="settings-group" aria-labelledby="settings-account-heading">

@@ -33,6 +33,23 @@ const baseSettings = {
 }
 
 describe('SettingsPanel', () => {
+  it('always shows the model backend dropdown with Claude Code CLI when no providers are advertised', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/providers') return Promise.resolve(new Response(JSON.stringify({ providers: [], activeId: null }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsPanel settings={baseSettings} authSession={undefined} onLogout={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+    const select = await screen.findByRole('combobox', { name: /model backend/i })
+    const options = Array.from((select as HTMLSelectElement).options).map((o) => o.textContent)
+    expect(options).toEqual(['Claude Code CLI'])
+  })
+
   it('lists IANA time zones and saves the selected value', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ settings: { timeZone: 'America/New_York' } }), { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)

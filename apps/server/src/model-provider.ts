@@ -95,7 +95,7 @@ export function registerProviderRoutes(app: Hono, input: { allowlist: Map<string
         label: p.label ?? p.id,
         // No connect flow => nothing to connect (e.g. an env-only backend), so report connected.
         // A transient connectionStatus() failure must not 500 the whole endpoint, or the Settings
-        // provider section (and the only UI to switch back to Official Anthropic) would disappear.
+        // provider section (and the only UI to switch back to the Claude Code CLI) would disappear.
         connected: p.connectionStatus
           ? await p.connectionStatus().then(
               (s) => s.connected,

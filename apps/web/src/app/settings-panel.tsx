@@ -57,6 +57,11 @@ function formatUptime(seconds: number): string {
   return `${seconds}s`
 }
 
+function formatStartedAt(uptimeSeconds: number, timeZone: string): string {
+  const started = new Date(Date.now() - uptimeSeconds * 1000)
+  return new Intl.DateTimeFormat('en-CA', { timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(started)
+}
+
 /** Permission icons for Settings: one shared shield outline with a mode-specific glyph inside. */
 const PERMISSION_SHIELD_GLYPH: Record<PermissionMode, string> = {
   plan: 'M8.5 10h7M8.5 12.6h4.5',
@@ -829,7 +834,9 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
             ) : null}
           </span>
           {buildInfo.data.agentSdkVersion ? <span>Claude Agent SDK version {buildInfo.data.agentSdkVersion}</span> : null}
-          <span>Uptime {formatUptime(buildInfo.data.uptimeSeconds)}</span>
+          <span>
+            Started {formatStartedAt(buildInfo.data.uptimeSeconds, settings.timeZone)} ({formatUptime(buildInfo.data.uptimeSeconds)})
+          </span>
         </footer>
       ) : null}
     </section>

@@ -1,4 +1,4 @@
-import { sessionTimelineResponseSchema } from '@cotta/shared'
+import { type SessionRunState, sessionTimelineResponseSchema } from '@cotta/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { readProjectSessions, readProjectTimeline } from './project-read-model.js'
 import type { ProjectRoutesInput } from './routes/project-routes-shared.js'
@@ -43,6 +43,60 @@ describe('project read model', () => {
     )
 
     expect(result.sessions[0]).toMatchObject({ id: 'session-newest', occupiedBy: 'cotta', occupiedStatus: 'busy' })
+  })
+
+  it.each([
+    { scope: 'control' as const, waitContext: false },
+    { scope: 'control' as const, waitContext: true },
+    { scope: undefined, waitContext: false },
+    { scope: undefined, waitContext: true },
+  ])('reads AUQ control state and version together after metadata resolves ($scope, waitContext=$waitContext)', async ({ scope, waitContext }) => {
+    let releaseMetadata!: () => void
+    let metadataStarted!: () => void
+    const metadataReady = new Promise<void>((resolve) => {
+      releaseMetadata = resolve
+    })
+    const started = new Promise<void>((resolve) => {
+      metadataStarted = resolve
+    })
+    let runState: SessionRunState = { phase: 'running', activeUserMessageUuid: 'user-2', lastTurn: null }
+    let version = 'before-auq'
+    const pendingPermission = { requestId: 'req-2', toolUseID: 'tool-2', toolName: 'AskUserQuestion', input: { questions: [] } }
+    const readInput = input({
+      timelineMetadataReader: async () => {
+        metadataStarted()
+        await metadataReady
+        return { turnMetadata: new Map(), turnOptions: { permissionMode: null, model: null, effort: null } }
+      },
+      timelineVersionReader: () => version,
+      liveTurnManager: {
+        ...input().liveTurnManager,
+        sessionRunState: () => runState,
+        contextUsage: async () => null,
+      },
+    })
+    const reading = readProjectTimeline(readInput, {
+      projectId: project.id,
+      sessionId: 'session-newest',
+      scope,
+      limitTurns: 1,
+      cursor: null,
+      fromTurnId: null,
+      anchorTurnId: null,
+      pendingSubmissionUuid: null,
+      waitContext,
+      acknowledgeCompletedTurn: false,
+    })
+    await started
+    runState = { phase: 'requires_action', activeUserMessageUuid: 'user-2', lastTurn: null, pendingPermission }
+    version = 'after-auq'
+    releaseMetadata()
+
+    const result = await reading
+    expect(result.state.version).toBe('after-auq')
+    expect(result.runState).toEqual(runState)
+    expect(result.pendingPermission).toEqual(pendingPermission)
+    expect(result.activity).toEqual({ owner: 'cotta', phase: 'waiting', activeTurnId: 'user-2' })
   })
 
   it('validates project ownership and can read the full timeline without acknowledging completion', async () => {

@@ -288,8 +288,21 @@ export class LiveTurnManager {
   respondToQuestion(sessionId: string, requestId: string, decision: AskUserQuestionDecisionRequest): { status: 'answered' } | null {
     const runtime = this.runtimes.get(sessionId)
     const pending = runtime?.pendingToolApprovals.get(requestId)
-    if (!runtime || runtime.stale || !pending || pending.request.toolName !== 'AskUserQuestion' || decision.toolUseID !== pending.request.toolUseID) return null
-    if (decision.behavior === 'completed' && !questionDecisionMatchesInput(pending.request.input, decision)) return null
+    const identity = { requestId, toolUseID: decision.toolUseID, toolName: 'AskUserQuestion' }
+    if (!runtime || runtime.stale || !pending || pending.request.toolName !== 'AskUserQuestion' || decision.toolUseID !== pending.request.toolUseID) {
+      this.logQuestion(
+        sessionId,
+        identity,
+        'response_rejected',
+        !runtime ? 'runtime_missing' : runtime.stale ? 'runtime_stale' : !pending ? 'request_missing' : pending.request.toolName !== 'AskUserQuestion' ? 'tool_mismatch' : 'tool_use_id_mismatch',
+      )
+      return null
+    }
+    if (decision.behavior === 'completed' && !questionDecisionMatchesInput(pending.request.input, decision)) {
+      this.logQuestion(sessionId, identity, 'response_rejected', 'invalid_answers')
+      return null
+    }
+    this.logQuestion(sessionId, identity, 'response_accepted', decision.behavior === 'completed' ? 'completed' : 'cancelled')
     runtime.pendingToolApprovals.delete(requestId)
     const toolUseID = pending.request.toolUseID
     pending.resolve(
@@ -432,8 +445,22 @@ export class LiveTurnManager {
     }
   }
 
+  private logQuestion(sessionId: string, request: Pick<ToolApprovalRequest, 'requestId' | 'toolUseID' | 'toolName'>, event: string, reason: string): void {
+    if (request.toolName !== 'AskUserQuestion') return
+    console.info('live-runtime:question', {
+      sessionId,
+      requestId: request.requestId,
+      toolUseID: request.toolUseID,
+      toolName: request.toolName,
+      event,
+      reason,
+      activeUserMessageUuid: this.runtimes.get(sessionId)?.currentUserMessageUuid ?? null,
+    })
+  }
+
   private denyPendingToolApprovals(runtime: SessionRuntime, message: string): void {
     for (const [requestId, pending] of runtime.pendingToolApprovals) {
+      this.logQuestion(runtime.sessionId, pending.request, 'request_denied', 'runtime_closed')
       runtime.pendingToolApprovals.delete(requestId)
       pending.resolve({ behavior: 'deny', message, toolUseID: pending.request.toolUseID })
     }
@@ -451,11 +478,13 @@ export class LiveTurnManager {
       const pending: PendingToolApproval = { request, resolve }
       const cleanup = () => {
         if (runtime.pendingToolApprovals.get(request.requestId) !== pending) return
+        this.logQuestion(runtime.sessionId, request, 'request_aborted', 'sdk_abort')
         runtime.pendingToolApprovals.delete(request.requestId)
         resolve({ behavior: 'deny', message: 'Permission request was cancelled.', toolUseID: request.toolUseID })
         if (this.runtimes.get(runtime.sessionId) === runtime && runtime.currentUserMessageUuid && !runtime.closed && !runtime.stale) this.setPendingOrRunningState(runtime)
       }
       runtime.pendingToolApprovals.set(request.requestId, pending)
+      this.logQuestion(runtime.sessionId, request, 'request_pending', 'awaiting_response')
       if (signal.aborted) cleanup()
       else signal.addEventListener('abort', cleanup, { once: true })
       this.setPendingOrRunningState(runtime)
@@ -849,6 +878,7 @@ export class LiveTurnManager {
         },
         allowDangerouslySkipPermissions: true,
         canUseTool: (toolName, toolInput, options) => {
+          this.logQuestion(input.sessionId, { requestId: options.requestId, toolUseID: options.toolUseID, toolName }, 'can_use_tool', 'sdk_request')
           const suggestions = toolName === 'ExitPlanMode' ? [] : (options.suggestions?.slice(0, 1) ?? [])
           return this.requestPermission(
             runtime,

@@ -89,10 +89,6 @@ export async function readProjectTimeline(input: ProjectRoutesInput, options: Ti
   const session = options.scope === 'control' ? locateSession(input, options.sessionId) : resolveSessionProject(input, options.sessionId)
   if (!session || session.currentProjectId !== options.projectId || !resolveSessionTimelineState(input, session)) throw new ProjectReadModelError('session_not_found')
 
-  const runState = input.liveTurnManager.sessionRunState(session.sessionId)
-  const liveBackgroundTasks = input.liveTurnManager.liveBackgroundTasks?.(session.sessionId) ?? null
-  const activity = sessionActivity(runState, input.sessionMetadataReader?.(session.sessionId) ?? null, liveBackgroundTasks)
-  const pendingPermission = runState?.phase === 'requires_action' ? (runState.pendingPermission ?? null) : null
   const contextUsage = options.waitContext
     ? ((await input.liveTurnManager.contextUsage?.(session.sessionId, true)) ?? input.sessionContextUsageStore?.getContextUsage(session.sessionId) ?? null)
     : (input.sessionContextUsageStore?.getContextUsage(session.sessionId) ?? null)
@@ -105,6 +101,11 @@ export async function readProjectTimeline(input: ProjectRoutesInput, options: Ti
   } catch (error) {
     throw new ProjectReadModelError('timeline_metadata_unavailable', { cause: error })
   }
+  // Read live control state and its version without yielding after the async readers.
+  const runState = input.liveTurnManager.sessionRunState(session.sessionId)
+  const liveBackgroundTasks = input.liveTurnManager.liveBackgroundTasks?.(session.sessionId) ?? null
+  const activity = sessionActivity(runState, input.sessionMetadataReader?.(session.sessionId) ?? null, liveBackgroundTasks)
+  const pendingPermission = runState?.phase === 'requires_action' ? (runState.pendingPermission ?? null) : null
   const control: SessionTimelineControlResponse = {
     sessionId: session.sessionId,
     turnOptions: timelineMetadata.turnOptions,

@@ -891,6 +891,7 @@ describe('LiveTurnManager', () => {
   })
 
   it('answers AskUserQuestion with server-owned updated input', async () => {
+    const questionLog = vi.spyOn(console, 'info').mockImplementation(() => undefined)
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
     const manager = new LiveTurnManager()
     const projectId = Buffer.from('/repo/a').toString('base64url')
@@ -910,7 +911,7 @@ describe('LiveTurnManager', () => {
     ]
     const approval = canUseTool(
       'AskUserQuestion',
-      { questions, metadata: { source: 'test' } },
+      { questions, metadata: { source: 'test', credential: 'secret-credential' } },
       {
         requestId: 'req-1',
         toolUseID: 'tool-1',
@@ -923,9 +924,83 @@ describe('LiveTurnManager', () => {
     await expect(approval).resolves.toEqual({
       behavior: 'allow',
       toolUseID: 'tool-1',
-      updatedInput: { questions, metadata: { source: 'test' }, answers: { 'Ship?': 'Yes' }, annotations },
+      updatedInput: { questions, metadata: { source: 'test', credential: 'secret-credential' }, answers: { 'Ship?': 'Yes' }, annotations },
     })
     expect(manager.respondToQuestion('session-1', 'req-1', { behavior: 'cancelled', toolUseID: 'tool-1' })).toBeNull()
+    expect(questionLog.mock.calls).toEqual(
+      [
+        ['can_use_tool', 'sdk_request'],
+        ['request_pending', 'awaiting_response'],
+        ['response_accepted', 'completed'],
+        ['response_rejected', 'request_missing'],
+      ].map(([event, reason]) => [
+        'live-runtime:question',
+        { sessionId: 'session-1', requestId: 'req-1', toolUseID: 'tool-1', toolName: 'AskUserQuestion', event, reason, activeUserMessageUuid: 'user-1' },
+      ]),
+    )
+    expect(JSON.stringify(questionLog.mock.calls)).not.toMatch(/Ship\?|Yes|release|today|secret-credential|questions|answers|annotations|metadata/)
+  })
+
+  it('keeps six sequential AskUserQuestion requests in one Turn isolated from late aborts, answers and SDK running', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    const runningGates = Array.from({ length: 6 }, () => {
+      let emit!: () => void
+      const ready = new Promise<void>((resolve) => {
+        emit = resolve
+      })
+      return { ready, emit }
+    })
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+      queryFromGenerator(
+        (async function* () {
+          for await (const message of prompt) {
+            yield message
+            for (const gate of runningGates) {
+              await gate.ready
+              yield { type: 'system', subtype: 'session_state_changed', state: 'running' } as SDKMessage
+            }
+          }
+        })(),
+      ),
+    )
+    const manager = new LiveTurnManager()
+    let runningEvents = 0
+    manager.subscribe('session-1', (event) => {
+      if (event.type === 'system' && 'subtype' in event && event.subtype === 'session_state_changed' && 'state' in event && event.state === 'running') runningEvents++
+    })
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    const questions = [{ question: 'Ship?', header: 'Ship', options: [{ label: 'Yes', description: 'Ship it' }], multiSelect: false }]
+    const answers = { 'Ship?': 'Yes' }
+    let previousController: AbortController | null = null
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'hello', userMessageUuid: 'user-1', permissionMode: 'default' })
+    const canUseTool = queryMock.mock.calls[0]?.[0].options.canUseTool
+
+    try {
+      for (let index = 0; index < 6; index++) {
+        const requestId = `req-${index + 1}`
+        const toolUseID = `tool-${index + 1}`
+        const controller = new AbortController()
+        const approval = canUseTool('AskUserQuestion', { questions }, { requestId, toolUseID, signal: controller.signal })
+        const pending = { phase: 'requires_action', activeUserMessageUuid: 'user-1', lastTurn: null, pendingPermission: { requestId, toolUseID, toolName: 'AskUserQuestion', input: { questions } } }
+        expect(manager.sessionRunState('session-1')).toEqual(pending)
+        if (previousController) {
+          previousController.abort()
+          expect(manager.sessionRunState('session-1')).toEqual(pending)
+          expect(manager.respondToQuestion('session-1', `req-${index}`, { behavior: 'completed', toolUseID: `tool-${index}`, answers })).toBeNull()
+          expect(manager.sessionRunState('session-1')).toEqual(pending)
+        }
+        runningGates[index]!.emit()
+        await vi.waitFor(() => expect(runningEvents).toBe(index + 1))
+        expect(manager.sessionRunState('session-1')).toEqual(pending)
+        expect(manager.respondToQuestion('session-1', requestId, { behavior: 'completed', toolUseID, answers })).toEqual({ status: 'answered' })
+        await expect(approval).resolves.toEqual({ behavior: 'allow', toolUseID, updatedInput: { questions, answers } })
+        expect(manager.sessionRunState('session-1')).toEqual({ phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null })
+        previousController = controller
+      }
+      expect(queryMock).toHaveBeenCalledTimes(1)
+    } finally {
+      manager.closeAll()
+    }
   })
 
   it('only answers AskUserQuestion through the question response path', async () => {
@@ -944,6 +1019,7 @@ describe('LiveTurnManager', () => {
   })
 
   it('rejects mismatched and invalid AskUserQuestion answers without consuming the request', async () => {
+    const questionLog = vi.spyOn(console, 'info').mockImplementation(() => undefined)
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
     const manager = new LiveTurnManager()
     const projectId = Buffer.from('/repo/a').toString('base64url')
@@ -986,9 +1062,16 @@ describe('LiveTurnManager', () => {
     const annotations = { 'Ship?': { preview: 'release', notes: 'today' }, 'Features?': { notes: 'includes commas' } }
     expect(manager.respondToQuestion('session-1', 'req-1', { behavior: 'completed', toolUseID: 'tool-1', answers, annotations })).toEqual({ status: 'answered' })
     await expect(approval).resolves.toEqual({ behavior: 'allow', toolUseID: 'tool-1', updatedInput: { questions, answers, annotations } })
+    expect(questionLog.mock.calls.slice(2).map(([, record]) => [record.event, record.reason, record.toolUseID])).toEqual([
+      ['response_rejected', 'tool_use_id_mismatch', 'wrong'],
+      ...Array.from({ length: 4 }, () => ['response_rejected', 'invalid_answers', 'tool-1']),
+      ['response_accepted', 'completed', 'tool-1'],
+    ])
+    expect(JSON.stringify(questionLog.mock.calls)).not.toMatch(/Ship\?|Features\?|observability|includes commas|release|today|custom/)
   })
 
   it('denies a cancelled AskUserQuestion', async () => {
+    const questionLog = vi.spyOn(console, 'info').mockImplementation(() => undefined)
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
     const manager = new LiveTurnManager()
     const projectId = Buffer.from('/repo/a').toString('base64url')
@@ -999,6 +1082,15 @@ describe('LiveTurnManager', () => {
 
     expect(manager.respondToQuestion('session-1', 'req-1', { behavior: 'cancelled', toolUseID: 'tool-1' })).toEqual({ status: 'answered' })
     await expect(approval).resolves.toEqual({ behavior: 'deny', message: 'User declined to answer questions.', toolUseID: 'tool-1' })
+    expect(questionLog).toHaveBeenLastCalledWith('live-runtime:question', {
+      sessionId: 'session-1',
+      requestId: 'req-1',
+      toolUseID: 'tool-1',
+      toolName: 'AskUserQuestion',
+      event: 'response_accepted',
+      reason: 'cancelled',
+      activeUserMessageUuid: 'user-1',
+    })
   })
 
   it('keeps an answered approval successful when its run-state observer throws', async () => {
@@ -1052,7 +1144,8 @@ describe('LiveTurnManager', () => {
     await expect(approval).resolves.toEqual({ behavior: 'deny', message: 'Denied by user.', toolUseID: 'tool-1' })
   })
 
-  it('clears requires_action when a pending tool approval is aborted', async () => {
+  it.each(['Bash', 'AskUserQuestion'])('clears requires_action when a pending %s approval is aborted', async (toolName) => {
+    const questionLog = vi.spyOn(console, 'info').mockImplementation(() => undefined)
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
     const manager = new LiveTurnManager()
     const projectId = Buffer.from('/repo/a').toString('base64url')
@@ -1060,13 +1153,26 @@ describe('LiveTurnManager', () => {
     await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'hello', userMessageUuid: 'user-1', permissionMode: 'default' })
     const canUseTool = queryMock.mock.calls[0]?.[0].options.canUseTool
     const controller = new AbortController()
-    const approval = canUseTool('Bash', { command: 'npm test' }, { requestId: 'req-1', toolUseID: 'tool-1', signal: controller.signal })
+    const approval = canUseTool(toolName, { questions: [], command: 'secret-command' }, { requestId: 'req-1', toolUseID: 'tool-1', signal: controller.signal })
 
     expect(manager.sessionRunState('session-1')?.phase).toBe('requires_action')
     controller.abort()
 
     await expect(approval).resolves.toEqual({ behavior: 'deny', message: 'Permission request was cancelled.', toolUseID: 'tool-1' })
     expect(manager.sessionRunState('session-1')).toEqual({ phase: 'running', activeUserMessageUuid: 'user-1', lastTurn: null })
+    if (toolName === 'AskUserQuestion') {
+      expect(questionLog).toHaveBeenCalledTimes(3)
+      expect(questionLog).toHaveBeenLastCalledWith('live-runtime:question', {
+        sessionId: 'session-1',
+        requestId: 'req-1',
+        toolUseID: 'tool-1',
+        toolName,
+        event: 'request_aborted',
+        reason: 'sdk_abort',
+        activeUserMessageUuid: 'user-1',
+      })
+    } else expect(questionLog).not.toHaveBeenCalled()
+    expect(JSON.stringify(questionLog.mock.calls)).not.toContain('secret-command')
   })
 
   it('passes model and effort to new SDK runtimes', async () => {
@@ -1520,6 +1626,7 @@ describe('LiveTurnManager', () => {
   })
 
   it('rejects question responses while external ownership takeover is pending', async () => {
+    const questionLog = vi.spyOn(console, 'info').mockImplementation(() => undefined)
     let resolveInterrupt!: () => void
     const interrupt = vi.fn(
       () =>
@@ -1539,6 +1646,16 @@ describe('LiveTurnManager', () => {
     resolveInterrupt()
     await expect(closing).resolves.toBe(true)
     await expect(approval).resolves.toMatchObject({ behavior: 'deny' })
+    expect(questionLog.mock.calls.slice(2)).toEqual([
+      [
+        'live-runtime:question',
+        { sessionId: 'session-1', requestId: 'req-1', toolUseID: 'tool-1', toolName: 'AskUserQuestion', event: 'response_rejected', reason: 'runtime_stale', activeUserMessageUuid: 'user-1' },
+      ],
+      [
+        'live-runtime:question',
+        { sessionId: 'session-1', requestId: 'req-1', toolUseID: 'tool-1', toolName: 'AskUserQuestion', event: 'request_denied', reason: 'runtime_closed', activeUserMessageUuid: null },
+      ],
+    ])
   })
 
   it('does not rebuild when CLI ownership becomes active again during close', async () => {

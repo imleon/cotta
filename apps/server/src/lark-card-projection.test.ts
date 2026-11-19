@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { type ProjectSessionsResponse, type SessionTimelineResponse, turnCookingLabel } from '@cotta/shared'
+import type { Nodes } from 'mdast'
+import { fromMarkdown } from 'mdast-util-from-markdown'
 import { describe, expect, it } from 'vitest'
 import { decodeDetailToken } from './detail-token.js'
 import { decodeLarkCardAction } from './lark-card-action.js'
@@ -193,6 +195,280 @@ describe('Lark card projection', () => {
     expect(settledJson).toMatch(/for 1m 5s · 09\/30 10:20/)
     expect(settled.body.elements.some((element) => element.background_style === 'turn-user-message')).toBe(false)
     expect(settledJson).not.toMatch(/First Turn|Previous Turn|Next Turn|Latest Turn/)
+  })
+
+  it('isolates three list blockquotes on Turn and result fast paths with stable per-reply ids', () => {
+    const content = ['1. 问题一\n\n   > 第一段引用\n   > 引用的第二行\n\n   第一段续文', '2. 问题二\n\n   > 第二段引用\n\n   第二段续文', '3. 问题三\n\n   > 第三段引用\n\n   第三段续文'].join('\n\n')
+    const fragments = ['1. 问题一', '> 第一段引用\n> 引用的第二行', '第一段续文', '2. 问题二', '> 第二段引用', '第二段续文', '3. 问题三', '> 第三段引用', '第三段续文']
+    const messages = [
+      sdkMessage('user', 'turn', [{ type: 'text', text: content }]),
+      sdkMessage('assistant', 'quotes', [{ type: 'text', text: content }]),
+      sdkMessage('assistant', 'activity', [{ type: 'tool_use', id: 'read', name: 'Read', input: { file_path: '/tmp/a' } }]),
+      sdkMessage('assistant', 'last', [{ type: 'text', text: 'Final reply' }]),
+    ]
+    const response = timeline(messages)
+    const replies = projectLarkTurnMessages(messages, 'turn').replies
+    expect(replies[0]?.content).toBe(content)
+    const projected = projectLarkTurnCard(session, '项目', response, identity, 'UTC')
+    expect(projected.atLimit).toBe(false)
+    expect(projected.card.body.elements.filter((element) => element.tag === 'markdown')).toEqual([...fragments, 'Final reply'].map((content) => ({ tag: 'markdown', content })))
+    expect(projected.card.body.elements.every((element) => element.element_id === undefined)).toBe(true)
+    expect(projected.card.body.elements[0]).toMatchObject({ columns: [{ elements: [{ content: `💬 ${content}` }] }] })
+    for (const settled of [false, true]) {
+      const result = projectLarkResultCard('Result', '项目', 'session', 'turn', replies, identity, !settled, settled ? { session, response, timeZone: 'UTC', showDebugNav: false } : undefined)
+      const elements = result.body.elements.filter((element) => element.element_id !== undefined)
+      expect(elements.map((element) => element.element_id)).toEqual(['reply_0', ...fragments.slice(1).map((_, index) => `reply_0_${index + 1}`), 'reply_1', 'reply_2'])
+      expect(elements.filter((element) => element.tag === 'markdown').map((element) => element.content)).toEqual([...fragments, 'Final reply'])
+      expect(elements.at(-2)).toMatchObject({ tag: 'div', element_id: 'reply_1', text: { tag: 'plain_text', content: '> Read 1 file' } })
+    }
+  })
+
+  it('isolates three- and four-space list quotes while preserving top-level indented code', () => {
+    const content = '1. Leading\n\n   > three\n\n   After\n\n    > four'
+    const result = projectLarkResultCard('Result', '项目', 'session', 'turn', [{ kind: 'markdown', content }], identity, true)
+    expect(result.body.elements).toEqual([
+      { tag: 'markdown', content: '1. Leading', element_id: 'reply_0' },
+      { tag: 'markdown', content: '> three', element_id: 'reply_0_1' },
+      { tag: 'markdown', content: 'After', element_id: 'reply_0_2' },
+      { tag: 'markdown', content: '> four', element_id: 'reply_0_3' },
+    ])
+    const code = 'Leading\n\n    > four'
+    expect(projectLarkResultCard('Result', '项目', 'session', 'turn', [{ kind: 'markdown', content: code }], identity, true).body.elements).toEqual([
+      { tag: 'markdown', content: code, element_id: 'reply_0' },
+    ])
+  })
+
+  it('preserves reply elements without blockquotes, including literal activity text', () => {
+    const content = '**Done**\n\n- item\n\n```md\n> literal code\n```'
+    const messages = [
+      sdkMessage('assistant', 'activity', [{ type: 'tool_use', id: 'read', name: 'Read', input: { file_path: '/tmp/a' } }]),
+      sdkMessage('assistant', 'answer', [{ type: 'text', text: content }]),
+    ]
+    const replies = projectLarkTurnMessages(messages, 'turn').replies
+    const expected = [
+      { tag: 'div', text: { tag: 'plain_text', content: '> Read 1 file', text_color: 'grey', text_size: 'normal', text_align: 'left', lines: 1 } },
+      { tag: 'markdown', content },
+    ]
+    expect(projectLarkTurnCard(session, '项目', timeline(messages), identity, 'UTC').card.body.elements.slice(0, 2)).toEqual(expected)
+    expect(projectLarkResultCard('Result', '项目', 'session', 'turn', replies, identity, true).body.elements).toEqual(expected.map((element, index) => ({ ...element, element_id: `reply_${index}` })))
+  })
+
+  describe.each(['turn', 'streaming', 'unsettled', 'settled'] as const)('%s lifted Markdown semantics', (mode) => {
+    const render = (contents: string[]) => {
+      const replies = contents.map((content) => ({ kind: 'markdown' as const, content }))
+      const response = timeline([
+        sdkMessage(
+          'assistant',
+          'answer',
+          contents.map((text) => ({ type: 'text', text })),
+        ),
+      ])
+      if (mode === 'turn') return projectLarkTurnCard(session, '项目', response, identity, 'UTC')
+      return {
+        card: projectLarkResultCard(
+          'Result',
+          '项目',
+          'session',
+          'turn',
+          replies,
+          identity,
+          mode === 'streaming',
+          mode === 'settled' ? { session, response, timeZone: 'UTC', showDebugNav: false } : undefined,
+        ),
+      }
+    }
+    const markdown = (card: ReturnType<typeof render>['card']) => card.body.elements.filter((element) => element.tag === 'markdown')
+    const nodes = (card: ReturnType<typeof render>['card']) => markdown(card).flatMap((element) => markdownNodes(fromMarkdown(String(element.content))))
+
+    it('preserves a 3000-level blockquote without overflowing the stack or truncating text', () => {
+      const content = `${'> '.repeat(3000)}text`
+      expect(Buffer.byteLength(content, 'utf8')).toBe(6004)
+      const projected = render([content, 'Next reply'])
+      const elements = markdown(projected.card)
+      const json = JSON.stringify(projected.card)
+
+      expect(elements.map((element) => element.content)).toEqual([content, 'Next reply'])
+      expect(json).not.toContain('Earlier Turn content omitted')
+      if ('atLimit' in projected) expect(projected.atLimit).toBe(false)
+      expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000)
+      expect((json.match(/"tag":/g) ?? []).length).toBeLessThanOrEqual(190)
+      if (mode === 'turn') expect(elements.every((element) => element.element_id === undefined)).toBe(true)
+      else expect(elements.map((element) => element.element_id)).toEqual(['reply_0', 'reply_1'])
+    })
+
+    it('keeps a tab-indented continuation as a paragraph with emphasis, not code', () => {
+      const content = '1. before\n   > quote\n\n   \t*after*'
+      const original = markdownNodes(fromMarkdown(content))
+      expect(original.some((node) => node.type === 'emphasis')).toBe(true)
+      expect(original.some((node) => node.type === 'code')).toBe(false)
+      const parsed = nodes(render([content]).card)
+      expect(parsed.filter((node) => node.type === 'code')).toEqual([])
+      expect(parsed.filter((node) => node.type === 'emphasis')).toEqual([expect.objectContaining({ children: [expect.objectContaining({ type: 'text', value: 'after' })] })])
+      expect(parsed.filter((node) => node.type === 'paragraph')).toEqual(expect.arrayContaining([expect.objectContaining({ children: [expect.objectContaining({ type: 'emphasis' })] })]))
+    })
+
+    it('preserves exact code values after multiple tab stops', () => {
+      for (const tabs of [2, 3, 4]) {
+        const content = `1. before\n   > quote\n\n   ${'\t'.repeat(tabs)}code  \n   ${'\t'.repeat(tabs + 1)}next\n\n   > last`
+        const original = markdownNodes(fromMarkdown(content))
+          .filter((node) => node.type === 'code')
+          .map((node) => node.value)
+        expect(original).toHaveLength(1)
+        const projected = nodes(render([content]).card)
+          .filter((node) => node.type === 'code')
+          .map((node) => node.value)
+        expect(projected).toEqual(original)
+      }
+    })
+
+    it.each([0, 99, 199])('keeps all 200 ordered items when only item index %i has a quote', (quotedIndex) => {
+      const content = Array.from({ length: 200 }, (_, index) => {
+        const marker = `${index + 1}.`
+        return `${marker} item-${String(index + 1).padStart(3, '0')}${index === quotedIndex ? `\n${' '.repeat(marker.length + 1)}> quote` : ''}`
+      }).join('\n')
+      const projected = render([content, 'Next reply'])
+      const json = JSON.stringify(projected.card)
+      const elements = markdown(projected.card)
+      const parsed = nodes(projected.card)
+      expect(json.includes('Earlier Turn content omitted')).toBe(false)
+      if ('atLimit' in projected) expect(projected.atLimit).toBe(false)
+      expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000)
+      expect((json.match(/"tag":/g) ?? []).length).toBeLessThanOrEqual(190)
+      const lists = parsed.filter((node) => node.type === 'list')
+      expect(lists.every((node) => node.ordered)).toBe(true)
+      expect(lists.map((node) => node.children.length)).toEqual(quotedIndex === 199 ? [200] : [quotedIndex + 1, 199 - quotedIndex])
+      expect(lists.flatMap((node) => node.children.map((_, index) => node.start! + index))).toEqual(Array.from({ length: 200 }, (_, index) => index + 1))
+      expect(
+        lists.flatMap((node) =>
+          markdownNodes(node)
+            .filter((child) => child.type === 'text')
+            .map((child) => child.value),
+        ),
+      ).toEqual(Array.from({ length: 200 }, (_, index) => `item-${String(index + 1).padStart(3, '0')}`))
+      expect(parsed.filter((node) => node.type === 'blockquote')).toHaveLength(1)
+      expect(lists.some((node) => markdownNodes(node).some((child) => child.type === 'blockquote'))).toBe(false)
+      const fragmentCount = quotedIndex === 199 ? 2 : 3
+      expect(elements).toHaveLength(fragmentCount + 1)
+      expect(elements.at(-1)?.content).toBe('Next reply')
+      if (mode === 'turn') expect(elements.every((element) => element.element_id === undefined)).toBe(true)
+      else expect(elements.map((element) => element.element_id)).toEqual([...Array.from({ length: fragmentCount }, (_, index) => (index ? `reply_0_${index}` : 'reply_0')), 'reply_1'])
+    })
+  })
+
+  it.each(['turn', 'streaming', 'unsettled', 'settled'] as const)('budgets over 190 quote fragments in a %s card without renumbering replies', (mode) => {
+    const content = `1. Earlier content\n\n${Array.from({ length: 220 }, (_, index) => `   > quote-${index}`).join('\n\n')}`
+    const replies = [
+      { kind: 'markdown' as const, content },
+      { kind: 'markdown' as const, content: 'latest reply' },
+    ]
+    const response = timeline([
+      sdkMessage(
+        'assistant',
+        'quotes',
+        replies.map((reply) => ({ type: 'text', text: reply.content })),
+      ),
+    ])
+    const turn = mode === 'turn' ? projectLarkTurnCard(session, '项目', response, identity, 'UTC') : undefined
+    const card =
+      turn?.card ??
+      projectLarkResultCard('Result', '项目', 'session', 'turn', replies, identity, mode === 'streaming', mode === 'settled' ? { session, response, timeZone: 'UTC', showDebugNav: true } : undefined)
+    const json = JSON.stringify(card)
+    expect(json).toContain('Earlier Turn content omitted due to card display limit')
+    expect(json).toContain('quote-219')
+    expect(json).not.toContain('quote-0"')
+    expect(json).toContain('latest reply')
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000)
+    expect((json.match(/"tag":/g) ?? []).length).toBeLessThanOrEqual(190)
+    if (turn) {
+      expect(turn.atLimit).toBe(true)
+      expect(card.body.elements.every((element) => element.element_id === undefined)).toBe(true)
+    } else {
+      const fragments = card.body.elements.filter((element) => element.element_id !== undefined)
+      expect(fragments.slice(-2).map((element) => element.element_id)).toEqual(['reply_0_220', 'reply_1'])
+      expect(new Set(fragments.map((element) => element.element_id)).size).toBe(fragments.length)
+    }
+  })
+
+  it.each(['turn', 'streaming', 'settled'] as const)('truncates a UTF-8 quote fragment within the %s card byte budget', (mode) => {
+    const content = `1. Introduction\n\n   > ${'中文😀'.repeat(8_000)}\n\n   Continuation`
+    const replies = [{ kind: 'markdown' as const, content }]
+    const response = timeline([sdkMessage('assistant', 'quote', [{ type: 'text', text: content }])])
+    const card =
+      mode === 'turn'
+        ? projectLarkTurnCard(session, '项目', response, identity, 'UTC').card
+        : projectLarkResultCard(
+            'Result',
+            '项目',
+            'session',
+            'turn',
+            replies,
+            identity,
+            mode === 'streaming',
+            mode === 'settled' ? { session, response, timeZone: 'UTC', showDebugNav: true } : undefined,
+          )
+    const json = JSON.stringify(card)
+    expect(json).toContain('Earlier Turn content omitted due to card display limit')
+    expect(json).not.toContain('Introduction')
+    expect(json).toContain('Continuation')
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000)
+    expect((json.match(/"tag":/g) ?? []).length).toBeLessThanOrEqual(190)
+    const quote = card.body.elements.find((element) => typeof element.content === 'string' && element.content.includes('中文'))
+    expect(quote?.content).toMatch(/…$/)
+    expect(String(quote?.content)).not.toMatch(/[\uD800-\uDFFF]/u)
+    expect(String(quote?.content)).not.toContain('�')
+    if (mode !== 'turn') {
+      expect(quote?.element_id).toBe('reply_0_1')
+      expect(card.body.elements.find((element) => element.content === 'Continuation')?.element_id).toBe('reply_0_2')
+    }
+  })
+
+  it.each(['turn', 'streaming', 'settled'] as const)('preserves indented code and reference links in final %s Markdown, including budget truncation', (mode) => {
+    const render = (content: string) => {
+      const replies = [{ kind: 'markdown' as const, content }]
+      const response = timeline([sdkMessage('assistant', 'answer', [{ type: 'text', text: content }])])
+      return mode === 'turn'
+        ? projectLarkTurnCard(session, '项目', response, identity, 'UTC').card
+        : projectLarkResultCard(
+            'Result',
+            '项目',
+            'session',
+            'turn',
+            replies,
+            identity,
+            mode === 'streaming',
+            mode === 'settled' ? { session, response, timeZone: 'UTC', showDebugNav: false } : undefined,
+          )
+    }
+    const nodes = (card: ReturnType<typeof render>) => card.body.elements.flatMap((element) => (element.tag === 'markdown' ? markdownNodes(fromMarkdown(String(element.content))) : []))
+    for (const suffix of ['', 'x'.repeat(40_000)]) {
+      const card = render(`1. before\n   > actual quote\n\n       > code${suffix}`)
+      const parsed = nodes(card)
+      expect(parsed.filter((node) => node.type === 'blockquote')).toHaveLength(suffix ? 0 : 1)
+      expect(parsed.filter((node) => node.type === 'code')).toEqual([expect.objectContaining({ value: suffix ? expect.stringMatching(/^> codex+…$/) : '> code' })])
+      expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThan(28_000)
+    }
+    for (const earlier of ['before', 'x'.repeat(40_000)]) {
+      const card = render(`1. ${earlier}\n   > first\n\n       code  \n\n   > last`)
+      expect(nodes(card).filter((node) => node.type === 'code')).toEqual([expect.objectContaining({ value: 'code  ' })])
+      const code = card.body.elements.find((element) => typeof element.content === 'string' && element.content.includes('    code'))
+      expect(code?.content).toBe('    code  ')
+      expect(JSON.stringify(card).includes('Earlier Turn content omitted')).toBe(earlier !== 'before')
+    }
+    for (const suffix of ['', 'x'.repeat(40_000)]) {
+      const card = render(`1. before\n   > first\n\n       code  \n       next${suffix}\n\n   > last`)
+      const code = nodes(card).find((node) => node.type === 'code')
+      expect(code).toMatchObject({ value: suffix ? expect.stringMatching(/^code {2}\nnextx+…$/) : 'code  \nnext' })
+      const hardbreak = render(`1. before\n   > first\n\n   line  \n   next${suffix}\n\n   > last`)
+      expect(nodes(hardbreak).filter((node) => node.type === 'break')).toHaveLength(1)
+      expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThan(28_000)
+      expect(Buffer.byteLength(JSON.stringify(hardbreak), 'utf8')).toBeLessThan(28_000)
+    }
+    const card = render(`[id]: /target\n\n1. before\n   > [link][id] ${'x'.repeat(40_000)}`)
+    const json = JSON.stringify(card)
+    expect(json).toContain('Earlier Turn content omitted due to card display limit')
+    expect(json).toContain('…')
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000)
+    expect(nodes(card).filter((node) => node.type === 'link')).toEqual([expect.objectContaining({ url: '/target', children: [expect.objectContaining({ type: 'text', value: 'link' })] })])
   })
 
   it('budgets unsettled result cards while retaining the latest reply', () => {
@@ -750,6 +1026,10 @@ describe('Lark card projection', () => {
     expect(json).not.toContain('open_url')
   })
 })
+
+function markdownNodes(node: Nodes): Nodes[] {
+  return [node, ...('children' in node ? node.children.flatMap(markdownNodes) : [])]
+}
 
 function collectButtons(value: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(value)) return value.flatMap(collectButtons)

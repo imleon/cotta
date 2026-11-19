@@ -21,6 +21,7 @@ import {
 } from '@cotta/shared'
 import { encodeDetailToken } from './detail-token.js'
 import { encodeLarkCardAction, type LarkCardAction } from './lark-card-action.js'
+import { splitLarkMarkdown } from './lark-markdown.js'
 
 export const LARK_CARD_MAX_BYTES = 30_000
 export const LARK_CARD_MAX_ELEMENTS = 200
@@ -184,8 +185,8 @@ function fitsCard(value: LarkCard): boolean {
   return elementCount(value) <= cardBudgetElements && bytes(value) < cardBudgetBytes
 }
 
-function longestPrefix(content: string, accepts: (value: string) => boolean): string | null {
-  const characters = Array.from(content.trim())
+function longestPrefix(content: string, accepts: (value: string) => boolean, preserveIndent = false): string | null {
+  const characters = Array.from(preserveIndent ? content : content.trim())
   let low = 0
   let high = characters.length
   while (low < high) {
@@ -455,15 +456,29 @@ export function projectLarkSessionCard(
 }
 
 type TurnRenderOptions = { result?: { replies: LarkTurnReply[]; streaming: boolean; turnId: string } }
+type LarkReplyFragment = LarkTurnReply & { elementId: string }
+
+function replyFragments(replies: LarkTurnReply[]): LarkReplyFragment[] {
+  return replies.flatMap((reply, index) => {
+    const contents = reply.kind === 'markdown' ? splitLarkMarkdown(reply.content) : [reply.content]
+    const transformed = contents.length !== 1 || contents[0] !== reply.content
+    // Preserve meaningful indentation and line-ending spaces; strip only blank boundary lines.
+    return contents.map((content, fragmentIndex) => ({
+      ...reply,
+      content: reply.kind === 'text' ? content : transformed ? content.replace(/^(?:[ \t]*(?:\r\n|\n|\r))+|(?:(?:\r\n|\n|\r)[ \t]*)+$/g, '') : content.trim(),
+      elementId: `reply_${index}${fragmentIndex ? `_${fragmentIndex}` : ''}`,
+    }))
+  })
+}
 
 function fitReplies(
-  replies: LarkTurnReply[],
-  replyElement: (reply: LarkTurnReply, content?: string, index?: number) => CardElement,
+  replies: LarkReplyFragment[],
+  replyElement: (reply: LarkReplyFragment, content?: string) => CardElement,
   prefix: CardElement[],
   emptyReply: CardElement,
   fits: (elements: CardElement[]) => boolean,
 ): { elements: CardElement[]; atLimit: boolean } {
-  const completeReplies = replies.length ? replies.map((reply, index) => replyElement(reply, reply.content, index)) : [emptyReply]
+  const completeReplies = replies.length ? replies.map((reply) => replyElement(reply)) : [emptyReply]
   if (fits([...prefix, ...completeReplies])) return { elements: [...prefix, ...completeReplies], atLimit: false }
 
   const omitted = markdown('_Earlier Turn content omitted due to card display limit_')
@@ -471,14 +486,14 @@ function fitReplies(
   for (let index = replies.length - 1; index >= 0; index -= 1) {
     const reply = replies[index]
     if (!reply) continue
-    const item = replyElement(reply, reply.content, index)
+    const item = replyElement(reply)
     const candidate = [...prefix, omitted, item, ...renderedReplies]
     if (fits(candidate)) {
       renderedReplies.unshift(item)
       continue
     }
-    const truncated = longestPrefix(reply.content, (content) => fits([...prefix, omitted, replyElement(reply, content, index), ...renderedReplies]))
-    if (truncated) renderedReplies.unshift(replyElement(reply, truncated, index))
+    const truncated = longestPrefix(reply.content, (content) => fits([...prefix, omitted, replyElement(reply, content), ...renderedReplies]), reply.kind === 'markdown')
+    if (truncated) renderedReplies.unshift(replyElement(reply, truncated))
     break
   }
   return { elements: [...prefix, omitted, ...(renderedReplies.length ? renderedReplies : [emptyReply])], atLimit: true }
@@ -575,6 +590,7 @@ export function projectLarkResultCard(
   questionNav?: QuestionNav,
 ): LarkCard {
   if (settled) return projectLarkTurnCard(settled.session, projectName, settled.response, identity, settled.timeZone, undefined, settled.showDebugNav, { result: { replies, streaming, turnId } }).card
+  const fragments = replyFragments(replies)
   const refresh = button('Refresh', action(identity, { card: 'turn', operation: 'refresh_result', sessionId, turnId }), 'default', 'refresh_outlined', 'tiny')
   const decision = pending ? decisionBlock(pending, identity, sessionId, turnId, questionNav) : []
   const render = (elements: CardElement[]) => {
@@ -583,11 +599,11 @@ export function projectLarkResultCard(
     if (streaming) result.config.summary = { content: turnCookingLabel(turnId) }
     return result
   }
-  const replyElement = (reply: LarkTurnReply, content = reply.content, index?: number) => ({
-    ...(reply.kind === 'markdown' ? markdown(content || ' ', false) : text(content, 'grey')),
-    ...(index !== undefined ? { element_id: `reply_${index}` } : {}),
+  const replyElement = (reply: LarkReplyFragment, content = reply.content) => ({
+    ...(reply.kind === 'markdown' ? { tag: 'markdown', content } : text(content, 'grey')),
+    element_id: reply.elementId,
   })
-  return render(fitReplies(replies, replyElement, [], markdown(streaming ? turnCookingLabel(turnId) : '(No response yet)'), (elements) => fitsCard(render(elements))).elements)
+  return render(fitReplies(fragments, replyElement, [], markdown(streaming ? turnCookingLabel(turnId) : '(No response yet)'), (elements) => fitsCard(render(elements))).elements)
 }
 
 export function projectLarkTurnCard(
@@ -646,13 +662,13 @@ export function projectLarkTurnCard(
   const fitsTurn = (elements: CardElement[]) => fitsCard(render(elements))
   const projected = projectLarkTurnMessages(turn.messages as SessionMessage[], turn.primaryUserUuid, active)
   const primary = options.result ? [] : projected.primary
-  const replies = options.result?.replies ?? projected.replies
+  const replies = replyFragments(options.result?.replies ?? projected.replies)
   const primaryContent = primary.join('\n\n')
-  const replyElement = (reply: LarkTurnReply, content = reply.content, index?: number) => ({
-    ...(reply.kind === 'markdown' ? markdown(content, false) : text(content, 'grey')),
-    ...(options.result && index !== undefined ? { element_id: `reply_${index}` } : {}),
+  const replyElement = (reply: LarkReplyFragment, content = reply.content) => ({
+    ...(reply.kind === 'markdown' ? { tag: 'markdown', content } : text(content, 'grey')),
+    ...(options.result ? { element_id: reply.elementId } : {}),
   })
-  const allReplies = replies.map((reply, index) => replyElement(reply, reply.content, index))
+  const allReplies = replies.map((reply) => replyElement(reply))
   const emptyReply = markdown(options.result?.streaming || (!options.result && active) ? turnCookingLabel(turn.primaryUserUuid) : '(No response yet)')
   const completePrimary = primaryContent ? [userMessage(primaryContent)] : []
   const completeReplies = allReplies.length ? allReplies : [emptyReply]

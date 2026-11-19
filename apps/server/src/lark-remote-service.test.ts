@@ -655,6 +655,161 @@ describe('LarkRemoteService', () => {
     db.close()
   })
 
+  it('updates the whole accumulated card as partial text becomes a quote and continuation, then settles', async () => {
+    const { db, store, client, readInput, service } = await setup()
+    await pair(store, service)
+    store.setSelection('bot', project.id, sessions[0]!.id, 1_000)
+    let subscriber: ((message: unknown) => void) | undefined
+    const unsubscribe = vi.fn()
+    readInput.liveTurnManager.subscribe = vi.fn((_sessionId: string, callback: (message: unknown) => void) => {
+      subscriber = callback
+      return unsubscribe
+    })
+    let activeTurnId: string | null = null
+    readInput.liveTurnManager.sessionRunState = vi.fn(() => (activeTurnId ? { phase: 'running' as const, activeUserMessageUuid: activeTurnId, lastTurn: null } : null))
+    readInput.liveTurnManager.startTurn = vi.fn(async ({ sessionId, userMessageUuid }: { sessionId: string; userMessageUuid: string }) => {
+      activeTurnId = userMessageUuid
+      return { sessionId, userMessageUuid }
+    })
+    await service.onMessage({
+      eventId: 'quote-submit',
+      senderOpenId: 'owner',
+      chatId: 'chat',
+      chatType: 'p2p',
+      messageId: 'message',
+      messageType: 'text',
+      content: JSON.stringify({ text: 'continue' }),
+    })
+    const turnId = activeTurnId!
+    const main = (type: string, extra: object = {}) => ({ type, session_id: sessions[0]!.id, parent_tool_use_id: null, parent_agent_id: null, ...extra })
+    const deltas = ['1. 前文\n\n   ', '> 引用中文😀', '\n\n   引用后续文\n\n2. 下一项']
+    const content = deltas.join('')
+    readInput.rawTranscriptCache!.loadTimelineWindow = vi.fn(() => ({
+      primaryTurns: [{ uuid: turnId, timestamp: 1_000 }],
+      ownedMessages: [
+        { ownerTurnId: turnId, message: { ...main('user'), uuid: turnId, message: { role: 'user', content: 'continue' } } },
+        { ownerTurnId: turnId, message: { ...main('assistant'), uuid: 'answer', message: { role: 'assistant', content: [{ type: 'text', text: content }] } } },
+      ],
+      hasMore: false,
+      hasNewer: false,
+      nextCursor: null,
+      snapshotFromTurnId: null,
+      anchorTurnId: turnId,
+      version: timelineState.version,
+      fileSize: timelineState.fileSize!,
+    })) as never
+    for (const [index, text] of deltas.entries()) {
+      subscriber?.(main('stream_event', { event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } }))
+      await vi.waitFor(() => expect(client.updateCardEntity).toHaveBeenCalledTimes(index + 1))
+    }
+    subscriber?.(main('result', { subtype: 'success' }))
+    await vi.waitFor(() => expect(client.updateCardEntity).toHaveBeenCalledTimes(4))
+    const updates = client.updateCardEntity.mock.calls as unknown as Array<[string, { config: { streaming_mode: boolean }; body: { elements: Array<Record<string, unknown>> } }, string, number]>
+    const contents = [['1. 前文'], ['1. 前文', '> 引用中文😀'], ['1. 前文', '> 引用中文😀', '引用后续文', '2. 下一项']]
+    for (const [index, expected] of [...contents, contents[2]!].entries()) {
+      const card = updates[index]![1]
+      expect(card.config.streaming_mode).toBe(index < 3)
+      expect(card.body.elements.filter((element) => element.element_id !== undefined)).toEqual(
+        expected.map((content, fragment) => ({
+          tag: 'markdown',
+          content,
+          element_id: fragment ? `reply_0_${fragment}` : 'reply_0',
+        })),
+      )
+      expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThan(28_000)
+    }
+    expect(updates.map(([cardId, , uuid, sequence]) => [cardId, uuid, sequence])).toEqual([1, 2, 3, 4].map((sequence) => ['card-entity', `quote-submit:${sequence}`, sequence]))
+    expect(client.createAndSendCard).toHaveBeenCalledOnce()
+    expect(client.appendCardElements).not.toHaveBeenCalled()
+    expect(client.streamCardElement).not.toHaveBeenCalled()
+    expect(readInput.rawTranscriptCache!.loadTimelineWindow).toHaveBeenCalled()
+    expect(JSON.stringify(updates.at(-1)?.[1])).toContain('Refresh')
+    db.close()
+  })
+
+  it('renders a 3000-level blockquote on the delta timer before completion, then settles in sequence', async () => {
+    const { db, store, client, readInput, service } = await setup()
+    vi.useFakeTimers()
+    try {
+      await pair(store, service)
+      store.setSelection('bot', project.id, sessions[0]!.id, 1_000)
+      let subscriber: ((message: unknown) => void) | undefined
+      const unsubscribe = vi.fn()
+      readInput.liveTurnManager.subscribe = vi.fn((_sessionId: string, callback: (message: unknown) => void) => {
+        subscriber = callback
+        return unsubscribe
+      })
+      let activeTurnId: string | null = null
+      readInput.liveTurnManager.sessionRunState = vi.fn(() => (activeTurnId ? { phase: 'running' as const, activeUserMessageUuid: activeTurnId, lastTurn: null } : null))
+      readInput.liveTurnManager.startTurn = vi.fn(async ({ sessionId, userMessageUuid }: { sessionId: string; userMessageUuid: string }) => {
+        activeTurnId = userMessageUuid
+        return { sessionId, userMessageUuid }
+      })
+      await service.onMessage({
+        eventId: 'deep-quote-submit',
+        senderOpenId: 'owner',
+        chatId: 'chat',
+        chatType: 'p2p',
+        messageId: 'message',
+        messageType: 'text',
+        content: JSON.stringify({ text: 'continue' }),
+      })
+      const turnId = activeTurnId!
+      const main = (type: string, extra: object = {}) => ({ type, session_id: sessions[0]!.id, parent_tool_use_id: null, parent_agent_id: null, ...extra })
+      const content = `${'> '.repeat(3000)}text`
+      expect(Buffer.byteLength(content, 'utf8')).toBe(6004)
+      readInput.rawTranscriptCache!.loadTimelineWindow = vi.fn(() => ({
+        primaryTurns: [{ uuid: turnId, timestamp: 1_000 }],
+        ownedMessages: [
+          { ownerTurnId: turnId, message: { ...main('user'), uuid: turnId, message: { role: 'user', content: 'continue' } } },
+          { ownerTurnId: turnId, message: { ...main('assistant'), uuid: 'answer', message: { role: 'assistant', content: [{ type: 'text', text: content }] } } },
+        ],
+        hasMore: false,
+        hasNewer: false,
+        nextCursor: null,
+        snapshotFromTurnId: null,
+        anchorTurnId: turnId,
+        version: timelineState.version,
+        fileSize: timelineState.fileSize!,
+      })) as never
+
+      subscriber?.(main('stream_event', { event: { type: 'content_block_delta', delta: { type: 'text_delta', text: content } } }))
+      await vi.advanceTimersByTimeAsync(499)
+      expect(client.updateCardEntity).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(client.updateCardEntity).toHaveBeenCalledOnce()
+      const updates = client.updateCardEntity.mock.calls as unknown as Array<[string, { config: { streaming_mode: boolean }; body: { elements: Array<Record<string, unknown>> } }, string, number]>
+      expect(updates[0]![1].config.streaming_mode).toBe(true)
+      expect(updates[0]![1].body.elements).toEqual([{ tag: 'markdown', content, element_id: 'reply_0' }])
+      expect(readInput.rawTranscriptCache!.loadTimelineWindow).not.toHaveBeenCalled()
+
+      subscriber?.(main('assistant', { uuid: 'answer', message: { role: 'assistant', content: [{ type: 'text', text: content }] } }))
+      subscriber?.(main('result', { subtype: 'success' }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(client.updateCardEntity).toHaveBeenCalledTimes(3)
+      expect(updates.map(([cardId, , uuid, sequence]) => [cardId, uuid, sequence])).toEqual([1, 2, 3].map((sequence) => ['card-entity', `deep-quote-submit:${sequence}`, sequence]))
+      expect(updates.map(([, card]) => card.config.streaming_mode)).toEqual([true, true, false])
+      for (const [, card] of updates) {
+        expect(card.body.elements.filter((element) => element.element_id !== undefined)).toEqual([{ tag: 'markdown', content, element_id: 'reply_0' }])
+        const json = JSON.stringify(card)
+        expect(json).not.toContain('Earlier Turn content omitted')
+        expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000)
+        expect((json.match(/"tag":/g) ?? []).length).toBeLessThanOrEqual(190)
+      }
+      expect(client.createAndSendCard).toHaveBeenCalledOnce()
+      expect(client.appendCardElements).not.toHaveBeenCalled()
+      expect(client.streamCardElement).not.toHaveBeenCalled()
+      expect(readInput.rawTranscriptCache!.loadTimelineWindow).toHaveBeenCalled()
+      expect(JSON.stringify(updates.at(-1)?.[1])).toContain('Refresh')
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(unsubscribe).toHaveBeenCalledOnce()
+      expect(client.updateCardEntity).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+      db.close()
+    }
+  })
+
   it('handles a failed final card update without another mutation', async () => {
     const { db, store, client, readInput, service } = await setup()
     await pair(store, service)

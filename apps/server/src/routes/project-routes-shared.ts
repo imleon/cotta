@@ -29,6 +29,8 @@ export type ProjectRoutesLiveTurnManager = Pick<LiveTurnManager, 'acknowledgeCom
   runtimeTurnProjection(sessionId: string, submissionUuid?: string): ReturnType<LiveTurnManager['runtimeTurnProjection']>
   clearRuntimeTurnProjection(sessionId: string): void
   hasRuntime?(sessionId: string): boolean
+  close?(sessionId: string): Promise<boolean>
+  runWithSessionDeleted?<T>(sessionId: string, operation: () => Promise<T>): Promise<T>
   restartRuntime?(input: Parameters<LiveTurnManager['restartRuntime']>[0]): Promise<boolean>
   liveBackgroundTasks?(sessionId: string): readonly LiveBackgroundTask[] | null
   sessionRunStateVersion?(sessionId: string): number

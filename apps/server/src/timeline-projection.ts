@@ -1,5 +1,5 @@
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { isTimelineLocalCommandCaveatMessage, type SessionTimelineResponse, type TurnSummary } from '@cotta/shared'
+import type { SessionMessage } from './claude-cli/types.js'
 
 type ProjectedSessionTimeline = Omit<
   SessionTimelineResponse,

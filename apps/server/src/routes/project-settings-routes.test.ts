@@ -36,9 +36,6 @@ const claudeCodeApiStub = {
   async forkSession() {
     return null
   },
-  async getSessionTimelineState() {
-    return null
-  },
 }
 
 describe('project settings routes', () => {
@@ -80,9 +77,6 @@ describe('project settings routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -235,9 +229,6 @@ describe('project settings routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },

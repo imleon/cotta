@@ -1,5 +1,4 @@
 import { stat } from 'node:fs/promises'
-import { type PermissionResult, type PermissionUpdate, type Query, query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   type AskUserQuestionDecisionRequest,
   buildComposerMessageContent,
@@ -18,6 +17,8 @@ import {
   type ToolApprovalRequest,
   timelineLocalCommand,
 } from '@cotta/shared'
+import { query } from './claude-cli/query.js'
+import type { PermissionResult, PermissionUpdate, Query, SDKControlGetContextUsageResponse, SDKMessage, SDKUserMessage } from './claude-cli/types.js'
 import { projectPathFromId } from './claude-code-api.js'
 import type { SessionContextUsageStore } from './session-context-usage-store.js'
 import type { SettingsStore } from './settings-store.js'
@@ -29,6 +30,7 @@ export class ProjectDirectoryUnavailableError extends Error {}
 export class SessionExternallyOwnedError extends Error {}
 export class SessionTurnInProgressError extends Error {}
 export class SessionProjectMismatchError extends Error {}
+export class SessionDeletingError extends Error {}
 
 type SessionActivityObserver = {
   signalSessionActivity?(input: { sessionId: string; projectId?: string }): unknown
@@ -46,13 +48,13 @@ function sdkUserMessage(input: {
   images?: ComposerImage[]
   sessionId: string
   startedAt: number
-}): SDKUserMessage & { entrypoint: 'sdk-ts'; parent_agent_id: null } {
+}): SDKUserMessage & { entrypoint: 'cotta'; parent_agent_id: null } {
   return {
     type: 'user',
     message: { role: 'user', content: buildComposerMessageContent(input.text ?? '', input.images ?? []) },
     parent_tool_use_id: null,
     parent_agent_id: null,
-    entrypoint: 'sdk-ts',
+    entrypoint: 'cotta',
     uuid: input.uuid,
     session_id: input.sessionId,
     timestamp: new Date(input.startedAt).toISOString(),
@@ -189,6 +191,8 @@ export class LiveTurnManager {
   private readonly externalOwnerGenerations = new Map<string, number>()
   private readonly rebuildAfterExternalOwnerGenerations = new Map<string, number>()
   private readonly lifecycleTails = new Map<string, Promise<unknown>>()
+  private readonly runtimeCloses = new Map<string, Promise<void>>()
+  private readonly deletingSessions = new Set<string>()
 
   constructor(
     private readonly sessionActivityObserver?: SessionActivityObserver,
@@ -225,7 +229,9 @@ export class LiveTurnManager {
     effort?: EffortLevel | null
     rebuild: boolean
   }): Promise<boolean> {
+    if (this.deletingSessions.has(input.sessionId)) throw new SessionDeletingError('Session is being deleted')
     return this.serializeLifecycle(input.sessionId, async () => {
+      if (this.deletingSessions.has(input.sessionId)) throw new SessionDeletingError('Session is being deleted')
       if (!this.hasRuntime(input.sessionId)) return false
       await this.closeForExternalOwnerInternal(input.sessionId, 'Session was interrupted because its runtime was restarted.', { rebuildAfterCliIdle: false })
       if (!input.rebuild) return false
@@ -314,11 +320,31 @@ export class LiveTurnManager {
     return { status: 'answered' }
   }
 
-  close(sessionId: string): boolean {
-    const runtime = this.runtimes.get(sessionId)
-    if (!runtime) return false
-    this.closeRuntime(runtime)
-    return true
+  async close(sessionId: string): Promise<boolean> {
+    return this.serializeLifecycle(sessionId, async () => {
+      const runtime = this.runtimes.get(sessionId)
+      if (!runtime) {
+        await this.runtimeCloses.get(sessionId)
+        return false
+      }
+      await this.closeRuntime(runtime)
+      return true
+    })
+  }
+
+  async runWithSessionDeleted<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    if (this.deletingSessions.has(sessionId)) throw new SessionDeletingError('Session is being deleted')
+    this.deletingSessions.add(sessionId)
+    try {
+      return await this.serializeLifecycle(sessionId, async () => {
+        const runtime = this.runtimes.get(sessionId)
+        if (runtime) await this.closeRuntime(runtime)
+        else await this.runtimeCloses.get(sessionId)
+        return await operation()
+      })
+    } finally {
+      this.deletingSessions.delete(sessionId)
+    }
   }
 
   closeForExternalOwner(
@@ -373,7 +399,7 @@ export class LiveTurnManager {
       }
       runtime.startingTurnToken = null
       runtime.stale = true
-      this.closeRuntime(runtime)
+      await this.closeRuntime(runtime)
       return true
     })()
     this.externalOwnerCloses.set(sessionId, closing)
@@ -384,11 +410,12 @@ export class LiveTurnManager {
     return options.rebuildAfterCliIdle === false ? closing.finally(() => this.clearExternalOwnerGeneration(sessionId, generation)) : closing
   }
 
-  closeAll(): void {
+  async closeAll(): Promise<void> {
     this.externalOwnerCloses.clear()
     this.externalOwnerGenerations.clear()
     this.rebuildAfterExternalOwnerGenerations.clear()
     for (const runtime of Array.from(this.runtimes.values())) this.closeRuntime(runtime)
+    await Promise.allSettled(this.runtimeCloses.values())
   }
 
   subscribe(sessionId: string, subscriber: LiveTurnSubscriber): () => void {
@@ -511,13 +538,19 @@ export class LiveTurnManager {
     if (this.rebuildAfterExternalOwnerGenerations.get(sessionId) === generation) this.rebuildAfterExternalOwnerGenerations.delete(sessionId)
   }
 
-  private closeRuntime(runtime: SessionRuntime): void {
-    if (runtime.closed) return
+  private closeRuntime(runtime: SessionRuntime): Promise<void> {
+    if (runtime.closed) return this.runtimeCloses.get(runtime.sessionId) ?? Promise.resolve()
+    const activeUserMessageUuid = runtime.currentUserMessageUuid
+    if (activeUserMessageUuid) {
+      this.finishTurn(runtime, activeUserMessageUuid, 'error')
+      runtime.currentUserMessageUuid = null
+      this.publish(runtime, cottaLiveTurnFailed({ error: 'Session closed before the turn completed.', sessionId: runtime.sessionId }))
+    }
     runtime.closed = true
     const hadPendingApprovals = runtime.pendingToolApprovals.size > 0
     const hadBackgroundTasks = runtime.liveBackgroundTasks.length > 0
     this.denyPendingToolApprovals(runtime, 'Session closed before permission was answered.')
-    if (hadPendingApprovals) this.setRunState(runtime, { phase: 'idle', activeUserMessageUuid: null })
+    if (hadPendingApprovals && !activeUserMessageUuid) this.setRunState(runtime, { phase: 'idle', activeUserMessageUuid: null })
     this.clearIdleTimer(runtime)
     const removedCurrentRuntime = this.runtimes.get(runtime.sessionId) === runtime
     if (removedCurrentRuntime) this.runtimes.delete(runtime.sessionId)
@@ -528,11 +561,18 @@ export class LiveTurnManager {
       this.rebuildAfterExternalOwnerGenerations.delete(runtime.sessionId)
     }
     if (removedCurrentRuntime || hadBackgroundTasks) this.signalRuntimeChange(runtime)
-    try {
-      runtime.query.close()
-    } catch (error) {
-      console.error('live-runtime:close failed', error)
-    }
+    const closing = (async () => {
+      await runtime.query.close()
+    })()
+    this.runtimeCloses.set(runtime.sessionId, closing)
+    void closing
+      .catch((error) => {
+        console.error('live-runtime:close failed', error)
+      })
+      .finally(() => {
+        if (this.runtimeCloses.get(runtime.sessionId) === closing) this.runtimeCloses.delete(runtime.sessionId)
+      })
+    return closing
   }
 
   private finishTurn(runtime: SessionRuntime, userMessageUuid: string, outcome: 'success' | 'error'): void {
@@ -623,6 +663,7 @@ export class LiveTurnManager {
     model?: ModelSelection | DefaultTurnOption
     effort?: EffortLevel | null
   }): Promise<unknown | null> {
+    if (this.deletingSessions.has(input.sessionId)) throw new SessionDeletingError('Session is being deleted')
     return this.serializeLifecycle(input.sessionId, () => this.ensureRuntimeInternalPublic(input))
   }
 
@@ -657,6 +698,7 @@ export class LiveTurnManager {
     effort: EffortLevel | null
     hasCliOwnership: () => boolean
   }): Promise<boolean> {
+    if (this.deletingSessions.has(input.sessionId)) return false
     return this.serializeLifecycle(input.sessionId, () => this.rebuildRuntimeAfterCliIdleInternal(input))
   }
 
@@ -693,7 +735,11 @@ export class LiveTurnManager {
         current.stale = true
         this.closeRuntime(current)
       }
-      const replacement = this.createRuntime({ ...input, resume: true }, await this.resolveProviderEnv(input.sessionId))
+      await this.runtimeCloses.get(input.sessionId)
+      if (!externalOwnerGenerationCurrent() || this.deletingSessions.has(input.sessionId)) return false
+      const providerEnv = await this.resolveProviderEnv(input.sessionId)
+      if (!externalOwnerGenerationCurrent() || this.deletingSessions.has(input.sessionId)) return false
+      const replacement = this.createRuntime({ ...input, resume: true }, providerEnv)
       replacement.rebuildingAfterCliIdle = true
       try {
         await replacement.ready
@@ -725,6 +771,7 @@ export class LiveTurnManager {
     model?: ModelSelection | DefaultTurnOption
     effort?: EffortLevel | null
   }): Promise<{ sessionId: string; userMessageUuid: string }> {
+    if (this.deletingSessions.has(input.sessionId)) throw new SessionDeletingError('Session is being deleted')
     return this.serializeLifecycle(input.sessionId, () => this.startTurnInternal(input))
   }
 
@@ -740,14 +787,17 @@ export class LiveTurnManager {
     effort?: EffortLevel | null
   }): Promise<{ sessionId: string; userMessageUuid: string }> {
     const sessionId = input.sessionId
+    if (this.deletingSessions.has(sessionId)) throw new SessionDeletingError('Session is being deleted')
     if (this.externalOwnershipReader?.(sessionId) != null) throw new SessionExternallyOwnedError('Session is externally owned')
     const runtime = await this.ensureRuntimeInternal({ projectId: input.projectId, sessionId, resume: input.resume, permissionMode: input.permissionMode, model: input.model, effort: input.effort })
+    if (this.deletingSessions.has(sessionId)) throw new SessionDeletingError('Session is being deleted')
     if (runtime.currentUserMessageUuid || runtime.startingTurnToken) throw new SessionTurnInProgressError('Session already has a running generation')
     const startingTurnToken = Symbol('starting-turn')
     runtime.startingTurnToken = startingTurnToken
     this.clearIdleTimer(runtime)
     try {
       await this.alignRuntimeOptions(runtime, input)
+      if (this.deletingSessions.has(sessionId)) throw new SessionDeletingError('Session is being deleted')
       if (this.externalOwnershipReader?.(sessionId) != null) throw new SessionExternallyOwnedError('Session is externally owned')
 
       const userMessageUuid = input.userMessageUuid as NonNullable<SDKUserMessage['uuid']>
@@ -825,6 +875,7 @@ export class LiveTurnManager {
   }): Promise<SessionRuntime> {
     await this.requireProjectDirectory(input.projectId)
     for (;;) {
+      if (this.deletingSessions.has(input.sessionId)) throw new SessionDeletingError('Session is being deleted')
       let runtime = this.runtimes.get(input.sessionId)
       if (runtime && runtime.projectId !== input.projectId) {
         if (runtime.currentUserMessageUuid || runtime.startingTurnToken) throw new SessionProjectMismatchError('Session runtime project mismatch')
@@ -832,7 +883,13 @@ export class LiveTurnManager {
         this.closeRuntime(runtime)
         runtime = undefined
       }
-      runtime ??= this.createRuntime(input, await this.resolveProviderEnv(input.sessionId))
+      if (!runtime) {
+        await this.runtimeCloses.get(input.sessionId)
+        if (this.deletingSessions.has(input.sessionId)) throw new SessionDeletingError('Session is being deleted')
+        const providerEnv = await this.resolveProviderEnv(input.sessionId)
+        if (this.deletingSessions.has(input.sessionId)) throw new SessionDeletingError('Session is being deleted')
+        runtime = this.createRuntime(input, providerEnv)
+      }
       await runtime.ready
       const current = this.runtimes.get(input.sessionId)
       if (current === runtime && !runtime.stale && !runtime.closed) return runtime
@@ -871,7 +928,6 @@ export class LiveTurnManager {
         ...(input.effort ? { effort: input.effort } : {}),
         env: {
           ...process.env,
-          CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
           ...(autoCompactPercent === undefined ? {} : { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(autoCompactPercent) }),
           // Provider env last so it can point the CLI at a gateway (ANTHROPIC_BASE_URL/AUTH_TOKEN). Empty when no provider.
           ...providerEnv,
@@ -999,7 +1055,7 @@ export class LiveTurnManager {
         this.publish(
           runtime,
           cottaLiveTurnFailed({
-            error: 'SDK stream ended before the turn completed.',
+            error: 'Claude Code CLI stream ended before the turn completed.',
             sessionId: runtime.sessionId,
           }),
         )
@@ -1019,8 +1075,8 @@ export class LiveTurnManager {
       }
     } finally {
       runtime.currentUserMessageUuid = null
-      if (runtime.liveBackgroundTasks.length === 0) this.closeRuntime(runtime)
-      else this.scheduleIdleClose(runtime)
+      // Background tasks keep a live stream alive, not a process whose stream has ended.
+      await this.closeRuntime(runtime)
     }
   }
 
@@ -1035,7 +1091,13 @@ export class LiveTurnManager {
   private publish(runtime: SessionRuntime, event: LiveTurnEvent): void {
     this.signalSessionActivity(runtime)
     if (event.type === 'system' && 'subtype' in event && event.subtype === 'background_tasks_changed') {
-      runtime.liveBackgroundTasks = event.tasks.map(({ task_id, task_type, ambient }) => ({ taskId: task_id, taskType: task_type, ...(ambient === undefined ? {} : { ambient }) }))
+      if (!Array.isArray(event.tasks)) throw new Error('Invalid Claude Code background task list.')
+      runtime.liveBackgroundTasks = event.tasks.map((value: unknown) => {
+        const task = record(value)
+        if (!task || typeof task.task_id !== 'string' || typeof task.task_type !== 'string' || (task.ambient !== undefined && typeof task.ambient !== 'boolean'))
+          throw new Error('Invalid Claude Code background task.')
+        return { taskId: task.task_id, taskType: task.task_type, ...(task.ambient === undefined ? {} : { ambient: task.ambient }) }
+      })
       this.scheduleIdleClose(runtime)
       this.signalRuntimeChange(runtime)
     }

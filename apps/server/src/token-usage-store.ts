@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { SDKAssistantMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { TokenUsageDailyResponse, TokenUsageDay, TokenUsageRange, TokenUsageResponse } from '@cotta/shared'
+import type { SDKAssistantMessage } from './claude-cli/types.js'
 import { type ParsedTranscriptLine, readCompleteTranscriptLines } from './session-raw-transcript-cache.js'
 
 type RecordValue = Record<string, unknown>

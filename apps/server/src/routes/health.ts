@@ -1,10 +1,10 @@
 import type { BuildInfoResponse, HealthResponse } from '@cotta/shared'
 import type { Hono } from 'hono'
-import { cottaAgentSdkVersion, cottaGitCommit, cottaVersion } from '../cotta-home.js'
+import { getClaudeCliRuntimeInfo } from '../claude-cli/executable.js'
+import { cottaGitCommit, cottaVersion } from '../cotta-home.js'
 
 const version = cottaVersion()
 const commit = cottaGitCommit()
-const agentSdkVersion = cottaAgentSdkVersion()
 
 export function registerHealthRoute(app: Hono): void {
   // Public (auth bypass): liveness only, no build details.
@@ -15,11 +15,13 @@ export function registerHealthRoute(app: Hono): void {
     }
     return c.json(response)
   })
-  app.get('/api/build-info', (c) => {
+  app.get('/api/build-info', async (c) => {
+    // The executable helper caches its probe, including failures, for this server process.
+    const cli = await getClaudeCliRuntimeInfo().catch(() => null)
     const response: BuildInfoResponse = {
       version,
       commit,
-      agentSdkVersion,
+      claudeCodeCliVersion: cli?.version ?? null,
       uptimeSeconds: Math.floor(process.uptime()),
     }
     return c.json(response)

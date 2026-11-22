@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 import { requestId } from 'hono/request-id'
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici'
 import { type CottaAuth, createAuth, noopAuth } from './auth.js'
+import { forceCloseOwnedClaudeProcesses } from './claude-cli/query.js'
 import { type ClaudeCodeApi, createClaudeCodeApi, projectIdFromPath, projectPathFromId } from './claude-code-api.js'
 import { createClaudeSessionRegistry } from './claude-session-registry.js'
 import { acquireServerLock, assertNoLegacyDatabase, serverUrl, writePidRecord } from './cotta-home.js'
@@ -14,7 +15,7 @@ import { createCottaDatabase } from './database.js'
 import { loadDetailTokenKey } from './detail-token.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
 import { LiveTurnManager } from './live-turn-manager.js'
-import { defaultModelCatalogProvider, modelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
+import { defaultModelCatalogProvider, type ModelCatalogProvider, modelCatalogProvider } from './model-catalog.js'
 import { loadProviderAllowlist, type ModelProvider, registerProviderRoutes, resolveActiveProvider } from './model-provider.js'
 import { ProjectFilesWatcherRegistry } from './project-files-watcher-registry.js'
 import { RawTranscriptCoordinator } from './raw-transcript-coordinator.js'
@@ -98,11 +99,33 @@ type CreateAppInput =
       transcriptIndex: Pick<TranscriptIndexStore, 'getSession' | 'getProject' | 'listProjectsPage' | 'listProjectSessionsPage'>
     })
 
+export function createSessionMutationTarget(input: {
+  transcriptIndex: Pick<TranscriptIndexStore, 'getSession'>
+  syncTranscript: (projectId: string, sessionId: string) => unknown | Promise<unknown>
+}) {
+  return async (projectId: string, sessionId: string): Promise<{ transcriptPath: string } | null> => {
+    try {
+      await input.syncTranscript(projectId, sessionId)
+    } catch (error) {
+      if (error instanceof TranscriptUnavailableError) return null
+      throw error
+    }
+    const session = input.transcriptIndex.getSession(sessionId)
+    if (!session?.isValidSessionId || session.currentProjectId !== projectId || !session.transcriptPath) return null
+    return { transcriptPath: session.transcriptPath }
+  }
+}
+
 export function createApp(input: CreateAppInput): Hono {
   const app = new Hono()
   const indexChangeNotifier = input.indexChangeNotifier ?? (input.claudeCodeApi || input.liveTurnManager ? undefined : new IndexChangeNotifier())
   const rawTranscriptCache = input.rawTranscriptCache
-  const claudeCodeApi = input.claudeCodeApi ? input.claudeCodeApi : createClaudeCodeApi({ transcriptIndex: input.transcriptIndex, timelineVersionProvider: input.timelineVersionReader })
+  const claudeCodeApi =
+    input.claudeCodeApi ??
+    createClaudeCodeApi({
+      transcriptIndex: input.transcriptIndex,
+      ...(input.transcriptSyncer ? { mutationTarget: createSessionMutationTarget({ transcriptIndex: input.transcriptIndex, syncTranscript: input.transcriptSyncer }) } : {}),
+    })
   const liveTurnManager =
     input.liveTurnManager ??
     new LiveTurnManager(
@@ -212,7 +235,7 @@ function resolveWebRoot(): string | undefined {
 }
 
 export async function closeServerResources(input: {
-  liveTurnManager: { closeAll(): void }
+  liveTurnManager: { closeAll(): void | Promise<void> }
   unsubscribeRegistry?: (() => void) | null
   indexChangeNotifier: { close(): void }
   claudeSessionRegistry?: { close(): Promise<void> } | null
@@ -224,7 +247,7 @@ export async function closeServerResources(input: {
   terminalRegistry?: { close(): void }
   remoteBotManager?: { close(): void | Promise<void> }
 }): Promise<void> {
-  input.liveTurnManager.closeAll()
+  await input.liveTurnManager.closeAll()
   input.unsubscribeRegistry?.()
   input.indexChangeNotifier.close()
   input.projectFilesWatcherRegistry?.close()
@@ -244,6 +267,20 @@ export async function closeServerResources(input: {
       input.cottaDb.close()
     }
   }
+}
+
+export function shutdownServer(server: { close(callback: () => void): unknown }, resources: Parameters<typeof closeServerResources>[0]): void {
+  let finished = false
+  const finishShutdown = () => {
+    if (finished) return
+    finished = true
+    clearTimeout(deadline)
+    forceCloseOwnedClaudeProcesses()
+    process.exit(0)
+  }
+  const deadline = setTimeout(finishShutdown, 1000).unref()
+  const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()))
+  void Promise.allSettled([serverClosed, closeServerResources(resources)]).then(finishShutdown)
 }
 
 export function subscribeCliSessionOwnership({
@@ -450,7 +487,10 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
   const claudeCodeApi = createClaudeCodeApi({
     transcriptIndex: rawTranscriptCache.index,
     beforeList: () => rawTranscriptCoordinator.ensureReady(),
-    timelineVersionProvider: timelineVersion,
+    mutationTarget: createSessionMutationTarget({
+      transcriptIndex: rawTranscriptCache.index,
+      syncTranscript: (_projectId, sessionId) => rawTranscriptCache.ensureSessionCachedById(sessionId),
+    }),
   })
   const auth = createAuth({ settingsStore })
   const projectRoutesInput = {
@@ -531,11 +571,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     terminalRegistry,
     remoteBotManager,
   }
-  const shutdown = () => {
-    setTimeout(() => process.exit(0), 1000).unref()
-    const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()))
-    void Promise.allSettled([serverClosed, closeServerResources(resources)]).then(() => process.exit(0))
-  }
+  const shutdown = () => shutdownServer(server, resources)
   process.once('SIGINT', shutdown)
   process.once('SIGTERM', shutdown)
 

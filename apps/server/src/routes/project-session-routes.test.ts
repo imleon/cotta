@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp } from '../index.js'
 import { IndexChangeNotifier } from '../index-change-notifier.js'
 import { ProjectDirectoryUnavailableError, SessionTurnInProgressError } from '../live-turn-manager.js'
+import { TranscriptUnavailableError } from '../session-raw-transcript-cache.js'
 import { createTestApp, memorySettingsStore, memoryTranscriptIndex, memoryTurnOptionsStore, messages, modelCatalog, project, timelineState } from './project-routes-test-helpers.js'
 
 afterEach(() => vi.restoreAllMocks())
@@ -10,6 +11,131 @@ afterEach(() => vi.restoreAllMocks())
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 describe('project session routes', () => {
+  function deletionApp(close: () => Promise<boolean>, remove = vi.fn(async () => true), extra: Partial<Parameters<typeof createApp>[0]> = {}) {
+    return createTestApp({}, messages, {
+      liveTurnManager: {
+        close,
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        runtimeTurnProjection: () => null,
+        clearRuntimeTurnProjection: () => {},
+        startTurn: async () => {
+          throw new Error('not implemented')
+        },
+        acknowledgeCompletedTurn: () => false,
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+      claudeCodeApi: {
+        listProjects: async () => ({ projects: [project], hasMore: false, nextCursor: null }),
+        getProject: async () => project,
+        listProjectSessions: async () => null,
+        deleteSession: remove,
+        renameSession: async () => false,
+        forkSession: async () => null,
+      },
+      ...extra,
+    })
+  }
+
+  const deleteRequest = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmationSessionId: 'session-newest' }) }
+
+  it('waits for runtime exit before touching source files or derived stores', async () => {
+    let finishClose!: (value: boolean) => void
+    const close = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishClose = resolve
+        }),
+    )
+    const remove = vi.fn(async () => true)
+    const syncTranscriptIndex = vi.fn(async () => {})
+    const request = deletionApp(close, remove, { syncTranscriptIndex }).request(`/api/projects/${project.id}/sessions/session-newest/delete`, deleteRequest)
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce())
+    expect(remove).not.toHaveBeenCalled()
+    expect(syncTranscriptIndex).not.toHaveBeenCalled()
+    finishClose(true)
+    expect((await request).status).toBe(200)
+    expect(remove).toHaveBeenCalledOnce()
+    expect(syncTranscriptIndex).toHaveBeenCalledOnce()
+  })
+
+  it('keeps sources and derived data when runtime close fails', async () => {
+    const close = vi.fn(async () => {
+      throw new Error('child did not exit')
+    })
+    const remove = vi.fn(async () => true)
+    const syncTranscriptIndex = vi.fn(async () => {})
+    const response = await deletionApp(close, remove, { syncTranscriptIndex }).request(`/api/projects/${project.id}/sessions/session-newest/delete`, deleteRequest)
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'session_delete_runtime_close_failed' })
+    expect(remove).not.toHaveBeenCalled()
+    expect(syncTranscriptIndex).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { status: 'busy' as const, kind: null },
+    { status: 'waiting' as const, kind: null },
+    { status: 'idle' as const, kind: 'bg' },
+  ])('rejects deletion for active external CLI $status/$kind without closing it', async (metadata) => {
+    const close = vi.fn(async () => true)
+    const remove = vi.fn(async () => true)
+    const response = await deletionApp(close, remove, { claudeSessionRegistry: { cliSessionMetadata: () => ({ ...metadata, hasRunningShell: false, entrypoint: 'cli' }) } }).request(
+      `/api/projects/${project.id}/sessions/session-newest/delete`,
+      deleteRequest,
+    )
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'session_externally_owned' })
+    expect(close).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('does not treat idle CLI metadata as an active writer', async () => {
+    const remove = vi.fn(async () => true)
+    const response = await deletionApp(async () => false, remove, {
+      claudeSessionRegistry: { cliSessionMetadata: () => ({ status: 'idle', kind: null, hasRunningShell: false, entrypoint: 'cli' }) },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/delete`, deleteRequest)
+    expect(response.status).toBe(200)
+    expect(remove).toHaveBeenCalledOnce()
+  })
+
+  it('rechecks external ownership after waiting for runtime exit', async () => {
+    let active = false
+    const remove = vi.fn(async () => true)
+    const response = await deletionApp(
+      async () => {
+        active = true
+        return true
+      },
+      remove,
+      { claudeSessionRegistry: { cliSessionMetadata: () => (active ? { status: 'busy', kind: null, hasRunningShell: false, entrypoint: 'cli' } : null) } },
+    ).request(`/api/projects/${project.id}/sessions/session-newest/delete`, deleteRequest)
+    expect(response.status).toBe(409)
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('does not clean derived stores when source or subagent deletion fails', async () => {
+    const remove = vi.fn(async () => {
+      throw new Error('subagent removal denied')
+    })
+    const syncTranscriptIndex = vi.fn(async () => {})
+    const response = await deletionApp(async () => true, remove, { syncTranscriptIndex }).request(`/api/projects/${project.id}/sessions/session-newest/delete`, deleteRequest)
+    expect(response.status).toBe(500)
+    expect(syncTranscriptIndex).not.toHaveBeenCalled()
+  })
+
+  it('reports derived cleanup failures after source deletion rather than reporting success', async () => {
+    const remove = vi.fn(async () => true)
+    const response = await deletionApp(async () => true, remove, {
+      syncTranscriptIndex: async () => {
+        throw new Error('index cleanup failed')
+      },
+    }).request(`/api/projects/${project.id}/sessions/session-newest/delete`, deleteRequest)
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'session_delete_index_cleanup_failed' })
+    expect(remove).toHaveBeenCalledOnce()
+  })
+
   it('publishes a timeline change and syncs existing runtime after updating session turn options', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(123)
     const turnOptionsStore = memoryTurnOptionsStore({ 'session-newest': { permissionMode: null, model: 'gateway/my-model', effort: 'high' } })
@@ -53,9 +179,6 @@ describe('project session routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -133,9 +256,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     })
 
@@ -195,9 +315,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     })
 
@@ -250,9 +367,6 @@ describe('project session routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -320,9 +434,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       settingsStore: memorySettingsStore({ modelCatalog, defaultPermissionMode: 'plan', defaultModel: 'gateway/my-model', defaultEffort: 'xhigh' }),
       turnOptionsStore: memoryTurnOptionsStore({ '10000000-0000-4000-8000-000000000001': { permissionMode: 'default', model: 'default', effort: 'medium' } }),
@@ -385,9 +496,6 @@ describe('project session routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -523,9 +631,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/sessions/session-newest/turns', {
       method: 'POST',
@@ -646,9 +751,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/sessions/session-newest/turns', {
       method: 'POST',
@@ -720,9 +822,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
     }).request(`/api/projects/${project.id}/sessions`, {
@@ -778,9 +877,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       settingsStore: memorySettingsStore({ modelCatalog, defaultModel: 'gateway/my-model', defaultEffort: 'medium' }),
       turnOptionsStore: memoryTurnOptionsStore({ '10000000-0000-4000-8000-000000000003': { permissionMode: 'default', model: 'missing-model', effort: 'medium' } }),
@@ -828,9 +924,6 @@ describe('project session routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -885,9 +978,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/sessions/session-newest/restart', { method: 'POST' })
 
@@ -936,9 +1026,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/sessions/session-newest/interrupt', { method: 'POST' })
 
@@ -948,8 +1035,8 @@ describe('project session routes', () => {
   })
   it('deletes an existing session after confirming the session id', async () => {
     const calls: string[] = []
-    const closeForExternalOwner = vi.fn(async () => {
-      calls.push('closeForExternalOwner')
+    const close = vi.fn(async () => {
+      calls.push('close')
       return true
     })
     const remove = vi.fn(async () => {
@@ -979,7 +1066,7 @@ describe('project session routes', () => {
         acknowledgeCompletedTurn: () => false,
         interrupt: async () => false,
         subscribe: () => () => {},
-        closeForExternalOwner,
+        close,
         clearRuntimeTurnProjection,
       },
       claudeCodeApi: {
@@ -999,9 +1086,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       syncTranscriptIndex,
       indexChangeNotifier: {
@@ -1017,12 +1101,12 @@ describe('project session routes', () => {
 
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ ok: true })
-    expect(closeForExternalOwner).toHaveBeenCalledWith('session-newest', 'Session was interrupted because it was deleted.', { rebuildAfterCliIdle: false })
+    expect(close).toHaveBeenCalledWith('session-newest')
     expect(remove).toHaveBeenCalledWith(project.id, 'session-newest')
     expect(clearRuntimeTurnProjection).toHaveBeenCalledWith('session-newest')
     expect(syncTranscriptIndex).toHaveBeenCalledWith({ projectId: project.id, sessionId: 'session-newest', kind: 'removed' })
     expect(publishChange).toHaveBeenCalledWith({ projectId: project.id, sessionId: 'session-newest', kind: 'removed' })
-    expect(calls).toEqual(['closeForExternalOwner', 'deleteSession', 'clearRuntimeTurnProjection', 'syncTranscriptIndex', 'publishChange'])
+    expect(calls).toEqual(['close', 'deleteSession', 'clearRuntimeTurnProjection', 'syncTranscriptIndex', 'publishChange'])
   })
 
   it('re-resolves transcript ownership before deleting', async () => {
@@ -1050,9 +1134,6 @@ describe('project session routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -1083,7 +1164,7 @@ describe('project session routes', () => {
         acknowledgeCompletedTurn: () => false,
         interrupt: async () => false,
         subscribe: () => () => {},
-        closeForExternalOwner: async () => true,
+        close: async () => true,
       },
       claudeCodeApi: {
         async listProjects() {
@@ -1102,9 +1183,6 @@ describe('project session routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -1130,7 +1208,7 @@ describe('project session routes', () => {
   })
 
   it('returns 404 when deleting an unknown session before closing runtime', async () => {
-    const closeForExternalOwner = vi.fn(async () => true)
+    const close = vi.fn(async () => true)
     const remove = vi.fn(async () => true)
     const syncTranscriptIndex = vi.fn(async () => {})
     const publishChange = vi.fn()
@@ -1149,7 +1227,7 @@ describe('project session routes', () => {
         acknowledgeCompletedTurn: () => false,
         interrupt: async () => false,
         subscribe: () => () => {},
-        closeForExternalOwner,
+        close,
       },
       claudeCodeApi: {
         async listProjects() {
@@ -1168,9 +1246,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       syncTranscriptIndex,
       indexChangeNotifier: {
@@ -1186,7 +1261,7 @@ describe('project session routes', () => {
 
     expect(response.status).toBe(404)
     expect(await response.json()).toEqual({ error: 'session_not_found' })
-    expect(closeForExternalOwner).not.toHaveBeenCalled()
+    expect(close).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
     expect(syncTranscriptIndex).not.toHaveBeenCalled()
     expect(publishChange).not.toHaveBeenCalled()
@@ -1227,9 +1302,6 @@ describe('project session routes', () => {
         },
         renameSession: rename,
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -1317,9 +1389,6 @@ describe('project session routes', () => {
           async forkSession() {
             return null
           },
-          async getSessionTimelineState() {
-            return null
-          },
         },
         sessionSearchStore: {
           search: () => ({ query: '', results: [], totalSessions: 0, totalMatches: 0, hasMore: false, nextCursor: null }),
@@ -1405,9 +1474,6 @@ describe('project session routes', () => {
           return false
         },
         forkSession: fork,
-        async getSessionTimelineState() {
-          return null
-        },
       },
       syncTranscriptIndex,
       indexChangeNotifier: {
@@ -1463,9 +1529,6 @@ describe('project session routes', () => {
           return false
         },
         forkSession: fork,
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request(`/api/projects/${project.id}/sessions/session-newest/fork`, {
       method: 'POST',
@@ -1539,9 +1602,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return timelineState
-        },
       },
       settingsStore: memorySettingsStore({ modelCatalog }),
       turnOptionsStore: memoryTurnOptionsStore({ 'session-newest': { permissionMode: 'default', model: 'no-effort-model', effort: 'high' } }),
@@ -1603,9 +1663,6 @@ describe('project session routes', () => {
         },
         async forkSession() {
           return null
-        },
-        async getSessionTimelineState() {
-          return timelineState
         },
       },
     }).request('/api/sessions/session-newest/runtime', { method: 'POST' })
@@ -1692,9 +1749,6 @@ describe('project session routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return timelineState
-        },
       },
     }).request('/api/sessions/session-newest/runtime', { method: 'POST' })
 
@@ -1740,9 +1794,6 @@ describe('project session routes', () => {
         },
         async forkSession() {
           return null
-        },
-        async getSessionTimelineState() {
-          return timelineState
         },
       },
       claudeSessionRegistry: {
@@ -1793,9 +1844,6 @@ describe('project session routes', () => {
         },
         async forkSession() {
           return null
-        },
-        async getSessionTimelineState() {
-          return timelineState
         },
       },
       claudeSessionRegistry: {
@@ -1981,6 +2029,52 @@ describe('project session routes', () => {
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({ error: 'invalid_permission_decision' })
     expect(answer).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 when rename, fork, or delete targets a transcript unavailable on disk', async () => {
+    const app = createApp({
+      timelineVersionReader: () => 'timeline-missing',
+      transcriptIndex: memoryTranscriptIndex(),
+      transcriptSyncer: async (_projectId, sessionId) => {
+        throw new TranscriptUnavailableError(sessionId)
+      },
+      liveTurnManager: {
+        ensureRuntime: () => {},
+        sessionRunState: () => null,
+        runtimeTurnProjection: () => null,
+        clearRuntimeTurnProjection: () => {},
+        startTurn: async () => {
+          throw new Error('not implemented')
+        },
+        acknowledgeCompletedTurn: () => false,
+        interrupt: async () => false,
+        subscribe: () => () => {},
+      },
+    })
+
+    const rename = await app.request(`/api/projects/${project.id}/sessions/missing-session/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Renamed' }),
+    })
+    expect(rename.status).toBe(404)
+    expect(await rename.json()).toEqual({ error: 'session_not_found' })
+
+    const fork = await app.request(`/api/projects/${project.id}/sessions/missing-session/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(fork.status).toBe(404)
+    expect(await fork.json()).toEqual({ error: 'session_not_found' })
+
+    const del = await app.request(`/api/projects/${project.id}/sessions/session-newest/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmationSessionId: 'session-newest' }),
+    })
+    expect(del.status).toBe(404)
+    expect(await del.json()).toEqual({ error: 'session_not_found' })
   })
 
   it('returns 404 for stale tool approvals', async () => {

@@ -28,9 +28,9 @@ export async function ensureModelCatalog(store: SettingsStore, provider: ModelCa
       return
     }
     console.error(
-      'Failed to load the model catalog from the Claude Agent SDK on startup. ' +
-        'This usually means the SDK is unauthenticated or the claude binary is unavailable. ' +
-        'Fix SDK access and restart Cotta.',
+      'Failed to load the model catalog from Claude Code CLI on startup. ' +
+        'Check CLI authentication, protocol support, and the claude executable on the service PATH. ' +
+        'Fix CLI access and restart Cotta.',
     )
     throw error
   }

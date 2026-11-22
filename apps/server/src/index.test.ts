@@ -1,15 +1,27 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { type ChildProcess, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildInfoResponseSchema, healthResponseSchema } from '@cotta/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAuth, saveGithubConfig } from './auth.js'
+import { getClaudeCliRuntimeInfo } from './claude-cli/executable.js'
+import { forceCloseOwnedClaudeProcesses } from './claude-cli/query.js'
 import type { ClaudeSessionRegistryChange, CliSessionMetadata } from './claude-session-registry.js'
 import { createCottaDatabase } from './database.js'
-import { closeServerResources, createApp, subscribeCliSessionOwnership } from './index.js'
+import { closeServerResources, createApp, shutdownServer, subscribeCliSessionOwnership } from './index.js'
 import { SqliteSettingsStore } from './settings-store.js'
 import type { TranscriptIndexStore } from './transcript-index-store.js'
 import { TurnOptionsStore } from './turn-options-store.js'
+
+vi.mock('./claude-cli/executable.js', () => ({
+  getClaudeCliRuntimeInfo: vi.fn().mockResolvedValue({ path: '/usr/local/bin/claude', version: '2.1.322' }),
+}))
+
+vi.mock('./claude-cli/query.js', () => ({ forceCloseOwnedClaudeProcesses: vi.fn() }))
 
 function emptyClaudeCodeApi() {
   return {
@@ -29,9 +41,6 @@ function emptyClaudeCodeApi() {
       return false
     },
     async forkSession() {
-      return null
-    },
-    async getSessionTimelineState() {
       return null
     },
   }
@@ -117,7 +126,155 @@ describe('CLI session ownership subscription', () => {
   })
 })
 
+describe('server shutdown', () => {
+  it.skipIf(process.platform !== 'linux')(
+    'reaps isolated CLI and tool processes before the real parent hard exit',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'cotta-shutdown-'))
+      let external: ChildProcess | undefined
+      let parent: ChildProcess | undefined
+      const pids: number[] = []
+      try {
+        const fakeCli = `#!${process.execPath}
+      const {spawn}=require('node:child_process');
+      const tool=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+      process.on('SIGTERM',()=>{});setInterval(()=>{},1000);
+      require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+        const frame=JSON.parse(line);
+        process.stdout.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:{models:[],toolPid:tool.pid}}})+'\\n');
+      });
+    `
+        writeFileSync(join(root, 'claude'), fakeCli, { mode: 0o700 })
+        const parentScript = join(root, 'parent.mjs')
+        writeFileSync(
+          parentScript,
+          `
+      import {query} from ${JSON.stringify(new URL('./claude-cli/query.ts', import.meta.url).href)};
+      import {shutdownServer} from ${JSON.stringify(new URL('./index.ts', import.meta.url).href)};
+      const active=query({prompt:(async function*(){})(),options:{cwd:${JSON.stringify(root)}}});
+      const closing=query({prompt:(async function*(){})(),options:{cwd:${JSON.stringify(root)}}});
+      const catalogs=await Promise.all([active.initializationResult(),closing.initializationResult()]);
+      process.send({pids:[active.pid,closing.pid,...catalogs.map(c=>c.toolPid)]});
+      void closing.close();
+      const close=()=>{};
+      shutdownServer({close}, {
+        liveTurnManager:{closeAll:()=>new Promise(()=>{})},
+        indexChangeNotifier:{close},rawTranscriptCoordinator:{close},turnMetaStore:{close},cottaDb:{close}
+      });
+    `,
+        )
+        const loader = createRequire(import.meta.url).resolve('tsx')
+        external = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', detached: true })
+        const externalPid = external.pid!
+        parent = spawn(process.execPath, ['--import', loader, parentScript], {
+          env: { ...process.env, PATH: `${root}:${process.env.PATH}`, TSX_TSCONFIG_PATH: fileURLToPath(new URL('../tsconfig.dev.json', import.meta.url)) },
+          stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+        })
+        const exited = once(parent, 'exit')
+        let stderr = ''
+        parent.stderr?.on('data', (chunk) => {
+          stderr += chunk.toString()
+        })
+        parent.on('message', (message) => {
+          pids.push(...(message as { pids: number[] }).pids)
+        })
+        expect(await exited, stderr).toEqual([0, null])
+        expect(pids).toHaveLength(4)
+        for (const pid of pids) {
+          await vi.waitFor(() => {
+            try {
+              expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(' ')[2]).toBe('Z')
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            }
+          })
+        }
+        expect(() => process.kill(externalPid, 0)).not.toThrow()
+      } finally {
+        if (parent && parent.exitCode === null && parent.signalCode === null) parent.kill('SIGKILL')
+        external?.kill('SIGKILL')
+        for (const pid of pids.slice(0, 2)) {
+          try {
+            process.kill(-pid, 'SIGKILL')
+          } catch (error) {
+            expect((error as NodeJS.ErrnoException).code).toBe('ESRCH')
+          }
+        }
+        rmSync(root, { recursive: true, force: true })
+      }
+    },
+    15_000,
+  )
+
+  it.each(['deadline', 'graceful'] as const)('synchronously reaps owned CLI processes before %s exit, only once', async (mode) => {
+    vi.useFakeTimers()
+    const calls: string[] = []
+    vi.mocked(forceCloseOwnedClaudeProcesses).mockImplementation(() => {
+      calls.push('kill')
+    })
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      calls.push('exit')
+      return undefined as never
+    })
+    let release!: () => void
+    const resourcesClosed = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const close = vi.fn()
+    try {
+      shutdownServer(
+        { close: (done) => done() },
+        {
+          liveTurnManager: { closeAll: () => resourcesClosed },
+          indexChangeNotifier: { close },
+          rawTranscriptCoordinator: { close },
+          turnMetaStore: { close },
+          cottaDb: { close },
+        },
+      )
+      expect(calls).toEqual([])
+      if (mode === 'deadline') {
+        await vi.advanceTimersByTimeAsync(999)
+        expect(calls).toEqual([])
+        await vi.advanceTimersByTimeAsync(1)
+        expect(calls).toEqual(['kill', 'exit'])
+        expect(close).not.toHaveBeenCalled()
+      }
+      release()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(calls).toEqual(['kill', 'exit'])
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(calls).toEqual(['kill', 'exit'])
+    } finally {
+      release()
+      exit.mockRestore()
+      vi.mocked(forceCloseOwnedClaudeProcesses).mockReset()
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('server resources', () => {
+  it('waits for CLI processes to exit before closing transcript resources', async () => {
+    let release!: () => void
+    const exited = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const close = vi.fn()
+    const closing = closeServerResources({
+      liveTurnManager: { closeAll: () => exited },
+      indexChangeNotifier: { close },
+      rawTranscriptCoordinator: { close },
+      turnMetaStore: { close },
+      cottaDb: { close },
+    })
+    await Promise.resolve()
+    expect(close).not.toHaveBeenCalled()
+    release()
+    await closing
+    expect(close).toHaveBeenCalledTimes(4)
+  })
+
   it('waits for registry close before closing SQLite', async () => {
     const calls: string[] = []
     let resolveRegistry!: () => void
@@ -282,12 +439,22 @@ describe('server routes', () => {
     })
   })
 
-  it('serves build info including the bundled Agent SDK version', async () => {
+  it('serves build info including the system Claude Code CLI version', async () => {
+    const response = await createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing' }).request('/api/build-info')
+    expect(response.status).toBe(200)
+    const payload = await response.json()
+    const info = buildInfoResponseSchema.parse(payload)
+    expect(info.version).toMatch(/\d/)
+    expect(info.claudeCodeCliVersion).toBe('2.1.322')
+    expect(payload).not.toHaveProperty('agentSdkVersion')
+  })
+
+  it('reports an unavailable CLI without inventing a runtime version', async () => {
+    vi.mocked(getClaudeCliRuntimeInfo).mockRejectedValueOnce(new Error('Claude Code CLI not found on PATH'))
     const response = await createApp({ transcriptIndex: emptyTranscriptIndex(), timelineVersionReader: () => 'timeline-missing' }).request('/api/build-info')
     expect(response.status).toBe(200)
     const info = buildInfoResponseSchema.parse(await response.json())
-    expect(info.version).toMatch(/\d/)
-    expect(info.agentSdkVersion).toMatch(/^\d+\.\d+\.\d+/)
+    expect(info.claudeCodeCliVersion).toBeNull()
   })
 
   it('keeps build info behind auth while health stays public', async () => {

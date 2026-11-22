@@ -1,4 +1,3 @@
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   type ModelCatalogResponse,
   type ProjectSummary,
@@ -8,6 +7,7 @@ import {
   type SessionTimelineState,
   timelineLocalCommand,
 } from '@cotta/shared'
+import type { SessionMessage } from '../claude-cli/types.js'
 import { createApp } from '../index.js'
 import { TimelineAnchorStaleError } from '../session-raw-transcript-cache.js'
 import type { TranscriptIndexStore } from '../transcript-index-store.js'
@@ -387,10 +387,6 @@ export function createTestApp(liveStates: Record<string, SessionRunState> = {}, 
       },
       async forkSession() {
         return null
-      },
-      async getSessionTimelineState(projectId, sessionId) {
-        if (projectId !== project.id || sessionId !== 'session-newest') return null
-        return timelineState
       },
     },
     // Sharing/Detail are gated on a configured public base URL; default it on so route tests exercise the happy path.

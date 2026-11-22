@@ -16,8 +16,8 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "dev": "COTTA_DB_PATH=data/cotta.sqlite tsx --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/cli.ts start -f",
-    "dev:watch": "COTTA_DB_PATH=data/cotta.sqlite tsx watch --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED --tsconfig tsconfig.dev.json src/cli.ts start -f",
+    "dev": "COTTA_DB_PATH=data/cotta.sqlite tsx --tsconfig tsconfig.dev.json src/cli.ts start -f",
+    "dev:watch": "COTTA_DB_PATH=data/cotta.sqlite tsx watch --tsconfig tsconfig.dev.json src/cli.ts start -f",
     "build": "tsc -b tsconfig.json",
     "bundle": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -27,7 +27,6 @@
     "prepack": "npm --prefix ../.. run build --workspace @cotta/shared && npm --prefix ../.. run build --workspace @cotta/web && node -e \"const fs=require('node:fs');fs.cpSync('../web/dist','web',{recursive:true});fs.copyFileSync('../../LICENSE','LICENSE')\" && tsup"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.296",
     "@homebridge/node-pty-prebuilt-multiarch": "^0.14.1",
     "@hono/node-server": "^2.1.1",
     "@larksuiteoapi/node-sdk": "^1.74.0",

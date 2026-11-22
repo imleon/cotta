@@ -340,8 +340,9 @@ describe('TurnComposer session selection', () => {
     expect(submission).not.toHaveProperty('turn')
   })
 
-  it('runs the pre-submit navigation before creating a turn', async () => {
+  it('runs pre-submit navigation and records the CLI entrypoint on the optimistic turn', async () => {
     const onBeforeSubmit = vi.fn()
+    const setPendingTurn = vi.fn()
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -362,7 +363,7 @@ describe('TurnComposer session selection', () => {
         latestTurnPhase={null}
         pendingTurnId={null}
         setSelectedSessionId={vi.fn()}
-        setPendingTurn={vi.fn()}
+        setPendingTurn={setPendingTurn}
         refreshSessionLists={vi.fn()}
         onSessionCreated={vi.fn()}
         settings={{
@@ -388,6 +389,7 @@ describe('TurnComposer session selection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Submit' }))
 
     expect(onBeforeSubmit).toHaveBeenCalledOnce()
+    expect(setPendingTurn.mock.calls[0]?.[0]).toMatchObject({ kind: 'turn', turn: { entrypoint: 'cotta', messages: [expect.objectContaining({ entrypoint: 'cotta' })] } })
   })
 
   it('shows only used categories and derives summary values from category kinds', async () => {

@@ -65,9 +65,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/projects?limit=101')
 
@@ -109,9 +106,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -156,9 +150,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -292,9 +283,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       sessionPinStore: { listPins: () => [pin], unpinMany } as never,
     }).request('/api/session-pins')
@@ -343,9 +331,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -399,9 +384,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -496,9 +478,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -769,9 +748,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       syncTranscriptIndex,
       indexChangeNotifier: {
@@ -835,9 +811,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/project-sessions/query', {
       method: 'POST',
@@ -896,9 +869,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -1012,9 +982,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       sessionSearchStore: { updateTitle: () => true, search: () => ({ query: 'x', results: [], totalSessions: 0, totalMatches: 0, hasMore: false, nextCursor: null }) },
       sessionSearchReady: async () => {},
@@ -1062,9 +1029,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -1128,9 +1092,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
       sessionSearchReady: async () => {
         calls.push('ready')
@@ -1188,9 +1149,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },
@@ -1253,9 +1211,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/project-sessions/query', {
       method: 'POST',
@@ -1313,9 +1268,6 @@ describe('project list routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return null
-        },
       },
     }).request('/api/project-sessions/query', {
       method: 'POST',
@@ -1367,9 +1319,6 @@ describe('project list routes', () => {
           return false
         },
         async forkSession() {
-          return null
-        },
-        async getSessionTimelineState() {
           return null
         },
       },

@@ -3,6 +3,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { SessionStatus } from '@cotta/shared'
+import { isOwnedClaudeProcess } from './claude-cli/query.js'
 
 const MAX_SANE_EPOCH_MS = 4_000_000_000_000_000
 const SESSION_FILE = /^(\d+)\.json$/
@@ -10,6 +11,8 @@ const SESSION_FILE = /^(\d+)\.json$/
 type Snapshot = {
   fileName: string
   fileMtimeMs: number
+  ino: number
+  owned: boolean
   rawJson: string
   payload: Record<string, unknown> | null
 }
@@ -18,12 +21,13 @@ export type CliSessionMetadata = {
   status: SessionStatus
   hasRunningShell: boolean
   kind: string | null
-  entrypoint: 'cli'
+  entrypoint: string | null
 }
 
 export type ClaudeSessionRegistryOptions = {
   sessionsDir?: string
   debounceMs?: number
+  isOwnedProcess?: (pid: number) => boolean
 }
 
 export type ClaudeSessionRegistryChangedSession = {
@@ -54,8 +58,12 @@ export function isActiveCliSessionMetadata(metadata: Pick<CliSessionMetadata, 's
   return metadata?.status === 'busy' || metadata?.status === 'waiting' || isBackgroundKind(metadata?.kind ?? null)
 }
 
-function activeSessionId(snapshot: Snapshot | undefined): string | null {
-  if (!snapshot || stringField(snapshot.payload, 'entrypoint') !== 'cli') return null
+function isExternalSnapshot(snapshot: Snapshot, isOwnedProcess: (pid: number) => boolean): boolean {
+  return !(stringField(snapshot.payload, 'entrypoint') === 'cotta' && (snapshot.owned || isOwnedProcess(Number(snapshot.fileName.slice(0, -5)))))
+}
+
+function activeSessionId(snapshot: Snapshot | undefined, isOwnedProcess: (pid: number) => boolean): string | null {
+  if (!snapshot || !isExternalSnapshot(snapshot, isOwnedProcess)) return null
   const sessionId = stringField(snapshot.payload, 'sessionId')
   return isActiveCliSessionMetadata({ status: sessionStatusFromSnapshot(snapshot), kind: stringField(snapshot.payload, 'kind') }) ? sessionId : null
 }
@@ -65,9 +73,9 @@ function sessionStatusFromSnapshot(snapshot: Snapshot | undefined): SessionStatu
   return status === 'busy' || status === 'waiting' ? status : 'idle'
 }
 
-function latestCliSnapshot(snapshots: Iterable<Snapshot>, sessionId: string): Snapshot | undefined {
+function latestCliSnapshot(snapshots: Iterable<Snapshot>, sessionId: string, isOwnedProcess: (pid: number) => boolean): Snapshot | undefined {
   return Array.from(snapshots)
-    .filter((snapshot) => stringField(snapshot.payload, 'sessionId') === sessionId && stringField(snapshot.payload, 'entrypoint') === 'cli')
+    .filter((snapshot) => stringField(snapshot.payload, 'sessionId') === sessionId && isExternalSnapshot(snapshot, isOwnedProcess))
     .sort(
       (left, right) =>
         (saneEpochField(right.payload, 'statusUpdatedAt') ?? saneEpochField(right.payload, 'updatedAt') ?? right.fileMtimeMs) -
@@ -87,6 +95,7 @@ function defaultSessionsDir(): string {
 export class ClaudeSessionRegistry {
   private readonly sessionsDir: string
   private readonly debounceMs: number
+  private readonly isOwnedProcess: (pid: number) => boolean
   private snapshots = new Map<string, Snapshot>()
   private watcher: FSWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -97,6 +106,7 @@ export class ClaudeSessionRegistry {
   constructor(options: ClaudeSessionRegistryOptions = {}) {
     this.sessionsDir = options.sessionsDir ?? defaultSessionsDir()
     this.debounceMs = options.debounceMs ?? 100
+    this.isOwnedProcess = options.isOwnedProcess ?? isOwnedClaudeProcess
   }
 
   async start(): Promise<void> {
@@ -124,15 +134,16 @@ export class ClaudeSessionRegistry {
   }
 
   cliSessionMetadata(sessionId: string): CliSessionMetadata | null {
-    const current = latestCliSnapshot(this.snapshots.values(), sessionId)
+    const current = latestCliSnapshot(this.snapshots.values(), sessionId, this.isOwnedProcess)
     if (!current) return null
+    const entrypoint = stringField(current.payload, 'entrypoint')
     const status = sessionStatusFromSnapshot(current)
     const kind = stringField(current.payload, 'kind')
     return {
       status,
       hasRunningShell: stringField(current.payload, 'status') === 'shell',
       kind,
-      entrypoint: 'cli',
+      entrypoint,
     }
   }
 
@@ -173,14 +184,14 @@ export class ClaudeSessionRegistry {
     for (const snapshot of [...created, ...changed]) {
       const sessionId = addChangedSession(snapshot)
       if (!sessionId) continue
-      const previousActiveSessionId = activeSessionId(this.snapshots.get(snapshot.fileName))
-      const nextActiveSessionId = activeSessionId(snapshot)
+      const previousActiveSessionId = activeSessionId(this.snapshots.get(snapshot.fileName), this.isOwnedProcess)
+      const nextActiveSessionId = activeSessionId(snapshot, this.isOwnedProcess)
       if (previousActiveSessionId && previousActiveSessionId !== nextActiveSessionId) idleSessionIds.add(previousActiveSessionId)
       if (nextActiveSessionId) activeSessionIds.add(nextActiveSessionId)
     }
     for (const snapshot of deleted) {
       addChangedSession(snapshot)
-      const sessionId = activeSessionId(snapshot)
+      const sessionId = activeSessionId(snapshot, this.isOwnedProcess)
       if (sessionId) idleSessionIds.add(sessionId)
     }
     for (const sessionId of activeSessionIds) idleSessionIds.delete(sessionId)
@@ -208,7 +219,10 @@ export class ClaudeSessionRegistry {
             } catch {
               payload = this.snapshots.get(entry.name)?.payload ?? null
             }
-            next.set(entry.name, { fileName: entry.name, fileMtimeMs: metadata.mtimeMs, rawJson, payload })
+            const previous = this.snapshots.get(entry.name)
+            const pid = Number(entry.name.slice(0, -5))
+            const owned = this.isOwnedProcess(pid) || (previous?.owned === true && previous.ino === metadata.ino)
+            next.set(entry.name, { fileName: entry.name, fileMtimeMs: metadata.mtimeMs, ino: metadata.ino, owned, rawJson, payload })
           } catch (error) {
             const code = isRecord(error) && typeof error.code === 'string' ? error.code : null
             if (code !== 'ENOENT') {

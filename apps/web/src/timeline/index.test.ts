@@ -3130,7 +3130,7 @@ describe('timeline response frame grouping', () => {
     expect(html).toContain('group-hover:opacity-100')
   })
 
-  it.each(['cli', 'sdk-ts'])('orders %s footer timestamp before actions and transcript source in the hover group', (entrypoint) => {
+  it.each(['cli', 'sdk-ts', 'sdk-cli', 'cotta', 'other', '', undefined])('orders %s footer timestamp before actions and transcript source in the hover group', (entrypoint) => {
     const html = renderToStaticMarkup(
       createElement(TimelineTimestamp, {
         timeZone: 'Asia/Shanghai',
@@ -3165,8 +3165,9 @@ describe('timeline response frame grouping', () => {
     expect(positions.every((position) => position >= 0)).toBe(true)
     expect(html).toContain('><time')
     expect(html).toContain('data-tooltip="CWD:\n/repo/cotta"')
-    expect(html).toContain(`data-tooltip="${entrypoint.toUpperCase()} Session:\nsession-1"`)
-    expect(html).toContain(`data-icon="${entrypoint === 'cli' ? 'terminal' : 'browser'}"`)
+    expect(html).toContain(`data-tooltip="${(entrypoint || 'cli').toUpperCase()} Session:\nsession-1"`)
+    expect(html).toContain(`data-icon="${entrypoint === 'cotta' ? 'browser' : 'terminal'}"`)
+    expect(html).not.toContain(`data-icon="${entrypoint === 'cotta' ? 'terminal' : 'browser'}"`)
     expect(positions).toEqual([...positions].sort((a, b) => a - b))
     expect(html).toContain('opacity-0')
     expect(html).toContain('group-hover:opacity-100')
@@ -3174,6 +3175,30 @@ describe('timeline response frame grouping', () => {
     expect(html).not.toContain('tracking-')
     expect(html).not.toContain('font-bold')
     expect(html).not.toContain('text-xs')
+  })
+
+  it.each(['cli', 'sdk-ts', 'sdk-cli', 'cotta', 'other', '', undefined])('uses the %s source icon in both main Timeline footers', (entrypoint) => {
+    const primary: TimelineBlock = { id: 'user-1', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'question' } }
+    const assistant: TimelineBlock = { id: 'assistant-1', kind: 'assistant.text', sourceEventIds: ['assistant-1'], data: { text: 'answer' } }
+    const props = { timeZone: 'Asia/Shanghai', sessionId: 'session-1', entrypoint }
+    const footers = [
+      renderToStaticMarkup(createElement(PrimaryInputView, { ...props, blocks: [primary] })),
+      renderToStaticMarkup(
+        createElement(AssistantResponseFrameView, {
+          ...props,
+          item: { type: 'assistant-response-frame', id: 'response-1', items: [{ type: 'block', block: assistant }] },
+          turnBlocks: [primary, assistant],
+          phase: 'settled',
+          source: 'TRANSCRIPT',
+        }),
+      ),
+    ]
+    for (const html of footers) {
+      expect(html).toContain('aria-label="Copy session ID"')
+      expect(html).toContain(`data-tooltip="${(entrypoint || 'cli').toUpperCase()} Session:\nsession-1"`)
+      expect(html).toContain(`data-icon="${entrypoint === 'cotta' ? 'browser' : 'terminal'}"`)
+      expect(html).not.toContain(`data-icon="${entrypoint === 'cotta' ? 'terminal' : 'browser'}"`)
+    }
   })
 
   it('only renders the reserved subagent action when it has a handler', () => {
@@ -3376,7 +3401,7 @@ describe('timeline response frame grouping', () => {
     expect(html.match(/turn-card/g)).toHaveLength(2)
   })
 
-  it('renders subagent metadata without duration or main-session actions', () => {
+  it.each(['cli', 'sdk-ts', 'sdk-cli', 'cotta', 'other', '', undefined])('renders %s subagent metadata without duration or main-session actions', (entrypoint) => {
     const turn = {
       ...userTurn('user-1', [
         { id: 'user-1', kind: 'user.message', sourceEventIds: ['user-1'], data: { text: 'question' } },
@@ -3387,7 +3412,7 @@ describe('timeline response frame grouping', () => {
       responseCwd: '/repo/response',
       durationMs: 2_000,
       durationTimestampMs: 3_000,
-      entrypoint: 'sdk-ts',
+      entrypoint,
     }
     const html = renderToStaticMarkup(
       createElement(SubagentsDialog, {
@@ -3413,6 +3438,9 @@ describe('timeline response frame grouping', () => {
     expect(html).toContain('data-tooltip="CWD:\n/repo/response"')
     expect(html.match(/data-tooltip="Subagent ID:\nagent-1"/g)).toHaveLength(2)
     expect(html.match(/aria-label="Copy Subagent ID"/g)).toHaveLength(2)
+    expect(html.match(new RegExp(`data-icon="${entrypoint === 'cotta' ? 'browser' : 'terminal'}"`, 'g'))).toHaveLength(2)
+    expect(html).not.toContain(`data-icon="${entrypoint === 'cotta' ? 'terminal' : 'browser'}"`)
+    expect(html).not.toContain(' Session:')
     expect(html).not.toContain(' for 2s')
     expect(html).not.toContain('>TRANSCRIPT<')
     expect(html).not.toContain('data-tooltip="Trace"')

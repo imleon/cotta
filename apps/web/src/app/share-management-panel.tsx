@@ -56,7 +56,7 @@ function ShareRow({ share, onRevoked, onOpenTurn }: { share: ShareSummary; onRev
               </>
             ) : null}
             <span className="share-row-title">{share.sessionTitle || share.promptPreview || share.turnId}</span>
-            {share.entrypoint === 'cli' ? <span className="share-row-source">CLI</span> : null}
+            {share.entrypoint !== 'cotta' ? <span className="share-row-source">External</span> : null}
           </span>
           {subtitle ? (
             <span className="share-row-sub" title={subtitle}>

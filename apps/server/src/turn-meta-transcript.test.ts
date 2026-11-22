@@ -204,10 +204,8 @@ describe('TurnMetaTranscriptStore', () => {
 
     vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 0, 1, 0, 0, 2))
     store.recordLiveResult(projectIdFromPath('/repo'), 'session', 'sdk-user', { type: 'result', uuid: 'result', subtype: 'success', is_error: false, duration_ms: 123 } as never)
-    expect(store.loadTimelineMetadata(projectIdFromPath('/repo'), 'session').turnMetadata.get('sdk-user')).toMatchObject({
-      durationMs: 123,
-      durationTimestampMs: Date.UTC(2026, 0, 1, 0, 0, 2),
-    })
+    expect(store.loadTimelineMetadata(projectIdFromPath('/repo'), 'session').turnMetadata.get('sdk-user')).toMatchObject({ durationMs: 123 })
+    expect(store.loadTimelineMetadata(projectIdFromPath('/repo'), 'session').turnMetadata.get('sdk-user')).not.toHaveProperty('durationTimestampMs')
 
     vi.restoreAllMocks()
     await appendFile(path, jsonl(duration('session', 'duration', 'assistant', 42)))
@@ -218,9 +216,9 @@ describe('TurnMetaTranscriptStore', () => {
     })
   })
 
-  it('uses live result duration and SDK timestamp until transcript duration arrives', async () => {
+  it.each(['cotta', 'cli', 'sdk-ts', 'sdk-cli', 'unknown', '', undefined])('keeps live duration for source %s but uses its recorded timestamp only for cotta', async (entrypoint) => {
     const { projectDir, store } = await setup()
-    await writeFile(join(projectDir, 'session.jsonl'), jsonl({ ...primary('session', 'sdk-user'), entrypoint: 'sdk-ts' }, primary('session', 'cli-user')))
+    await writeFile(join(projectDir, 'session.jsonl'), jsonl({ ...primary('session', 'sdk-user'), entrypoint }, primary('session', 'cli-user')))
     await sync()
     const before = store.timelineVersion(projectIdFromPath('/repo'), 'session', 'base')
     const recordedAtMs = Date.now() + 1_000
@@ -246,7 +244,11 @@ describe('TurnMetaTranscriptStore', () => {
     } as never)
 
     const liveMetadata = store.loadTimelineMetadata(projectIdFromPath('/repo'), 'session').turnMetadata
-    expect(liveMetadata.get('sdk-user')).toMatchObject({ durationMs: 123, durationTimestampMs: recordedAtMs })
+    expect(liveMetadata.get('sdk-user')).toMatchObject({ durationMs: 123 })
+    if (entrypoint === undefined) expect(liveMetadata.get('sdk-user')).not.toHaveProperty('entrypoint')
+    else expect(liveMetadata.get('sdk-user')).toHaveProperty('entrypoint', entrypoint)
+    if (entrypoint === 'cotta') expect(liveMetadata.get('sdk-user')).toHaveProperty('durationTimestampMs', recordedAtMs)
+    else expect(liveMetadata.get('sdk-user')).not.toHaveProperty('durationTimestampMs')
     expect(liveMetadata.get('cli-user')).toMatchObject({ durationMs: 456 })
     expect(liveMetadata.get('cli-user')).not.toHaveProperty('durationTimestampMs')
     expect(store.timelineVersion(projectIdFromPath('/repo'), 'session', 'base')).not.toBe(before)

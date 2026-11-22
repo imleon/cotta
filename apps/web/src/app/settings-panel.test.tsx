@@ -33,6 +33,28 @@ const baseSettings = {
 }
 
 describe('SettingsPanel', () => {
+  it.each<[string | null, string]>([
+    ['2.1.322', 'Claude Code CLI version 2.1.322'],
+    [null, 'Claude Code CLI unavailable'],
+  ])('shows the detected CLI runtime version %s in build info', async (claudeCodeCliVersion, label) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) =>
+        Promise.resolve(
+          new Response(JSON.stringify(url === '/api/build-info' ? { version: '0.1.1', commit: null, claudeCodeCliVersion, uptimeSeconds: 60 } : { providers: [], activeId: null }), { status: 200 }),
+        ),
+      ),
+    )
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SettingsPanel settings={baseSettings} authSession={authedSession} onLogout={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    const version = await screen.findByText(label)
+    expect(version.closest('footer')?.className).toBe('settings-build-info')
+    expect(screen.queryByText(/Claude Agent SDK/)).toBeNull()
+  })
+
   it('always shows the model backend dropdown with Claude Code CLI when no providers are advertised', async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url === '/api/providers') return Promise.resolve(new Response(JSON.stringify({ providers: [], activeId: null }), { status: 200 }))

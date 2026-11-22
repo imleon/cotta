@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto'
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { type ProjectSessionsResponse, type SessionTimelineResponse, turnCookingLabel } from '@cotta/shared'
 import type { Nodes } from 'mdast'
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import { describe, expect, it } from 'vitest'
+import type { SessionMessage } from './claude-cli/types.js'
 import { decodeDetailToken } from './detail-token.js'
 import { decodeLarkCardAction } from './lark-card-action.js'
 import { LARK_CARD_MAX_BYTES, LARK_CARD_MAX_ELEMENTS, projectLarkResultCard, projectLarkSessionCard, projectLarkTurnCard, projectLarkTurnMessages } from './lark-card-projection.js'
@@ -19,7 +19,7 @@ function sdkMessage(type: 'user' | 'assistant', uuid: string, content: unknown[]
 function timeline(messages: SessionMessage[]): SessionTimelineResponse {
   return {
     sessionId: 'session',
-    turns: [{ primaryUserUuid: 'turn', primaryUserTimestampMs: Date.parse('2026-09-29T17:06:00.000Z'), entrypoint: 'sdk-ts', messages }],
+    turns: [{ primaryUserUuid: 'turn', primaryUserTimestampMs: Date.parse('2026-09-29T17:06:00.000Z'), entrypoint: 'cotta', messages }],
     runtimeTurnProjection: null,
     turnOptions: { permissionMode: null, model: null, effort: null },
     contextUsage: null,
@@ -115,12 +115,15 @@ describe('Lark card projection', () => {
     })
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(LARK_CARD_MAX_BYTES)
     expect((json.match(/"tag":/g) ?? []).length).toBeLessThanOrEqual(LARK_CARD_MAX_ELEMENTS)
+  })
 
-    response.turns[response.turns.length - 1] = { primaryUserUuid: 'turn', messages }
-    expect(projectLarkTurnCard(session, '项目', response, identity, 'Asia/Shanghai').card.header).not.toHaveProperty('text_tag_list')
-
-    response.turns[response.turns.length - 1] = { primaryUserUuid: 'turn', entrypoint: 'cli', messages }
-    expect(projectLarkTurnCard(session, '项目', response, identity, 'Asia/Shanghai').card.header).toMatchObject({ text_tag_list: [{ text: { content: 'CLI' } }] })
+  it.each(['cotta', 'cli', 'sdk-ts', 'sdk-cli', 'unknown', '', undefined])('labels source %s without changing the blue Turn header', (entrypoint) => {
+    const response = timeline([])
+    response.turns[0] = { primaryUserUuid: 'turn', ...(entrypoint !== undefined ? { entrypoint } : {}), messages: [] }
+    const header = projectLarkTurnCard(session, '项目', response, identity, 'Asia/Shanghai').card.header
+    expect(header).toMatchObject({ template: 'blue' })
+    if (entrypoint === 'cotta') expect(header).not.toHaveProperty('text_tag_list')
+    else expect(header).toHaveProperty('text_tag_list', [{ tag: 'text_tag', text: { tag: 'plain_text', content: 'External' }, color: 'blue' }])
   })
 
   it('aggregates consecutive Lark activity with reliable thinking duration and literal text quotes', () => {

@@ -154,6 +154,7 @@ describe('LarkRemoteService', () => {
       title: { tag: 'plain_text', content: sessions[0]?.title },
       icon: { tag: 'standard_icon', token: 'submit-feedback_outlined' },
       subtitle: { tag: 'plain_text', content: project.name },
+      text_tag_list: [{ tag: 'text_tag', text: { tag: 'plain_text', content: 'External' }, color: 'blue' }],
     })
     const selectedList = opened.callback?.card?.data as { body: { elements: Array<{ tag: string; background_style?: string }> } } | undefined
     expect(selectedList?.body.elements.find(({ tag }) => tag === 'interactive_container')?.background_style).toBe('session-item-selected')

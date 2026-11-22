@@ -767,7 +767,7 @@ export function TimelineTimestamp({
         >
           {copyStatus?.target === 'session' && copyStatus.label === 'Copied' ? (
             copiedIcon
-          ) : !entrypoint || entrypoint === 'cli' ? (
+          ) : entrypoint !== 'cotta' ? (
             <svg
               data-icon="terminal"
               viewBox="0 0 24 24"

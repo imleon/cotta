@@ -88,7 +88,7 @@ export type HealthResponse = z.infer<typeof healthResponseSchema>
 export const buildInfoResponseSchema = z.object({
   version: z.string(),
   commit: z.string().nullable(),
-  agentSdkVersion: z.string().nullable(),
+  claudeCodeCliVersion: z.string().nullable(),
   uptimeSeconds: z.number(),
 })
 

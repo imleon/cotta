@@ -1,5 +1,4 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   type EffortLevel,
   effortLevelSchema,
@@ -10,6 +9,7 @@ import {
   type TurnSummary,
   timelineLocalCommand,
 } from '@cotta/shared'
+import type { SDKMessage } from './claude-cli/types.js'
 import { projectIdFromPath } from './claude-code-api.js'
 import type { SettingsStore } from './settings-store.js'
 import { TranscriptIndexStore } from './transcript-index-store.js'
@@ -438,7 +438,7 @@ export class TurnMetaTranscriptStore {
       if (turnMetadata.has(row.primary_user_uuid)) continue
       const liveResult = liveResults.get(row.primary_user_uuid)
       const durationMs = row.duration_ms ?? liveResult?.durationMs
-      const durationTimestampMs = row.duration_timestamp_ms ?? (row.primary_entrypoint === 'sdk-ts' ? liveResult?.recordedAtMs : undefined)
+      const durationTimestampMs = row.duration_timestamp_ms ?? (row.primary_entrypoint === 'cotta' ? liveResult?.recordedAtMs : undefined)
       turnMetadata.set(row.primary_user_uuid, {
         ...(durationMs !== undefined ? { durationMs } : {}),
         ...(durationTimestampMs !== undefined ? { durationTimestampMs } : {}),

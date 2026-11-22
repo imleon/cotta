@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises'
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { isPrimaryTimelineUserMessage, type TurnSummary } from '@cotta/shared'
+import type { SessionMessage } from './claude-cli/types.js'
 import { readCompleteTranscriptLines } from './session-raw-transcript-cache.js'
 import { projectSessionTimeline } from './timeline-projection.js'
 import { materializeTranscriptTurnOwnership } from './transcript-turn-ownership.js'

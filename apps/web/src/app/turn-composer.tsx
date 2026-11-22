@@ -113,13 +113,13 @@ function pendingSubmission(projectId: string, text: string, images: ComposerImag
     turn: {
       primaryUserUuid: userMessageUuid,
       primaryUserTimestampMs: Date.parse(timestamp),
-      entrypoint: 'sdk-ts',
+      entrypoint: 'cotta',
       messages: [
         {
           type: 'user',
           message: { role: 'user', content: buildComposerMessageContent(text, images) },
           parent_tool_use_id: null,
-          entrypoint: 'sdk-ts',
+          entrypoint: 'cotta',
           uuid: userMessageUuid,
           session_id: sessionId,
           timestamp,

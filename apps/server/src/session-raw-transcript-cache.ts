@@ -2,9 +2,10 @@ import { open, readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
-import { isPrimaryTimelineUserMessage, type SessionRawTranscriptLine, timelineLocalCommand, timelineToolUseResult } from '@cotta/shared'
+import { type SessionRawTranscriptLine, timelineLocalCommand, timelineToolUseResult } from '@cotta/shared'
+import type { SessionMessage } from './claude-cli/types.js'
 import { nextOwnerCwd, normalizeProjectPath, projectIdFromPath, projectTranscriptDirName } from './project-path.js'
+import { extractPromptCandidate } from './session-prompt-title.js'
 import { SessionSearchStore } from './session-search-store.js'
 import type { SessionSubagentStore } from './session-subagent-store.js'
 import type { TokenUsageStore } from './token-usage-store.js'
@@ -43,7 +44,6 @@ export class TimelineAnchorStaleError extends Error {
     super(`timeline ${kind} stale`)
   }
 }
-type PromptExtraction = { firstPrompt?: string; commandFallback?: string; locked?: boolean }
 export type ParsedTranscriptLine = {
   offset: number
   byteLength: number
@@ -59,47 +59,6 @@ function timestampMs(value: unknown): number | null {
   if (typeof value !== 'string') return null
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : null
-}
-
-const requestMarkup = /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/
-const commandName = /<command-name>(.*?)<\/command-name>/
-const bashInput = /<bash-input>([\s\S]*?)<\/bash-input>/
-
-function truncatePrompt(text: string): string {
-  return text.length > 200 ? `${text.slice(0, 200).trim()}…` : text
-}
-
-function extractPromptCandidate(value: JsonRecord, currentCommandFallback: string | null): PromptExtraction {
-  if (value.type !== 'user' || value.isMeta === true || value.isCompactSummary === true || !isPrimaryTimelineUserMessage(value)) return {}
-  const message = isRecord(value.message) ? value.message : null
-  const content = message?.content
-  const texts: string[] = []
-  let hasImage = false
-  if (typeof content === 'string') texts.push(content)
-  else if (Array.isArray(content)) {
-    for (const block of content) {
-      if (!isRecord(block)) continue
-      if (block.type === 'tool_result') return {}
-      if (block.type === 'image') hasImage = true
-      if (block.type === 'text' && typeof block.text === 'string') texts.push(block.text)
-    }
-  }
-  let commandFallback: string | undefined
-  for (const raw of texts) {
-    const text = raw.replaceAll('\n', ' ').trim()
-    if (!text) continue
-    const command = commandName.exec(text)
-    if (command) {
-      if (!currentCommandFallback && !commandFallback) commandFallback = command[1]
-      continue
-    }
-    const bash = bashInput.exec(text)
-    if (bash) return { firstPrompt: `! ${bash[1].trim()}`, commandFallback, locked: true }
-    if (requestMarkup.test(text)) continue
-    return { firstPrompt: truncatePrompt(text), commandFallback, locked: true }
-  }
-  if (hasImage) return { firstPrompt: 'Image prompt', commandFallback, locked: true }
-  return commandFallback ? { commandFallback } : {}
 }
 
 const rawLineColumns =

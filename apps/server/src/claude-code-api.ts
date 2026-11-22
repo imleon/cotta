@@ -1,7 +1,7 @@
-import { getSessionInfo, type SDKSessionInfo, deleteSession as sdkDeleteSession, forkSession as sdkForkSession, renameSession as sdkRenameSession } from '@anthropic-ai/claude-agent-sdk'
-import type { ProjectSummary, SessionSummary, SessionTimelineState } from '@cotta/shared'
+import type { ProjectSummary, SessionSummary } from '@cotta/shared'
 import { createKeysetListCursor, resolveKeysetListCursor } from './list-cursor.js'
 import { normalizeProjectPath, projectIdFromPath, projectPathFromId } from './project-path.js'
+import { deleteSessionTranscript, forkSessionTranscript, renameSessionTranscript, type SessionMutationOperation, type SessionMutationTarget } from './session-transcript-mutations.js'
 import type { IndexedProject, IndexedSession, TranscriptIndexStore } from './transcript-index-store.js'
 
 export { projectIdFromPath, projectPathFromId }
@@ -44,15 +44,6 @@ export function projectDisplayMetadataFromPath(path: string): Pick<ProjectSummar
   return { name: projectNameFromPath(basePath), worktreeName }
 }
 
-function isExactProjectPath(projectPath: string, sessionPath: string | undefined): boolean {
-  return !!sessionPath && normalizeProjectPath(sessionPath) === normalizeProjectPath(projectPath)
-}
-
-async function getExactProjectSession(projectPath: string, sessionId: string): Promise<SDKSessionInfo | null> {
-  const session = await getSessionInfo(sessionId, { dir: projectPath })
-  return session && isExactProjectPath(projectPath, session.cwd) ? session : null
-}
-
 function toProjectSummary(project: IndexedProject): ProjectSummary {
   return {
     id: project.projectId,
@@ -77,22 +68,6 @@ export function toSessionSummary(session: IndexedSession): SessionSummary {
   }
 }
 
-export function sessionTimelineSignature(session: SDKSessionInfo): string {
-  return [`mtime=${session.lastModified}`, `size=${session.fileSize ?? 'unknown'}`].join(';')
-}
-
-export function sessionTimelineVersion(session: SDKSessionInfo): string {
-  return `timeline-state-v1:${sessionTimelineSignature(session)}`
-}
-
-function toSessionTimelineState(session: SDKSessionInfo, version: string): SessionTimelineState {
-  return {
-    sessionId: session.sessionId,
-    version,
-    fileSize: session.fileSize,
-  }
-}
-
 export type ProjectSessionsOptions = {
   limit?: number
   cursor?: string | null
@@ -106,12 +81,10 @@ export type ProjectSessions = {
   nextCursor: string | null
 }
 
-export type TimelineVersionProvider = (projectId: string, sessionId: string, baseVersion: string) => string | Promise<string>
-
 export type ClaudeCodeApiOptions = {
   transcriptIndex?: Pick<TranscriptIndexStore, 'getProject' | 'listProjectsPage' | 'listProjectSessionsPage'>
   beforeList?: () => Promise<void>
-  timelineVersionProvider?: TimelineVersionProvider
+  mutationTarget?: (projectId: string, sessionId: string, operation: SessionMutationOperation) => Promise<SessionMutationTarget | null>
 }
 
 export type ClaudeCodeApi = {
@@ -121,20 +94,17 @@ export type ClaudeCodeApi = {
   renameSession(projectId: string, sessionId: string, title: string): Promise<boolean>
   forkSession(projectId: string, sessionId: string, upToMessageId?: string): Promise<string | null>
   deleteSession(projectId: string, sessionId: string): Promise<boolean>
-  getSessionTimelineState(projectId: string, sessionId: string): Promise<SessionTimelineState | null>
+}
+
+function isEnoent(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT'
 }
 
 export function createClaudeCodeApi(options: ClaudeCodeApiOptions = {}): ClaudeCodeApi {
-  const timelineVersionFromBase = async (projectId: string, sessionId: string, baseVersion: string) => {
-    try {
-      return (await options.timelineVersionProvider?.(projectId, sessionId, baseVersion)) ?? baseVersion
-    } catch (error) {
-      console.error('timeline-version-provider failed', error)
-      return baseVersion
-    }
+  const mutationTarget = (projectId: string, sessionId: string, operation: SessionMutationOperation) => {
+    if (!options.mutationTarget) throw new Error('Session transcript mutations are not configured')
+    return options.mutationTarget(projectId, sessionId, operation)
   }
-
-  const timelineVersion = (projectId: string, session: SDKSessionInfo) => timelineVersionFromBase(projectId, session.sessionId, sessionTimelineVersion(session))
 
   return {
     async listProjects(listOptions = {}) {
@@ -172,38 +142,38 @@ export function createClaudeCodeApi(options: ClaudeCodeApiOptions = {}): ClaudeC
     },
 
     async renameSession(projectId, sessionId, title) {
-      const projectPath = projectPathFromId(projectId)
-      if (!projectPath) return false
-      const session = await getExactProjectSession(projectPath, sessionId)
-      if (!session) return false
-      await sdkRenameSession(sessionId, title, { dir: projectPath })
+      const target = await mutationTarget(projectId, sessionId, 'rename')
+      if (!target) return false
+      try {
+        await renameSessionTranscript(target, sessionId, title)
+      } catch (error) {
+        if (isEnoent(error)) return false
+        throw error
+      }
       return true
     },
 
     async forkSession(projectId, sessionId, upToMessageId) {
-      const projectPath = projectPathFromId(projectId)
-      if (!projectPath) return null
-      const session = await getExactProjectSession(projectPath, sessionId)
-      if (!session) return null
-      const result = await sdkForkSession(sessionId, { dir: projectPath, ...(upToMessageId ? { upToMessageId } : {}) })
-      return result.sessionId
+      const target = await mutationTarget(projectId, sessionId, 'fork')
+      if (!target) return null
+      try {
+        return await forkSessionTranscript(target, sessionId, upToMessageId)
+      } catch (error) {
+        if (isEnoent(error)) return null
+        throw error
+      }
     },
 
     async deleteSession(projectId, sessionId) {
-      const projectPath = projectPathFromId(projectId)
-      if (!projectPath) return false
-      const session = await getExactProjectSession(projectPath, sessionId)
-      if (!session) return false
-      await sdkDeleteSession(sessionId, { dir: projectPath })
+      const target = await mutationTarget(projectId, sessionId, 'delete')
+      if (!target) return false
+      try {
+        await deleteSessionTranscript(target, sessionId)
+      } catch (error) {
+        if (isEnoent(error)) return false
+        throw error
+      }
       return true
-    },
-
-    async getSessionTimelineState(projectId, sessionId) {
-      const projectPath = projectPathFromId(projectId)
-      if (!projectPath) return null
-      const session = await getExactProjectSession(projectPath, sessionId)
-      if (!session) return null
-      return toSessionTimelineState(session, await timelineVersion(projectId, session))
     },
   }
 }

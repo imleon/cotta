@@ -1,4 +1,3 @@
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   approvalDescription,
   approvalTitle,
@@ -19,6 +18,7 @@ import {
   turnDurationLabel,
   turnPendingAgentLabel,
 } from '@cotta/shared'
+import type { SessionMessage } from './claude-cli/types.js'
 import { encodeDetailToken } from './detail-token.js'
 import { encodeLarkCardAction, type LarkCardAction } from './lark-card-action.js'
 import { splitLarkMarkdown } from './lark-markdown.js'
@@ -322,7 +322,7 @@ function activitySummary(activity: LarkActivity, active: boolean): string {
   return `> ${summary.charAt(0).toUpperCase()}${summary.slice(1)}`
 }
 
-/** Projects official Agent SDK SessionMessage transcript records into a compact, read-only summary. */
+/** Projects Claude Code transcript records into a compact, read-only summary. */
 export function projectLarkTurnMessages(messages: SessionMessage[], primaryUserUuid: string, active = false): { primary: string[]; replies: LarkTurnReply[] } {
   const primary: string[] = []
   const replies: LarkTurnReply[] = []
@@ -618,7 +618,7 @@ export function projectLarkTurnCard(
 ): { card: LarkCard; atLimit: boolean } {
   const turn = response.turns.at(-1)
   const title = session.title
-  const source = turn?.entrypoint === 'cli' ? 'CLI' : undefined
+  const source = turn?.entrypoint === 'cotta' ? undefined : 'External'
   const latest = navigation?.nextTurnId == null
   const active = latest && turn !== undefined && !hasTerminalEvidence(turn) && effectiveActiveTurnId(response.activity, turn) === turn.primaryUserUuid
   if (!turn) {

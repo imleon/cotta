@@ -174,10 +174,11 @@ describe('ensureModelCatalog', () => {
     try {
       const store = new SqliteSettingsStore(db)
       const provider = vi.fn(async () => {
-        throw new Error('sdk unavailable')
+        throw new Error('CLI unavailable')
       })
-      await expect(ensureModelCatalog(store, provider, { required: true })).rejects.toThrow('sdk unavailable')
-      expect(error).toHaveBeenCalledWith(expect.stringContaining('model catalog'))
+      await expect(ensureModelCatalog(store, provider, { required: true })).rejects.toThrow('CLI unavailable')
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('Claude Code CLI'))
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('service PATH'))
       expect(store.getAll('global').modelCatalog).toBeUndefined()
     } finally {
       error.mockRestore()
@@ -191,7 +192,7 @@ describe('ensureModelCatalog', () => {
     try {
       const store = new SqliteSettingsStore(db)
       const provider = vi.fn(async () => {
-        throw new Error('sdk unavailable')
+        throw new Error('CLI unavailable')
       })
       await expect(ensureModelCatalog(store, provider, { required: false })).resolves.toBeUndefined()
       expect(warn).toHaveBeenCalled()

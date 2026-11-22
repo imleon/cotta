@@ -5,7 +5,7 @@ const { queryMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
 }))
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+vi.mock('./claude-cli/query.js', () => ({
   query: queryMock,
 }))
 
@@ -20,6 +20,25 @@ describe('defaultModelCatalogProvider', () => {
       initializationResult: vi.fn(async () => catalog),
       close: vi.fn(),
     }))
+  })
+
+  it('preserves the complete initialize result and awaits child exit', async () => {
+    let finishClose!: () => void
+    const closing = new Promise<void>((resolve) => {
+      finishClose = resolve
+    })
+    const result = { ...catalog, commands: [{ name: 'native' }], extra: { capability: true } }
+    const close = vi.fn(() => closing)
+    queryMock.mockReturnValueOnce({ initializationResult: async () => result, close })
+    let settled = false
+    const response = defaultModelCatalogProvider('/tmp/project').then((value) => {
+      settled = true
+      return value
+    })
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce())
+    expect(settled).toBe(false)
+    finishClose()
+    await expect(response).resolves.toBe(result)
   })
 
   it('queries every call without caching', async () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { AskUserQuestionDecisionRequest, ProjectSummary, SessionSummary, SessionTimelineResponse, ToolApprovalDecisionRequest, ToolApprovalRequest } from '@cotta/shared'
+import type { SessionMessage } from './claude-cli/types.js'
 import { decodeLarkCardAction, type LarkCardAction } from './lark-card-action.js'
 import { askUserQuestionList, type LarkTurnReply, projectLarkResultCard, projectLarkSessionCard, projectLarkTurnCard, projectLarkTurnMessages, type QuestionNav } from './lark-card-projection.js'
 import type { LarkCardActionEvent, LarkCardActionResponse, LarkMenuEvent, LarkMessageEvent } from './lark-sdk-adapter.js'

@@ -1,5 +1,5 @@
-import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest'
+import type { SessionMessage } from './claude-cli/types.js'
 import { projectSessionTimeline } from './timeline-projection.js'
 
 function message(type: 'user' | 'assistant', uuid: string, extra: Record<string, unknown> = {}): SessionMessage {

@@ -1,24 +1,31 @@
-import type { Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Query, SDKMessage, SDKUserMessage } from './claude-cli/types.js'
 
 const { queryMock, statMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   statMock: vi.fn().mockResolvedValue({ isDirectory: () => true }),
 }))
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+vi.mock('./claude-cli/query.js', () => ({
   query: queryMock,
 }))
 vi.mock('node:fs/promises', () => ({ stat: statMock }))
 
-import { type LiveTurnEvent, LiveTurnManager, ProjectDirectoryUnavailableError, SessionExternallyOwnedError, SessionProjectMismatchError, SessionTurnInProgressError } from './live-turn-manager.js'
+import {
+  type LiveTurnEvent,
+  LiveTurnManager,
+  ProjectDirectoryUnavailableError,
+  SessionDeletingError,
+  SessionExternallyOwnedError,
+  SessionProjectMismatchError,
+  SessionTurnInProgressError,
+} from './live-turn-manager.js'
 
 function queryFromGenerator(generator: AsyncGenerator<SDKMessage>, overrides: Partial<Query> = {}): Query {
   return Object.assign(generator, {
     close: vi.fn(),
     interrupt: vi.fn(),
     setPermissionMode: vi.fn(),
-    setModel: vi.fn(),
     applyFlagSettings: vi.fn(),
     initializationResult: vi.fn().mockResolvedValue({}),
     getContextUsage: vi.fn().mockResolvedValue({ categories: [], totalTokens: 0, maxTokens: 200_000, percentage: 0 }),
@@ -167,6 +174,29 @@ describe('LiveTurnManager', () => {
 
   afterEach(() => vi.restoreAllMocks())
 
+  it('submits user messages with the cotta entrypoint', async () => {
+    const messages: SDKUserMessage[] = []
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+      queryFromGenerator(
+        (async function* () {
+          for await (const message of prompt) {
+            messages.push(message)
+            yield { type: 'result', subtype: 'success', user_message_uuid: message.uuid } as unknown as SDKMessage
+          }
+        })(),
+      ),
+    )
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    try {
+      await manager.startTurn({ projectId, sessionId: 'session-1', resume: false, text: 'hello', userMessageUuid: 'user-1', permissionMode: 'default' })
+      await vi.waitFor(() => expect(messages).toHaveLength(1))
+      expect(messages[0]).toMatchObject({ entrypoint: 'cotta', uuid: 'user-1', session_id: 'session-1', message: { role: 'user', content: 'hello' } })
+    } finally {
+      await manager.closeAll()
+    }
+  })
+
   it('returns the SDK initialization result after ensuring runtime', async () => {
     const initializationResult = { models: [{ value: 'model-a' }], raw: { source: 'sdk' } }
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
@@ -264,11 +294,49 @@ describe('LiveTurnManager', () => {
     manager.closeAll()
   })
 
+  it('awaits actual child exit before close resolves and before replacing the writer', async () => {
+    let finishClose!: () => void
+    const exited = new Promise<void>((resolve) => {
+      finishClose = resolve
+    })
+    const close = vi.fn(() => exited)
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close }))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+    let closed = false
+    const closing = manager.close('session-1').then((value) => {
+      closed = true
+      return value
+    })
+    const next = manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+    await Promise.resolve()
+    expect(closed).toBe(false)
+    expect(queryMock).toHaveBeenCalledTimes(1)
+    finishClose()
+    await expect(closing).resolves.toBe(true)
+    await next
+    expect(queryMock).toHaveBeenCalledTimes(2)
+    await manager.close('session-1')
+  })
+
+  it('settles an active turn when ordinary close stops its writer even if later deletion fails', async () => {
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    const events: LiveTurnEvent[] = []
+    manager.subscribe('session-1', (event) => events.push(event))
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'active', userMessageUuid: 'user-1', permissionMode: 'default' })
+    await manager.close('session-1')
+    expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
+    expect(events.filter((event) => event.type === 'cotta_live_turn_failed')).toHaveLength(1)
+    expect(manager.hasRuntime('session-1')).toBe(false)
+  })
+
   it('updates session options when ensuring an existing runtime', async () => {
     const setPermissionMode = vi.fn()
-    const setModel = vi.fn()
     const applyFlagSettings = vi.fn()
-    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { setPermissionMode, setModel, applyFlagSettings }))
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { setPermissionMode, applyFlagSettings }))
     const manager = new LiveTurnManager()
     const projectId = Buffer.from('/repo/a').toString('base64url')
 
@@ -277,7 +345,6 @@ describe('LiveTurnManager', () => {
 
     expect(queryMock).toHaveBeenCalledTimes(1)
     expect(setPermissionMode).toHaveBeenCalledWith('plan')
-    expect(setModel).not.toHaveBeenCalled()
     expect(applyFlagSettings).toHaveBeenCalledWith({ model: 'claude-sonnet-5', effortLevel: 'max' })
   })
 
@@ -341,9 +408,8 @@ describe('LiveTurnManager', () => {
 
   it('syncs options only when a runtime already exists', async () => {
     const setPermissionMode = vi.fn()
-    const setModel = vi.fn()
     const applyFlagSettings = vi.fn()
-    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { setPermissionMode, setModel, applyFlagSettings }))
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { setPermissionMode, applyFlagSettings }))
     const manager = new LiveTurnManager()
     const projectId = Buffer.from('/repo/a').toString('base64url')
 
@@ -355,7 +421,6 @@ describe('LiveTurnManager', () => {
 
     expect(queryMock).toHaveBeenCalledTimes(1)
     expect(setPermissionMode).toHaveBeenCalledWith('plan')
-    expect(setModel).not.toHaveBeenCalled()
     expect(applyFlagSettings).toHaveBeenCalledWith({ model: 'claude-sonnet-5', effortLevel: 'xhigh' })
   })
 
@@ -704,7 +769,7 @@ describe('LiveTurnManager', () => {
     })
 
     await vi.waitFor(() => expect(manager.sessionRunState('session-1')?.phase).toBe('idle'))
-    expect(events).toEqual([{ type: 'cotta_live_turn_failed', error: 'SDK stream ended before the turn completed.', session_id: 'session-1' }])
+    expect(events).toEqual([{ type: 'cotta_live_turn_failed', error: 'Claude Code CLI stream ended before the turn completed.', session_id: 'session-1' }])
     expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-1', outcome: 'error' } })
   })
 
@@ -1221,9 +1286,8 @@ describe('LiveTurnManager', () => {
 
   it('updates session options when reusing a session runtime', async () => {
     const setPermissionMode = vi.fn()
-    const setModel = vi.fn()
     const applyFlagSettings = vi.fn()
-    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { setPermissionMode, setModel, applyFlagSettings }))
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { setPermissionMode, applyFlagSettings }))
     const manager = new LiveTurnManager()
 
     await manager.startTurn({
@@ -1249,7 +1313,6 @@ describe('LiveTurnManager', () => {
     })
 
     expect(setPermissionMode).toHaveBeenCalledWith('plan')
-    expect(setModel).not.toHaveBeenCalled()
     expect(applyFlagSettings).toHaveBeenCalledWith({ model: 'claude-sonnet-5', effortLevel: 'xhigh' })
     await vi.waitFor(() => expect(manager.sessionRunState('session-1')).toEqual({ phase: 'idle', activeUserMessageUuid: null, lastTurn: { id: 'user-2', outcome: 'success' } }))
     await manager.closeForExternalOwner('session-1')
@@ -1307,7 +1370,7 @@ describe('LiveTurnManager', () => {
     })
     expect(manager.acknowledgeCompletedTurn({ projectId, sessionId: 'session-1', turnId: 'user-1' })).toBe(true)
     expect(manager.runtimeTurnProjection('session-1', 'user-1')).toEqual({ submissionUuid: 'user-1', kind: 'visible', visibleTurnUuid: 'command-1' })
-    expect(manager.close('session-1')).toBe(true)
+    expect(await manager.close('session-1')).toBe(true)
     expect(manager.runtimeTurnProjection('session-1', 'user-1')).toEqual({ submissionUuid: 'user-1', kind: 'visible', visibleTurnUuid: 'command-1' })
     manager.clearRuntimeTurnProjection('session-1')
     expect(manager.runtimeTurnProjection('session-1')).toBeNull()
@@ -1422,9 +1485,8 @@ describe('LiveTurnManager', () => {
   })
 
   it('updates a reused runtime to the explicit default model', async () => {
-    const setModel = vi.fn()
     const applyFlagSettings = vi.fn()
-    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { setModel, applyFlagSettings }))
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => streamingQuery(prompt, { applyFlagSettings }))
     const manager = new LiveTurnManager()
     const projectId = Buffer.from('/repo/a').toString('base64url')
 
@@ -1432,7 +1494,6 @@ describe('LiveTurnManager', () => {
     await vi.waitFor(() => expect(manager.sessionRunState('session-1')?.phase).toBe('idle'))
     await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'second', userMessageUuid: 'user-2', permissionMode: 'default', model: 'default' })
 
-    expect(setModel).not.toHaveBeenCalled()
     expect(applyFlagSettings).toHaveBeenCalledWith({ model: 'default' })
   })
 
@@ -1716,7 +1777,7 @@ describe('LiveTurnManager', () => {
     const pendingInitialization = new Promise<Awaited<ReturnType<Query['initializationResult']>>>((_resolve, reject) => {
       rejectInitialization = reject
     })
-    const close = vi.fn(() => rejectInitialization(new Error('Query closed before response received')))
+    const close = vi.fn(async () => rejectInitialization(new Error('Query closed before response received')))
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
       pendingQuery(prompt, {
         close,
@@ -1905,8 +1966,8 @@ describe('LiveTurnManager', () => {
       sessionId: 'session-1',
     })
 
-    expect(manager.close('session-1')).toBe(true)
-    expect(manager.close('session-1')).toBe(false)
+    expect(await manager.close('session-1')).toBe(true)
+    expect(await manager.close('session-1')).toBe(false)
     expect(close).toHaveBeenCalledTimes(1)
   })
 
@@ -2190,5 +2251,110 @@ describe('LiveTurnManager', () => {
 
     await vi.waitFor(() => expect(events.some((event) => event.type === 'result')).toBe(true))
     expect(onPermissionModeChanged).not.toHaveBeenCalled()
+  })
+
+  it('clears runtimeCloses after a failed close so the session can create a new runtime', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { close: vi.fn(async () => Promise.reject(new Error('close failed'))) }))
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+    await expect(manager.close('session-1')).rejects.toThrow('close failed')
+    await expect(manager.ensureRuntime({ projectId, sessionId: 'session-1' })).resolves.toEqual({})
+    expect(queryMock).toHaveBeenCalledTimes(2)
+    expect(errorLog).toHaveBeenCalledWith('live-runtime:close failed', expect.any(Error))
+    await manager.closeAll()
+  })
+
+  it('blocks concurrent runtime creation while a session is closing and being deleted', async () => {
+    let releaseClose!: () => void
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    let releaseDelete!: () => void
+    const deleteGate = new Promise<void>((resolve) => {
+      releaseDelete = resolve
+    })
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+      pendingQuery(prompt, {
+        close: vi.fn(() => closeGate),
+      }),
+    )
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.ensureRuntime({ projectId, sessionId: 'session-1' })
+    expect(queryMock).toHaveBeenCalledTimes(1)
+
+    let deleteOpStarted = false
+    const deleting = manager.runWithSessionDeleted('session-1', async () => {
+      deleteOpStarted = true
+      await deleteGate
+      return 'deleted'
+    })
+
+    // While waiting for the old runtime process to exit, concurrent starts/ensures/restarts must fail and never spawn a new runtime.
+    await expect(manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'hello', userMessageUuid: 'user-1', permissionMode: 'default' })).rejects.toThrow(SessionDeletingError)
+    await expect(manager.ensureRuntime({ projectId, sessionId: 'session-1' })).rejects.toThrow(SessionDeletingError)
+    await expect(manager.restartRuntime({ projectId, sessionId: 'session-1', permissionMode: 'default', rebuild: true })).rejects.toThrow(SessionDeletingError)
+    await expect(manager.rebuildRuntimeAfterCliIdle({ projectId, sessionId: 'session-1', permissionMode: 'default', model: 'default', effort: null, hasCliOwnership: () => false })).resolves.toBe(
+      false,
+    )
+    expect(deleteOpStarted).toBe(false)
+
+    releaseClose()
+    await vi.waitFor(() => expect(deleteOpStarted).toBe(true))
+
+    // Even after the old runtime has exited, rebuilds stay blocked until the delete operation completes.
+    await expect(manager.ensureRuntime({ projectId, sessionId: 'session-1' })).rejects.toThrow(SessionDeletingError)
+    expect(queryMock).toHaveBeenCalledTimes(1)
+
+    releaseDelete()
+    await expect(deleting).resolves.toBe('deleted')
+    expect(queryMock).toHaveBeenCalledTimes(1)
+    await manager.closeAll()
+  })
+
+  it('resolves closeAll even if one runtime close rejects so remaining runtimes still settle', async () => {
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    let releaseSecond!: () => void
+    const secondClose = new Promise<void>((resolve) => {
+      releaseSecond = resolve
+    })
+    queryMock
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        pendingQuery(prompt, {
+          close: vi.fn(async () => {
+            throw new Error('close boom')
+          }),
+        }),
+      )
+      .mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        pendingQuery(prompt, {
+          close: vi.fn(() => secondClose),
+        }),
+      )
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const manager = new LiveTurnManager()
+    try {
+      await manager.ensureRuntime({ projectId, sessionId: 'session-fail' })
+      await manager.ensureRuntime({ projectId, sessionId: 'session-wait' })
+
+      let settled = false
+      const closing = manager.closeAll().then(() => {
+        settled = true
+      })
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      releaseSecond()
+      await closing
+      expect(settled).toBe(true)
+      expect(consoleError).toHaveBeenCalledWith('live-runtime:close failed', expect.any(Error))
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 })

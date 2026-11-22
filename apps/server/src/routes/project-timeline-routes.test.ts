@@ -698,9 +698,6 @@ describe('project timeline routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return timelineState
-        },
       },
     })
 
@@ -773,9 +770,6 @@ describe('project timeline routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return timelineState
-        },
       },
     })
 
@@ -826,9 +820,6 @@ describe('project timeline routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return timelineState
-        },
       },
     })
 
@@ -872,9 +863,6 @@ describe('project timeline routes', () => {
         },
         async forkSession() {
           return null
-        },
-        async getSessionTimelineState() {
-          return timelineState
         },
       },
     })
@@ -926,9 +914,6 @@ describe('project timeline routes', () => {
         },
         async forkSession() {
           return null
-        },
-        async getSessionTimelineState() {
-          return timelineState
         },
       },
     })
@@ -1015,9 +1000,6 @@ describe('project timeline routes', () => {
         async forkSession() {
           return null
         },
-        async getSessionTimelineState() {
-          return timelineState
-        },
       },
     })
 
@@ -1073,9 +1055,6 @@ describe('project timeline routes', () => {
         },
         async forkSession() {
           return null
-        },
-        async getSessionTimelineState() {
-          return timelineState
         },
       },
     })
@@ -1354,9 +1333,6 @@ describe('project timeline routes', () => {
         },
         async forkSession() {
           return null
-        },
-        async getSessionTimelineState() {
-          return timelineState
         },
       },
     })

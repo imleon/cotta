@@ -833,7 +833,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
               </>
             ) : null}
           </span>
-          {buildInfo.data.agentSdkVersion ? <span>Claude Agent SDK version {buildInfo.data.agentSdkVersion}</span> : null}
+          <span>{buildInfo.data.claudeCodeCliVersion ? `Claude Code CLI version ${buildInfo.data.claudeCodeCliVersion}` : 'Claude Code CLI unavailable'}</span>
           <span>
             Started {formatStartedAt(buildInfo.data.uptimeSeconds, settings.timeZone)} ({formatUptime(buildInfo.data.uptimeSeconds)})
           </span>

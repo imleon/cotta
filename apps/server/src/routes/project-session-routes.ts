@@ -20,8 +20,11 @@ import {
 } from '@cotta/shared'
 import type { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
+import { isActiveCliSessionMetadata } from '../claude-session-registry.js'
 import { shareAssetsRoot } from '../database.js'
-import { ProjectDirectoryUnavailableError, SessionExternallyOwnedError, SessionProjectMismatchError, SessionTurnInProgressError } from '../live-turn-manager.js'
+import { ProjectDirectoryUnavailableError, SessionDeletingError, SessionExternallyOwnedError, SessionProjectMismatchError, SessionTurnInProgressError } from '../live-turn-manager.js'
+import { TranscriptUnavailableError } from '../session-raw-transcript-cache.js'
+import { SessionTranscriptMutationError } from '../session-transcript-mutations.js'
 import { SubmitTurnError, submitTurn } from '../submit-turn.js'
 import { normalizeModelEffortSelection, persistedTurnOptions, readSettings, resolveTurnOptions, validateTurnOptions } from '../turn-options.js'
 import { locateSession, type ProjectRoutesInput, resolveSessionProject, type SessionMetadata } from './project-routes-shared.js'
@@ -70,6 +73,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
       if (error instanceof SessionExternallyOwnedError) return c.json({ error: 'session_externally_owned' }, 409)
       if (error instanceof SessionTurnInProgressError) return c.json({ error: 'session_turn_in_progress' }, 409)
+      if (error instanceof SessionDeletingError) return c.json({ error: 'session_deleting' }, 409)
       console.error('sessions:create failed', error)
       return c.json({ error: 'session_create_failed' }, 500)
     }
@@ -89,6 +93,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
       if (error instanceof SessionExternallyOwnedError) return c.json({ error: 'session_externally_owned' }, 409)
       if (error instanceof SessionTurnInProgressError) return c.json({ error: 'session_turn_in_progress' }, 409)
+      if (error instanceof SessionDeletingError) return c.json({ error: 'session_deleting' }, 409)
       console.error('turns:create failed', error)
       return c.json({ error: 'turn_create_failed' }, 500)
     }
@@ -122,6 +127,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       const renamed = await input.claudeCodeApi.renameSession(projectId, sessionId, title)
       if (!renamed) return c.json({ error: 'session_not_found' }, 404)
     } catch (error) {
+      if (error instanceof SessionTranscriptMutationError) return c.json({ error: 'session_transcript_conflict', message: error.message }, 409)
       console.error('session:rename failed', sessionId, error)
       return c.json({ error: 'session_rename_failed' }, 500)
     }
@@ -158,6 +164,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       input.indexChangeNotifier?.publishChange(change)
       return c.json(forkSessionResponseSchema.parse({ projectId, sessionId }), 201)
     } catch (error) {
+      if (error instanceof SessionTranscriptMutationError) return c.json({ error: 'session_transcript_conflict', message: error.message }, 409)
       console.error('session:fork failed', error)
       return c.json({ error: 'session_fork_failed' }, 500)
     }
@@ -173,26 +180,50 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       if (!locatedSession?.currentProjectId) return c.json({ error: 'session_not_found' }, 404)
       if (input.transcriptSyncer) await input.transcriptSyncer(locatedSession.currentProjectId, sessionId, locatedSession.fileSize ?? undefined)
       if (resolveSessionProject(input, sessionId)?.currentProjectId !== projectId) return c.json({ error: 'session_not_found' }, 404)
+      const metadata = input.sessionMetadataReader?.(sessionId)
+      if (metadata && isActiveCliSessionMetadata(metadata)) return c.json({ error: 'session_externally_owned' }, 409)
     } catch (error) {
+      if (error instanceof TranscriptUnavailableError) return c.json({ error: 'session_not_found' }, 404)
       console.error('session:delete preflight failed', error)
       return c.json({ error: 'session_delete_failed' }, 500)
     }
 
     const runState = input.liveTurnManager.sessionRunState(sessionId)
     const turnWasRunning = runState !== null && runState.phase !== 'idle'
-    try {
-      await input.liveTurnManager.closeForExternalOwner?.(sessionId, 'Session was interrupted because it was deleted.', { rebuildAfterCliIdle: false })
-    } catch (error) {
-      console.error('session:delete runtime close failed', error)
-      return c.json({ error: 'session_delete_runtime_close_failed' }, 500)
+    const executeDelete = async (): Promise<Response | null> => {
+      try {
+        const metadata = input.sessionMetadataReader?.(sessionId)
+        if (metadata && isActiveCliSessionMetadata(metadata)) return c.json({ error: 'session_externally_owned' }, 409)
+        const deleted = await input.claudeCodeApi.deleteSession(projectId, sessionId)
+        if (!deleted) return c.json({ error: turnWasRunning ? 'session_not_found_after_interrupt' : 'session_not_found' }, 404)
+        input.liveTurnManager.clearRuntimeTurnProjection(sessionId)
+        return null
+      } catch (error) {
+        if (error instanceof SessionTranscriptMutationError) return c.json({ error: 'session_transcript_conflict', message: error.message }, 409)
+        console.error('session:delete failed', error)
+        return c.json({ error: turnWasRunning ? 'session_delete_failed_after_interrupt' : 'session_delete_failed' }, 500)
+      }
     }
-    try {
-      const deleted = await input.claudeCodeApi.deleteSession(projectId, sessionId)
-      if (!deleted) return c.json({ error: turnWasRunning ? 'session_not_found_after_interrupt' : 'session_not_found' }, 404)
-      input.liveTurnManager.clearRuntimeTurnProjection(sessionId)
-    } catch (error) {
-      console.error('session:delete failed', error)
-      return c.json({ error: turnWasRunning ? 'session_delete_failed_after_interrupt' : 'session_delete_failed' }, 500)
+    if (input.liveTurnManager.runWithSessionDeleted) {
+      let earlyResponse: Response | null = null
+      try {
+        earlyResponse = await input.liveTurnManager.runWithSessionDeleted(sessionId, executeDelete)
+      } catch (error) {
+        if (error instanceof SessionDeletingError) return c.json({ error: 'session_deleting' }, 409)
+        console.error('session:delete runtime close failed', error)
+        return c.json({ error: 'session_delete_runtime_close_failed' }, 500)
+      }
+      if (earlyResponse) return earlyResponse
+    } else {
+      try {
+        if (!input.liveTurnManager.close) throw new Error('Session runtime close is unavailable')
+        await input.liveTurnManager.close(sessionId)
+      } catch (error) {
+        console.error('session:delete runtime close failed', error)
+        return c.json({ error: 'session_delete_runtime_close_failed' }, 500)
+      }
+      const earlyResponse = await executeDelete()
+      if (earlyResponse) return earlyResponse
     }
 
     // PRD lifecycle: revoke the session's shares and delete their frozen assets before reporting success; cleanup failure must not report success.
@@ -208,6 +239,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       await input.syncTranscriptIndex?.(change)
     } catch (error) {
       console.error('session:delete index sync failed', error)
+      return c.json({ error: 'session_delete_index_cleanup_failed' }, 500)
     }
     try {
       input.indexChangeNotifier?.publishChange(change)
@@ -313,6 +345,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
     } catch (error) {
       if (error instanceof ProjectDirectoryUnavailableError) return c.json({ error: 'project_directory_unavailable' }, 409)
       if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
+      if (error instanceof SessionDeletingError) return c.json({ error: 'session_deleting' }, 409)
       console.error('session:restart failed', error)
       return c.json({ error: 'session_restart_failed' }, 500)
     }
@@ -358,6 +391,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
     } catch (error) {
       if (error instanceof ProjectDirectoryUnavailableError) return c.json({ error: 'project_directory_unavailable' }, 409)
       if (error instanceof SessionProjectMismatchError) return c.json({ error: 'session_project_mismatch' }, 409)
+      if (error instanceof SessionDeletingError) return c.json({ error: 'session_deleting' }, 409)
       console.error('session:runtime failed', error)
       return c.json({ error: 'session_runtime_failed' }, 500)
     }

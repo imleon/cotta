@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -10,16 +9,6 @@ const packageRoot = resolve(import.meta.dirname, '..')
 
 export function cottaVersion(): string {
   return (JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as { version: string }).version
-}
-
-/** Version of the bundled Claude Agent SDK. Its `exports` hides `./package.json`, so read it next to the main entry at the package root. */
-export function cottaAgentSdkVersion(): string | null {
-  try {
-    const entry = createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk')
-    return (JSON.parse(readFileSync(join(dirname(entry), 'package.json'), 'utf8')) as { version: string }).version
-  } catch {
-    return null
-  }
 }
 
 /** Short HEAD commit, only when running from the Cotta checkout itself (not an install nested in some other repo). */

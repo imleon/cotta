@@ -1,5 +1,5 @@
-import { type FSWatcher, watch } from 'node:fs'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { constants, type FSWatcher, lstatSync, type Stats, unlinkSync, watch } from 'node:fs'
+import { lstat, open, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { SessionStatus } from '@cotta/shared'
@@ -7,11 +7,14 @@ import { isOwnedClaudeProcess } from './claude-cli/query.js'
 
 const MAX_SANE_EPOCH_MS = 4_000_000_000_000_000
 const SESSION_FILE = /^(\d+)\.json$/
+const REVALIDATE_INTERVAL_MS = 30_000
+const OPEN_NOFOLLOW_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
 
 type Snapshot = {
   fileName: string
   fileMtimeMs: number
   ino: number
+  dev: number
   owned: boolean
   rawJson: string
   payload: Record<string, unknown> | null
@@ -28,6 +31,8 @@ export type ClaudeSessionRegistryOptions = {
   sessionsDir?: string
   debounceMs?: number
   isOwnedProcess?: (pid: number) => boolean
+  checkProcess?: (pid: number) => void
+  now?: () => number
 }
 
 export type ClaudeSessionRegistryChangedSession = {
@@ -92,10 +97,23 @@ function defaultSessionsDir(): string {
   return join(homedir(), '.claude', 'sessions')
 }
 
+function errorCode(error: unknown): string | null {
+  return isRecord(error) && typeof error.code === 'string' ? error.code : null
+}
+
+function sameFile(left: Stats, right: Stats): boolean {
+  return left.isFile() && right.isFile() && left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs
+}
+
 export class ClaudeSessionRegistry {
   private readonly sessionsDir: string
   private readonly debounceMs: number
   private readonly isOwnedProcess: (pid: number) => boolean
+  private readonly checkProcess: (pid: number) => void
+  private readonly now: () => number
+  private lastRevalidatedAt = -Infinity
+  private scanRunning = false
+  private scanRequested = false
   private snapshots = new Map<string, Snapshot>()
   private watcher: FSWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -107,14 +125,52 @@ export class ClaudeSessionRegistry {
     this.sessionsDir = options.sessionsDir ?? defaultSessionsDir()
     this.debounceMs = options.debounceMs ?? 100
     this.isOwnedProcess = options.isOwnedProcess ?? isOwnedClaudeProcess
+    this.checkProcess = options.checkProcess ?? ((pid) => process.kill(pid, 0))
+    this.now = options.now ?? Date.now
   }
 
   async start(): Promise<void> {
     if (this.closed || this.watcher) return
-    this.watcher = watch(this.sessionsDir, () => this.scheduleScan())
-    this.watcher.on('error', (error) => console.error('claude-session-registry:watch failed', error))
-    this.snapshots = await this.readSnapshots()
-    this.scheduleScan()
+    const watcher = watch(this.sessionsDir, () => this.scheduleScan())
+    watcher.on('error', (error) => console.error('claude-session-registry:watch failed', error))
+    this.watcher = watcher
+    this.scanRunning = true
+    this.lastRevalidatedAt = this.now()
+    let startupError: unknown = null
+    let failed = false
+    this.scanChain = this.scanChain.then(async () => {
+      try {
+        this.snapshots = await this.readSnapshots()
+      } catch (error) {
+        failed = true
+        startupError = error
+      } finally {
+        this.scanRunning = false
+      }
+    })
+    await this.scanChain
+    if (failed) {
+      this.scanRequested = false
+      if (this.debounceTimer) clearTimeout(this.debounceTimer)
+      this.debounceTimer = null
+      if (this.watcher === watcher) {
+        this.watcher = null
+        watcher.close()
+      }
+      throw startupError
+    }
+    if (this.closed) return
+    if (this.scanRequested) {
+      void this.requestScan()
+    }
+  }
+
+  revalidateIfDue(): Promise<void> {
+    const now = this.now()
+    if (this.closed || !this.watcher || (now >= this.lastRevalidatedAt && now - this.lastRevalidatedAt < REVALIDATE_INTERVAL_MS)) return Promise.resolve()
+    // A running scan already probes liveness; periodic ticks must not build a backlog.
+    if (this.scanRunning) return this.scanChain
+    return this.requestScan()
   }
 
   async close(): Promise<void> {
@@ -152,9 +208,34 @@ export class ClaudeSessionRegistry {
     if (this.debounceTimer) clearTimeout(this.debounceTimer)
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null
-      this.scanChain = this.scanChain.then(() => this.scan()).catch((error) => console.error('claude-session-registry:scan failed', error))
+      void this.requestScan()
     }, this.debounceMs)
     this.debounceTimer.unref?.()
+  }
+
+  private requestScan(): Promise<void> {
+    if (this.closed) return Promise.resolve()
+    if (this.debounceTimer) clearTimeout(this.debounceTimer)
+    this.debounceTimer = null
+    this.scanRequested = true
+    if (this.scanRunning) return this.scanChain
+    this.scanRunning = true
+    this.scanChain = this.scanChain.then(async () => {
+      try {
+        while (this.scanRequested && !this.closed) {
+          this.scanRequested = false
+          this.lastRevalidatedAt = this.now()
+          try {
+            await this.scan()
+          } catch (error) {
+            console.error('claude-session-registry:scan failed', error)
+          }
+        }
+      } finally {
+        this.scanRunning = false
+      }
+    })
+    return this.scanChain
   }
 
   private async scan(): Promise<void> {
@@ -202,6 +283,63 @@ export class ClaudeSessionRegistry {
     }
   }
 
+  private processIsDead(pid: number): boolean {
+    try {
+      this.checkProcess(pid)
+    } catch (error) {
+      if (errorCode(error) === 'ESRCH') return true
+      console.error(`claude-session-registry:pid probe inconclusive pid=${pid} code=${errorCode(error) ?? 'unknown'}`, error)
+    }
+    return false
+  }
+
+  private async discardStale(filePath: string, pid: number, rawJson: string, metadata: Stats): Promise<boolean> {
+    try {
+      // Independently reopen without following links: the earlier snapshot is not deletion authority.
+      const handle = await open(filePath, OPEN_NOFOLLOW_FLAGS)
+      try {
+        const before = await handle.stat()
+        if (!sameFile(metadata, before)) {
+          this.scheduleScan()
+          return false
+        }
+        const currentJson = await handle.readFile('utf8')
+        const after = await handle.stat()
+        if (currentJson !== rawJson || !sameFile(before, after)) {
+          this.scheduleScan()
+          return false
+        }
+        // No portable atomic compare-and-unlink exists on POSIX; execute the final path/PID checks
+        // and unlink synchronously back-to-back without yielding across the libuv threadpool.
+        const pathMetadata = lstatSync(filePath)
+        if (!sameFile(after, pathMetadata)) {
+          this.scheduleScan()
+          return false
+        }
+        if (!this.processIsDead(pid)) {
+          this.scheduleScan()
+          return false
+        }
+        try {
+          unlinkSync(filePath)
+        } catch (error) {
+          if (errorCode(error) !== 'ENOENT') {
+            console.error(`claude-session-registry:stale unlink failed path=${filePath} pid=${pid} code=${errorCode(error) ?? 'unknown'}`, error)
+          }
+        }
+        // Confirmed invalid metadata stays excluded even if disk cleanup failed. Recheck next scan.
+        return true
+      } finally {
+        await handle.close()
+      }
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') return true
+      console.error(`claude-session-registry:stale verification failed path=${filePath} pid=${pid} code=${errorCode(error) ?? 'unknown'}`, error)
+      if (errorCode(error) === 'ELOOP') this.scheduleScan()
+      return false
+    }
+  }
+
   private async readSnapshots(): Promise<Map<string, Snapshot>> {
     const entries = await readdir(this.sessionsDir, { withFileTypes: true })
     const next = new Map<string, Snapshot>()
@@ -210,25 +348,56 @@ export class ClaudeSessionRegistry {
         .filter((entry) => entry.isFile() && SESSION_FILE.test(entry.name))
         .map(async (entry) => {
           const filePath = join(this.sessionsDir, entry.name)
+          const previous = this.snapshots.get(entry.name)
           try {
-            const [rawJson, metadata] = await Promise.all([readFile(filePath, 'utf8'), stat(filePath)])
-            let payload: Record<string, unknown> | null = null
+            let snapshot: Snapshot | null = null
+            let staleCandidate: { pid: number; rawJson: string; metadata: Stats } | null = null
+            const handle = await open(filePath, OPEN_NOFOLLOW_FLAGS)
             try {
-              const parsed: unknown = JSON.parse(rawJson)
-              if (isRecord(parsed)) payload = parsed
-            } catch {
-              payload = this.snapshots.get(entry.name)?.payload ?? null
+              const metadata = await handle.stat()
+              if (!metadata.isFile()) {
+                if (previous) next.set(entry.name, previous)
+                this.scheduleScan()
+                return
+              }
+              const rawJson = await handle.readFile('utf8')
+              const after = await handle.stat()
+              const pathMetadata = await lstat(filePath)
+              const stable = sameFile(metadata, after) && sameFile(after, pathMetadata)
+              let payload: Record<string, unknown> | null = null
+              let parsedSuccessfully = false
+              try {
+                const parsed: unknown = JSON.parse(rawJson)
+                if (isRecord(parsed) && !Array.isArray(parsed)) {
+                  payload = parsed
+                  parsedSuccessfully = true
+                }
+              } catch {
+                payload = previous?.payload ?? null
+              }
+              const pid = Number(entry.name.slice(0, -5))
+              const owned = this.isOwnedProcess(pid) || (previous?.owned === true && previous.ino === metadata.ino && previous.dev === metadata.dev)
+              snapshot = { fileName: entry.name, fileMtimeMs: metadata.mtimeMs, ino: metadata.ino, dev: metadata.dev, owned, rawJson, payload }
+              if (!stable) {
+                next.set(entry.name, previous ?? snapshot)
+                this.scheduleScan()
+                return
+              }
+              if (parsedSuccessfully && payload?.entrypoint === 'cotta' && Number.isSafeInteger(pid) && pid > 1 && entry.name === `${pid}.json` && payload.pid === pid && this.processIsDead(pid)) {
+                staleCandidate = { pid, rawJson, metadata }
+              }
+            } finally {
+              await handle.close()
             }
-            const previous = this.snapshots.get(entry.name)
-            const pid = Number(entry.name.slice(0, -5))
-            const owned = this.isOwnedProcess(pid) || (previous?.owned === true && previous.ino === metadata.ino)
-            next.set(entry.name, { fileName: entry.name, fileMtimeMs: metadata.mtimeMs, ino: metadata.ino, owned, rawJson, payload })
+            if (staleCandidate && (await this.discardStale(filePath, staleCandidate.pid, staleCandidate.rawJson, staleCandidate.metadata))) {
+              return
+            }
+            if (snapshot) next.set(entry.name, snapshot)
           } catch (error) {
-            const code = isRecord(error) && typeof error.code === 'string' ? error.code : null
-            if (code !== 'ENOENT') {
+            if (errorCode(error) !== 'ENOENT') {
               console.error(`claude-session-registry:read failed ${filePath}`, error)
-              const previous = this.snapshots.get(entry.name)
               if (previous) next.set(entry.name, previous)
+              if (errorCode(error) === 'ELOOP') this.scheduleScan()
             }
           }
         }),

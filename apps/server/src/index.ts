@@ -257,15 +257,15 @@ export async function closeServerResources(input: {
     try {
       await input.remoteBotManager?.close()
     } finally {
-      await input.rawTranscriptCoordinator.close()
+      try {
+        await input.claudeSessionRegistry?.close()
+      } finally {
+        await input.rawTranscriptCoordinator.close()
+      }
     }
   } finally {
     input.turnMetaStore.close()
-    try {
-      await input.claudeSessionRegistry?.close()
-    } finally {
-      input.cottaDb.close()
-    }
+    input.cottaDb.close()
   }
 }
 
@@ -415,6 +415,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     subagentStore,
     tokenUsageStore,
     timelineVersionReader: timelineVersion,
+    onMaintenanceTick: () => claudeSessionRegistry.revalidateIfDue(),
     onSessionSynced: (input) => indexChangeNotifier.publishChange(input),
     onSessionVersionChanged: ({ projectId, sessionId, version }) => indexChangeNotifier.publishSessionVersion(projectId, sessionId, version),
     onSubagentsChanged: ({ projectId, sessionId }) => indexChangeNotifier.publishSubagentChange(projectId, sessionId),

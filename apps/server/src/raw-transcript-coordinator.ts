@@ -26,6 +26,7 @@ type CoordinatorOptions = {
   onSessionSynced?: (input: SessionChangeNotification) => void
   onSessionVersionChanged?: (input: { projectId: string; sessionId: string; version: string }) => void
   onSubagentsChanged?: (input: { projectId: string; sessionId: string }) => void
+  onMaintenanceTick?: () => Promise<void>
   onScanProgress?: (done: number, total: number) => void
 }
 
@@ -38,6 +39,8 @@ export class RawTranscriptCoordinator {
   private readonly onSessionVersionChanged?: CoordinatorOptions['onSessionVersionChanged']
   private readonly onSubagentsChanged?: CoordinatorOptions['onSubagentsChanged']
   private readonly onScanProgress?: CoordinatorOptions['onScanProgress']
+  private readonly onMaintenanceTick?: CoordinatorOptions['onMaintenanceTick']
+  private maintenanceRun: Promise<void> | null = null
   private readonly subagentStore?: SessionSubagentStore
   private readonly tokenUsageStore?: TokenUsageStore
   private readonly timelineVersionReader: CoordinatorOptions['timelineVersionReader']
@@ -79,10 +82,20 @@ export class RawTranscriptCoordinator {
     this.onSessionVersionChanged = options.onSessionVersionChanged
     this.onSubagentsChanged = options.onSubagentsChanged
     this.onScanProgress = options.onScanProgress
+    this.onMaintenanceTick = options.onMaintenanceTick
   }
 
   start(): void {
     this.hotTimer = setInterval(() => {
+      if (this.closed) return
+      if (this.onMaintenanceTick && !this.maintenanceRun) {
+        this.maintenanceRun = Promise.resolve()
+          .then(() => this.onMaintenanceTick?.())
+          .catch((error) => console.error('raw-transcript:maintenance tick failed', error))
+          .finally(() => {
+            this.maintenanceRun = null
+          })
+      }
       this.hotPoll = this.hotPoll.then(() => this.pollHot()).catch((error) => console.error('raw-transcript:hot poll failed', error))
     }, this.hotPollMs)
     this.fullScanTimer = setInterval(() => {
@@ -198,7 +211,7 @@ export class RawTranscriptCoordinator {
     if (this.hotTimer) clearInterval(this.hotTimer)
     if (this.fullScanTimer) clearInterval(this.fullScanTimer)
     this.hot.clear()
-    await Promise.allSettled([this.readiness, this.hotPoll, ...this.fullScanRuns])
+    await Promise.allSettled([this.readiness, this.hotPoll, this.maintenanceRun, ...this.fullScanRuns])
     await Promise.allSettled([...this.syncing.values(), ...this.subagentRefreshes.values(), ...this.taskSnapshotRefreshes.values()])
   }
 

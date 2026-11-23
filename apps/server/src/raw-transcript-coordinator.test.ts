@@ -48,6 +48,84 @@ function jsonl(...values: unknown[]): string {
 }
 
 describe('RawTranscriptCoordinator', () => {
+  it('reuses the hot timer for maintenance with no hot sessions and stops on close', async () => {
+    const onMaintenanceTick = vi.fn(async () => {})
+    const { db, coordinator } = await setup({ onMaintenanceTick })
+    vi.useFakeTimers()
+    try {
+      coordinator.start()
+      await coordinator.ensureReady()
+      expect(vi.getTimerCount()).toBe(2)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(onMaintenanceTick).toHaveBeenCalledTimes(2)
+      await coordinator.close()
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(onMaintenanceTick).toHaveBeenCalledTimes(2)
+    } finally {
+      await coordinator.close()
+      vi.useRealTimers()
+      db.close()
+    }
+  })
+
+  it('does not queue overlapping maintenance and waits for it on close', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const onMaintenanceTick = vi.fn(() => pending)
+    const { db, coordinator } = await setup({ onMaintenanceTick })
+    vi.useFakeTimers()
+    try {
+      coordinator.start()
+      await coordinator.ensureReady()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(onMaintenanceTick).toHaveBeenCalledTimes(1)
+      let closed = false
+      const closing = coordinator.close().then(() => {
+        closed = true
+      })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(closed).toBe(false)
+      finish()
+      await closing
+      expect(closed).toBe(true)
+    } finally {
+      finish()
+      await coordinator.close()
+      vi.useRealTimers()
+      db.close()
+    }
+  })
+
+  it('keeps maintenance independent of blocked hot syncs and reports callback errors', async () => {
+    const failure = new Error('maintenance failed')
+    const onMaintenanceTick = vi.fn(async () => {}).mockRejectedValueOnce(failure)
+    const { db, cache, coordinator } = await setup({ onMaintenanceTick })
+    let finish!: () => void
+    const pending = new Promise<{ changed: false }>((resolve) => {
+      finish = () => resolve({ changed: false })
+    })
+    const sync = vi.spyOn(cache, 'ensureSessionCachedById').mockReturnValue(pending)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.useFakeTimers()
+    try {
+      coordinator.start()
+      await coordinator.ensureReady()
+      coordinator.signalSession('session')
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(sync).toHaveBeenCalledTimes(1)
+      expect(onMaintenanceTick).toHaveBeenCalledTimes(3)
+      expect(consoleError).toHaveBeenCalledWith('raw-transcript:maintenance tick failed', failure)
+    } finally {
+      finish()
+      await coordinator.close()
+      vi.useRealTimers()
+      db.close()
+    }
+  })
+
   it('keeps unavailable background sync quiet while explicit reads fail', async () => {
     const { db, coordinator } = await setup()
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})

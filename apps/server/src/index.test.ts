@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAuth, saveGithubConfig } from './auth.js'
 import { getClaudeCliRuntimeInfo } from './claude-cli/executable.js'
 import { forceCloseOwnedClaudeProcesses } from './claude-cli/query.js'
-import type { ClaudeSessionRegistryChange, CliSessionMetadata } from './claude-session-registry.js'
+import { type ClaudeSessionRegistryChange, type CliSessionMetadata, createClaudeSessionRegistry } from './claude-session-registry.js'
 import { createCottaDatabase } from './database.js'
 import { closeServerResources, createApp, shutdownServer, subscribeCliSessionOwnership } from './index.js'
 import { SqliteSettingsStore } from './settings-store.js'
@@ -78,6 +78,61 @@ afterEach(() => {
 })
 
 describe('CLI session ownership subscription', () => {
+  it('releases stale cotta ownership through registry notifications without changing transcript history', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cotta-stale-ownership-'))
+    const sessionId = '12345678-1234-4123-8123-123456789abc'
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+    const recordPath = join(root, '101.json')
+    const transcriptPath = join(root, `${sessionId}.jsonl`)
+    const history = '{"type":"user","message":{"content":"hi"}}\n'
+    writeFileSync(transcriptPath, history)
+    writeFileSync(recordPath, JSON.stringify({ pid: 101, sessionId, cwd: '/repo/a', entrypoint: 'cotta', status: 'busy' }))
+    let now = 0
+    let alive = true
+    const registry = await createClaudeSessionRegistry({
+      sessionsDir: root,
+      now: () => now,
+      isOwnedProcess: () => false,
+      checkProcess: () => {
+        if (!alive) throw Object.assign(new Error('gone'), { code: 'ESRCH' })
+      },
+    })
+    const database = createCottaDatabase(':memory:')
+    const rebuildRuntimeAfterCliIdle = vi.fn().mockResolvedValue(true)
+    const closeForExternalOwner = vi.fn().mockResolvedValue(true)
+    const publishChange = vi.fn()
+    const unsubscribe = subscribeCliSessionOwnership({
+      claudeSessionRegistry: registry,
+      liveTurnManager: { closeForExternalOwner, rebuildRuntimeAfterCliIdle },
+      rawTranscriptCoordinator: { signalSession: vi.fn(), syncForRead: vi.fn().mockResolvedValue(undefined) },
+      rawTranscriptCache: { index: { getSession: () => ({ currentProjectId: projectId }) as never } },
+      indexChangeNotifier: { publishChange },
+      timelineVersion: () => 'v1',
+      syncTranscriptIndex: vi.fn().mockResolvedValue(undefined),
+      settingsStore: memorySettingsStore() as never,
+      turnOptionsStore: new TurnOptionsStore(database),
+    })
+    try {
+      expect(registry.cliSessionMetadata(sessionId)?.status).toBe('busy')
+      writeFileSync(recordPath, JSON.stringify({ pid: 101, sessionId, cwd: '/repo/a', entrypoint: 'cotta', status: 'busy', updatedAt: 1 }))
+      await vi.waitFor(() => expect(closeForExternalOwner).toHaveBeenCalledWith(sessionId))
+      alive = false
+      now = 30_000
+      await registry.revalidateIfDue()
+      await vi.waitFor(() => expect(rebuildRuntimeAfterCliIdle).toHaveBeenCalledOnce())
+      expect(registry.cliSessionMetadata(sessionId)).toBeNull()
+      expect(rebuildRuntimeAfterCliIdle.mock.calls[0]?.[0].hasCliOwnership()).toBe(false)
+      expect(publishChange).toHaveBeenCalled()
+      expect(() => readFileSync(recordPath)).toThrow()
+      expect(readFileSync(transcriptPath, 'utf8')).toBe(history)
+    } finally {
+      unsubscribe()
+      await registry.close()
+      database.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('waits for CLI metadata removal before rebuilding a previously opened runtime', async () => {
     const listeners: Array<(change: ClaudeSessionRegistryChange) => void> = []
     let metadata: CliSessionMetadata | null = { status: 'busy', hasRunningShell: false, kind: null, entrypoint: 'cli' }
@@ -331,10 +386,12 @@ describe('server resources', () => {
     await Promise.resolve()
     expect(calls).toContain('session-watchers')
     expect(calls).toContain('remote-bots')
+    expect(calls).not.toContain('coordinator')
     expect(calls).not.toContain('db')
 
     resolveRegistry()
     await closing
+    expect(calls.indexOf('registry')).toBeLessThan(calls.indexOf('coordinator'))
     expect(calls.at(-1)).toBe('db')
   })
 })

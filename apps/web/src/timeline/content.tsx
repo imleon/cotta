@@ -19,7 +19,7 @@ import {
 import ReactMarkdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown'
 import Zoom from 'react-medium-image-zoom'
 import remarkGfm from 'remark-gfm'
-import { fetchLocalMessageImage, type LocalImageConfirmation, LocalImageHttpError } from '../api'
+import { fetchAnonymousAsset, fetchLocalMessageImage, type LocalImageConfirmation, LocalImageHttpError } from '../api'
 import { type FileMutationResult, isRecord, type StructuredPatchHunk, shortText, type TimelineSource } from './core'
 import { highlightCode, resolveHighlightLanguage, tokenizeCode } from './highlight'
 
@@ -387,7 +387,7 @@ function AnonLocalImage({ url, alt }: { url: string; alt: string }) {
     async (confirmed: boolean, signal?: AbortSignal) => {
       setState({ status: 'loading' })
       try {
-        const response = await fetch(confirmed ? `${url}&confirmed=1` : url, { cache: 'no-store', signal })
+        const response = await fetchAnonymousAsset(url, confirmed, signal)
         if (response.ok) setState({ status: 'loaded', blob: await response.blob() })
         else setState({ status: response.status === 409 && !confirmed ? 'confirmation' : 'unavailable' })
       } catch (cause) {

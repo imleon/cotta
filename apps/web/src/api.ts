@@ -7,8 +7,11 @@ import {
   type BuildInfoResponse,
   buildInfoResponseSchema,
   type CreateRemoteBotRequest,
+  type ComposerImage,
   type CreateShareResponse,
+  type CreateTurnResponse,
   createShareResponseSchema,
+  createTurnResponseSchema,
   type DeleteSessionResponse,
   type DetailResponse,
   type DeviceConnectPoll,
@@ -94,6 +97,7 @@ import {
   turnSubagentTranscriptResponseSchema,
   type UpdateRemoteBotRequest,
 } from '@cotta/shared'
+import { type CottaTransport, sameOriginTransport } from './client/transport'
 
 export class PaginationCursorStaleError extends Error {}
 export class TimelineSnapshotStaleError extends Error {}
@@ -111,31 +115,6 @@ export class LocalImageHttpError extends Error {
   ) {
     super(`Local image request failed: ${code ?? status}`)
   }
-}
-
-export async function fetchBuildInfo(): Promise<BuildInfoResponse> {
-  const response = await fetch('/api/build-info')
-  if (!response.ok) throw new Error(`Build info request failed: ${response.status}`)
-  return buildInfoResponseSchema.parse(await response.json())
-}
-
-export async function fetchUsage(range: TokenUsageRange, timeZone: string): Promise<TokenUsageResponse> {
-  const params = new URLSearchParams({ range, timeZone })
-  const response = await fetch(`/api/token-usage?${params}`)
-  if (!response.ok) throw new Error(`Usage request failed: ${response.status}`)
-  return tokenUsageResponseSchema.parse(await response.json())
-}
-
-export async function fetchDailyUsage(days: number, timeZone: string): Promise<TokenUsageDailyResponse> {
-  const params = new URLSearchParams({ days: String(days), timeZone })
-  const response = await fetch(`/api/token-usage/daily?${params}`)
-  if (!response.ok) throw new Error(`Daily usage request failed: ${response.status}`)
-  return tokenUsageDailyResponseSchema.parse(await response.json())
-}
-
-export async function refreshUsage(): Promise<void> {
-  const response = await fetch('/api/token-usage/refresh', { method: 'POST' })
-  if (!response.ok) throw new Error(`Usage refresh failed: ${response.status}`)
 }
 
 async function throwRequestError(response: Response, label: string): Promise<never> {
@@ -168,447 +147,686 @@ async function throwProjectFileError(response: Response): Promise<never> {
   throw new ProjectFileHttpError(response.status, body?.error ?? null)
 }
 
-export async function fetchAuthSession(): Promise<AuthSessionResponse> {
-  const response = await fetch('/api/auth/session')
-  if (!response.ok) throw new Error(`Auth session request failed: ${response.status}`)
-  return authSessionResponseSchema.parse(await response.json())
+export class CreateTurnHttpError extends Error {}
+
+async function responseErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.clone().json()) as { error?: unknown }
+    if (typeof body.error === 'string' && body.error) return body.error
+  } catch {}
+  const text = await response.text().catch(() => '')
+  return text || response.statusText || 'Request failed'
 }
 
 export class DetailUnavailableError extends Error {}
 
-export async function fetchDetail(token: string): Promise<DetailResponse> {
-  const response = await fetch(`/api/detail/${encodeURIComponent(token)}`, { cache: 'no-store' })
-  if (!response.ok) throw new DetailUnavailableError(`Detail unavailable: ${response.status}`)
-  return detailResponseSchema.parse(await response.json())
-}
-
 export class ShareUnavailableError extends Error {}
 
-export async function fetchShare(token: string): Promise<DetailResponse> {
-  const response = await fetch(`/api/share/${encodeURIComponent(token)}`, { cache: 'no-store' })
-  if (!response.ok) throw new ShareUnavailableError(`Share unavailable: ${response.status}`)
-  return detailResponseSchema.parse(await response.json())
-}
-
-export async function createShare(body: { detailToken: string } | { projectId: string; sessionId: string; turnId: string }): Promise<CreateShareResponse> {
-  const response = await fetch('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(body) })
-  if (!response.ok) await throwRequestError(response, 'Share creation')
-  return createShareResponseSchema.parse(await response.json())
-}
-
-export async function listShares(cursor: string | null = null): Promise<ShareListResponse> {
-  const params = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
-  const response = await fetch(`/api/shares${params}`)
-  if (!response.ok) throw new Error(`List shares failed: ${response.status}`)
-  return shareListResponseSchema.parse(await response.json())
-}
-
-export async function revokeShare(token: string): Promise<void> {
-  const response = await fetch(`/api/share/${encodeURIComponent(token)}/revoke`, { method: 'POST' })
-  if (!response.ok) throw new Error(`Revoke failed: ${response.status}`)
-}
-
-export async function startGitHubDeviceLogin(): Promise<GitHubDeviceStartResponse> {
-  const response = await fetch('/api/auth/github/device/start', { method: 'POST' })
-  if (!response.ok) throw new Error(`GitHub login start failed: ${response.status}`)
-  return githubDeviceStartResponseSchema.parse(await response.json())
-}
-
-export async function pollGitHubDeviceLogin(flowId: string): Promise<GitHubDevicePollResponse> {
-  const response = await fetch('/api/auth/github/device/poll', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ flowId }),
-  })
-  if (response.status !== 202 && !response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    if (body?.error === 'forbidden') throw new Error('This GitHub account is not the allowed Cotta user.')
-    throw new Error(`GitHub login poll failed: ${body?.error ?? response.status}`)
+/**
+ * Every backend call the UI makes, bound to one transport (one backend instance). Components use the
+ * same-origin default exported below; a later machine-scoped container creates its own instance.
+ */
+export function createCottaApi(transport: CottaTransport) {
+  async function fetchBuildInfo(): Promise<BuildInfoResponse> {
+    const response = await transport.fetch('/api/build-info')
+    if (!response.ok) throw new Error(`Build info request failed: ${response.status}`)
+    return buildInfoResponseSchema.parse(await response.json())
   }
-  return githubDevicePollResponseSchema.parse(await response.json())
-}
 
-// Model-backend providers (COTTA_MODEL_PROVIDERS) and the connect flow. Connecting authenticates
-// the backend (not cotta) — same device-flow shape as GitHub login, but routes live under
-// /api/provider/<id>/connect/ and the authorized poll carries no cotta user (GitHub login owns that).
-export async function fetchProviders(): Promise<ProvidersResponse> {
-  const response = await fetch('/api/providers')
-  if (!response.ok) throw new Error(`Providers request failed: ${response.status}`)
-  return providersResponseSchema.parse(await response.json())
-}
-
-export async function setActiveProvider(id: string | null): Promise<void> {
-  const response = await fetch('/api/providers/active', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id }),
-  })
-  if (!response.ok) throw new Error(`Set active provider failed: ${response.status}`)
-}
-
-export async function startProviderConnect(id: string): Promise<DeviceConnectStart> {
-  const response = await fetch(`/api/provider/${encodeURIComponent(id)}/connect/start`, { method: 'POST' })
-  if (!response.ok) throw new Error(`Connect start failed: ${response.status}`)
-  return deviceConnectStartSchema.parse(await response.json())
-}
-
-export async function pollProviderConnect(id: string, flowId: string): Promise<DeviceConnectPoll> {
-  const response = await fetch(`/api/provider/${encodeURIComponent(id)}/connect/poll`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ flowId }),
-  })
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new Error(`Connect poll failed: ${body?.error ?? response.status}`)
+  async function fetchUsage(range: TokenUsageRange, timeZone: string): Promise<TokenUsageResponse> {
+    const params = new URLSearchParams({ range, timeZone })
+    const response = await transport.fetch(`/api/token-usage?${params}`)
+    if (!response.ok) throw new Error(`Usage request failed: ${response.status}`)
+    return tokenUsageResponseSchema.parse(await response.json())
   }
-  return deviceConnectPollSchema.parse(await response.json())
-}
 
-export async function logout(): Promise<LogoutResponse> {
-  const response = await fetch('/api/auth/logout', { method: 'POST' })
-  if (!response.ok) throw new Error(`Logout failed: ${response.status}`)
-  return logoutResponseSchema.parse(await response.json())
-}
-
-export async function fetchProjectFiles(projectId: string, path = ''): Promise<ProjectFilesResponse> {
-  const params = new URLSearchParams({ path })
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files?${params}`)
-  if (!response.ok) await throwProjectFileError(response)
-  return projectFilesResponseSchema.parse(await response.json())
-}
-
-export async function fetchProjectFile(projectId: string, path: string): Promise<ProjectFileResponse> {
-  const params = new URLSearchParams({ path })
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/file?${params}`)
-  if (!response.ok) await throwProjectFileError(response)
-  return projectFileResponseSchema.parse(await response.json())
-}
-
-export async function fetchProjectFileImage(projectId: string, path: string): Promise<Blob> {
-  const params = new URLSearchParams({ path })
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/file/image?${params}`)
-  if (!response.ok) await throwProjectFileError(response)
-  return response.blob()
-}
-
-export async function fetchProjectFilesGit(projectId: string): Promise<ProjectFilesGitResponse> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files/git`)
-  if (!response.ok) await throwProjectFileError(response)
-  return projectFilesGitResponseSchema.parse(await response.json())
-}
-
-export async function fetchProjectFileDiff(projectId: string, path: string): Promise<ProjectFileDiffResponse> {
-  const params = new URLSearchParams({ path })
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/file/diff?${params}`)
-  if (!response.ok) await throwProjectFileError(response)
-  return projectFileDiffResponseSchema.parse(await response.json())
-}
-
-export async function fetchProjects(cursor: string | null = null, limit = 20): Promise<ProjectsResponse> {
-  const params = new URLSearchParams({ limit: String(limit) })
-  if (cursor) params.set('cursor', cursor)
-  const response = await fetch(`/api/projects?${params}`)
-  if (!response.ok) await throwRequestError(response, 'Projects')
-  return projectsResponseSchema.parse(await response.json())
-}
-
-export async function fetchProjectSessions(projectId: string, cursor: string | null = null, limit = 10): Promise<ProjectSessionsResponse> {
-  const params = new URLSearchParams({ limit: String(limit) })
-  if (cursor) params.set('cursor', cursor)
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`)
-  if (!response.ok) await throwRequestError(response, 'Project sessions')
-  return projectSessionsResponseSchema.parse(await response.json())
-}
-
-export async function queryProjectSessions(projects: Array<{ projectId: string; limit: number; selectedSessionId?: string }>): Promise<ProjectSessionsQueryResponse> {
-  const response = await fetch('/api/project-sessions/query', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projects }),
-  })
-  if (!response.ok) throw new Error(`Project sessions query failed: ${response.status}`)
-  return projectSessionsQueryResponseSchema.parse(await response.json())
-}
-
-export async function searchProjectSessions(query: string, cursor: string | null = null): Promise<ProjectSessionSearchResponse> {
-  const response = await fetch('/api/project-sessions/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, ...(cursor ? { cursor } : {}) }),
-  })
-  if (!response.ok) await throwRequestError(response, 'Project sessions search')
-  return projectSessionSearchResponseSchema.parse(await response.json())
-}
-
-export async function fetchRemoteBots(): Promise<RemoteBotsResponse> {
-  const response = await fetch('/api/remote-bots')
-  if (!response.ok) throw new Error(`Remote bots request failed: ${response.status}`)
-  return remoteBotsResponseSchema.parse(await response.json())
-}
-
-async function remoteBotRequest<T>(path: string, method: string, schema: { parse(value: unknown): T }, body?: unknown): Promise<T> {
-  const response = await fetch(path, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) })
-  if (!response.ok) throw new Error(`Remote bot request failed: ${response.status}`)
-  return schema.parse(await response.json())
-}
-
-export function createRemoteBot(bot: CreateRemoteBotRequest): Promise<RemoteBotResponse> {
-  return remoteBotRequest('/api/remote-bots', 'POST', remoteBotResponseSchema, bot)
-}
-
-export function updateRemoteBot(botId: string, update: UpdateRemoteBotRequest): Promise<RemoteBotResponse> {
-  return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}`, 'PUT', remoteBotResponseSchema, update)
-}
-
-export function deleteRemoteBot(botId: string): Promise<RemoteBotMutationResponse> {
-  return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}`, 'DELETE', remoteBotMutationResponseSchema)
-}
-
-export function resolveRemoteBot(botId: string, chatId: string): Promise<RemoteBotResolveResponse> {
-  return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}/resolve`, 'POST', remoteBotResolveResponseSchema, { chatId })
-}
-
-export function bindRemoteBot(botId: string, chatId: string): Promise<RemoteBotResponse> {
-  return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}/bind`, 'POST', remoteBotResponseSchema, { chatId })
-}
-
-export function unpairRemoteBot(botId: string): Promise<RemoteBotMutationResponse> {
-  return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}/unpair`, 'POST', remoteBotMutationResponseSchema)
-}
-
-export async function fetchSettings(): Promise<SettingsResponse> {
-  const response = await fetch('/api/settings')
-  if (!response.ok) throw new Error(`Settings request failed: ${response.status}`)
-  return settingsResponseSchema.parse(await response.json())
-}
-
-export async function saveSettings(settings: AppSettingsUpdate): Promise<SettingsResponse> {
-  const response = await fetch('/api/settings', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ settings }),
-  })
-  if (!response.ok) throw new Error(`Settings save failed: ${response.status}`)
-  return settingsResponseSchema.parse(await response.json())
-}
-
-export async function refreshModelCatalog(projectId: string | null): Promise<SettingsResponse> {
-  const params = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
-  const response = await fetch(`/api/settings/model-catalog/refresh${params}`, { method: 'POST' })
-  if (!response.ok) throw new Error(`Model catalog refresh failed: ${response.status}`)
-  return settingsResponseSchema.parse(await response.json())
-}
-
-export async function fetchGitHubConfig(): Promise<GitHubConfig> {
-  const response = await fetch('/api/settings/github')
-  if (!response.ok) throw new Error(`GitHub config load failed: ${response.status}`)
-  return githubConfigSchema.parse(await response.json())
-}
-
-export async function saveGitHubConfig(config: GitHubConfig): Promise<GitHubConfig> {
-  const response = await fetch('/api/settings/github', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  })
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new Error(body?.error ? `GitHub config save failed: ${body.error}` : `GitHub config save failed: ${response.status}`)
+  async function fetchDailyUsage(days: number, timeZone: string): Promise<TokenUsageDailyResponse> {
+    const params = new URLSearchParams({ days: String(days), timeZone })
+    const response = await transport.fetch(`/api/token-usage/daily?${params}`)
+    if (!response.ok) throw new Error(`Daily usage request failed: ${response.status}`)
+    return tokenUsageDailyResponseSchema.parse(await response.json())
   }
-  return githubConfigSchema.parse(await response.json())
-}
 
-export async function fetchSessionTimeline(
-  sessionId: string,
-  options: { cursor?: string; fromTurnId?: string; anchorTurnId?: string; limitTurns?: number; waitContext?: boolean; pendingSubmissionUuid?: string } = {},
-): Promise<SessionTimelineResponse> {
-  if ([options.cursor, options.fromTurnId, options.anchorTurnId].filter(Boolean).length > 1) throw new Error('Timeline cursor, fromTurnId, and anchorTurnId are mutually exclusive')
-  const params = new URLSearchParams({ limitTurns: String(options.limitTurns ?? 20) })
-  if (options.cursor) params.set('cursor', options.cursor)
-  if (options.fromTurnId) params.set('fromTurnId', options.fromTurnId)
-  if (options.anchorTurnId) params.set('anchorTurnId', options.anchorTurnId)
-  if (options.waitContext) params.set('waitContext', 'true')
-  if (options.pendingSubmissionUuid) params.set('pendingSubmissionUuid', options.pendingSubmissionUuid)
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`)
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    if (response.status === 409 && (body?.error === 'timeline_cursor_stale' || body?.error === 'timeline_invalidation_stale' || body?.error === 'timeline_anchor_stale'))
-      throw new TimelineSnapshotStaleError(body.error)
-    throw new Error(`Session timeline request failed: ${response.status}`)
+  async function refreshUsage(): Promise<void> {
+    const response = await transport.fetch('/api/token-usage/refresh', { method: 'POST' })
+    if (!response.ok) throw new Error(`Usage refresh failed: ${response.status}`)
   }
-  return sessionTimelineResponseSchema.parse(await response.json())
-}
 
-export async function fetchSessionProject(sessionId: string): Promise<SessionProjectResponse | null> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/project`)
-  if (response.status === 404) return null
-  if (!response.ok) throw new Error(`Session project request failed: ${response.status}`)
-  return sessionProjectResponseSchema.parse(await response.json())
-}
-
-export async function fetchSessionTimelineControl(sessionId: string, options: { waitContext?: boolean } = {}): Promise<SessionTimelineControlResponse> {
-  const params = new URLSearchParams({ scope: 'control' })
-  if (options.waitContext) params.set('waitContext', 'true')
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`)
-  if (!response.ok) throw new Error(`Session timeline control request failed: ${response.status}`)
-  return sessionTimelineControlResponseSchema.parse(await response.json())
-}
-
-export async function saveTurnOptions(sessionId: string, options: TurnOptionsUpdateRequest): Promise<void> {
-  turnOptionsUpdateRequestSchema.parse(options)
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/turn-options`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(options),
-  })
-  if (!response.ok) throw new Error(`Turn options save failed: ${response.status}`)
-}
-
-export async function respondToToolApproval(sessionId: string, requestId: string, decision: ToolApprovalDecisionRequest): Promise<ToolApprovalDecisionResponse> {
-  toolApprovalDecisionRequestSchema.parse(decision)
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(decision),
-  })
-  if (!response.ok) throw new Error(`Permission response failed: ${response.status}`)
-  return toolApprovalDecisionResponseSchema.parse(await response.json())
-}
-
-export async function respondToQuestion(sessionId: string, requestId: string, decision: AskUserQuestionDecisionRequest): Promise<ToolApprovalDecisionResponse> {
-  askUserQuestionDecisionRequestSchema.parse(decision)
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(requestId)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(decision),
-  })
-  if (!response.ok) throw new Error(`Question response failed: ${response.status}`)
-  return toolApprovalDecisionResponseSchema.parse(await response.json())
-}
-
-export async function fetchLocalMessageImage(
-  sessionId: string,
-  messageUuid: string,
-  input: { src: string; confirmedExternal: boolean; confirmedLarge: boolean; expectedConfirmation?: LocalImageConfirmation; agentId?: string },
-  signal?: AbortSignal,
-): Promise<Blob> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageUuid)}/local-image`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-    signal,
-  })
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      error?: string
-      size?: number
-      external?: boolean
-      resolvedPath?: string
-      confirmation?: LocalImageConfirmation
-    } | null
-    throw new LocalImageHttpError(response.status, body?.error ?? null, body?.size, body?.external, body?.resolvedPath, body?.confirmation)
+  async function fetchAuthSession(): Promise<AuthSessionResponse> {
+    const response = await transport.fetch('/api/auth/session')
+    if (!response.ok) throw new Error(`Auth session request failed: ${response.status}`)
+    return authSessionResponseSchema.parse(await response.json())
   }
-  return response.blob()
-}
 
-export async function fetchSessionRawMessages(sessionId: string, turnId: string): Promise<SessionRawMessagesResponse> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/raw-messages?turnId=${encodeURIComponent(turnId)}`)
-  if (!response.ok) throw new Error(`Session raw messages request failed: ${response.status}`)
-  return sessionRawMessagesResponseSchema.parse(await response.json())
-}
-
-export async function fetchTurnSubagentsTree(sessionId: string, turnId: string): Promise<TurnSubagentsTreeResponse> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/subagents/tree`)
-  if (!response.ok) throw new Error(`Turn subagents tree request failed: ${response.status}`)
-  return turnSubagentsTreeResponseSchema.parse(await response.json())
-}
-
-export async function fetchTurnSubagentTranscript(sessionId: string, turnId: string, agentId: string): Promise<TurnSubagentTranscriptResponse> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/subagents/${encodeURIComponent(agentId)}/transcript`)
-  if (!response.ok) throw new Error(`Turn subagent transcript request failed: ${response.status}`)
-  return turnSubagentTranscriptResponseSchema.parse(await response.json())
-}
-
-export async function fetchSessionPins(): Promise<SessionPinsResponse> {
-  const response = await fetch('/api/session-pins')
-  if (!response.ok) throw new Error(`Session pins request failed: ${response.status}`)
-  return sessionPinsResponseSchema.parse(await response.json())
-}
-
-export async function setSessionPinned(sessionId: string, pinned: boolean): Promise<SessionPinUpdateResponse> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned }) })
-  if (!response.ok) throw new Error(`Session pin request failed: ${response.status}`)
-  return sessionPinUpdateResponseSchema.parse(await response.json())
-}
-
-export async function deleteSession(projectId: string, sessionId: string, confirmationSessionId: string): Promise<DeleteSessionResponse> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/delete`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmationSessionId }),
-  })
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    if (body?.error === 'session_not_found_after_interrupt') throw new Error('The session was no longer found during deletion. Refresh the session list.')
-    if (body?.error === 'session_delete_failed_after_interrupt') throw new Error('The running turn was interrupted, but the session could not be deleted. You can retry deleting it.')
-    if (body?.error === 'session_delete_runtime_close_failed') throw new Error('The running turn could not be stopped, so the session was not deleted. You can retry deleting it.')
-    throw new Error(`Session delete request failed: ${response.status}`)
+  async function fetchDetail(token: string): Promise<DetailResponse> {
+    const response = await transport.fetch(`/api/detail/${encodeURIComponent(token)}`, { cache: 'no-store' })
+    if (!response.ok) throw new DetailUnavailableError(`Detail unavailable: ${response.status}`)
+    return detailResponseSchema.parse(await response.json())
   }
-  return deleteSessionResponseSchema.parse(await response.json())
-}
 
-export async function renameSession(projectId: string, sessionId: string, title: string): Promise<RenameSessionResponse> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/rename`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
-  })
-  if (!response.ok) throw new Error(`Session rename request failed: ${response.status}`)
-  return renameSessionResponseSchema.parse(await response.json())
-}
-
-export async function forkSession(projectId: string, sessionId: string, upToMessageId?: string): Promise<ForkSessionResponse> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/fork`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(upToMessageId ? { upToMessageId } : {}),
-  })
-  if (!response.ok) throw new Error(`Session fork request failed: ${response.status}`)
-  return forkSessionResponseSchema.parse(await response.json())
-}
-
-export async function refreshProjects(projectId: string | null = null): Promise<void> {
-  const path = projectId ? `/api/projects/${encodeURIComponent(projectId)}/refresh` : '/api/projects/refresh'
-  const response = await fetch(path, { method: 'POST' })
-  if (!response.ok) throw new Error(`Projects refresh request failed: ${response.status}`)
-}
-
-export function connectListVersions(onEvent: (event: ListVersionsEvent) => void, onError?: () => void, selected?: { projectId: string; sessionId: string } | null): EventSource {
-  const params = new URLSearchParams()
-  if (selected) {
-    params.set('projectId', selected.projectId)
-    params.set('sessionId', selected.sessionId)
+  async function fetchShare(token: string): Promise<DetailResponse> {
+    const response = await transport.fetch(`/api/share/${encodeURIComponent(token)}`, { cache: 'no-store' })
+    if (!response.ok) throw new ShareUnavailableError(`Share unavailable: ${response.status}`)
+    return detailResponseSchema.parse(await response.json())
   }
-  const events = new EventSource(`/api/list-versions/events${params.size ? `?${params}` : ''}`)
-  events.onmessage = (message) => {
-    onEvent(listVersionsEventSchema.parse(JSON.parse(message.data)))
+
+  async function createShare(body: { detailToken: string } | { projectId: string; sessionId: string; turnId: string }): Promise<CreateShareResponse> {
+    const response = await transport.fetch('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(body) })
+    if (!response.ok) await throwRequestError(response, 'Share creation')
+    return createShareResponseSchema.parse(await response.json())
   }
-  if (onError) events.onerror = onError
-  return events
+
+  async function listShares(cursor: string | null = null): Promise<ShareListResponse> {
+    const params = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+    const response = await transport.fetch(`/api/shares${params}`)
+    if (!response.ok) throw new Error(`List shares failed: ${response.status}`)
+    return shareListResponseSchema.parse(await response.json())
+  }
+
+  async function revokeShare(token: string): Promise<void> {
+    const response = await transport.fetch(`/api/share/${encodeURIComponent(token)}/revoke`, { method: 'POST' })
+    if (!response.ok) throw new Error(`Revoke failed: ${response.status}`)
+  }
+
+  async function startGitHubDeviceLogin(): Promise<GitHubDeviceStartResponse> {
+    const response = await transport.fetch('/api/auth/github/device/start', { method: 'POST' })
+    if (!response.ok) throw new Error(`GitHub login start failed: ${response.status}`)
+    return githubDeviceStartResponseSchema.parse(await response.json())
+  }
+
+  async function pollGitHubDeviceLogin(flowId: string): Promise<GitHubDevicePollResponse> {
+    const response = await transport.fetch('/api/auth/github/device/poll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ flowId }),
+    })
+    if (response.status !== 202 && !response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      if (body?.error === 'forbidden') throw new Error('This GitHub account is not the allowed Cotta user.')
+      throw new Error(`GitHub login poll failed: ${body?.error ?? response.status}`)
+    }
+    return githubDevicePollResponseSchema.parse(await response.json())
+  }
+
+  // Model-backend providers (COTTA_MODEL_PROVIDERS) and the connect flow. Connecting authenticates
+  // the backend (not cotta) — same device-flow shape as GitHub login, but routes live under
+  // /api/provider/<id>/connect/ and the authorized poll carries no cotta user (GitHub login owns that).
+  async function fetchProviders(): Promise<ProvidersResponse> {
+    const response = await transport.fetch('/api/providers')
+    if (!response.ok) throw new Error(`Providers request failed: ${response.status}`)
+    return providersResponseSchema.parse(await response.json())
+  }
+
+  async function setActiveProvider(id: string | null): Promise<void> {
+    const response = await transport.fetch('/api/providers/active', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    if (!response.ok) throw new Error(`Set active provider failed: ${response.status}`)
+  }
+
+  async function startProviderConnect(id: string): Promise<DeviceConnectStart> {
+    const response = await transport.fetch(`/api/provider/${encodeURIComponent(id)}/connect/start`, { method: 'POST' })
+    if (!response.ok) throw new Error(`Connect start failed: ${response.status}`)
+    return deviceConnectStartSchema.parse(await response.json())
+  }
+
+  async function pollProviderConnect(id: string, flowId: string): Promise<DeviceConnectPoll> {
+    const response = await transport.fetch(`/api/provider/${encodeURIComponent(id)}/connect/poll`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ flowId }),
+    })
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      throw new Error(`Connect poll failed: ${body?.error ?? response.status}`)
+    }
+    return deviceConnectPollSchema.parse(await response.json())
+  }
+
+  async function logout(): Promise<LogoutResponse> {
+    const response = await transport.fetch('/api/auth/logout', { method: 'POST' })
+    if (!response.ok) throw new Error(`Logout failed: ${response.status}`)
+    return logoutResponseSchema.parse(await response.json())
+  }
+
+  async function fetchProjectFiles(projectId: string, path = ''): Promise<ProjectFilesResponse> {
+    const params = new URLSearchParams({ path })
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/files?${params}`)
+    if (!response.ok) await throwProjectFileError(response)
+    return projectFilesResponseSchema.parse(await response.json())
+  }
+
+  async function fetchProjectFile(projectId: string, path: string): Promise<ProjectFileResponse> {
+    const params = new URLSearchParams({ path })
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/file?${params}`)
+    if (!response.ok) await throwProjectFileError(response)
+    return projectFileResponseSchema.parse(await response.json())
+  }
+
+  async function fetchProjectFileImage(projectId: string, path: string): Promise<Blob> {
+    const params = new URLSearchParams({ path })
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/file/image?${params}`)
+    if (!response.ok) await throwProjectFileError(response)
+    return response.blob()
+  }
+
+  async function fetchProjectFilesGit(projectId: string): Promise<ProjectFilesGitResponse> {
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/files/git`)
+    if (!response.ok) await throwProjectFileError(response)
+    return projectFilesGitResponseSchema.parse(await response.json())
+  }
+
+  async function fetchProjectFileDiff(projectId: string, path: string): Promise<ProjectFileDiffResponse> {
+    const params = new URLSearchParams({ path })
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/file/diff?${params}`)
+    if (!response.ok) await throwProjectFileError(response)
+    return projectFileDiffResponseSchema.parse(await response.json())
+  }
+
+  async function fetchProjects(cursor: string | null = null, limit = 20): Promise<ProjectsResponse> {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (cursor) params.set('cursor', cursor)
+    const response = await transport.fetch(`/api/projects?${params}`)
+    if (!response.ok) await throwRequestError(response, 'Projects')
+    return projectsResponseSchema.parse(await response.json())
+  }
+
+  async function fetchProjectSessions(projectId: string, cursor: string | null = null, limit = 10): Promise<ProjectSessionsResponse> {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (cursor) params.set('cursor', cursor)
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params}`)
+    if (!response.ok) await throwRequestError(response, 'Project sessions')
+    return projectSessionsResponseSchema.parse(await response.json())
+  }
+
+  async function queryProjectSessions(projects: Array<{ projectId: string; limit: number; selectedSessionId?: string }>): Promise<ProjectSessionsQueryResponse> {
+    const response = await transport.fetch('/api/project-sessions/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects }),
+    })
+    if (!response.ok) throw new Error(`Project sessions query failed: ${response.status}`)
+    return projectSessionsQueryResponseSchema.parse(await response.json())
+  }
+
+  async function searchProjectSessions(query: string, cursor: string | null = null): Promise<ProjectSessionSearchResponse> {
+    const response = await transport.fetch('/api/project-sessions/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, ...(cursor ? { cursor } : {}) }),
+    })
+    if (!response.ok) await throwRequestError(response, 'Project sessions search')
+    return projectSessionSearchResponseSchema.parse(await response.json())
+  }
+
+  async function fetchRemoteBots(): Promise<RemoteBotsResponse> {
+    const response = await transport.fetch('/api/remote-bots')
+    if (!response.ok) throw new Error(`Remote bots request failed: ${response.status}`)
+    return remoteBotsResponseSchema.parse(await response.json())
+  }
+
+  async function remoteBotRequest<T>(path: string, method: string, schema: { parse(value: unknown): T }, body?: unknown): Promise<T> {
+    const response = await transport.fetch(path, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) })
+    if (!response.ok) throw new Error(`Remote bot request failed: ${response.status}`)
+    return schema.parse(await response.json())
+  }
+
+  function createRemoteBot(bot: CreateRemoteBotRequest): Promise<RemoteBotResponse> {
+    return remoteBotRequest('/api/remote-bots', 'POST', remoteBotResponseSchema, bot)
+  }
+
+  function updateRemoteBot(botId: string, update: UpdateRemoteBotRequest): Promise<RemoteBotResponse> {
+    return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}`, 'PUT', remoteBotResponseSchema, update)
+  }
+
+  function deleteRemoteBot(botId: string): Promise<RemoteBotMutationResponse> {
+    return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}`, 'DELETE', remoteBotMutationResponseSchema)
+  }
+
+  function resolveRemoteBot(botId: string, chatId: string): Promise<RemoteBotResolveResponse> {
+    return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}/resolve`, 'POST', remoteBotResolveResponseSchema, { chatId })
+  }
+
+  function bindRemoteBot(botId: string, chatId: string): Promise<RemoteBotResponse> {
+    return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}/bind`, 'POST', remoteBotResponseSchema, { chatId })
+  }
+
+  function unpairRemoteBot(botId: string): Promise<RemoteBotMutationResponse> {
+    return remoteBotRequest(`/api/remote-bots/${encodeURIComponent(botId)}/unpair`, 'POST', remoteBotMutationResponseSchema)
+  }
+
+  async function fetchSettings(): Promise<SettingsResponse> {
+    const response = await transport.fetch('/api/settings')
+    if (!response.ok) throw new Error(`Settings request failed: ${response.status}`)
+    return settingsResponseSchema.parse(await response.json())
+  }
+
+  async function saveSettings(settings: AppSettingsUpdate): Promise<SettingsResponse> {
+    const response = await transport.fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings }),
+    })
+    if (!response.ok) throw new Error(`Settings save failed: ${response.status}`)
+    return settingsResponseSchema.parse(await response.json())
+  }
+
+  async function refreshModelCatalog(projectId: string | null): Promise<SettingsResponse> {
+    const params = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+    const response = await transport.fetch(`/api/settings/model-catalog/refresh${params}`, { method: 'POST' })
+    if (!response.ok) throw new Error(`Model catalog refresh failed: ${response.status}`)
+    return settingsResponseSchema.parse(await response.json())
+  }
+
+  async function fetchGitHubConfig(): Promise<GitHubConfig> {
+    const response = await transport.fetch('/api/settings/github')
+    if (!response.ok) throw new Error(`GitHub config load failed: ${response.status}`)
+    return githubConfigSchema.parse(await response.json())
+  }
+
+  async function saveGitHubConfig(config: GitHubConfig): Promise<GitHubConfig> {
+    const response = await transport.fetch('/api/settings/github', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      throw new Error(body?.error ? `GitHub config save failed: ${body.error}` : `GitHub config save failed: ${response.status}`)
+    }
+    return githubConfigSchema.parse(await response.json())
+  }
+
+  async function fetchSessionTimeline(
+    sessionId: string,
+    options: { cursor?: string; fromTurnId?: string; anchorTurnId?: string; limitTurns?: number; waitContext?: boolean; pendingSubmissionUuid?: string } = {},
+  ): Promise<SessionTimelineResponse> {
+    if ([options.cursor, options.fromTurnId, options.anchorTurnId].filter(Boolean).length > 1) throw new Error('Timeline cursor, fromTurnId, and anchorTurnId are mutually exclusive')
+    const params = new URLSearchParams({ limitTurns: String(options.limitTurns ?? 20) })
+    if (options.cursor) params.set('cursor', options.cursor)
+    if (options.fromTurnId) params.set('fromTurnId', options.fromTurnId)
+    if (options.anchorTurnId) params.set('anchorTurnId', options.anchorTurnId)
+    if (options.waitContext) params.set('waitContext', 'true')
+    if (options.pendingSubmissionUuid) params.set('pendingSubmissionUuid', options.pendingSubmissionUuid)
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`)
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      if (response.status === 409 && (body?.error === 'timeline_cursor_stale' || body?.error === 'timeline_invalidation_stale' || body?.error === 'timeline_anchor_stale'))
+        throw new TimelineSnapshotStaleError(body.error)
+      throw new Error(`Session timeline request failed: ${response.status}`)
+    }
+    return sessionTimelineResponseSchema.parse(await response.json())
+  }
+
+  async function fetchSessionProject(sessionId: string): Promise<SessionProjectResponse | null> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/project`)
+    if (response.status === 404) return null
+    if (!response.ok) throw new Error(`Session project request failed: ${response.status}`)
+    return sessionProjectResponseSchema.parse(await response.json())
+  }
+
+  async function fetchSessionTimelineControl(sessionId: string, options: { waitContext?: boolean } = {}): Promise<SessionTimelineControlResponse> {
+    const params = new URLSearchParams({ scope: 'control' })
+    if (options.waitContext) params.set('waitContext', 'true')
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?${params}`)
+    if (!response.ok) throw new Error(`Session timeline control request failed: ${response.status}`)
+    return sessionTimelineControlResponseSchema.parse(await response.json())
+  }
+
+  async function saveTurnOptions(sessionId: string, options: TurnOptionsUpdateRequest): Promise<void> {
+    turnOptionsUpdateRequestSchema.parse(options)
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/turn-options`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    })
+    if (!response.ok) throw new Error(`Turn options save failed: ${response.status}`)
+  }
+
+  async function respondToToolApproval(sessionId: string, requestId: string, decision: ToolApprovalDecisionRequest): Promise<ToolApprovalDecisionResponse> {
+    toolApprovalDecisionRequestSchema.parse(decision)
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(decision),
+    })
+    if (!response.ok) throw new Error(`Permission response failed: ${response.status}`)
+    return toolApprovalDecisionResponseSchema.parse(await response.json())
+  }
+
+  async function respondToQuestion(sessionId: string, requestId: string, decision: AskUserQuestionDecisionRequest): Promise<ToolApprovalDecisionResponse> {
+    askUserQuestionDecisionRequestSchema.parse(decision)
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(requestId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(decision),
+    })
+    if (!response.ok) throw new Error(`Question response failed: ${response.status}`)
+    return toolApprovalDecisionResponseSchema.parse(await response.json())
+  }
+
+  async function fetchLocalMessageImage(
+    sessionId: string,
+    messageUuid: string,
+    input: { src: string; confirmedExternal: boolean; confirmedLarge: boolean; expectedConfirmation?: LocalImageConfirmation; agentId?: string },
+    signal?: AbortSignal,
+  ): Promise<Blob> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageUuid)}/local-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+      signal,
+    })
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as {
+        error?: string
+        size?: number
+        external?: boolean
+        resolvedPath?: string
+        confirmation?: LocalImageConfirmation
+      } | null
+      throw new LocalImageHttpError(response.status, body?.error ?? null, body?.size, body?.external, body?.resolvedPath, body?.confirmation)
+    }
+    return response.blob()
+  }
+
+  async function fetchSessionRawMessages(sessionId: string, turnId: string): Promise<SessionRawMessagesResponse> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/raw-messages?turnId=${encodeURIComponent(turnId)}`)
+    if (!response.ok) throw new Error(`Session raw messages request failed: ${response.status}`)
+    return sessionRawMessagesResponseSchema.parse(await response.json())
+  }
+
+  async function fetchTurnSubagentsTree(sessionId: string, turnId: string): Promise<TurnSubagentsTreeResponse> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/subagents/tree`)
+    if (!response.ok) throw new Error(`Turn subagents tree request failed: ${response.status}`)
+    return turnSubagentsTreeResponseSchema.parse(await response.json())
+  }
+
+  async function fetchTurnSubagentTranscript(sessionId: string, turnId: string, agentId: string): Promise<TurnSubagentTranscriptResponse> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/subagents/${encodeURIComponent(agentId)}/transcript`)
+    if (!response.ok) throw new Error(`Turn subagent transcript request failed: ${response.status}`)
+    return turnSubagentTranscriptResponseSchema.parse(await response.json())
+  }
+
+  async function fetchSessionPins(): Promise<SessionPinsResponse> {
+    const response = await transport.fetch('/api/session-pins')
+    if (!response.ok) throw new Error(`Session pins request failed: ${response.status}`)
+    return sessionPinsResponseSchema.parse(await response.json())
+  }
+
+  async function setSessionPinned(sessionId: string, pinned: boolean): Promise<SessionPinUpdateResponse> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned }) })
+    if (!response.ok) throw new Error(`Session pin request failed: ${response.status}`)
+    return sessionPinUpdateResponseSchema.parse(await response.json())
+  }
+
+  async function deleteSession(projectId: string, sessionId: string, confirmationSessionId: string): Promise<DeleteSessionResponse> {
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmationSessionId }),
+    })
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      if (body?.error === 'session_not_found_after_interrupt') throw new Error('The session was no longer found during deletion. Refresh the session list.')
+      if (body?.error === 'session_delete_failed_after_interrupt') throw new Error('The running turn was interrupted, but the session could not be deleted. You can retry deleting it.')
+      if (body?.error === 'session_delete_runtime_close_failed') throw new Error('The running turn could not be stopped, so the session was not deleted. You can retry deleting it.')
+      throw new Error(`Session delete request failed: ${response.status}`)
+    }
+    return deleteSessionResponseSchema.parse(await response.json())
+  }
+
+  async function renameSession(projectId: string, sessionId: string, title: string): Promise<RenameSessionResponse> {
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    })
+    if (!response.ok) throw new Error(`Session rename request failed: ${response.status}`)
+    return renameSessionResponseSchema.parse(await response.json())
+  }
+
+  async function forkSession(projectId: string, sessionId: string, upToMessageId?: string): Promise<ForkSessionResponse> {
+    const response = await transport.fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(upToMessageId ? { upToMessageId } : {}),
+    })
+    if (!response.ok) throw new Error(`Session fork request failed: ${response.status}`)
+    return forkSessionResponseSchema.parse(await response.json())
+  }
+
+  async function refreshProjects(projectId: string | null = null): Promise<void> {
+    const path = projectId ? `/api/projects/${encodeURIComponent(projectId)}/refresh` : '/api/projects/refresh'
+    const response = await transport.fetch(path, { method: 'POST' })
+    if (!response.ok) throw new Error(`Projects refresh request failed: ${response.status}`)
+  }
+
+  function connectListVersions(onEvent: (event: ListVersionsEvent) => void, onError?: () => void, selected?: { projectId: string; sessionId: string } | null): EventSource {
+    const params = new URLSearchParams()
+    if (selected) {
+      params.set('projectId', selected.projectId)
+      params.set('sessionId', selected.sessionId)
+    }
+    const events = transport.eventSource(`/api/list-versions/events${params.size ? `?${params}` : ''}`)
+    events.onmessage = (message) => {
+      onEvent(listVersionsEventSchema.parse(JSON.parse(message.data)))
+    }
+    if (onError) events.onerror = onError
+    return events
+  }
+
+  async function restartSessionRuntime(sessionId: string): Promise<RestartSessionRuntimeResponse> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/restart`, { method: 'POST' })
+    if (!response.ok) await throwRequestError(response, 'Session restart')
+    return restartSessionRuntimeResponseSchema.parse(await response.json())
+  }
+
+  async function ensureSessionRuntime(sessionId: string): Promise<SessionRuntimeResponse> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/runtime`, { method: 'POST' })
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      throw new SessionRuntimeHttpError(response.status, body?.error ?? null)
+    }
+    return sessionRuntimeResponseSchema.parse(await response.json())
+  }
+
+  async function createTurn(projectId: string, existingSessionId: string | null, sessionId: string, text: string, images: ComposerImage[], userMessageUuid: string): Promise<CreateTurnResponse> {
+    const path = existingSessionId ? `/api/sessions/${encodeURIComponent(existingSessionId)}/turns` : `/api/projects/${encodeURIComponent(projectId)}/sessions`
+    const response = await transport.fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, ...(text ? { text } : {}), ...(images.length ? { images } : {}), userMessageUuid }),
+    })
+    if (!response.ok) throw new CreateTurnHttpError(await responseErrorMessage(response))
+    return createTurnResponseSchema.parse(await response.json())
+  }
+
+  async function interruptTurn(sessionId: string): Promise<void> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, { method: 'POST' })
+    if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
+  }
+
+  /** Live run-state and timeline events for one session. The caller owns the stream and must close it. */
+  function connectSessionEvents(sessionId: string): EventSource {
+    return transport.eventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`)
+  }
+
+  /** File-tree and selected-file change events for one project. The caller owns the stream and must close it. */
+  function connectProjectFileEvents(projectId: string, params: URLSearchParams): EventSource {
+    return transport.eventSource(`/api/projects/${encodeURIComponent(projectId)}/files/events${params.size ? `?${params}` : ''}`)
+  }
+
+  /** Opens the backend's single terminal session. The caller owns the socket and must close it. */
+  function connectTerminal(): WebSocket {
+    return transport.webSocket('/api/terminal')
+  }
+
+  /** Whether the backend can start a sandboxed terminal. */
+  async function fetchTerminalAvailability(): Promise<boolean> {
+    const response = await transport.fetch('/api/terminal')
+    if (!response.ok) throw new Error(`Terminal availability request failed: ${response.status}`)
+    const body = (await response.json()) as { available?: unknown }
+    if (typeof body.available !== 'boolean') throw new Error('Terminal availability response is invalid')
+    return body.available
+  }
+
+  async function terminateTerminal(): Promise<void> {
+    const response = await transport.fetch('/api/terminal', { method: 'DELETE' })
+    if (!response.ok) throw new Error(`Terminal terminate failed: ${response.status}`)
+  }
+
+  /** Backend path of a token-bound anonymous (detail/share) image asset. */
+  function anonymousAssetPath(kind: 'detail' | 'share', token: string, src: string): string {
+    return `/api/${kind}/${encodeURIComponent(token)}/asset?src=${encodeURIComponent(src)}`
+  }
+
+  /** Loads an anonymous image asset path built by `anonymousAssetPath`; the caller interprets the status. */
+  function fetchAnonymousAsset(path: string, confirmed: boolean, signal?: AbortSignal): Promise<Response> {
+    return transport.fetch(confirmed ? `${path}&confirmed=1` : path, { cache: 'no-store', signal })
+  }
+  return {
+    createTurn,
+    interruptTurn,
+    connectSessionEvents,
+    connectProjectFileEvents,
+    connectTerminal,
+    fetchTerminalAvailability,
+    terminateTerminal,
+    anonymousAssetPath,
+    fetchAnonymousAsset,
+    fetchBuildInfo,
+    fetchUsage,
+    fetchDailyUsage,
+    refreshUsage,
+    fetchAuthSession,
+    fetchDetail,
+    fetchShare,
+    createShare,
+    listShares,
+    revokeShare,
+    startGitHubDeviceLogin,
+    pollGitHubDeviceLogin,
+    fetchProviders,
+    setActiveProvider,
+    startProviderConnect,
+    pollProviderConnect,
+    logout,
+    fetchProjectFiles,
+    fetchProjectFile,
+    fetchProjectFileImage,
+    fetchProjectFilesGit,
+    fetchProjectFileDiff,
+    fetchProjects,
+    fetchProjectSessions,
+    queryProjectSessions,
+    searchProjectSessions,
+    fetchRemoteBots,
+    createRemoteBot,
+    updateRemoteBot,
+    deleteRemoteBot,
+    resolveRemoteBot,
+    bindRemoteBot,
+    unpairRemoteBot,
+    fetchSettings,
+    saveSettings,
+    refreshModelCatalog,
+    fetchGitHubConfig,
+    saveGitHubConfig,
+    fetchSessionTimeline,
+    fetchSessionProject,
+    fetchSessionTimelineControl,
+    saveTurnOptions,
+    respondToToolApproval,
+    respondToQuestion,
+    fetchLocalMessageImage,
+    fetchSessionRawMessages,
+    fetchTurnSubagentsTree,
+    fetchTurnSubagentTranscript,
+    fetchSessionPins,
+    setSessionPinned,
+    deleteSession,
+    renameSession,
+    forkSession,
+    refreshProjects,
+    connectListVersions,
+    restartSessionRuntime,
+    ensureSessionRuntime,
+  }
 }
 
-export async function restartSessionRuntime(sessionId: string): Promise<RestartSessionRuntimeResponse> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/restart`, { method: 'POST' })
-  if (!response.ok) await throwRequestError(response, 'Session restart')
-  return restartSessionRuntimeResponseSchema.parse(await response.json())
-}
+export type CottaApi = ReturnType<typeof createCottaApi>
 
-export async function ensureSessionRuntime(sessionId: string): Promise<SessionRuntimeResponse> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/runtime`, { method: 'POST' })
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new SessionRuntimeHttpError(response.status, body?.error ?? null)
-  }
-  return sessionRuntimeResponseSchema.parse(await response.json())
-}
+/** The API bound to the backend that served this page. */
+export const cottaApi: CottaApi = createCottaApi(sameOriginTransport)
+
+export const {
+  createTurn,
+  interruptTurn,
+  connectSessionEvents,
+  connectProjectFileEvents,
+  connectTerminal,
+  fetchTerminalAvailability,
+  terminateTerminal,
+  anonymousAssetPath,
+  fetchAnonymousAsset,
+  fetchBuildInfo,
+  fetchUsage,
+  fetchDailyUsage,
+  refreshUsage,
+  fetchAuthSession,
+  fetchDetail,
+  fetchShare,
+  createShare,
+  listShares,
+  revokeShare,
+  startGitHubDeviceLogin,
+  pollGitHubDeviceLogin,
+  fetchProviders,
+  setActiveProvider,
+  startProviderConnect,
+  pollProviderConnect,
+  logout,
+  fetchProjectFiles,
+  fetchProjectFile,
+  fetchProjectFileImage,
+  fetchProjectFilesGit,
+  fetchProjectFileDiff,
+  fetchProjects,
+  fetchProjectSessions,
+  queryProjectSessions,
+  searchProjectSessions,
+  fetchRemoteBots,
+  createRemoteBot,
+  updateRemoteBot,
+  deleteRemoteBot,
+  resolveRemoteBot,
+  bindRemoteBot,
+  unpairRemoteBot,
+  fetchSettings,
+  saveSettings,
+  refreshModelCatalog,
+  fetchGitHubConfig,
+  saveGitHubConfig,
+  fetchSessionTimeline,
+  fetchSessionProject,
+  fetchSessionTimelineControl,
+  saveTurnOptions,
+  respondToToolApproval,
+  respondToQuestion,
+  fetchLocalMessageImage,
+  fetchSessionRawMessages,
+  fetchTurnSubagentsTree,
+  fetchTurnSubagentTranscript,
+  fetchSessionPins,
+  setSessionPinned,
+  deleteSession,
+  renameSession,
+  forkSession,
+  refreshProjects,
+  connectListVersions,
+  restartSessionRuntime,
+  ensureSessionRuntime,
+} = cottaApi

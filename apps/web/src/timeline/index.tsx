@@ -13,7 +13,16 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { createShare, fetchSessionRawMessages, fetchSessionTimeline, fetchSessionTimelineControl, fetchTurnSubagentsTree, fetchTurnSubagentTranscript, TimelineSnapshotStaleError } from '../api'
+import {
+  connectSessionEvents,
+  createShare,
+  fetchSessionRawMessages,
+  fetchSessionTimeline,
+  fetchSessionTimelineControl,
+  fetchTurnSubagentsTree,
+  fetchTurnSubagentTranscript,
+  TimelineSnapshotStaleError,
+} from '../api'
 import { sessionQueryKeys } from '../app/session-query-refresh'
 import {
   AssistantResponseFrameView,
@@ -600,7 +609,7 @@ function useSessionTimelineData(
   useEffect(() => {
     if (!sessionId) return
     let active = true
-    const events = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`)
+    const events = connectSessionEvents(sessionId)
     events.onmessage = (message) => {
       if (!active) return
       let raw: unknown

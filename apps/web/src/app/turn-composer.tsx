@@ -5,8 +5,6 @@ import {
   COMPOSER_IMAGES_MAX_BYTES,
   COMPOSER_IMAGES_MAX_COUNT,
   type ComposerImage,
-  type CreateTurnResponse,
-  createTurnResponseSchema,
   type DefaultTurnOption,
   type EffortLevel,
   inspectComposerImage,
@@ -26,7 +24,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import type { CSSProperties, Dispatch, SetStateAction } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { refreshProjects, saveTurnOptions } from '../api'
+import { CreateTurnHttpError, createTurn, interruptTurn, refreshProjects, saveTurnOptions } from '../api'
 import { type SubmitState, submitStateFor, type TurnPhase } from '../timeline'
 import { composerActionMode, composerControlLabel, composerSessionBusy, composerSubmitBlocked, UNKNOWN_SUBMISSION_RECOVERY_MS } from './composer-core'
 import { sessionQueryKeys } from './session-query-refresh'
@@ -60,21 +58,6 @@ function contextCategoryWidth(tokens: number, maxTokens: number): string {
   return `${contextWindowPercentage(tokens, maxTokens) ?? 0}%`
 }
 
-class CreateTurnHttpError extends Error {
-  constructor(message: string) {
-    super(message)
-  }
-}
-
-async function responseErrorMessage(response: Response): Promise<string> {
-  try {
-    const body = (await response.clone().json()) as { error?: unknown }
-    if (typeof body.error === 'string' && body.error) return body.error
-  } catch {}
-  const text = await response.text().catch(() => '')
-  return text || response.statusText || 'Request failed'
-}
-
 function createUserMessageUuid(): string {
   if (crypto.randomUUID) return crypto.randomUUID()
   const bytes = crypto.getRandomValues(new Uint8Array(16))
@@ -82,22 +65,6 @@ function createUserMessageUuid(): string {
   bytes[8] = (bytes[8]! & 0x3f) | 0x80
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
-async function createTurn(projectId: string, existingSessionId: string | null, sessionId: string, text: string, images: ComposerImage[], userMessageUuid: string): Promise<CreateTurnResponse> {
-  const path = existingSessionId ? `/api/sessions/${encodeURIComponent(existingSessionId)}/turns` : `/api/projects/${encodeURIComponent(projectId)}/sessions`
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, ...(text ? { text } : {}), ...(images.length ? { images } : {}), userMessageUuid }),
-  })
-  if (!response.ok) throw new CreateTurnHttpError(await responseErrorMessage(response))
-  return createTurnResponseSchema.parse(await response.json())
-}
-
-async function interruptTurn(sessionId: string): Promise<void> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, { method: 'POST' })
-  if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
 }
 
 type PendingSubmissionBase = { projectId: string; sessionId: string; submissionUuid: string; phase: TurnPhase }

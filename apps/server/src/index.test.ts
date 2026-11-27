@@ -206,16 +206,17 @@ describe('server shutdown', () => {
           `
       import {query} from ${JSON.stringify(new URL('./claude-cli/query.ts', import.meta.url).href)};
       import {shutdownServer} from ${JSON.stringify(new URL('./index.ts', import.meta.url).href)};
+      import {closeServerResources} from ${JSON.stringify(new URL('./core.ts', import.meta.url).href)};
       const active=query({prompt:(async function*(){})(),options:{cwd:${JSON.stringify(root)}}});
       const closing=query({prompt:(async function*(){})(),options:{cwd:${JSON.stringify(root)}}});
       const catalogs=await Promise.all([active.initializationResult(),closing.initializationResult()]);
       process.send({pids:[active.pid,closing.pid,...catalogs.map(c=>c.toolPid)]});
       void closing.close();
       const close=()=>{};
-      shutdownServer({close}, {
+      shutdownServer({close}, () => closeServerResources({
         liveTurnManager:{closeAll:()=>new Promise(()=>{})},
         indexChangeNotifier:{close},rawTranscriptCoordinator:{close},turnMetaStore:{close},cottaDb:{close}
-      });
+      }));
     `,
         )
         const loader = createRequire(import.meta.url).resolve('tsx')
@@ -277,15 +278,14 @@ describe('server shutdown', () => {
     })
     const close = vi.fn()
     try {
-      shutdownServer(
-        { close: (done) => done() },
-        {
+      shutdownServer({ close: (done) => done() }, () =>
+        closeServerResources({
           liveTurnManager: { closeAll: () => resourcesClosed },
           indexChangeNotifier: { close },
           rawTranscriptCoordinator: { close },
           turnMetaStore: { close },
           cottaDb: { close },
-        },
+        }),
       )
       expect(calls).toEqual([])
       if (mode === 'deadline') {

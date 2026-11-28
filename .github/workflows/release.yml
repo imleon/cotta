@@ -18,7 +18,7 @@ jobs:
           cache: npm
       - run: npm ci
       # prepack builds shared + web, copies assets, and bundles the server into one ESM file.
-      # Pack from the repo root with --workspace cotta: `npm pack` inside apps/server fails with
+      # Pack from the repo root with --workspace cotta: `npm pack` inside apps/daemon fails with
       # ENOWORKSPACES, and prepack's `--prefix ../..` builds assume this root-relative layout.
       - name: Build tarball
         run: |

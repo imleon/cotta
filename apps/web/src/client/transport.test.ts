@@ -51,7 +51,7 @@ describe('createCottaApi', () => {
     target.respond(Response.json({ sessionId: 's/1', turnId: 't1', projectId: 'p1' }))
     await api.createTurn('p1', 's/1', 's/1', 'hello', [], 'uuid-1').catch(() => undefined)
     target.respond(new Response(null, { status: 204 }))
-    await api.interruptTurn('s/1')
+    await api.interruptTurn('s/1', 'u1')
     expect(api.connectSessionEvents('s/1')).toBe(target.eventSource)
     expect(api.connectProjectFileEvents('p/1', new URLSearchParams({ file: 'a b' }))).toBe(target.eventSource)
     expect(api.connectTerminal()).toBe(target.webSocket)

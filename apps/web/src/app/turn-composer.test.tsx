@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event'
 import { type ComponentProps, type ReactNode, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { saveTurnOptions } from '../api'
+import { fetchTurnSubmissionStatus, saveTurnOptions } from '../api'
 import { UNKNOWN_SUBMISSION_RECOVERY_MS } from './composer-core'
 import { type PendingSubmission, TurnComposer } from './turn-composer'
 
@@ -13,6 +13,8 @@ vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
   refreshProjects: vi.fn(),
   saveTurnOptions: vi.fn(),
+  // Default: the daemon is unreachable, so a lost acknowledgement stays unknown until the timeline confirms it.
+  fetchTurnSubmissionStatus: vi.fn(() => Promise.reject(new Error('offline'))),
 }))
 
 function renderComposer(ui: ReactNode) {
@@ -593,6 +595,77 @@ describe('TurnComposer session selection', () => {
     expect((screen.getByPlaceholderText('Describe a task or ask a question') as HTMLTextAreaElement).value).toBe('hello')
     expect(screen.getByRole('button', { name: 'Submit' }).hasAttribute('disabled')).toBe(false)
     vi.useRealTimers()
+  })
+
+  describe('when the submit acknowledgement is lost', () => {
+    function lostAckProps(): ComponentProps<typeof TurnComposer> {
+      return {
+        projectId: 'project-1',
+        selectedSessionId: 'session-a',
+        selectedSession: { id: 'session-a', projectId: 'project-1', title: 'A', occupiedBy: null, occupiedStatus: 'idle', kind: null },
+        activity: null,
+        liveSessionId: 'session-a',
+        liveUserMessageUuid: null,
+        latestTurnPhase: null,
+        pendingTurnId: null,
+        setSelectedSessionId: vi.fn(),
+        setPendingTurn: vi.fn(),
+        refreshSessionLists: vi.fn(),
+        onSessionCreated: vi.fn(),
+        settings: {
+          timeZone: 'Asia/Shanghai',
+          defaultModel: null,
+          defaultPermissionMode: 'default',
+          defaultEffort: 'medium',
+          useOneMillionContext: true,
+          autoCompactPercent: undefined,
+          showDebugNav: false,
+        },
+        sessionRuntime: null,
+        projectDirectoryUnavailable: false,
+        turnOptions: { permissionMode: 'default', model: null, effort: null },
+        externalPermissionMode: null,
+        contextUsage: null,
+        onNotify: vi.fn(),
+      }
+    }
+
+    function submit() {
+      fireEvent.change(screen.getByPlaceholderText('Describe a task or ask a question'), { target: { value: 'hello' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+    }
+
+    it('treats the turn as submitted when the daemon reports it arrived', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.reject(new Error('network'))),
+      )
+      vi.mocked(fetchTurnSubmissionStatus).mockImplementationOnce(async (sessionId, userMessageUuid) => ({ sessionId, userMessageUuid, status: 'running' }))
+      const props = lostAckProps()
+      renderComposer(<TurnComposer {...props} />)
+
+      submit()
+
+      await waitFor(() => expect((screen.getByPlaceholderText('Describe a task or ask a question') as HTMLTextAreaElement).value).toBe(''))
+      expect(fetchTurnSubmissionStatus).toHaveBeenCalledWith('session-a', expect.any(String))
+      expect(screen.queryByText(/Submission status unknown/)).toBeNull()
+      expect(props.refreshSessionLists).toHaveBeenCalledWith('project-1', 'session-a')
+    })
+
+    it('keeps the draft and says it can be resent when the daemon never received it', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() => Promise.reject(new Error('network'))),
+      )
+      vi.mocked(fetchTurnSubmissionStatus).mockImplementationOnce(async (sessionId, userMessageUuid) => ({ sessionId, userMessageUuid, status: 'not_found' }))
+      renderComposer(<TurnComposer {...lostAckProps()} />)
+
+      submit()
+
+      expect(await screen.findByText(/did not reach the server/)).toBeTruthy()
+      expect((screen.getByPlaceholderText('Describe a task or ask a question') as HTMLTextAreaElement).value).toBe('hello')
+      expect(screen.getByRole('button', { name: 'Submit' }).hasAttribute('disabled')).toBe(false)
+    })
   })
 
   it('synchronizes updated model and effort for the selected session', async () => {

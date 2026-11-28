@@ -2698,3 +2698,109 @@ iframe.project-file-image {
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
+
+/* ---- Main area panes (stage 3) ---- */
+
+.workspace-group > .layout-split {
+  min-width: 0;
+  min-height: 0;
+}
+
+.layout-panel {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-drop-target {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.pane-drop-target > .workspace-panel {
+  min-height: 0;
+}
+
+/* With several panes, the focused one is marked by its border; a single pane looks as before. */
+.workspace-group:has(.layout-separator) .workspace-panel[data-focused="true"] {
+  border-color: color-mix(in srgb, var(--interactive-default) 55%, var(--border-default));
+}
+
+.pane-drop-zone {
+  position: absolute;
+  z-index: 40;
+  border: 2px dashed color-mix(in srgb, var(--interactive-default) 70%, transparent);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--interactive-default) 10%, transparent);
+  pointer-events: none;
+}
+
+.pane-drop-zone[data-zone="center"] {
+  inset: 8px;
+}
+
+.pane-drop-zone[data-zone="left"] {
+  inset: 8px 50% 8px 8px;
+}
+
+.pane-drop-zone[data-zone="right"] {
+  inset: 8px 8px 8px 50%;
+}
+
+.pane-drop-zone[data-zone="top"] {
+  inset: 8px 8px 50% 8px;
+}
+
+.pane-drop-zone[data-zone="bottom"] {
+  inset: 50% 8px 8px 8px;
+}
+
+.workspace-pane-close {
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* Rail: open a session in a new pane, and mark sessions already open in another pane. */
+.session-row-split-button {
+  position: absolute;
+  top: 50%;
+  right: 58px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  padding: 0;
+  color: var(--text-secondary);
+  opacity: 0;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.session-row-split-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.session-row-wrap:hover .session-row-split-button,
+.session-row-split-button:focus-visible {
+  opacity: 1;
+}
+
+.session-row-split-button:hover {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+}
+
+.session-row-split-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.session-row[data-open-in-pane="true"] {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--interactive-default) 55%, transparent);
+}

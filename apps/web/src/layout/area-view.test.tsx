@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from '@testing-library/react'
+import { useEffect } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AreaView } from './area-view'
 import { createArea, type SessionTab, splitPane } from './layout-model'
@@ -24,11 +25,24 @@ function ids() {
 }
 
 describe('AreaView', () => {
-  it('renders a single pane with no wrapper around it', () => {
-    const area = createArea('main', session('s1'), ids())
-    const { container } = render(<AreaView area={area} onSplitSizesChange={vi.fn()} renderPane={(pane) => <section data-testid={pane.id}>pane</section>} />)
+  it('keeps the existing pane mounted when the area splits', () => {
+    const newId = ids()
+    const mounts: string[] = []
+    function Probe({ id }: { id: string }) {
+      useEffect(() => {
+        mounts.push(id)
+      }, [id])
+      return <section aria-label={id}>pane</section>
+    }
+    const single = createArea('main', session('s1'), newId)
+    const split = splitPane(single, single.focusedPaneId, 'right', session('s2'), newId)
+    if (!split) throw new Error('split failed')
+    const render_ = (area: typeof single) => <AreaView area={area} onSplitSizesChange={vi.fn()} renderPane={(pane) => <Probe id={pane.id} />} />
 
-    expect(container.firstElementChild?.getAttribute('data-testid')).toBe(area.focusedPaneId)
+    const view = render(render_(single))
+    view.rerender(render_(split))
+
+    expect(mounts).toEqual([single.focusedPaneId, split.focusedPaneId])
   })
 
   it('renders every pane of a split once, marking only the focused one', () => {

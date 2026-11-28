@@ -1,12 +1,11 @@
 import type { ReactNode } from 'react'
 import { Group, type Layout, Panel, Separator } from 'react-resizable-panels'
-import type { Area, LayoutNode, PaneNode } from './layout-model'
+import type { Area, LayoutNode, PaneNode, SplitNode } from './layout-model'
 
 export type AreaViewProps = {
   area: Area
   /**
-   * Renders one pane. The renderer owns the pane's own element (and its focus handling), so a single-pane area adds
-   * no wrapper around it.
+   * Renders one pane. The renderer owns the pane's own element and its focus handling.
    */
   renderPane: (pane: PaneNode, state: { focused: boolean }) => ReactNode
   onSplitSizesChange: (splitId: string, sizes: number[]) => void
@@ -20,10 +19,19 @@ export type AreaViewProps = {
  * Desktop and Web, so it touches nothing outside the tree it is given (no URL, no document title).
  */
 export function AreaView({ area, renderPane, onSplitSizesChange, minPaneSize = 280, className }: AreaViewProps) {
-  function node(current: LayoutNode): ReactNode {
-    if (current.type === 'pane') return renderPane(current, { focused: current.id === area.focusedPaneId })
+  function panel(child: LayoutNode, size: number) {
+    return (
+      <Panel key={child.id} id={child.id} defaultSize={String(size)} minSize={minPaneSize} className="layout-panel">
+        {node(child)}
+      </Panel>
+    )
+  }
+
+  function group(current: SplitNode | PaneNode, key: string) {
+    const children: LayoutNode[] = current.type === 'pane' ? [current] : current.children
+    const sizes = current.type === 'pane' ? [100] : current.sizes
     const onLayoutChanged = (layout: Layout, meta: { isUserInteraction: boolean; requestedLayout?: Layout }) => {
-      if (!meta.isUserInteraction) return
+      if (!meta.isUserInteraction || current.type !== 'split') return
       const source = meta.requestedLayout ?? layout
       onSplitSizesChange(
         current.id,
@@ -32,22 +40,23 @@ export function AreaView({ area, renderPane, onSplitSizesChange, minPaneSize = 2
     }
     return (
       <Group
-        key={current.id}
-        id={current.id}
-        orientation={current.direction === 'row' ? 'horizontal' : 'vertical'}
+        key={key}
+        id={`${area.kind}:${key}`}
+        orientation={current.type === 'split' && current.direction === 'column' ? 'vertical' : 'horizontal'}
         onLayoutChanged={onLayoutChanged}
-        className="layout-split"
-        data-direction={current.direction}
+        className={className ? `layout-split ${className}` : 'layout-split'}
+        data-direction={current.type === 'split' ? current.direction : 'row'}
       >
-        {current.children.flatMap((child, index) => [
-          ...(index > 0 ? [<Separator key={`${child.id}:separator`} className="layout-separator" />] : []),
-          <Panel key={child.id} id={child.id} defaultSize={String(current.sizes[index] ?? 100 / current.children.length)} minSize={minPaneSize} className="layout-panel">
-            {node(child)}
-          </Panel>,
-        ])}
+        {children.flatMap((child, index) => [...(index > 0 ? [<Separator key={`${child.id}:separator`} className="layout-separator" />] : []), panel(child, sizes[index] ?? 100 / children.length)])}
       </Group>
     )
   }
 
-  return className && area.root.type === 'split' ? <div className={className}>{node(area.root)}</div> : node(area.root)
+  function node(current: LayoutNode): ReactNode {
+    return current.type === 'pane' ? renderPane(current, { focused: current.id === area.focusedPaneId }) : group(current, current.id)
+  }
+
+  // The root is always one group with a stable key, so a pane keeps its React identity (Timeline, drafts, scroll,
+  // terminal connection) when the area goes from one pane to several side by side.
+  return group(area.root, 'root')
 }

@@ -4,6 +4,7 @@ import { type FormEvent, type UIEvent as ReactUIEvent, useCallback, useEffect, u
 import { PaginationCursorStaleError } from '../api'
 import { useMachineApi } from '../client/machine-scope'
 import { formatAge } from '../format-age'
+import { useRailPanes, writeDraggedSession } from '../layout/session-drag'
 import { sessionQueryKeys } from './session-query-refresh'
 
 function statusTone(session: SessionSummary): string {
@@ -457,6 +458,8 @@ function SessionRow({
   onSelect: () => void
 } & SessionActionCallbacks) {
   const tag = session.kind && session.kind !== 'interactive' ? session.kind : session.hasRunningShell ? 'SHELL' : null
+  const panes = useRailPanes()
+  const openInPane = panes?.openSessionIds.has(session.id) ?? false
   return (
     <li className="session-row-wrap">
       <button
@@ -466,6 +469,9 @@ function SessionRow({
         aria-current={selected ? 'true' : undefined}
         data-session-id={session.id}
         data-highlighted-session={highlighted ? 'true' : undefined}
+        data-open-in-pane={openInPane && !selected ? 'true' : undefined}
+        draggable={panes ? true : undefined}
+        onDragStart={panes ? (event) => writeDraggedSession(event, { projectId, sessionId: session.id }) : undefined}
       >
         <div className="session-content">
           <div className="session-main">
@@ -476,6 +482,21 @@ function SessionRow({
         </div>
         <span className="session-age">{formatAge(session.lastActivityAt)}</span>
       </button>
+      {panes && !openInPane ? (
+        <button
+          type="button"
+          className="session-row-split-button"
+          aria-label={`Open ${session.title} to the right`}
+          title={panes.canOpenInSplit ? 'Open to the right' : 'The workspace already has four panes'}
+          disabled={!panes.canOpenInSplit}
+          onClick={() => panes.openInSplit({ projectId, sessionId: session.id })}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2" y="3" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" />
+            <path d="M8 3v10" stroke="currentColor" />
+          </svg>
+        </button>
+      ) : null}
       <SessionActions projectId={projectId} session={session} pinned={pinned} selected={selected} buttonClassName="session-row-menu-button" {...actions} />
     </li>
   )

@@ -1,4 +1,4 @@
-import { type AppSettings, appSettingsSchema, type ListVersionsEvent, type ProjectSessionSearchMatch, type ProjectSessionSearchResult } from '@cotta/shared'
+import { type AppSettings, appSettingsSchema, type ListVersionsEvent, type ProjectSessionSearchMatch, type ProjectSessionSearchResult, type ProjectSummary, type SessionSummary } from '@cotta/shared'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type PointerEvent as ReactPointerEvent, StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -56,7 +56,27 @@ import type { ToastState } from './app/turn-composer'
 import { WorkspacePaneToggleIcon } from './app/workspace-panel'
 import { SAME_ORIGIN_MACHINE_ID, useMachineApi } from './client/machine-scope'
 import { AreaView } from './layout/area-view'
-import { type Area, activateTab, addTab, createArea, focusedPane, panes } from './layout/layout-model'
+import {
+  AREA_MAX_PANES,
+  type Area,
+  activateTab,
+  activeTab,
+  addTab,
+  closePane,
+  createArea,
+  defaultIdFactory,
+  focusedPane,
+  focusPane,
+  type PaneNode,
+  paneForSession,
+  panes,
+  replaceActiveTab,
+  type SessionTab,
+  type SplitSide,
+  setSplitSizes,
+  splitPane,
+} from './layout/layout-model'
+import { type DraggedSession, type DropZone, PaneDropTarget, type RailPanes, RailPanesProvider } from './layout/session-drag'
 import type { TimelineControlSignal, TranscriptSignal } from './timeline'
 import 'react-medium-image-zoom/dist/styles.css'
 import './styles.css'
@@ -81,6 +101,10 @@ function historyProjectId(): string | null {
 type SearchSelection = { kind: 'metadata'; result: ProjectSessionSearchResult } | { kind: 'message'; result: ProjectSessionSearchResult; match: ProjectSessionSearchMatch }
 
 type SearchTarget = { kind: 'message'; turnId: string; messageUuid: string; blockIndex?: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number }
+
+function sessionTab(projectId: string | null, sessionId: string | null): SessionTab {
+  return { kind: 'session', id: defaultIdFactory(), machineId: SAME_ORIGIN_MACHINE_ID, projectId, sessionId }
+}
 
 /** Files and Changes always; the machine terminal when the page was opened with `?terminal=1`. */
 function initialToolsArea(withTerminal: boolean): Area {
@@ -169,12 +193,22 @@ function WorkspaceShell() {
   const [, setUrlResolvedTick] = useState(0)
   const applyLocationSessionRef = useRef<(location: SessionLocation | null) => Promise<void>>(async () => {})
   const urlTurnId = searchNavigation?.sessionId === selectedSessionId ? searchNavigation.anchorTurnId : null
-  // Stage 3 step 1: the main area is a single session pane mirroring the current selection; the selection stays the
-  // source of truth until per-session state moves into panes.
-  const mainArea = useMemo(
-    () => createArea('main', { kind: 'session', id: 'main-session', machineId: SAME_ORIGIN_MACHINE_ID, projectId: selectedProjectId, sessionId: selectedSessionId }, () => 'main-pane'),
-    [selectedProjectId, selectedSessionId],
-  )
+  // The main area's panes. The focused pane always shows the shell's selection; other panes keep their own session.
+  const [mainArea, setMainArea] = useState<Area>(() => createArea('main', sessionTab(null, null)))
+  const mainPanes = panes(mainArea.root)
+  // Last known summaries, so a pane that is not focused can still title itself when its session is not in the rail cache.
+  const knownSessionsRef = useRef(new Map<string, SessionSummary>())
+  const knownProjectsRef = useRef(new Map<string, ProjectSummary>())
+  // Selection → focused pane. A session already open in another pane is focused there instead of duplicated.
+  useEffect(() => {
+    setMainArea((area) => {
+      const current = activeTab(focusedPane(area))
+      if (current.kind === 'session' && current.projectId === selectedProjectId && current.sessionId === selectedSessionId) return area
+      const elsewhere = selectedSessionId ? paneForSession(area, SAME_ORIGIN_MACHINE_ID, selectedSessionId) : null
+      if (elsewhere && elsewhere.id !== area.focusedPaneId) return focusPane(area, elsewhere.id)
+      return replaceActiveTab(area, area.focusedPaneId, sessionTab(selectedProjectId, selectedSessionId)) ?? area
+    })
+  }, [selectedProjectId, selectedSessionId])
   // Every pane's session, focused first: the list-version stream watches each and delivers each its signals.
   const openSessions = useMemo(() => {
     const focused = mainArea.focusedPaneId
@@ -483,6 +517,10 @@ function WorkspaceShell() {
     detail?.selectedSessionDetail ??
     selectedSessionFromRailCache(queryClient, selectedProjectId, selectedSessionId) ??
     sessionPins.data?.pins.find((pin) => pin.project.id === selectedProjectId && pin.session.id === selectedSessionId)?.session
+  useEffect(() => {
+    if (selectedSession) knownSessionsRef.current.set(selectedSession.id, selectedSession)
+    if (selectedProject) knownProjectsRef.current.set(selectedProject.id, selectedProject)
+  }, [selectedProject, selectedSession])
   const workspaceTitle = selectedProject?.name ?? (selection.selectedProjectSessionsQuery.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : '')
   const selectedSessionAvailable = Boolean(selectedSession)
   const pageTitle = activeAppNav === 'chat' ? (selectedSession?.title ?? selectedProject?.name) : APP_NAV_ITEMS.find((item) => item.key === activeAppNav)?.label
@@ -889,6 +927,190 @@ function WorkspaceShell() {
     requestAnimationFrame(() => document.getElementById('settings-account-heading')?.scrollIntoView({ block: 'start' }))
   }
 
+  /** Makes `pane` the focused pane and points the shell's selection at its session. */
+  function focusMainPane(pane: PaneNode) {
+    const tab = activeTab(pane)
+    setMainArea((area) => focusPane(area, pane.id))
+    if (tab.kind !== 'session') return
+    if (tab.projectId && tab.sessionId) handleSelectSession(tab.projectId, tab.sessionId)
+    else if (tab.projectId) startPendingProject(tab.projectId)
+    else beginNewConversation()
+  }
+
+  function closeMainPane(paneId: string) {
+    const next = closePane(mainArea, paneId)
+    if (!next) return
+    setMainArea(next)
+    if (next.focusedPaneId !== mainArea.focusedPaneId) focusMainPane(focusedPane(next))
+  }
+
+  /** Opens a rail session in a new pane beside `targetPaneId` (the focused pane by default), or focuses it if already open. */
+  function openSessionInSplit(session: DraggedSession, targetPaneId = mainArea.focusedPaneId, side: SplitSide = 'right') {
+    const existing = paneForSession(mainArea, SAME_ORIGIN_MACHINE_ID, session.sessionId)
+    if (existing) {
+      focusMainPane(existing)
+      return
+    }
+    const next = splitPane(mainArea, targetPaneId, side, sessionTab(session.projectId, session.sessionId))
+    if (!next) return
+    setMainArea(next)
+    handleSelectSession(session.projectId, session.sessionId)
+  }
+
+  function dropSessionOnPane(paneId: string, zone: DropZone, session: DraggedSession) {
+    if (zone !== 'center') {
+      openSessionInSplit(session, paneId, zone)
+      return
+    }
+    const existing = paneForSession(mainArea, SAME_ORIGIN_MACHINE_ID, session.sessionId)
+    if (existing) {
+      focusMainPane(existing)
+      return
+    }
+    setMainArea((area) => focusPane(area, paneId))
+    handleSelectSession(session.projectId, session.sessionId)
+  }
+
+  /** One main-area pane. The focused pane shows the shell's selection; the others show the session their tab holds. */
+  function renderMainPane(pane: PaneNode, focused: boolean) {
+    const tab = activeTab(pane) as SessionTab
+    const paneIndex = mainPanes.findIndex((candidate) => candidate.id === pane.id)
+    const isFirst = paneIndex <= 0
+    const isLast = paneIndex === mainPanes.length - 1
+    const canClose = mainPanes.length > 1
+    const paneProjectId = focused ? selectedProjectId : tab.projectId
+    const paneSessionId = focused ? selectedSessionId : tab.sessionId
+    const paneProject = focused ? selectedProject : paneProjectId ? (selection.projectList.find((project) => project.id === paneProjectId) ?? knownProjectsRef.current.get(paneProjectId)) : undefined
+    const paneSession = focused
+      ? selectedSession
+      : paneSessionId
+        ? (selectedSessionFromRailCache(queryClient, paneProjectId, paneSessionId) ??
+          sessionPins.data?.pins.find((pin) => pin.session.id === paneSessionId)?.session ??
+          knownSessionsRef.current.get(paneSessionId))
+        : undefined
+    const paneTitle = focused ? workspaceTitle : (paneProject?.name ?? (paneProjectId ? 'Project' : ''))
+    return (
+      <PaneDropTarget allowSides={mainPanes.length < AREA_MAX_PANES.main} onDropSession={(zone, dragged) => dropSessionOnPane(pane.id, zone, dragged)}>
+        <section
+          className="workspace-panel"
+          data-focused={focused ? 'true' : 'false'}
+          onPointerDownCapture={() => {
+            if (!focused) focusMainPane(pane)
+          }}
+        >
+          <div className="workspace-main-pane">
+            <div className="workspace-main-content">
+              {focused && selection.selectedProjectSessionsQuery.isError ? (
+                <div className="panel error workspace-panel-error">
+                  Failed to load project sessions: {selection.selectedProjectSessionsQuery.error instanceof Error ? selection.selectedProjectSessionsQuery.error.message : 'unknown error'}
+                </div>
+              ) : (
+                <SessionPane
+                  chatHeader={
+                    <header className="workspace-main-header workspace-panel-header">
+                      <div className="project-title-block">
+                        {isFirst ? (
+                          <button
+                            className="workspace-pane-toggle workspace-sidebar-toggle"
+                            type="button"
+                            onClick={toggleAppSidebar}
+                            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                            aria-expanded={!sidebarCollapsed}
+                            aria-controls="app-sidebar"
+                            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                          >
+                            <WorkspacePaneToggleIcon expanded={!sidebarCollapsed} />
+                          </button>
+                        ) : null}
+                        <div className="project-title-text">
+                          <div
+                            className="project-session-title"
+                            title={paneSession ? `${paneTitle} / ${paneSession.title}` : paneTitle || undefined}
+                            data-has-project={paneProjectId ? 'true' : 'false'}
+                            data-has-session={paneSession ? 'true' : 'false'}
+                            data-has-worktree={paneProject?.worktreeName ? 'true' : 'false'}
+                          >
+                            {paneProjectId ? (
+                              <svg viewBox="0 0 640 640" className="project-card-folder-icon" aria-hidden="true" data-icon="FolderOutlined">
+                                <path
+                                  d="M129.5 464 179.5 304h379.4l-50 160H129.5zM320.2 512H509c21 0 39.6-13.6 45.8-33.7l50-160c9.7-30.9-13.3-62.3-45.9-62.3H179.6c-21 0-39.6 13.6-45.8 33.7L112.2 358.4V160c0-8.8 7.2-16 16-16h138.7c3.5 0 6.8 1.1 9.6 3.2l38.4 28.8c13.8 10.4 30.7 16 48 16h117.3c8.8 0 16 7.2 16 16h48c0-35.3-28.7-64-64-64H362.9c-6.9 0-13.7-2.2-19.2-6.4l-38.4-28.8C294.2 100.5 280.8 96 266.9 96H128.2c-35.3 0-64 28.7-64 64v288c0 35.3 28.7 64 64 64h192z"
+                                  fill="currentColor"
+                                />
+                              </svg>
+                            ) : null}
+                            <span className="project-name">{paneTitle}</span>
+                            {paneProject?.worktreeName ? <WorktreeBadge name={paneProject.worktreeName} /> : null}
+                            {paneSession ? (
+                              <span className="project-session-identity">
+                                <span className="project-session-separator" aria-hidden="true">
+                                  /
+                                </span>
+                                <span className="project-session-name">{paneSession.title}</span>
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="project-meta-lines">
+                        {canClose ? (
+                          <button type="button" className="workspace-pane-toggle workspace-pane-close" onClick={() => closeMainPane(pane.id)} aria-label="Close pane" title="Close pane">
+                            ×
+                          </button>
+                        ) : null}
+                        {isLast ? (
+                          <button
+                            className="workspace-pane-toggle workspace-explorer-toggle"
+                            type="button"
+                            onClick={() => setToolsOpen((open) => !open)}
+                            aria-label={toolsOpen ? 'Collapse tools' : 'Expand tools'}
+                            aria-expanded={toolsOpen}
+                            aria-controls="workbench-tools"
+                            title={toolsOpen ? 'Collapse tools' : 'Expand tools'}
+                          >
+                            <WorkspacePaneToggleIcon expanded={toolsOpen} />
+                          </button>
+                        ) : null}
+                      </div>
+                    </header>
+                  }
+                  githubLogin={authSession.data?.authenticated ? (authSession.data.user?.login ?? null) : null}
+                  projectId={paneProjectId}
+                  projectName={paneProject?.name}
+                  projectPath={paneProject?.path ?? null}
+                  transcriptSignal={paneSessionId ? (transcriptSignals[paneSessionId] ?? null) : null}
+                  timelineControlSignal={paneSessionId ? (timelineControlSignals[paneSessionId] ?? null) : null}
+                  restartNonce={paneSessionId ? (restartNonces[paneSessionId] ?? 0) : 0}
+                  selectedSession={paneSession}
+                  selectedSessionId={paneSessionId}
+                  setSelectedSessionId={focused ? selection.setSelectedSessionId : () => {}}
+                  searchAnchorTurnId={focused && searchNavigation?.sessionId === paneSessionId ? searchNavigation.anchorTurnId : null}
+                  searchTarget={focused && searchNavigation?.sessionId === paneSessionId ? searchNavigation.target : null}
+                  onSearchTargetHandled={() => setSearchNavigation((current) => (current ? { ...current, target: null } : current))}
+                  onJumpToLatest={() => {
+                    if (!selection.selectedSessionId) return
+                    const queryNonce = searchQueryNonceRef.current + 1
+                    searchQueryNonceRef.current = queryNonce
+                    setSearchNavigation({ sessionId: selection.selectedSessionId, anchorTurnId: null, target: { kind: 'jump-latest', queryNonce } })
+                  }}
+                  refreshSessionLists={refreshVisibleWindows}
+                  onSessionCreated={handleSessionCreated}
+                  settings={settings}
+                  onForkSession={handleForkSession}
+                  onNotify={setToast}
+                />
+              )}
+            </div>
+          </div>
+        </section>
+      </PaneDropTarget>
+    )
+  }
+
+  const railPanes: RailPanes = {
+    openSessionIds: new Set(openSessions.map(({ sessionId }) => sessionId)),
+    canOpenInSplit: mainPanes.length < AREA_MAX_PANES.main,
+    openInSplit: (session) => openSessionInSplit(session),
+  }
   const projectsContent = selection.projectsQuery.isLoading ? (
     <ProjectListSkeleton />
   ) : selection.projectsQuery.isError ? (
@@ -962,7 +1184,7 @@ function WorkspaceShell() {
               </svg>
             </button>
           }
-          projectsContent={projectsContent}
+          projectsContent={<RailPanesProvider value={railPanes}>{projectsContent}</RailPanesProvider>}
           onNavigate={navigateAppNav}
           onOpenTerminal={toggleTerminal}
           onExpandSidebar={expandAppSidebar}
@@ -981,105 +1203,9 @@ function WorkspaceShell() {
               <section className="workspace-group">
                 <AreaView
                   area={mainArea}
-                  onSplitSizesChange={() => {}}
-                  renderPane={() => (
-                    <section className="workspace-panel">
-                      <div className="workspace-main-pane">
-                        <div className="workspace-main-content">
-                          {selection.selectedProjectSessionsQuery.isError ? (
-                            <div className="panel error workspace-panel-error">
-                              Failed to load project sessions: {selection.selectedProjectSessionsQuery.error instanceof Error ? selection.selectedProjectSessionsQuery.error.message : 'unknown error'}
-                            </div>
-                          ) : (
-                            <SessionPane
-                              chatHeader={
-                                <header className="workspace-main-header workspace-panel-header">
-                                  <div className="project-title-block">
-                                    <button
-                                      className="workspace-pane-toggle workspace-sidebar-toggle"
-                                      type="button"
-                                      onClick={toggleAppSidebar}
-                                      aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                                      aria-expanded={!sidebarCollapsed}
-                                      aria-controls="app-sidebar"
-                                      title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                                    >
-                                      <WorkspacePaneToggleIcon expanded={!sidebarCollapsed} />
-                                    </button>
-                                    <div className="project-title-text">
-                                      <div
-                                        className="project-session-title"
-                                        title={selectedSession ? `${workspaceTitle} / ${selectedSession.title}` : workspaceTitle || undefined}
-                                        data-has-project={selectedProjectId ? 'true' : 'false'}
-                                        data-has-session={selectedSession ? 'true' : 'false'}
-                                        data-has-worktree={selectedProject?.worktreeName ? 'true' : 'false'}
-                                      >
-                                        {selectedProjectId ? (
-                                          <svg viewBox="0 0 640 640" className="project-card-folder-icon" aria-hidden="true" data-icon="FolderOutlined">
-                                            <path
-                                              d="M129.5 464 179.5 304h379.4l-50 160H129.5zM320.2 512H509c21 0 39.6-13.6 45.8-33.7l50-160c9.7-30.9-13.3-62.3-45.9-62.3H179.6c-21 0-39.6 13.6-45.8 33.7L112.2 358.4V160c0-8.8 7.2-16 16-16h138.7c3.5 0 6.8 1.1 9.6 3.2l38.4 28.8c13.8 10.4 30.7 16 48 16h117.3c8.8 0 16 7.2 16 16h48c0-35.3-28.7-64-64-64H362.9c-6.9 0-13.7-2.2-19.2-6.4l-38.4-28.8C294.2 100.5 280.8 96 266.9 96H128.2c-35.3 0-64 28.7-64 64v288c0 35.3 28.7 64 64 64h192z"
-                                              fill="currentColor"
-                                            />
-                                          </svg>
-                                        ) : null}
-                                        <span className="project-name">{workspaceTitle}</span>
-                                        {selectedProject?.worktreeName ? <WorktreeBadge name={selectedProject.worktreeName} /> : null}
-                                        {selectedSession ? (
-                                          <span className="project-session-identity">
-                                            <span className="project-session-separator" aria-hidden="true">
-                                              /
-                                            </span>
-                                            <span className="project-session-name">{selectedSession.title}</span>
-                                          </span>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="project-meta-lines">
-                                    <button
-                                      className="workspace-pane-toggle workspace-explorer-toggle"
-                                      type="button"
-                                      onClick={() => setToolsOpen((open) => !open)}
-                                      aria-label={toolsOpen ? 'Collapse tools' : 'Expand tools'}
-                                      aria-expanded={toolsOpen}
-                                      aria-controls="workbench-tools"
-                                      title={toolsOpen ? 'Collapse tools' : 'Expand tools'}
-                                    >
-                                      <WorkspacePaneToggleIcon expanded={toolsOpen} />
-                                    </button>
-                                  </div>
-                                </header>
-                              }
-                              githubLogin={authSession.data?.authenticated ? (authSession.data.user?.login ?? null) : null}
-                              projectId={selection.selectedProjectId}
-                              projectName={selectedProject?.name}
-                              projectPath={selectedProject?.path ?? null}
-                              transcriptSignal={selectedSessionId ? (transcriptSignals[selectedSessionId] ?? null) : null}
-                              timelineControlSignal={selectedSessionId ? (timelineControlSignals[selectedSessionId] ?? null) : null}
-                              restartNonce={selectedSessionId ? (restartNonces[selectedSessionId] ?? 0) : 0}
-                              selectedSession={selectedSession}
-                              selectedSessionId={selection.selectedSessionId}
-                              setSelectedSessionId={selection.setSelectedSessionId}
-                              searchAnchorTurnId={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.anchorTurnId : null}
-                              searchTarget={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.target : null}
-                              onSearchTargetHandled={() => setSearchNavigation((current) => (current ? { ...current, target: null } : current))}
-                              onJumpToLatest={() => {
-                                if (!selection.selectedSessionId) return
-                                const queryNonce = searchQueryNonceRef.current + 1
-                                searchQueryNonceRef.current = queryNonce
-                                setSearchNavigation({ sessionId: selection.selectedSessionId, anchorTurnId: null, target: { kind: 'jump-latest', queryNonce } })
-                              }}
-                              refreshSessionLists={refreshVisibleWindows}
-                              onSessionCreated={handleSessionCreated}
-                              settings={settings}
-                              onForkSession={handleForkSession}
-                              onNotify={setToast}
-                            />
-                          )}
-                        </div>
-                      </div>
-                    </section>
-                  )}
+                  minPaneSize={MAIN_AREA_MIN_WIDTH}
+                  onSplitSizesChange={(splitId, sizes) => setMainArea((current) => setSplitSizes(current, splitId, sizes))}
+                  renderPane={(pane, { focused }) => renderMainPane(pane, focused)}
                 />
               </section>
             </Panel>

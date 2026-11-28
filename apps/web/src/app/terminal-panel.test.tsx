@@ -50,7 +50,8 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }))
 
-vi.mock('../api', () => ({
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api')>()),
   fetchProjectFile: vi.fn().mockResolvedValue({ path: 'README.md', content: '# Demo\n', size: 7, revision: '1' }),
   fetchProjectFileDiff: vi.fn().mockResolvedValue({ kind: 'text', hunks: [], truncated: false }),
   fetchProjectFileImage: vi.fn(),

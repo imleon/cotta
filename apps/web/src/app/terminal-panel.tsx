@@ -1,6 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { connectTerminal, fetchTerminalAvailability, terminateTerminal } from '../api'
 
 const TERMINAL_RESIZE_DEBOUNCE_MS = 100
 
@@ -136,7 +137,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
     const createSocket = () => {
       if (disposed || socket || !layoutReady) return
       resize()
-      socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/terminal`)
+      socket = connectTerminal()
       socket.binaryType = 'arraybuffer'
       socket.onopen = () => {
         if (disposed) return
@@ -202,8 +203,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
   const terminate = async () => {
     setTerminating(true)
     try {
-      const response = await fetch('/api/terminal', { method: 'DELETE' })
-      if (!response.ok) throw new Error()
+      await terminateTerminal()
       cleanupConnection(false)
       setConnection('idle')
       setStatus('Terminal exited.')
@@ -218,13 +218,10 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
   useEffect(() => {
     if (!open) return
     let cancelled = false
-    void fetch('/api/terminal')
-      .then(async (response) => {
-        if (!response.ok) throw new Error()
-        const body = (await response.json()) as { available?: unknown }
-        if (typeof body.available !== 'boolean') throw new Error()
+    void fetchTerminalAvailability()
+      .then((available) => {
         if (!cancelled) {
-          setBubblewrapAvailability(body.available ? 'available' : 'missing')
+          setBubblewrapAvailability(available ? 'available' : 'missing')
         }
       })
       .catch(() => {

@@ -9,7 +9,11 @@ import { saveTurnOptions } from '../api'
 import { UNKNOWN_SUBMISSION_RECOVERY_MS } from './composer-core'
 import { type PendingSubmission, TurnComposer } from './turn-composer'
 
-vi.mock('../api', () => ({ refreshProjects: vi.fn(), saveTurnOptions: vi.fn() }))
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api')>()),
+  refreshProjects: vi.fn(),
+  saveTurnOptions: vi.fn(),
+}))
 
 function renderComposer(ui: ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>)

@@ -2,7 +2,7 @@ import { type ProjectFileEntry, type ProjectFileResponse, type ProjectGitWorktre
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Zoom from 'react-medium-image-zoom'
-import { fetchProjectFile, fetchProjectFileDiff, fetchProjectFileImage, fetchProjectFiles, fetchProjectFilesGit, ProjectFileHttpError } from '../api'
+import { connectProjectFileEvents, fetchProjectFile, fetchProjectFileDiff, fetchProjectFileImage, fetchProjectFiles, fetchProjectFilesGit, ProjectFileHttpError } from '../api'
 import { fileLanguage, MarkdownContent, TimelineCodeActions, TimelineCodeContent, TimelineDiffContent, timelineDiffCopyValue } from '../timeline/content'
 import { PROJECT_FILE_PREVIEW_MIN_WIDTH, PROJECT_FILES_PANE_MIN_WIDTH, projectFilePreviewWidthMax, resizeProjectFilePreview } from './project-files-layout'
 import { ProjectFolderIcon, WorktreeIcon } from './session-history'
@@ -701,8 +701,7 @@ export function ExplorerPanel({
     const params = new URLSearchParams()
     for (const path of expandedPathsKey.split('\0')) if (path) params.append('path', path)
     if (state.selectedPath) params.set('file', state.selectedPath)
-    const suffix = params.size ? `?${params}` : ''
-    const source = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/files/events${suffix}`)
+    const source = connectProjectFileEvents(projectId, params)
     source.onmessage = (event) => {
       let contentOnly = false
       try {

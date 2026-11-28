@@ -1,5 +1,6 @@
 import { localImageDestinationPathname, projectTurnMarkdown, type TurnSummary, turnExportFilename } from '@cotta/shared'
 import { type ReactNode, useEffect, useState } from 'react'
+import { anonymousAssetPath } from '../api'
 import logoUrl from '../assets/logo.svg'
 import { AnonImageContext, writeClipboard } from '../timeline/content'
 import { groupAssistantResponseFrames, groupTimelineBlocks, isPrimaryInputBlock, projectTimelineTurn, turnFooterState } from '../timeline/core'
@@ -12,7 +13,7 @@ export type AnonImageEndpoint = { kind: 'detail' | 'share'; token: string }
 
 /** Builds a resolver mapping a local image src to its anonymous GET endpoint, rejecting unsafe srcs up front. */
 function anonImageResolver(endpoint: AnonImageEndpoint): (rawSrc: string) => string | null {
-  return (rawSrc) => (localImageDestinationPathname(rawSrc) ? `/api/${endpoint.kind}/${encodeURIComponent(endpoint.token)}/asset?src=${encodeURIComponent(rawSrc)}` : null)
+  return (rawSrc) => (localImageDestinationPathname(rawSrc) ? anonymousAssetPath(endpoint.kind, endpoint.token, rawSrc) : null)
 }
 
 /** Renders a single source/snapshot Turn read-only: reuses the Timeline render pipeline, no interaction callbacks. */

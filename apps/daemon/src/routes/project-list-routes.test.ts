@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp } from '../index.js'
 import { IndexChangeNotifier } from '../index-change-notifier.js'
 import { ListCursorError } from '../list-cursor.js'
+import { selectedSessionsFromQuery } from './project-list-routes.js'
 import { createSseHeartbeat, SSE_HEARTBEAT_INTERVAL_MS } from './project-routes-shared.js'
 import { createTestApp, memoryTranscriptIndex, messages, project, sessions } from './project-routes-test-helpers.js'
 
@@ -529,6 +530,52 @@ describe('project list routes', () => {
     expect(registry.acquireSubagent).not.toHaveBeenCalled()
     expect(refreshTaskSnapshot).not.toHaveBeenCalled()
     expect(refreshSubagentIndex).not.toHaveBeenCalled()
+  })
+
+  it('watches every open session and snapshots each one', async () => {
+    const registry = {
+      acquireTask: vi.fn(async (_sessionId: string, _onChange: () => Promise<void>) => () => {}),
+      acquireSubagent: vi.fn(async (_sessionId: string, _transcriptPath: string, _onChange: () => Promise<void>) => () => {}),
+    }
+    const single = memoryTranscriptIndex('session-newest')
+    const other = memoryTranscriptIndex('session-other')
+    const transcriptIndex = { ...single, getSession: (sessionId: string) => single.getSession(sessionId) ?? other.getSession(sessionId) }
+    const app = createTestApp({}, undefined, {
+      indexChangeNotifier: new IndexChangeNotifier(),
+      transcriptIndex,
+      sessionWatcherRegistry: registry,
+      refreshTaskSnapshot: vi.fn(async () => {}),
+      refreshSubagentIndex: vi.fn(async () => false),
+      selectedSessionVersionReader: (_projectId: string, sessionId: string) => `v-${sessionId}`,
+    })
+
+    const response = await app.request(`/api/list-versions/events?projectId=${project.id}&sessionId=session-newest&projectId=${project.id}&sessionId=session-other`)
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    for (let reads = 0; !text.includes('data:') && reads < 20; reads += 1) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      text += decoder.decode(chunk.value)
+    }
+    await reader.cancel()
+
+    expect(registry.acquireTask.mock.calls.map(([sessionId]) => sessionId)).toEqual(['session-newest', 'session-other'])
+    expect(registry.acquireSubagent).toHaveBeenCalledTimes(2)
+    const snapshot = JSON.parse(text.slice(text.indexOf('data:') + 5).split('\n')[0] ?? '{}') as { sessionVersions: Array<{ sessionId: string; version: string }> }
+    expect(snapshot.sessionVersions.map(({ sessionId, version }) => [sessionId, version])).toEqual([
+      ['session-newest', 'v-session-newest'],
+      ['session-other', 'v-session-other'],
+    ])
+  })
+
+  it('pairs repeated session parameters, dedupes them and caps them at four', () => {
+    expect(selectedSessionsFromQuery(['p', 'p', 'p'], ['a', 'a', 'b'])).toEqual([
+      { projectId: 'p', sessionId: 'a' },
+      { projectId: 'p', sessionId: 'b' },
+    ])
+    expect(selectedSessionsFromQuery(['p'], ['a', 'b'])).toEqual([{ projectId: 'p', sessionId: 'a' }])
+    expect(selectedSessionsFromQuery(Array(6).fill('p'), ['1', '2', '3', '4', '5', '6'])).toHaveLength(4)
   })
 
   it('waits for the selected-session subagent watcher before the initial refresh', async () => {

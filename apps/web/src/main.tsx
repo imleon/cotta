@@ -118,8 +118,9 @@ function WorkspaceShell() {
   const [projectChoiceOpen, setProjectChoiceOpen] = useState(false)
   const [refreshingLists, setRefreshingLists] = useState(false)
   const [listUpdatesReconnecting, setListUpdatesReconnecting] = useState(false)
-  const [transcriptSignal, setTranscriptSignal] = useState<{ projectId: string; sessionId: string; signal: TranscriptSignal } | null>(null)
-  const [timelineControlSignal, setTimelineControlSignal] = useState<{ projectId: string; sessionId: string; signal: TimelineControlSignal } | null>(null)
+  // Latest Timeline signals per open session (every pane gets its own, focused or not).
+  const [transcriptSignals, setTranscriptSignals] = useState<Record<string, TranscriptSignal>>({})
+  const [timelineControlSignals, setTimelineControlSignals] = useState<Record<string, TimelineControlSignal>>({})
   // Per-session restart counters; a session pane re-ensures its runtime and remounts its Timeline when its count changes.
   const [restartNonces, setRestartNonces] = useState<Record<string, number>>({})
   const [toast, setToast] = useState<ToastState | null>(null)
@@ -174,6 +175,14 @@ function WorkspaceShell() {
     () => createArea('main', { kind: 'session', id: 'main-session', machineId: SAME_ORIGIN_MACHINE_ID, projectId: selectedProjectId, sessionId: selectedSessionId }, () => 'main-pane'),
     [selectedProjectId, selectedSessionId],
   )
+  // Every pane's session, focused first: the list-version stream watches each and delivers each its signals.
+  const openSessions = useMemo(() => {
+    const focused = mainArea.focusedPaneId
+    return panes(mainArea.root)
+      .sort((left, right) => (left.id === focused ? -1 : right.id === focused ? 1 : 0))
+      .flatMap((pane) => pane.tabs.flatMap((tab) => (tab.kind === 'session' && tab.projectId && tab.sessionId ? [{ projectId: tab.projectId, sessionId: tab.sessionId }] : [])))
+  }, [mainArea])
+  const openSessionsKey = openSessions.map(({ projectId, sessionId }) => `${projectId}\0${sessionId}`).join('\n')
   const currentChatPath = chatPath(selectedSessionId ? { sessionId: selectedSessionId, turnId: urlTurnId } : null)
   useEffect(() => {
     void applyLocationSessionRef.current(sessionLocationFromPath())
@@ -799,11 +808,18 @@ function WorkspaceShell() {
     }
   }
 
+  // The stream reconnects only when the set of open sessions changes, which openSessionsKey stands for.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: openSessions is represented by openSessionsKey
   useEffect(() => {
     const events = api.connectListVersions(
       (event: ListVersionsEvent) => {
         setListUpdatesReconnecting(false)
-        const plan = planListVersionEvent(listVersionStateRef.current, event, { selectedProjectId, selectedSessionId, visibleProjectIds })
+        const plan = planListVersionEvent(listVersionStateRef.current, event, {
+          selectedProjectId,
+          selectedSessionId,
+          visibleProjectIds,
+          openSessionIds: openSessions.map(({ sessionId }) => sessionId),
+        })
         listVersionStateRef.current = plan.state
         if (plan.refreshProjects) void refreshProjectsOnly()
         if (plan.refreshProjects || event.sessionChanges.length > 0) markSessionSearchCacheStale(queryClient)
@@ -812,10 +828,10 @@ function WorkspaceShell() {
           removeSessionFromSearchCache(queryClient, change.sessionId)
         }
         if (plan.refreshPins) void sessionPins.refetch()
-        if (selectedProjectId && selectedSessionId) {
-          if (plan.transcriptSignal) setTranscriptSignal({ projectId: selectedProjectId, sessionId: selectedSessionId, signal: plan.transcriptSignal })
-          if (plan.controlSignal) setTimelineControlSignal({ projectId: selectedProjectId, sessionId: selectedSessionId, signal: plan.controlSignal })
-          if (plan.invalidateSelectedSessionSubagents) void queryClient.invalidateQueries({ queryKey: ['turn-subagents-tree', selectedSessionId] })
+        for (const { sessionId, transcriptSignal, controlSignal, invalidateSubagents } of plan.sessionSignals) {
+          if (transcriptSignal) setTranscriptSignals((current) => ({ ...current, [sessionId]: transcriptSignal }))
+          if (controlSignal) setTimelineControlSignals((current) => ({ ...current, [sessionId]: controlSignal }))
+          if (invalidateSubagents) void queryClient.invalidateQueries({ queryKey: ['turn-subagents-tree', sessionId] })
         }
         const { projectIds, selectedSessionProjectIds } = plan
         if (projectIds.length === 0) return
@@ -825,10 +841,10 @@ function WorkspaceShell() {
         })
       },
       () => setListUpdatesReconnecting(true),
-      selectedProjectId && selectedSessionId ? { projectId: selectedProjectId, sessionId: selectedSessionId } : null,
+      openSessions,
     )
     return () => events.close()
-  }, [queryClient, refreshProjectsOnly, refreshVisibleWindows, selectedProjectId, selectedSessionId, visibleProjectIds, sessionPins.refetch, api.connectListVersions])
+  }, [queryClient, refreshProjectsOnly, refreshVisibleWindows, selectedProjectId, selectedSessionId, visibleProjectIds, sessionPins.refetch, api.connectListVersions, openSessionsKey])
 
   useEffect(() => {
     if (visibleProjectIds.length === 0) return
@@ -1038,8 +1054,8 @@ function WorkspaceShell() {
                               projectId={selection.selectedProjectId}
                               projectName={selectedProject?.name}
                               projectPath={selectedProject?.path ?? null}
-                              transcriptSignal={transcriptSignal?.sessionId === selectedSessionId ? transcriptSignal.signal : null}
-                              timelineControlSignal={timelineControlSignal?.sessionId === selectedSessionId ? timelineControlSignal.signal : null}
+                              transcriptSignal={selectedSessionId ? (transcriptSignals[selectedSessionId] ?? null) : null}
+                              timelineControlSignal={selectedSessionId ? (timelineControlSignals[selectedSessionId] ?? null) : null}
                               restartNonce={selectedSessionId ? (restartNonces[selectedSessionId] ?? 0) : 0}
                               selectedSession={selectedSession}
                               selectedSessionId={selection.selectedSessionId}

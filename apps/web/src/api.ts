@@ -608,11 +608,12 @@ export function createCottaApi(transport: CottaTransport) {
     if (!response.ok) throw new Error(`Projects refresh request failed: ${response.status}`)
   }
 
-  function connectListVersions(onEvent: (event: ListVersionsEvent) => void, onError?: () => void, selected?: { projectId: string; sessionId: string } | null): EventSource {
+  /** List-version events; `openSessions` (one per open pane) get server-side task and subagent watchers and a baseline. */
+  function connectListVersions(onEvent: (event: ListVersionsEvent) => void, onError?: () => void, openSessions: ReadonlyArray<{ projectId: string; sessionId: string }> = []): EventSource {
     const params = new URLSearchParams()
-    if (selected) {
-      params.set('projectId', selected.projectId)
-      params.set('sessionId', selected.sessionId)
+    for (const session of openSessions) {
+      params.append('projectId', session.projectId)
+      params.append('sessionId', session.sessionId)
     }
     const events = transport.eventSource(`/api/list-versions/events${params.size ? `?${params}` : ''}`)
     events.onmessage = (message) => {

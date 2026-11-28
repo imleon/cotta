@@ -34,6 +34,20 @@ async function resolveSessionIdentity(input: ProjectRoutesInput, projectId: stri
   return project && indexedSession?.currentProjectId === projectId ? { project, session: toSessionSummary(indexedSession) } : null
 }
 
+/** At most this many open sessions get watchers on one stream — the main area holds at most four panes. */
+const MAX_SELECTED_SESSIONS = 4
+
+/** Pairs repeated `projectId`/`sessionId` query parameters (one pair per open pane), deduplicated by session. */
+export function selectedSessionsFromQuery(projectIds: readonly string[], sessionIds: readonly string[]): Array<{ projectId: string; sessionId: string }> {
+  const pairs = new Map<string, { projectId: string; sessionId: string }>()
+  for (let index = 0; index < Math.min(projectIds.length, sessionIds.length); index += 1) {
+    const projectId = projectIds[index]
+    const sessionId = sessionIds[index]
+    if (projectId && sessionId && !pairs.has(sessionId)) pairs.set(sessionId, { projectId, sessionId })
+  }
+  return [...pairs.values()].slice(0, MAX_SELECTED_SESSIONS)
+}
+
 export function registerProjectListRoutes(app: Hono, input: ProjectRoutesInput): void {
   app.get('/api/projects', async (c) => {
     try {
@@ -161,8 +175,8 @@ export function registerProjectListRoutes(app: Hono, input: ProjectRoutesInput):
         const buffered: ListVersionsEvent[] = []
         let snapshotSent = false
         let closed = false
-        let releaseTaskWatcher: (() => void) | null = null
-        let releaseSubagentWatcher: (() => void) | null = null
+        // Watchers for every open session (one per pane); released together when the stream closes.
+        const releases: Array<() => void> = []
         let send = (event: ListVersionsEvent): void => {
           buffered.push(event)
         }
@@ -173,58 +187,65 @@ export function registerProjectListRoutes(app: Hono, input: ProjectRoutesInput):
           () => {
             closed = true
           },
-          () => releaseTaskWatcher?.(),
-          () => releaseSubagentWatcher?.(),
+          () => {
+            for (const release of releases.splice(0)) release()
+          },
           unsubscribe,
         )
         send = (event) => (snapshotSent ? void heartbeat.enqueue(encodeSse(event)) : buffered.push(event))
         cleanup = heartbeat.cleanup
         try {
           if (!heartbeat.enqueue(': connected\n\n')) return
-          const projectId = c.req.query('projectId')
-          const sessionId = c.req.query('sessionId')
-          const selectedSession = projectId && sessionId ? locateSession(input, sessionId) : null
-          const selectedProjectId = selectedSession?.currentProjectId === projectId ? projectId : null
-          if (selectedProjectId && sessionId && input.refreshTaskSnapshot && input.sessionWatcherRegistry) {
-            const release = await input.sessionWatcherRegistry
-              .acquireTask(sessionId, async () => {
-                await input.refreshTaskSnapshot?.(sessionId)
-              })
-              .catch((error) => {
-                console.error(`session-task-watcher:start failed for ${sessionId}`, error)
-                return null
-              })
-            if (closed) {
-              release?.()
-              return
+          const selected = selectedSessionsFromQuery(c.req.queries('projectId') ?? [], c.req.queries('sessionId') ?? [])
+            .map(({ projectId, sessionId }) => {
+              const located = locateSession(input, sessionId)
+              return located?.currentProjectId === projectId ? { projectId, sessionId, transcriptPath: located.transcriptPath } : null
+            })
+            .filter((session): session is { projectId: string; sessionId: string; transcriptPath: string | null } => session !== null)
+          for (const { projectId: selectedProjectId, sessionId, transcriptPath } of selected) {
+            if (input.refreshTaskSnapshot && input.sessionWatcherRegistry) {
+              const release = await input.sessionWatcherRegistry
+                .acquireTask(sessionId, async () => {
+                  await input.refreshTaskSnapshot?.(sessionId)
+                })
+                .catch((error) => {
+                  console.error(`session-task-watcher:start failed for ${sessionId}`, error)
+                  return null
+                })
+              if (closed) {
+                release?.()
+                return
+              }
+              if (release) releases.push(release)
+              await input.refreshTaskSnapshot(sessionId, selectedProjectId).catch((error) => console.error(`session-task-snapshot:initial refresh failed for ${sessionId}`, error))
             }
-            releaseTaskWatcher = release
-            await input.refreshTaskSnapshot(sessionId, selectedProjectId).catch((error) => console.error(`session-task-snapshot:initial refresh failed for ${sessionId}`, error))
-          }
-          if (selectedProjectId && sessionId && selectedSession?.transcriptPath && input.refreshSubagentIndex && input.sessionWatcherRegistry) {
-            const release = await input.sessionWatcherRegistry
-              .acquireSubagent(sessionId, selectedSession.transcriptPath, async () => {
-                if (await input.refreshSubagentIndex?.(sessionId)) input.indexChangeNotifier?.publishSubagentChange?.(selectedProjectId, sessionId)
-              })
-              .catch((error) => {
-                console.error(`session-subagent-watcher:start failed for ${sessionId}`, error)
-                return null
-              })
-            if (closed) {
-              release?.()
-              return
+            if (transcriptPath && input.refreshSubagentIndex && input.sessionWatcherRegistry) {
+              const release = await input.sessionWatcherRegistry
+                .acquireSubagent(sessionId, transcriptPath, async () => {
+                  if (await input.refreshSubagentIndex?.(sessionId)) input.indexChangeNotifier?.publishSubagentChange?.(selectedProjectId, sessionId)
+                })
+                .catch((error) => {
+                  console.error(`session-subagent-watcher:start failed for ${sessionId}`, error)
+                  return null
+                })
+              if (closed) {
+                release?.()
+                return
+              }
+              if (release) releases.push(release)
+              await input
+                .refreshSubagentIndex(sessionId)
+                .then((changed) => {
+                  if (changed) input.indexChangeNotifier?.publishSubagentChange?.(selectedProjectId, sessionId)
+                })
+                .catch((error) => console.error(`session-subagents:initial refresh failed for ${sessionId}`, error))
             }
-            releaseSubagentWatcher = release
-            await input
-              .refreshSubagentIndex(sessionId)
-              .then((changed) => {
-                if (changed) input.indexChangeNotifier?.publishSubagentChange?.(selectedProjectId, sessionId)
-              })
-              .catch((error) => console.error(`session-subagents:initial refresh failed for ${sessionId}`, error))
           }
           if (closed) return
-          const version = selectedProjectId && sessionId ? input.selectedSessionVersionReader?.(selectedProjectId, sessionId) : null
-          const snapshot = selectedProjectId && sessionId && notifier.snapshot ? notifier.snapshot({ projectId: selectedProjectId, sessionId, version }) : notifier.versionSnapshot
+          const snapshot =
+            selected.length && notifier.snapshot
+              ? notifier.snapshot(selected.map(({ projectId, sessionId }) => ({ projectId, sessionId, version: input.selectedSessionVersionReader?.(projectId, sessionId) ?? null })))
+              : notifier.versionSnapshot
           if (!heartbeat.enqueue(encodeSse(snapshot))) return
           snapshotSent = true
           for (const event of buffered) if (!heartbeat.enqueue(encodeSse(event))) return

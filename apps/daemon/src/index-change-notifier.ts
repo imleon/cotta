@@ -15,6 +15,8 @@ function sessionChange(input: IndexChangeInput): SessionChange | null {
     : { projectId: input.projectId, sessionId: input.sessionId, kind: input.kind, version: input.version, reset: false, invalidateFromTurnId: input.invalidateFromTurnId }
 }
 
+type SelectedSessionSnapshot = { projectId: string; sessionId: string; version?: string | null }
+
 export class IndexChangeNotifier {
   private readonly epoch = randomUUID()
   private projectsVersionValue = 0
@@ -26,15 +28,20 @@ export class IndexChangeNotifier {
     return this.snapshot()
   }
 
-  snapshot(selectedSession?: { projectId: string; sessionId: string; version?: string | null } | null): ListVersionsEvent {
+  /** The connect-time baseline, including a version snapshot for each selected (open) session. */
+  snapshot(selected?: SelectedSessionSnapshot | readonly SelectedSessionSnapshot[] | null): ListVersionsEvent {
+    const sessions = selected ? (Array.isArray(selected) ? selected : [selected as SelectedSessionSnapshot]) : []
     return {
       epoch: this.epoch,
       projectsVersion: this.projectsVersionValue,
       projectVersions: [...this.projectVersionsById].map(([projectId, version]) => ({ projectId, version })),
-      sessionVersions: selectedSession?.version ? [{ projectId: selectedSession.projectId, sessionId: selectedSession.sessionId, version: selectedSession.version, snapshot: true }] : [],
-      subagentVersions: selectedSession
-        ? [{ projectId: selectedSession.projectId, sessionId: selectedSession.sessionId, version: this.subagentVersionsBySessionId.get(selectedSession.sessionId) ?? 0, snapshot: true }]
-        : [],
+      sessionVersions: sessions.flatMap((session) => (session.version ? [{ projectId: session.projectId, sessionId: session.sessionId, version: session.version, snapshot: true }] : [])),
+      subagentVersions: sessions.map((session) => ({
+        projectId: session.projectId,
+        sessionId: session.sessionId,
+        version: this.subagentVersionsBySessionId.get(session.sessionId) ?? 0,
+        snapshot: true,
+      })),
       sessionChanges: [],
     }
   }

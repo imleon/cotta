@@ -29,7 +29,31 @@ export function createListVersionState(): ListVersionState {
   }
 }
 
-export function planListVersionEvent(current: ListVersionState, event: ListVersionsEvent, input: { selectedProjectId: string | null; selectedSessionId: string | null; visibleProjectIds: string[] }) {
+/** Timeline signals for one open session, derived from a list-version event. */
+export type SessionSignals = { sessionId: string; transcriptSignal: TranscriptSignal | null; controlSignal: TimelineControlSignal | null; invalidateSubagents: boolean }
+
+function sessionSignals(event: ListVersionsEvent, sessionId: string): SessionSignals {
+  const change = event.sessionChanges.find((item) => item.kind === 'changed' && item.sessionId === sessionId)
+  const snapshot = !change ? event.sessionVersions.find((item) => item.sessionId === sessionId) : undefined
+  const transcriptSignal: TranscriptSignal | null =
+    change?.kind === 'changed'
+      ? { source: 'change', epoch: event.epoch, version: change.version, reset: change.reset, invalidateFromTurnId: change.invalidateFromTurnId }
+      : snapshot?.snapshot
+        ? { source: 'snapshot', epoch: event.epoch, version: snapshot.version, reset: false, invalidateFromTurnId: null }
+        : null
+  const controlSignal: TimelineControlSignal | null = snapshot && !snapshot.snapshot ? { epoch: event.epoch, version: snapshot.version } : null
+  return { sessionId, transcriptSignal, controlSignal, invalidateSubagents: event.subagentVersions.some((item) => item.sessionId === sessionId) }
+}
+
+/**
+ * Plans the work for one list-version event. `selectedSessionId` is the focused pane's session (it drives list
+ * reconciliation); `openSessionIds` are every pane's sessions, each of which gets its own Timeline signals.
+ */
+export function planListVersionEvent(
+  current: ListVersionState,
+  event: ListVersionsEvent,
+  input: { selectedProjectId: string | null; selectedSessionId: string | null; visibleProjectIds: string[]; openSessionIds?: readonly string[] },
+) {
   const epochChanged = current.epoch !== event.epoch
   const desiredProjectVersions = epochChanged ? new Map<string, number>() : new Map(current.desiredProjectVersions)
   const acknowledgedProjectVersions = epochChanged ? new Map<string, number>() : new Map(current.acknowledgedProjectVersions)
@@ -38,16 +62,12 @@ export function planListVersionEvent(current: ListVersionState, event: ListVersi
   for (const { projectId, version } of event.projectVersions) {
     desiredProjectVersions.set(projectId, Math.max(desiredProjectVersions.get(projectId) ?? 0, version))
   }
-  const selectedChange = input.selectedSessionId ? event.sessionChanges.find((change) => change.kind === 'changed' && change.sessionId === input.selectedSessionId) : undefined
-  const selectedSnapshot = !selectedChange && input.selectedSessionId ? event.sessionVersions.find((snapshot) => snapshot.sessionId === input.selectedSessionId) : undefined
-  const invalidateSelectedSessionSubagents = input.selectedSessionId ? event.subagentVersions.some(({ sessionId }) => sessionId === input.selectedSessionId) : false
-  const transcriptSignal: TranscriptSignal | null =
-    selectedChange?.kind === 'changed'
-      ? { source: 'change', epoch: event.epoch, version: selectedChange.version, reset: selectedChange.reset, invalidateFromTurnId: selectedChange.invalidateFromTurnId }
-      : selectedSnapshot?.snapshot
-        ? { source: 'snapshot', epoch: event.epoch, version: selectedSnapshot.version, reset: false, invalidateFromTurnId: null }
-        : null
-  const controlSignal: TimelineControlSignal | null = selectedSnapshot && !selectedSnapshot.snapshot ? { epoch: event.epoch, version: selectedSnapshot.version } : null
+  const openSessionIds = [...new Set([input.selectedSessionId, ...(input.openSessionIds ?? [])].filter((id): id is string => Boolean(id)))]
+  const signals = openSessionIds.map((sessionId) => sessionSignals(event, sessionId))
+  const selected = input.selectedSessionId ? signals.find((item) => item.sessionId === input.selectedSessionId) : undefined
+  const transcriptSignal = selected?.transcriptSignal ?? null
+  const controlSignal = selected?.controlSignal ?? null
+  const invalidateSelectedSessionSubagents = selected?.invalidateSubagents ?? false
   const selectedSessionProjectIds = input.selectedSessionId
     ? [
         ...new Set([
@@ -72,6 +92,7 @@ export function planListVersionEvent(current: ListVersionState, event: ListVersi
     transcriptSignal,
     controlSignal,
     invalidateSelectedSessionSubagents,
+    sessionSignals: signals,
     selectedSessionProjectIds,
     projectIds,
   }

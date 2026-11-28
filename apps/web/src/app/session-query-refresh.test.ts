@@ -48,6 +48,32 @@ const versionEvent = (overrides: Partial<ListVersionsEvent> = {}): ListVersionsE
 })
 
 describe('list version convergence', () => {
+  it('derives Timeline signals for every open session, not only the focused one', () => {
+    const plan = planListVersionEvent(
+      versionState(),
+      versionEvent({
+        sessionChanges: [{ kind: 'changed', projectId: 'p2', sessionId: 's2', version: 'v2', reset: false, invalidateFromTurnId: null }],
+        sessionVersions: [{ projectId: 'p1', sessionId: 's1', version: 'v1' }],
+        subagentVersions: [{ projectId: 'p2', sessionId: 's2', version: 3 }],
+      }),
+      { selectedProjectId: 'p1', selectedSessionId: 's1', visibleProjectIds: [], openSessionIds: ['s1', 's2', 's3'] },
+    )
+
+    expect(plan.sessionSignals).toEqual([
+      { sessionId: 's1', transcriptSignal: null, controlSignal: { epoch: '00000000-0000-4000-8000-000000000001', version: 'v1' }, invalidateSubagents: false },
+      {
+        sessionId: 's2',
+        transcriptSignal: { source: 'change', epoch: '00000000-0000-4000-8000-000000000001', version: 'v2', reset: false, invalidateFromTurnId: null },
+        controlSignal: null,
+        invalidateSubagents: true,
+      },
+      { sessionId: 's3', transcriptSignal: null, controlSignal: null, invalidateSubagents: false },
+    ])
+    // The focused session keeps its dedicated fields.
+    expect(plan.controlSignal).toEqual({ epoch: '00000000-0000-4000-8000-000000000001', version: 'v1' })
+    expect(plan.transcriptSignal).toBeNull()
+  })
+
   it('resets stale acknowledgements and refreshes every visible project after an epoch change', () => {
     const plan = planListVersionEvent(
       versionState(),

@@ -1,6 +1,6 @@
 import { type AppSettings, appSettingsSchema, type ListVersionsEvent, type ProjectSessionSearchMatch, type ProjectSessionSearchResult, type SessionRuntimeResponse } from '@cotta/shared'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, StrictMode, useCallback, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { PaginationCursorStaleError, SessionRuntimeHttpError, TimelineSnapshotStaleError } from './api'
 import { AccessRequired } from './app/access-required'
@@ -53,7 +53,9 @@ import { TerminalPanel } from './app/terminal-panel'
 import type { ToastState } from './app/turn-composer'
 import { WORKSPACE_EXPLORER_DEFAULT_WIDTH } from './app/workspace-explorer-layout'
 import { WorkspacePanel, WorkspacePaneToggleIcon } from './app/workspace-panel'
-import { useMachineApi } from './client/machine-scope'
+import { SAME_ORIGIN_MACHINE_ID, useMachineApi } from './client/machine-scope'
+import { AreaView } from './layout/area-view'
+import { createArea } from './layout/layout-model'
 import type { TimelineControlSignal, TranscriptSignal } from './timeline'
 import 'react-medium-image-zoom/dist/styles.css'
 import './styles.css'
@@ -162,6 +164,12 @@ function WorkspaceShell() {
   const [, setUrlResolvedTick] = useState(0)
   const applyLocationSessionRef = useRef<(location: SessionLocation | null) => Promise<void>>(async () => {})
   const urlTurnId = searchNavigation?.sessionId === selectedSessionId ? searchNavigation.anchorTurnId : null
+  // Stage 3 step 1: the main area is a single session pane mirroring the current selection; the selection stays the
+  // source of truth until per-session state moves into panes.
+  const mainArea = useMemo(
+    () => createArea('main', { kind: 'session', id: 'main-session', machineId: SAME_ORIGIN_MACHINE_ID, projectId: selectedProjectId, sessionId: selectedSessionId }, () => 'main-pane'),
+    [selectedProjectId, selectedSessionId],
+  )
   const currentChatPath = chatPath(selectedSessionId ? { sessionId: selectedSessionId, turnId: urlTurnId } : null)
   useEffect(() => {
     void applyLocationSessionRef.current(sessionLocationFromPath())
@@ -1066,117 +1074,123 @@ function WorkspaceShell() {
           style={{ '--tool-panel-width': `${effectiveTerminalWidth}px`, '--tool-panel-height': `${effectiveTerminalHeight}px` } as CSSProperties}
         >
           <section className="workspace-group">
-            <section className="workspace-panel">
-              <div className="workspace-main-pane">
-                <div className="workspace-main-content">
-                  {selection.selectedProjectSessionsQuery.isError ? (
-                    <div className="panel error workspace-panel-error">
-                      Failed to load project sessions: {selection.selectedProjectSessionsQuery.error instanceof Error ? selection.selectedProjectSessionsQuery.error.message : 'unknown error'}
-                    </div>
-                  ) : (
-                    <WorkspacePanel
-                      chatHeader={
-                        <header className="workspace-main-header workspace-panel-header">
-                          <div className="project-title-block">
-                            <button
-                              className="workspace-pane-toggle workspace-sidebar-toggle"
-                              type="button"
-                              onClick={toggleAppSidebar}
-                              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                              aria-expanded={!sidebarCollapsed}
-                              aria-controls="app-sidebar"
-                              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                            >
-                              <WorkspacePaneToggleIcon expanded={!sidebarCollapsed} />
-                            </button>
-                            <div className="project-title-text">
-                              <div
-                                className="project-session-title"
-                                title={selectedSession ? `${workspaceTitle} / ${selectedSession.title}` : workspaceTitle || undefined}
-                                data-has-project={selectedProjectId ? 'true' : 'false'}
-                                data-has-session={selectedSession ? 'true' : 'false'}
-                                data-has-worktree={selectedProject?.worktreeName ? 'true' : 'false'}
-                              >
-                                {selectedProjectId ? (
-                                  <svg viewBox="0 0 640 640" className="project-card-folder-icon" aria-hidden="true" data-icon="FolderOutlined">
-                                    <path
-                                      d="M129.5 464 179.5 304h379.4l-50 160H129.5zM320.2 512H509c21 0 39.6-13.6 45.8-33.7l50-160c9.7-30.9-13.3-62.3-45.9-62.3H179.6c-21 0-39.6 13.6-45.8 33.7L112.2 358.4V160c0-8.8 7.2-16 16-16h138.7c3.5 0 6.8 1.1 9.6 3.2l38.4 28.8c13.8 10.4 30.7 16 48 16h117.3c8.8 0 16 7.2 16 16h48c0-35.3-28.7-64-64-64H362.9c-6.9 0-13.7-2.2-19.2-6.4l-38.4-28.8C294.2 100.5 280.8 96 266.9 96H128.2c-35.3 0-64 28.7-64 64v288c0 35.3 28.7 64 64 64h192z"
-                                      fill="currentColor"
-                                    />
-                                  </svg>
-                                ) : null}
-                                <span className="project-name">{workspaceTitle}</span>
-                                {selectedProject?.worktreeName ? <WorktreeBadge name={selectedProject.worktreeName} /> : null}
-                                {selectedSession ? (
-                                  <span className="project-session-identity">
-                                    <span className="project-session-separator" aria-hidden="true">
-                                      /
-                                    </span>
-                                    <span className="project-session-name">{selectedSession.title}</span>
-                                  </span>
-                                ) : null}
+            <AreaView
+              area={mainArea}
+              onSplitSizesChange={() => {}}
+              renderPane={() => (
+                <section className="workspace-panel">
+                  <div className="workspace-main-pane">
+                    <div className="workspace-main-content">
+                      {selection.selectedProjectSessionsQuery.isError ? (
+                        <div className="panel error workspace-panel-error">
+                          Failed to load project sessions: {selection.selectedProjectSessionsQuery.error instanceof Error ? selection.selectedProjectSessionsQuery.error.message : 'unknown error'}
+                        </div>
+                      ) : (
+                        <WorkspacePanel
+                          chatHeader={
+                            <header className="workspace-main-header workspace-panel-header">
+                              <div className="project-title-block">
+                                <button
+                                  className="workspace-pane-toggle workspace-sidebar-toggle"
+                                  type="button"
+                                  onClick={toggleAppSidebar}
+                                  aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                                  aria-expanded={!sidebarCollapsed}
+                                  aria-controls="app-sidebar"
+                                  title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                                >
+                                  <WorkspacePaneToggleIcon expanded={!sidebarCollapsed} />
+                                </button>
+                                <div className="project-title-text">
+                                  <div
+                                    className="project-session-title"
+                                    title={selectedSession ? `${workspaceTitle} / ${selectedSession.title}` : workspaceTitle || undefined}
+                                    data-has-project={selectedProjectId ? 'true' : 'false'}
+                                    data-has-session={selectedSession ? 'true' : 'false'}
+                                    data-has-worktree={selectedProject?.worktreeName ? 'true' : 'false'}
+                                  >
+                                    {selectedProjectId ? (
+                                      <svg viewBox="0 0 640 640" className="project-card-folder-icon" aria-hidden="true" data-icon="FolderOutlined">
+                                        <path
+                                          d="M129.5 464 179.5 304h379.4l-50 160H129.5zM320.2 512H509c21 0 39.6-13.6 45.8-33.7l50-160c9.7-30.9-13.3-62.3-45.9-62.3H179.6c-21 0-39.6 13.6-45.8 33.7L112.2 358.4V160c0-8.8 7.2-16 16-16h138.7c3.5 0 6.8 1.1 9.6 3.2l38.4 28.8c13.8 10.4 30.7 16 48 16h117.3c8.8 0 16 7.2 16 16h48c0-35.3-28.7-64-64-64H362.9c-6.9 0-13.7-2.2-19.2-6.4l-38.4-28.8C294.2 100.5 280.8 96 266.9 96H128.2c-35.3 0-64 28.7-64 64v288c0 35.3 28.7 64 64 64h192z"
+                                          fill="currentColor"
+                                        />
+                                      </svg>
+                                    ) : null}
+                                    <span className="project-name">{workspaceTitle}</span>
+                                    {selectedProject?.worktreeName ? <WorktreeBadge name={selectedProject.worktreeName} /> : null}
+                                    {selectedSession ? (
+                                      <span className="project-session-identity">
+                                        <span className="project-session-separator" aria-hidden="true">
+                                          /
+                                        </span>
+                                        <span className="project-session-name">{selectedSession.title}</span>
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
                               </div>
-                            </div>
-                          </div>
-                          <div className="project-meta-lines">
-                            <button
-                              className="workspace-pane-toggle workspace-explorer-toggle"
-                              type="button"
-                              onClick={() =>
-                                setExplorerOpen((open) => {
-                                  setExplorerPaneWidth(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
-                                  return !open
-                                })
-                              }
-                              aria-label={explorerOpen ? 'Collapse explorer' : 'Expand explorer'}
-                              aria-expanded={explorerOpen}
-                              aria-controls="workspace-explorer-pane"
-                              title={explorerOpen ? 'Collapse explorer' : 'Expand explorer'}
-                            >
-                              <WorkspacePaneToggleIcon expanded={explorerOpen} />
-                            </button>
-                          </div>
-                        </header>
-                      }
-                      githubLogin={authSession.data?.authenticated ? (authSession.data.user?.login ?? null) : null}
-                      explorerOpen={explorerOpen}
-                      explorerPaneWidth={explorerPaneWidth}
-                      onExplorerPaneWidthChange={setExplorerPaneWidth}
-                      onExplorerOpenChange={(open) => {
-                        setExplorerOpen(open)
-                        if (open) setExplorerPaneWidth(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
-                      }}
-                      projectId={selection.selectedProjectId}
-                      projectName={selectedProject?.name}
-                      projectPath={selectedProject?.path ?? null}
-                      currentCwd={selectedSession?.currentCwd ?? selectedProject?.path ?? null}
-                      transcriptSignal={transcriptSignal?.sessionId === selectedSessionId ? transcriptSignal.signal : null}
-                      timelineControlSignal={timelineControlSignal?.sessionId === selectedSessionId ? timelineControlSignal.signal : null}
-                      timelineInstanceNonce={timelineInstanceNonce}
-                      selectedSession={selectedSession}
-                      selectedSessionId={selection.selectedSessionId}
-                      setSelectedSessionId={selection.setSelectedSessionId}
-                      searchAnchorTurnId={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.anchorTurnId : null}
-                      searchTarget={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.target : null}
-                      onSearchTargetHandled={() => setSearchNavigation((current) => (current ? { ...current, target: null } : current))}
-                      onJumpToLatest={() => {
-                        if (!selection.selectedSessionId) return
-                        const queryNonce = searchQueryNonceRef.current + 1
-                        searchQueryNonceRef.current = queryNonce
-                        setSearchNavigation({ sessionId: selection.selectedSessionId, anchorTurnId: null, target: { kind: 'jump-latest', queryNonce } })
-                      }}
-                      refreshSessionLists={refreshVisibleWindows}
-                      onSessionCreated={handleSessionCreated}
-                      settings={settings}
-                      sessionRuntime={selectedSessionRuntime}
-                      projectDirectoryUnavailable={selectedProjectId !== null && unavailableProjectId === selectedProjectId}
-                      onForkSession={handleForkSession}
-                      onNotify={setToast}
-                    />
-                  )}
-                </div>
-              </div>
-            </section>
+                              <div className="project-meta-lines">
+                                <button
+                                  className="workspace-pane-toggle workspace-explorer-toggle"
+                                  type="button"
+                                  onClick={() =>
+                                    setExplorerOpen((open) => {
+                                      setExplorerPaneWidth(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
+                                      return !open
+                                    })
+                                  }
+                                  aria-label={explorerOpen ? 'Collapse explorer' : 'Expand explorer'}
+                                  aria-expanded={explorerOpen}
+                                  aria-controls="workspace-explorer-pane"
+                                  title={explorerOpen ? 'Collapse explorer' : 'Expand explorer'}
+                                >
+                                  <WorkspacePaneToggleIcon expanded={explorerOpen} />
+                                </button>
+                              </div>
+                            </header>
+                          }
+                          githubLogin={authSession.data?.authenticated ? (authSession.data.user?.login ?? null) : null}
+                          explorerOpen={explorerOpen}
+                          explorerPaneWidth={explorerPaneWidth}
+                          onExplorerPaneWidthChange={setExplorerPaneWidth}
+                          onExplorerOpenChange={(open) => {
+                            setExplorerOpen(open)
+                            if (open) setExplorerPaneWidth(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
+                          }}
+                          projectId={selection.selectedProjectId}
+                          projectName={selectedProject?.name}
+                          projectPath={selectedProject?.path ?? null}
+                          currentCwd={selectedSession?.currentCwd ?? selectedProject?.path ?? null}
+                          transcriptSignal={transcriptSignal?.sessionId === selectedSessionId ? transcriptSignal.signal : null}
+                          timelineControlSignal={timelineControlSignal?.sessionId === selectedSessionId ? timelineControlSignal.signal : null}
+                          timelineInstanceNonce={timelineInstanceNonce}
+                          selectedSession={selectedSession}
+                          selectedSessionId={selection.selectedSessionId}
+                          setSelectedSessionId={selection.setSelectedSessionId}
+                          searchAnchorTurnId={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.anchorTurnId : null}
+                          searchTarget={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.target : null}
+                          onSearchTargetHandled={() => setSearchNavigation((current) => (current ? { ...current, target: null } : current))}
+                          onJumpToLatest={() => {
+                            if (!selection.selectedSessionId) return
+                            const queryNonce = searchQueryNonceRef.current + 1
+                            searchQueryNonceRef.current = queryNonce
+                            setSearchNavigation({ sessionId: selection.selectedSessionId, anchorTurnId: null, target: { kind: 'jump-latest', queryNonce } })
+                          }}
+                          refreshSessionLists={refreshVisibleWindows}
+                          onSessionCreated={handleSessionCreated}
+                          settings={settings}
+                          sessionRuntime={selectedSessionRuntime}
+                          projectDirectoryUnavailable={selectedProjectId !== null && unavailableProjectId === selectedProjectId}
+                          onForkSession={handleForkSession}
+                          onNotify={setToast}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
+            />
           </section>
           {terminalVisible ? (
             // biome-ignore lint/a11y/useSemanticElements: pointer-driven resize handle; <hr> cannot carry the drag affordance

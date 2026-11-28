@@ -1108,6 +1108,7 @@ function WorkspaceShell() {
 
   const railPanes: RailPanes = {
     openSessionIds: new Set(openSessions.map(({ sessionId }) => sessionId)),
+    split: mainPanes.length > 1,
     canOpenInSplit: mainPanes.length < AREA_MAX_PANES.main,
     openInSplit: (session) => openSessionInSplit(session),
   }

@@ -85,12 +85,14 @@ function ProjectCard({
   onToggleExpanded: () => void
   onSelectProject: () => void
 }) {
+  // With several panes open, selecting the project would replace the focused pane's session; expanding should not.
+  const split = useRailPanes()?.split ?? false
   return (
     <button
       className={`project-card ${selected ? 'selected' : ''}`}
       type="button"
       onClick={() => {
-        if (!selected && !expanded) onSelectProject()
+        if (!selected && !expanded && !split) onSelectProject()
         onToggleExpanded()
       }}
       aria-current={selected ? 'true' : undefined}

@@ -15,6 +15,7 @@ vi.mock('../api', () => ({
   PaginationCursorStaleError: class PaginationCursorStaleError extends Error {},
 }))
 
+import { RailPanesProvider } from '../layout/session-drag'
 import { ProjectSessionRail } from './session-history'
 
 const project = (id: string, name = id): ProjectSummary => ({ id, name })
@@ -51,6 +52,39 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('ProjectSessionRail', () => {
+  it('expands an unselected project without selecting it while several panes are open', async () => {
+    fetchProjectSessionsMock.mockResolvedValue(page([session('s1')]))
+    const user = userEvent.setup()
+    const projects = [project('p1', 'P1'), project('p2', 'P2')]
+    const single = vi.fn()
+    const view = renderRail({ projects, onSelectProject: single })
+    await user.click(screen.getByLabelText('Expand P2 sessions'))
+    expect(single).toHaveBeenCalledWith('p2')
+    view.unmount()
+
+    const split = vi.fn()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RailPanesProvider value={{ openSessionIds: new Set(['s1']), split: true, canOpenInSplit: true, openInSplit: vi.fn() }}>
+          <ProjectSessionRail
+            projects={projects}
+            pins={[]}
+            selectedProjectId="p1"
+            selectedSessionId="s1"
+            visibleSessionStates={{}}
+            onSelectProject={split}
+            onSelectSession={vi.fn()}
+            onSessionCursorStale={vi.fn()}
+          />
+        </RailPanesProvider>
+      </QueryClientProvider>,
+    )
+    await user.click(screen.getByLabelText('Expand P2 sessions'))
+    expect(split).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Collapse P2 sessions').getAttribute('aria-expanded')).toBe('true')
+  })
+
   it('shows Restart only for the selected session with a runtime', async () => {
     fetchProjectSessionsMock.mockResolvedValue(
       page([

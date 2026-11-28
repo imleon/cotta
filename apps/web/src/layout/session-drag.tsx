@@ -80,8 +80,12 @@ export function PaneDropTarget({ allowSides, onDropSession, children }: { allowS
   )
 }
 
-/** What the rail needs from the main area: which sessions are open in panes, and how to open one beside the focus. */
-export type RailPanes = { openSessionIds: ReadonlySet<string>; canOpenInSplit: boolean; openInSplit: (session: DraggedSession) => void }
+/**
+ * What the rail needs from the main area: which sessions are open in panes, whether several panes are open (then
+ * expanding a project in the rail only expands it, instead of also replacing the focused pane), and how to open a
+ * session beside the focus.
+ */
+export type RailPanes = { openSessionIds: ReadonlySet<string>; split: boolean; canOpenInSplit: boolean; openInSplit: (session: DraggedSession) => void }
 
 const RailPanesContext = createContext<RailPanes | null>(null)
 

@@ -29,6 +29,7 @@ import {
   terminalOpenFromLocation,
 } from './app/app-layout'
 import { appsLayout, MAIN_AREA_MIN_WIDTH, TOOLS_AREA_MIN_WIDTH } from './app/apps-layout'
+import { paneSessionQueryKeys, usePaneSessionInfo } from './app/pane-sessions'
 import { ProjectListSkeleton, ProjectSessionRail, useProjectSessionSelection, WorktreeBadge } from './app/session-history'
 import { SessionPane } from './app/session-pane'
 import {
@@ -50,7 +51,7 @@ import {
 import { SessionSearchDialog } from './app/session-search-dialog'
 import { SettingsPanel } from './app/settings-panel'
 import { ShareManagementPanel } from './app/share-management-panel'
-import { faviconHref, tabStatus } from './app/tab-status'
+import { faviconHref, mostUrgentTabStatus } from './app/tab-status'
 import { ToolsArea } from './app/tools-area'
 import type { ToastState } from './app/turn-composer'
 import { WorkspacePaneToggleIcon } from './app/workspace-panel'
@@ -76,6 +77,7 @@ import {
   setSplitSizes,
   splitPane,
 } from './layout/layout-model'
+import { readWorkbenchLayout, writeWorkbenchLayout } from './layout/layout-storage'
 import { type DraggedSession, type DropZone, PaneDropTarget, type RailPanes, RailPanesProvider } from './layout/session-drag'
 import type { TimelineControlSignal, TranscriptSignal } from './timeline'
 import 'react-medium-image-zoom/dist/styles.css'
@@ -106,12 +108,26 @@ function sessionTab(projectId: string | null, sessionId: string | null): Session
   return { kind: 'session', id: defaultIdFactory(), machineId: SAME_ORIGIN_MACHINE_ID, projectId, sessionId }
 }
 
-/** Files and Changes always; the machine terminal when the page was opened with `?terminal=1`. */
-function initialToolsArea(withTerminal: boolean): Area {
-  const files = createArea('tools', { kind: 'files', id: 'files' })
-  const withChanges = addTab(files, files.focusedPaneId, { kind: 'changes', id: 'changes' }) ?? files
-  const area = activateTab(withChanges, withChanges.focusedPaneId, 'files')
-  return withTerminal ? (addTab(area, area.focusedPaneId, { kind: 'terminal', id: 'machine-terminal', machineId: SAME_ORIGIN_MACHINE_ID, cwd: null }) ?? area) : area
+const MACHINE_TERMINAL_TAB_ID = 'machine-terminal'
+
+/**
+ * The tab's remembered tools area, or Files and Changes. Opening the page with `?terminal=1` also shows the machine
+ * terminal, added to the focused tools pane when the remembered layout has none.
+ */
+function initialToolsArea(stored: Area | null, withTerminal: boolean): Area {
+  let area = stored
+  if (!area) {
+    const files = createArea('tools', { kind: 'files', id: 'files' })
+    const withChanges = addTab(files, files.focusedPaneId, { kind: 'changes', id: 'changes' }) ?? files
+    area = activateTab(withChanges, withChanges.focusedPaneId, 'files')
+  }
+  if (!withTerminal) return area
+  const terminalPane = panes(area.root).find((pane) => pane.tabs.some((tab) => tab.kind === 'terminal'))
+  if (terminalPane) {
+    const terminalTab = terminalPane.tabs.find((tab) => tab.kind === 'terminal')
+    return terminalTab ? activateTab(focusPane(area, terminalPane.id), terminalPane.id, terminalTab.id) : area
+  }
+  return addTab(area, area.focusedPaneId, { kind: 'terminal', id: MACHINE_TERMINAL_TAB_ID, machineId: SAME_ORIGIN_MACHINE_ID, cwd: null }) ?? area
 }
 
 function WorkspaceShell() {
@@ -135,9 +151,11 @@ function WorkspaceShell() {
   const [sidebarWidth, setSidebarWidth] = useState(APP_SIDEBAR_DEFAULT_WIDTH)
   const [sidebarResizing, setSidebarResizing] = useState(false)
   const [shellSize, setShellSize] = useState({ width: 0, height: 0 })
+  // This browser tab's remembered layout, read once; every part that does not validate falls back to its default.
+  const [storedLayout] = useState(readWorkbenchLayout)
   // Tools area (Files, Changes, the machine terminal). It collapses rather than unmounts, so its tabs keep their state.
-  const [toolsOpen, setToolsOpen] = useState(terminalOpenFromLocation)
-  const [toolsArea, setToolsArea] = useState<Area>(() => initialToolsArea(terminalOpenFromLocation()))
+  const [toolsOpen, setToolsOpen] = useState(() => terminalOpenFromLocation() || (storedLayout.toolsOpen ?? false))
+  const [toolsArea, setToolsArea] = useState<Area>(() => initialToolsArea(storedLayout.tools, terminalOpenFromLocation()))
   const toolsPanelRef = usePanelRef()
   const [projectChoiceOpen, setProjectChoiceOpen] = useState(false)
   const [refreshingLists, setRefreshingLists] = useState(false)
@@ -190,17 +208,24 @@ function WorkspaceShell() {
   const urlResolvingIntentRef = useRef<number | null>(null)
   // Set by user navigation (showChat, session created); the URL sync in the same render pushes instead of replacing.
   const pushNextUrlRef = useRef(false)
-  const [, setUrlResolvedTick] = useState(0)
+  const [urlResolvedTick, setUrlResolvedTick] = useState(0)
   const applyLocationSessionRef = useRef<(location: SessionLocation | null) => Promise<void>>(async () => {})
   const urlTurnId = searchNavigation?.sessionId === selectedSessionId ? searchNavigation.anchorTurnId : null
   // The main area's panes. The focused pane always shows the shell's selection; other panes keep their own session.
-  const [mainArea, setMainArea] = useState<Area>(() => createArea('main', sessionTab(null, null)))
+  const [mainArea, setMainArea] = useState<Area>(() => storedLayout.main ?? createArea('main', sessionTab(null, null)))
   const mainPanes = panes(mainArea.root)
+  // A restored layout waits for the URL's session to resolve before the selection drives the focused pane, so the
+  // empty selection of the first render does not wipe the restored pane. Ends with the first resolution or selection.
+  const restoringFocusedPaneRef = useRef(storedLayout.main !== null && sessionLocationFromPath() !== null)
   // Last known summaries, so a pane that is not focused can still title itself when its session is not in the rail cache.
   const knownSessionsRef = useRef(new Map<string, SessionSummary>())
   const knownProjectsRef = useRef(new Map<string, ProjectSummary>())
   // Selection → focused pane. A session already open in another pane is focused there instead of duplicated.
   useEffect(() => {
+    if (restoringFocusedPaneRef.current) {
+      if (!selectedSessionId && urlResolvedTick === 0) return
+      restoringFocusedPaneRef.current = false
+    }
     setMainArea((area) => {
       const current = activeTab(focusedPane(area))
       if (current.kind === 'session' && current.projectId === selectedProjectId && current.sessionId === selectedSessionId) return area
@@ -208,7 +233,10 @@ function WorkspaceShell() {
       if (elsewhere && elsewhere.id !== area.focusedPaneId) return focusPane(area, elsewhere.id)
       return replaceActiveTab(area, area.focusedPaneId, sessionTab(selectedProjectId, selectedSessionId)) ?? area
     })
-  }, [selectedProjectId, selectedSessionId])
+  }, [selectedProjectId, selectedSessionId, urlResolvedTick])
+  useEffect(() => {
+    writeWorkbenchLayout({ main: mainArea, tools: toolsArea, toolsOpen })
+  }, [mainArea, toolsArea, toolsOpen])
   // Every pane's session, focused first: the list-version stream watches each and delivers each its signals.
   const openSessions = useMemo(() => {
     const focused = mainArea.focusedPaneId
@@ -216,6 +244,16 @@ function WorkspaceShell() {
       .sort((left, right) => (left.id === focused ? -1 : right.id === focused ? 1 : 0))
       .flatMap((pane) => pane.tabs.flatMap((tab) => (tab.kind === 'session' && tab.projectId && tab.sessionId ? [{ projectId: tab.projectId, sessionId: tab.sessionId }] : [])))
   }, [mainArea])
+  // Sessions in panes other than the focused one: each asks for its own summary (title, status).
+  const backgroundPaneSessions = useMemo(
+    () =>
+      panes(mainArea.root).flatMap((pane) => {
+        const tab = activeTab(pane)
+        return pane.id !== mainArea.focusedPaneId && tab.kind === 'session' && tab.projectId && tab.sessionId ? [{ projectId: tab.projectId, sessionId: tab.sessionId }] : []
+      }),
+    [mainArea],
+  )
+  const backgroundPaneInfo = usePaneSessionInfo(backgroundPaneSessions)
   const openSessionsKey = openSessions.map(({ projectId, sessionId }) => `${projectId}\0${sessionId}`).join('\n')
   const currentChatPath = chatPath(selectedSessionId ? { sessionId: selectedSessionId, turnId: urlTurnId } : null)
   useEffect(() => {
@@ -525,7 +563,19 @@ function WorkspaceShell() {
   const selectedSessionAvailable = Boolean(selectedSession)
   const pageTitle = activeAppNav === 'chat' ? (selectedSession?.title ?? selectedProject?.name) : APP_NAV_ITEMS.find((item) => item.key === activeAppNav)?.label
   const pageTitleLoading = activeAppNav === 'chat' && ((selectedSessionId && !selectedSession) || (selectedProjectId && !selectedProject))
-  const selectedTabStatus = tabStatus(selectedSession?.occupiedStatus)
+  function backgroundPaneSession(projectId: string | null, sessionId: string): SessionSummary | undefined {
+    return (
+      selectedSessionFromRailCache(queryClient, projectId, sessionId) ??
+      backgroundPaneInfo.get(sessionId)?.session ??
+      sessionPins.data?.pins.find((pin) => pin.session.id === sessionId)?.session ??
+      knownSessionsRef.current.get(sessionId)
+    )
+  }
+  // The favicon shows the most urgent of every open pane, not just the focused one.
+  const selectedTabStatus = mostUrgentTabStatus([
+    selectedSession?.occupiedStatus,
+    ...backgroundPaneSessions.map(({ projectId, sessionId }) => backgroundPaneSession(projectId, sessionId)?.occupiedStatus),
+  ])
   useEffect(() => {
     // Keep the previous tab title while the selection is still resolving.
     if (pageTitleLoading) return
@@ -847,7 +897,7 @@ function WorkspaceShell() {
   }
 
   // The stream reconnects only when the set of open sessions changes, which openSessionsKey stands for.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: openSessions is represented by openSessionsKey
+  // biome-ignore lint/correctness/useExhaustiveDependencies: openSessions and backgroundPaneSessions are represented by openSessionsKey
   useEffect(() => {
     const events = api.connectListVersions(
       (event: ListVersionsEvent) => {
@@ -870,6 +920,12 @@ function WorkspaceShell() {
           if (transcriptSignal) setTranscriptSignals((current) => ({ ...current, [sessionId]: transcriptSignal }))
           if (controlSignal) setTimelineControlSignals((current) => ({ ...current, [sessionId]: controlSignal }))
           if (invalidateSubagents) void queryClient.invalidateQueries({ queryKey: ['turn-subagents-tree', sessionId] })
+        }
+        // Panes outside the focus refresh their own summaries when their project or session changes.
+        const backgroundProjects = new Set(backgroundPaneSessions.map(({ projectId }) => projectId))
+        const changedProjects = new Set([...event.projectVersions, ...event.sessionVersions, ...event.sessionChanges].map(({ projectId }) => projectId))
+        for (const projectId of changedProjects) {
+          if (backgroundProjects.has(projectId)) void queryClient.invalidateQueries({ queryKey: paneSessionQueryKeys.project(projectId) })
         }
         const { projectIds, selectedSessionProjectIds } = plan
         if (projectIds.length === 0) return
@@ -980,20 +1036,22 @@ function WorkspaceShell() {
     const canClose = mainPanes.length > 1
     const paneProjectId = focused ? selectedProjectId : tab.projectId
     const paneSessionId = focused ? selectedSessionId : tab.sessionId
-    const paneProject = focused ? selectedProject : paneProjectId ? (selection.projectList.find((project) => project.id === paneProjectId) ?? knownProjectsRef.current.get(paneProjectId)) : undefined
-    const paneSession = focused
-      ? selectedSession
-      : paneSessionId
-        ? (selectedSessionFromRailCache(queryClient, paneProjectId, paneSessionId) ??
-          sessionPins.data?.pins.find((pin) => pin.session.id === paneSessionId)?.session ??
-          knownSessionsRef.current.get(paneSessionId))
+    const paneProject = focused
+      ? selectedProject
+      : paneProjectId
+        ? (selection.projectList.find((project) => project.id === paneProjectId) ??
+          (paneSessionId ? backgroundPaneInfo.get(paneSessionId)?.project : undefined) ??
+          knownProjectsRef.current.get(paneProjectId) ??
+          undefined)
         : undefined
+    const paneSession = focused ? selectedSession : paneSessionId ? backgroundPaneSession(paneProjectId, paneSessionId) : undefined
     const paneTitle = focused ? workspaceTitle : (paneProject?.name ?? (paneProjectId ? 'Project' : ''))
     return (
       <PaneDropTarget allowSides={mainPanes.length < AREA_MAX_PANES.main} onDropSession={(zone, dragged) => dropSessionOnPane(pane.id, zone, dragged)}>
         <section
           className="workspace-panel"
           data-focused={focused ? 'true' : 'false'}
+          data-waiting={paneSession?.occupiedStatus === 'waiting' ? 'true' : undefined}
           onPointerDownCapture={() => {
             if (!focused) focusMainPane(pane)
           }}

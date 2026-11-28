@@ -2729,6 +2729,12 @@ iframe.project-file-image {
   border-color: color-mix(in srgb, var(--interactive-default) 55%, var(--border-default));
 }
 
+/* With several panes, one waiting on the user (permission, question) tints its header so it is found at a glance. */
+.workspace-group:has(.layout-separator) .workspace-panel[data-waiting="true"] .workspace-panel-header {
+  background: var(--status-waiting-subtle);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--status-waiting) 35%, transparent);
+}
+
 .pane-drop-zone {
   position: absolute;
   z-index: 40;

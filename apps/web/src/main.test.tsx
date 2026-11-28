@@ -93,6 +93,8 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  // The workbench layout is remembered per browser tab; each test starts from the default layout.
+  window.sessionStorage.clear()
   app.props.client.clear()
   vi.restoreAllMocks()
 })
@@ -226,6 +228,46 @@ describe('workspace header', () => {
     render(app)
 
     await waitFor(() => expect(document.querySelector('.project-session-title')?.getAttribute('title')).toBe('coconut / A long session title'))
+  })
+})
+
+describe('workbench layout', () => {
+  it("restores the tab's panes, titling a pane outside the focus from its own summary", async () => {
+    const tab = (id: string, sessionId: string) => ({ kind: 'session', id, machineId: 'same-origin', projectId: 'project', sessionId })
+    const main = {
+      kind: 'main',
+      focusedPaneId: 'pane-a',
+      root: {
+        type: 'split',
+        id: 'split',
+        direction: 'row',
+        sizes: [50, 50],
+        children: [
+          { type: 'pane', id: 'pane-a', tabs: [tab('tab-a', 'session')], activeTabId: 'tab-a' },
+          { type: 'pane', id: 'pane-b', tabs: [tab('tab-b', 'other')], activeTabId: 'tab-b' },
+        ],
+      },
+    }
+    window.sessionStorage.setItem('cotta.workbench-layout', JSON.stringify({ main, tools: null, toolsOpen: false }))
+    mocks.selection.mockReturnValue({
+      selectedProjectId: 'project',
+      selectedSessionId: 'session',
+      projectList: [{ id: 'project', name: 'coconut' }],
+      projectsQuery: {},
+      selectedProjectSessionsQuery: { data: { sessions: [{ id: 'session', title: 'Focused', lastActivityAt: 0 }], hasMore: false, nextCursor: null } },
+      selectSession: mocks.selectSession,
+    })
+    mocks.sessions.mockResolvedValue({
+      sessionsByProject: { project: { sessions: [], hasMore: false, nextCursor: null, selectedSessionDetail: { id: 'other', projectId: 'project', title: 'Background', occupiedStatus: 'waiting' } } },
+    })
+
+    window.history.replaceState(null, '', '/s/session')
+    render(app)
+
+    await waitFor(() => expect([...document.querySelectorAll('.project-session-title')].map((title) => title.getAttribute('title'))).toEqual(['coconut / Focused', 'coconut / Background']))
+    expect(mocks.sessions).toHaveBeenCalledWith([{ projectId: 'project', limit: 1, selectedSessionId: 'other' }])
+    expect([...document.querySelectorAll('.workspace-panel')].map((pane) => pane.getAttribute('data-waiting'))).toEqual([null, 'true'])
+    expect(JSON.parse(window.sessionStorage.getItem('cotta.workbench-layout') ?? '{}').main.focusedPaneId).toBe('pane-a')
   })
 })
 

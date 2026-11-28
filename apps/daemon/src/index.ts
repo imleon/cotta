@@ -10,6 +10,7 @@ import { type CottaAuth, createAuth, noopAuth } from './auth.js'
 import { forceCloseOwnedClaudeProcesses } from './claude-cli/query.js'
 import { type ClaudeCodeApi, createClaudeCodeApi } from './claude-code-api.js'
 import type { createClaudeSessionRegistry } from './claude-session-registry.js'
+import type { ClientAuthenticator } from './client-auth.js'
 import { createCottaCore, createSessionMutationTarget } from './core.js'
 import { acquireServerLock, serverUrl, writePidRecord } from './cotta-home.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
@@ -85,6 +86,8 @@ type CreateAppOptions = {
   detailTokenKey?: Buffer
   shareStore?: ShareStore
   requestLedger?: RequestLedger
+  /** Trusted-client pairing and challenge routes; absent in tests that do not exercise client trust. */
+  clientAuthenticator?: ClientAuthenticator
   webRoot?: string
   providerAllowlist?: Map<string, ModelProvider>
 }
@@ -158,6 +161,7 @@ export function createApp(input: CreateAppInput): Hono {
   })
   registerHealthRoute(app)
   auth.registerRoutes(app)
+  input.clientAuthenticator?.registerRoutes(app)
   if (input.providerAllowlist?.size) registerProviderRoutes(app, { allowlist: input.providerAllowlist, settingsStore })
   registerShareAdminRoutes(app, input.shareStore, auth, input.transcriptIndex)
   registerProjectFileRoutes(app, { claudeCodeApi, watcherRegistry: projectFilesWatcherRegistry })
@@ -241,7 +245,7 @@ export async function runServer(opts: { reconfigureGithub: boolean }): Promise<b
     onSettingsReady: (settingsStore) => ensureGithubConfig(settingsStore, { force: opts.reconfigureGithub }),
   })
   // Hosting concerns stay here: authentication and the bundled web UI are not part of the core.
-  const auth = createAuth({ settingsStore: core.settingsStore })
+  const auth = createAuth({ settingsStore: core.settingsStore, clientAuthenticator: core.clientAuthenticator })
   const app = createApp({ ...core.appInput, auth, webRoot: resolveWebRoot() })
 
   const server = createAdaptorServer({ fetch: app.fetch })

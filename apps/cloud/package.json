@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@cotta/shared": "*",
-    "hono": "^4.13.8",
+    "hono": "^4.13.23",
     "zod": "^4.3.6"
   },
   "devDependencies": {

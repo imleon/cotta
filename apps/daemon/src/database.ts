@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { databasePath } from './cotta-home.js'
 
-const SCHEMA_VERSION = 46
+const SCHEMA_VERSION = 47
 
 /** On-disk root for a share's frozen image assets, co-located with the database file. */
 export function shareAssetsRoot(token: string): string {
@@ -364,6 +364,31 @@ function createRequestReceiptTables(db: DatabaseSync): void {
   `)
 }
 
+/** The daemon's trusted clients (its `authorized_keys`) and pairing requests awaiting approval on this machine. */
+function createTrustedClientTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE trusted_clients (
+      client_id TEXT PRIMARY KEY,
+      public_key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      capabilities_json TEXT NOT NULL CHECK (json_valid(capabilities_json)),
+      approval_method TEXT NOT NULL CHECK (approval_method IN ('local')),
+      approved_at_ms INTEGER NOT NULL CHECK (approved_at_ms >= 0),
+      revoked_at_ms INTEGER CHECK (revoked_at_ms IS NULL OR revoked_at_ms >= approved_at_ms)
+    );
+
+    CREATE TABLE client_pairing_requests (
+      code TEXT PRIMARY KEY,
+      public_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+      expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms > created_at_ms),
+      approved_at_ms INTEGER CHECK (approved_at_ms IS NULL OR approved_at_ms >= created_at_ms)
+    );
+    CREATE INDEX client_pairing_requests_by_key ON client_pairing_requests(public_key);
+  `)
+}
+
 function initializeSchema(db: DatabaseSync): void {
   const version = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
   if (version === SCHEMA_VERSION) return
@@ -381,11 +406,13 @@ function initializeSchema(db: DatabaseSync): void {
       createRemoteBotTables(db)
       createShareTables(db)
       createRequestReceiptTables(db)
+      createTrustedClientTables(db)
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
-    } else if (version === 43 || version === 44 || version === 45) {
+    } else if (version >= 43 && version <= 46) {
       if (version === 43) createShareTables(db)
       if (version <= 44) db.exec('ALTER TABLE session_index ADD COLUMN pre_plan_permission_mode TEXT')
-      createRequestReceiptTables(db)
+      if (version <= 45) createRequestReceiptTables(db)
+      createTrustedClientTables(db)
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
     } else
       throw new Error(

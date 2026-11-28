@@ -47,9 +47,10 @@ describe('Cotta database', () => {
     const reopened = createCottaDatabase(path.file)
 
     await expect((await import('node:fs/promises')).stat(path.file).then((metadata) => metadata.mode & 0o777)).resolves.toBe(0o600)
-    expect((reopened.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(46)
+    expect((reopened.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(47)
     expect(reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()).toEqual([
       { name: 'auth_sessions' },
+      { name: 'client_pairing_requests' },
       { name: 'project_index' },
       { name: 'remote_bot_projects' },
       { name: 'remote_bots' },
@@ -68,6 +69,7 @@ describe('Cotta database', () => {
       { name: 'settings' },
       { name: 'shares' },
       { name: 'token_usage_stats' },
+      { name: 'trusted_clients' },
       { name: 'turn_meta_live' },
       { name: 'turn_meta_transcript' },
     ])
@@ -160,11 +162,11 @@ describe('Cotta database', () => {
     db.close()
 
     expect(() => createCottaDatabase(path)).toThrow(
-      `Unsupported Cotta database schema version ${version}; preserve the database and apply a one-time transactional migration to version 46 based on the actual DDL differences`,
+      `Unsupported Cotta database schema version ${version}; preserve the database and apply a one-time transactional migration to version 47 based on the actual DDL differences`,
     )
   })
 
-  it('migrates a version 43 database to 46 by adding the shares table and the pre-plan permission column', async () => {
+  it('migrates a version 43 database to 47 by adding the shares table and the pre-plan permission column', async () => {
     const root = await tempRoot('cotta-database-')
     const path = join(root, 'cotta.sqlite')
     const db = new DatabaseSync(path)
@@ -172,7 +174,7 @@ describe('Cotta database', () => {
     db.close()
 
     const migrated = createCottaDatabase(path)
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(46)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(47)
     expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shares'").get()).toEqual({ name: 'shares' })
     expect(migrated.prepare('SELECT session_id, permission_mode, pre_plan_permission_mode FROM session_index').all()).toEqual([
       { session_id: 'kept', permission_mode: 'plan', pre_plan_permission_mode: null },
@@ -180,7 +182,7 @@ describe('Cotta database', () => {
     migrated.close()
   })
 
-  it('migrates a version 44 database to 46 by adding the pre-plan permission column and keeping rows', async () => {
+  it('migrates a version 44 database to 47 by adding the pre-plan permission column and keeping rows', async () => {
     const root = await tempRoot('cotta-database-')
     const path = join(root, 'cotta.sqlite')
     const db = new DatabaseSync(path)
@@ -188,14 +190,14 @@ describe('Cotta database', () => {
     db.close()
 
     const migrated = createCottaDatabase(path)
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(46)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(47)
     expect(migrated.prepare('SELECT session_id, permission_mode, pre_plan_permission_mode FROM session_index').all()).toEqual([
       { session_id: 'kept', permission_mode: 'bypassPermissions', pre_plan_permission_mode: null },
     ])
     migrated.close()
   })
 
-  it('migrates a version 45 database to 46 by adding request receipts and keeping rows', async () => {
+  it('migrates a version 45 database to 47 by adding request receipts and keeping rows', async () => {
     const root = await tempRoot('cotta-database-')
     const path = join(root, 'cotta.sqlite')
     const db = new DatabaseSync(path)
@@ -203,9 +205,26 @@ describe('Cotta database', () => {
     db.close()
 
     const migrated = createCottaDatabase(path)
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(46)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(47)
     expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'request_receipts'").get()).toEqual({ name: 'request_receipts' })
     expect(migrated.prepare('SELECT session_id, pre_plan_permission_mode FROM session_index').all()).toEqual([{ session_id: 'kept', pre_plan_permission_mode: 'plan' }])
+    migrated.close()
+  })
+
+  it('migrates a version 46 database to 47 by adding trusted clients and keeping receipts', async () => {
+    const root = await tempRoot('cotta-database-')
+    const path = join(root, 'cotta.sqlite')
+    const db = new DatabaseSync(path)
+    db.exec("CREATE TABLE request_receipts (kind TEXT, request_key TEXT); INSERT INTO request_receipts VALUES ('turn', 'kept'); PRAGMA user_version = 46;")
+    db.close()
+
+    const migrated = createCottaDatabase(path)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(47)
+    expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('trusted_clients', 'client_pairing_requests') ORDER BY name").all()).toEqual([
+      { name: 'client_pairing_requests' },
+      { name: 'trusted_clients' },
+    ])
+    expect(migrated.prepare('SELECT kind, request_key FROM request_receipts').all()).toEqual([{ kind: 'turn', request_key: 'kept' }])
     migrated.close()
   })
 

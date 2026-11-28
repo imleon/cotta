@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { type AuthUser, isSingleUser, normalizeAllowedUser } from '@cotta/shared'
 import type { Context, Hono, Next } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
+import { bearerToken, type ClientAuthenticator, isClientAuthPublicPath } from './client-auth.js'
 import type { SettingsStore } from './settings-store.js'
 
 const SESSION_COOKIE = 'cotta_session'
@@ -99,7 +100,7 @@ export function noopAuth(): CottaAuth {
   }
 }
 
-export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: SettingsStore } = {}) {
+export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: SettingsStore; clientAuthenticator?: Pick<ClientAuthenticator, 'authenticate'> } = {}) {
   const sessions = new Map<string, Session>()
   const deviceFlows = new Map<string, DeviceFlow>()
   const cookieSecureOverride = input.github?.cookieSecure ?? process.env.COTTA_COOKIE_SECURE
@@ -202,7 +203,13 @@ export function createAuth(input: { github?: GitHubAuthConfig; settingsStore?: S
       await next()
       return
     }
-    if (c.req.path === '/api/health' || c.req.path.startsWith('/api/auth/')) {
+    if (c.req.path === '/api/health' || c.req.path.startsWith('/api/auth/') || (input.clientAuthenticator && isClientAuthPublicPath(c.req.path))) {
+      await next()
+      return
+    }
+    // A trusted client (new protocol entries such as Desktop) authenticates with a bearer token from its signed challenge.
+    const token = bearerToken(c.req.header('Authorization'))
+    if (token && input.clientAuthenticator?.authenticate(token)) {
       await next()
       return
     }

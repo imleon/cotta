@@ -1,10 +1,12 @@
 import { createClaudeCodeApi, projectIdFromPath, projectPathFromId } from './claude-code-api.js'
 import { createClaudeSessionRegistry } from './claude-session-registry.js'
+import { ClientAuthenticator } from './client-auth.js'
 import { assertNoLegacyDatabase } from './cotta-home.js'
 import { createCottaDatabase } from './database.js'
 import { loadDetailTokenKey } from './detail-token.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
 import { LiveTurnManager } from './live-turn-manager.js'
+import { loadOrCreateMachineIdentity } from './machine-identity.js'
 import { defaultModelCatalogProvider, type ModelCatalogProvider, modelCatalogProvider } from './model-catalog.js'
 import { loadProviderAllowlist, resolveActiveProvider } from './model-provider.js'
 import { ProjectFilesWatcherRegistry } from './project-files-watcher-registry.js'
@@ -25,6 +27,7 @@ import { ensureModelCatalog } from './startup-config.js'
 import { TerminalRegistry } from './terminal-registry.js'
 import { TokenUsageStore } from './token-usage-store.js'
 import type { TranscriptIndexStore } from './transcript-index-store.js'
+import { TrustedClientStore } from './trusted-clients.js'
 import { TurnMetaTranscriptStore } from './turn-meta-transcript.js'
 import { resolveTurnOptions, validateTurnOptions } from './turn-options.js'
 import { TurnOptionsStore } from './turn-options-store.js'
@@ -205,6 +208,9 @@ export async function createCottaCore(options: CreateCottaCoreOptions = {}) {
   const turnOptionsStore = new TurnOptionsStore(cottaDb)
   const requestLedger = new RequestLedger(cottaDb)
   requestLedger.prune()
+  const machineIdentity = loadOrCreateMachineIdentity()
+  const clientAuthenticator = new ClientAuthenticator(new TrustedClientStore(cottaDb), machineIdentity)
+  console.log(`Machine identity ${machineIdentity.fingerprint}`)
   const sessionContextUsageStore = new SessionContextUsageStore(cottaDb)
   const sessionPinStore = new SessionPinStore(cottaDb)
   const turnMetaStore = new TurnMetaTranscriptStore(cottaDb, { settingsStore })
@@ -326,6 +332,7 @@ export async function createCottaCore(options: CreateCottaCoreOptions = {}) {
     detailTokenKey,
     shareStore,
     requestLedger,
+    clientAuthenticator,
   }
   const remoteBotStore = createRemoteBotStore(cottaDb)
   const remoteBotManager = new RemoteBotManager(remoteBotStore, projectRoutesInput)
@@ -364,6 +371,8 @@ export async function createCottaCore(options: CreateCottaCoreOptions = {}) {
     settingsStore,
     providerAllowlist,
     terminalRegistry,
+    machineIdentity,
+    clientAuthenticator,
     /** Everything the HTTP routes need, all backed by this core's single set of resources. */
     appInput: {
       ...projectRoutesInput,

@@ -28,6 +28,8 @@ Commands:
   stop                                             Stop the running server
   restart [--reconfigure-github]                   Restart the server in the background
   status                                           Show whether the server is running
+  identity                                         Show this machine's identity fingerprint
+  clients list|approve|revoke                      Manage clients trusted to use this machine
   uninstall [-y|--yes]                             Stop, delete ~/.cotta, and remove the npm package
   help                                             Show this help
 
@@ -249,6 +251,7 @@ export async function main(argv: string[]): Promise<number> {
       foreground: { type: 'boolean', short: 'f' },
       'reconfigure-github': { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
+      all: { type: 'boolean', short: 'a' },
       version: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -270,6 +273,10 @@ export async function main(argv: string[]): Promise<number> {
       return status()
     case 'uninstall':
       return uninstall(values.yes ?? false)
+    case 'identity':
+      return (await import('./cli-clients.js')).identityCommand(console)
+    case 'clients':
+      return (await import('./cli-clients.js')).clientsCommand(positionals.slice(1), { yes: values.yes ?? false, all: values.all ?? false }, { log: console.log, error: console.error, confirm })
     case undefined:
     case 'help':
       console.log(HELP)

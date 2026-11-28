@@ -1,8 +1,8 @@
-import { type AppSettings, appSettingsSchema, type ListVersionsEvent, type ProjectSessionSearchMatch, type ProjectSessionSearchResult, type SessionRuntimeResponse } from '@cotta/shared'
+import { type AppSettings, appSettingsSchema, type ListVersionsEvent, type ProjectSessionSearchMatch, type ProjectSessionSearchResult } from '@cotta/shared'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { PaginationCursorStaleError, SessionRuntimeHttpError, TimelineSnapshotStaleError } from './api'
+import { PaginationCursorStaleError, TimelineSnapshotStaleError } from './api'
 import { AccessRequired } from './app/access-required'
 import { AgentsPage } from './app/agents-page'
 import { AnonTurnDetail } from './app/anon-turn-detail'
@@ -29,6 +29,7 @@ import {
 } from './app/app-layout'
 import { appsLayout, TOOL_PANEL_MIN_HEIGHT, TOOL_PANEL_MIN_WIDTH, type ToolLayout, terminalHeightMax, terminalWidthMax } from './app/apps-layout'
 import { ProjectListSkeleton, ProjectSessionRail, useProjectSessionSelection, WorktreeBadge } from './app/session-history'
+import { SessionPane } from './app/session-pane'
 import {
   acknowledgeListRefresh,
   createListVersionState,
@@ -52,7 +53,7 @@ import { faviconHref, tabStatus } from './app/tab-status'
 import { TerminalPanel } from './app/terminal-panel'
 import type { ToastState } from './app/turn-composer'
 import { WORKSPACE_EXPLORER_DEFAULT_WIDTH } from './app/workspace-explorer-layout'
-import { WorkspacePanel, WorkspacePaneToggleIcon } from './app/workspace-panel'
+import { WorkspacePaneToggleIcon } from './app/workspace-panel'
 import { SAME_ORIGIN_MACHINE_ID, useMachineApi } from './client/machine-scope'
 import { AreaView } from './layout/area-view'
 import { createArea } from './layout/layout-model'
@@ -112,9 +113,8 @@ function WorkspaceShell() {
   const [listUpdatesReconnecting, setListUpdatesReconnecting] = useState(false)
   const [transcriptSignal, setTranscriptSignal] = useState<{ projectId: string; sessionId: string; signal: TranscriptSignal } | null>(null)
   const [timelineControlSignal, setTimelineControlSignal] = useState<{ projectId: string; sessionId: string; signal: TimelineControlSignal } | null>(null)
-  const [timelineInstanceNonce, setTimelineInstanceNonce] = useState(0)
-  const [selectedSessionRuntime, setSelectedSessionRuntime] = useState<SessionRuntimeResponse | null>(null)
-  const [unavailableProjectId, setUnavailableProjectId] = useState<string | null>(null)
+  // Per-session restart counters; a session pane re-ensures its runtime and remounts its Timeline when its count changes.
+  const [restartNonces, setRestartNonces] = useState<Record<string, number>>({})
   const [toast, setToast] = useState<ToastState | null>(null)
   // The catalog may be absent at boot when the active model provider's backend only authenticates after
   // the user connects it in Settings (server defers it). Whenever we're authenticated with no catalog yet,
@@ -236,7 +236,6 @@ function WorkspaceShell() {
   function beginNewConversation() {
     beginSelectionIntent()
     setSelectedRailContext(null)
-    setSelectedSessionRuntime(null)
     selection.clearSelection()
   }
 
@@ -285,7 +284,6 @@ function WorkspaceShell() {
       return
     }
     beginSelectionIntent()
-    setSelectedSessionRuntime(null)
     setSelectedSessionId(null)
   }
 
@@ -293,7 +291,6 @@ function WorkspaceShell() {
     beginSelectionIntent()
     setSelectedRailContext(null)
     setProjectChoiceOpen(false)
-    setSelectedSessionRuntime(null)
     selection.selectProject(projectId)
   }
 
@@ -303,8 +300,6 @@ function WorkspaceShell() {
     setSelectedRailContext(null)
     pendingCreatedSelectionRef.current = { projectId, sessionId }
     selection.selectSession(projectId, sessionId)
-    setSelectedSessionRuntime(null)
-    setUnavailableProjectId(null)
   }
 
   function revealRailSession(projectId: string, sessionId: string) {
@@ -559,7 +554,6 @@ function WorkspaceShell() {
     sessionPins.data?.pins.find((pin) => pin.project.id === selectedProjectId && pin.session.id === selectedSessionId)?.session
   const workspaceTitle = selectedProject?.name ?? (selection.selectedProjectSessionsQuery.isLoading ? 'Loading project…' : selectedProjectId ? 'Project' : '')
   const selectedSessionAvailable = Boolean(selectedSession)
-  const selectedSessionExternallyOwned = selectedSession?.occupiedBy === 'external'
   const pageTitle = activeAppNav === 'chat' ? (selectedSession?.title ?? selectedProject?.name) : APP_NAV_ITEMS.find((item) => item.key === activeAppNav)?.label
   const pageTitleLoading = activeAppNav === 'chat' && ((selectedSessionId && !selectedSession) || (selectedProjectId && !selectedProject))
   const selectedTabStatus = tabStatus(selectedSession?.occupiedStatus)
@@ -572,24 +566,12 @@ function WorkspaceShell() {
     const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
     if (icon) icon.href = faviconHref(selectedTabStatus)
   }, [selectedTabStatus])
-  // biome-ignore lint/correctness/useExhaustiveDependencies: timelineInstanceNonce re-runs runtime ensure after a session restart
+  // When the focused session becomes available a new selection intent begins, superseding in-flight selection
+  // resolutions and clearing the just-created guard. (The runtime itself is ensured by the session pane.)
   useEffect(() => {
     if (!selectedProjectId || !selectedSessionId || !selectedSessionAvailable) return
-    const requestId = beginSelectionIntent()
-    if (selectedSessionExternallyOwned) {
-      setSelectedSessionRuntime(null)
-      return
-    }
-    void api
-      .ensureSessionRuntime(selectedSessionId)
-      .then((runtime) => {
-        if (pendingSessionRequestRef.current !== requestId) return
-        setSelectedSessionRuntime(runtime)
-      })
-      .catch((error) => {
-        if (pendingSessionRequestRef.current === requestId && error instanceof SessionRuntimeHttpError && error.code === 'project_directory_unavailable') setUnavailableProjectId(selectedProjectId)
-      })
-  }, [selectedProjectId, selectedSessionAvailable, selectedSessionExternallyOwned, selectedSessionId, timelineInstanceNonce, beginSelectionIntent])
+    beginSelectionIntent()
+  }, [selectedProjectId, selectedSessionAvailable, selectedSessionId, beginSelectionIntent])
   const reconcileSelection = useCallback(
     (selectionSnapshot: { intentId: number; projectId: string | null; sessionId: string | null }, outcomes: Map<string, ProjectRefreshResult>) => {
       if (pendingSessionRequestRef.current !== selectionSnapshot.intentId || selectedProjectId !== selectionSnapshot.projectId || selectedSessionId !== selectionSnapshot.sessionId) return
@@ -607,7 +589,6 @@ function WorkspaceShell() {
         if (shouldClearMissingSelection({ projectId: selectionSnapshot.projectId, sessionId: selectionSnapshot.sessionId }, selectedProjectOutcome, pendingCreatedSelectionRef.current)) {
           beginSelectionIntent()
           setSelectedSessionId(null)
-          setSelectedSessionRuntime(null)
         }
       }
     },
@@ -685,8 +666,6 @@ function WorkspaceShell() {
 
   function handleSelectSession(projectId: string, sessionId: string) {
     beginSelectionIntent()
-    setSelectedSessionRuntime(null)
-    setUnavailableProjectId(null)
     setSearchNavigation(null)
     if (projectId !== selectedProjectId || sessionId !== selectedSessionId) {
       selection.selectSession(projectId, sessionId)
@@ -697,8 +676,6 @@ function WorkspaceShell() {
   function openSessionTurn(projectId: string, location: SessionLocation) {
     if (projectId !== selectedProjectId || location.sessionId !== selectedSessionId) {
       setSelectedRailContext(null)
-      setSelectedSessionRuntime(null)
-      setUnavailableProjectId(null)
       selectSessionOwner(projectId, location.sessionId)
       revealRailSession(projectId, location.sessionId)
     }
@@ -721,7 +698,6 @@ function WorkspaceShell() {
       if (currentChatPath === '/' && projectId === selectedProjectId) return
       beginSelectionIntent()
       setSelectedRailContext(null)
-      setSelectedSessionRuntime(null)
       setSearchNavigation(null)
       if (projectId) selectProject(projectId)
       else clearSelection()
@@ -773,8 +749,6 @@ function WorkspaceShell() {
       setSelectedRailContext({ project: selectedWindow?.project ?? searchSelection.result.project, session: selectedWindow?.selectedSessionDetail ?? searchSelection.result.session })
       if (searchSelection.kind === 'metadata') {
         setSearchNavigation(null)
-        setSelectedSessionRuntime(null)
-        setUnavailableProjectId(null)
         selectSessionOwner(detail.projectId, sessionId)
         revealRailSession(detail.projectId, sessionId)
         showChat()
@@ -795,8 +769,6 @@ function WorkspaceShell() {
           const block = Array.isArray(payload) ? payload[locator.blockIndex] : undefined
           return typeof block === 'object' && block !== null && 'type' in block && block.type === 'text' && 'text' in block && typeof block.text === 'string'
         }) ?? false
-      setSelectedSessionRuntime(null)
-      setUnavailableProjectId(null)
       selectSessionOwner(detail.projectId, sessionId)
       revealRailSession(detail.projectId, sessionId)
       const queryNonce = searchQueryNonceRef.current + 1
@@ -812,8 +784,6 @@ function WorkspaceShell() {
     } catch (error) {
       if (pendingSessionRequestRef.current !== intentId) return
       if (error instanceof TimelineSnapshotStaleError && detail) {
-        setSelectedSessionRuntime(null)
-        setUnavailableProjectId(null)
         selectSessionOwner(detail.projectId, sessionId)
         revealRailSession(detail.projectId, sessionId)
         const queryNonce = searchQueryNonceRef.current + 1
@@ -846,8 +816,7 @@ function WorkspaceShell() {
     try {
       const result = await api.restartSessionRuntime(sessionId)
       if (pendingSessionRequestRef.current !== intentId || selectedSessionId !== sessionId) return
-      setSelectedSessionRuntime(null)
-      setTimelineInstanceNonce((current) => current + 1)
+      setRestartNonces((current) => ({ ...current, [sessionId]: (current[sessionId] ?? 0) + 1 }))
       await refreshVisibleWindows(projectId ? [projectId] : [])
       if (pendingSessionRequestRef.current !== intentId || selectedSessionId !== sessionId) return
       setToast({ message: result.restarted ? 'Runtime restarted' : 'Runtime closed for CLI', tone: 'success' })
@@ -867,7 +836,6 @@ function WorkspaceShell() {
       if (selectedSessionId === sessionId) {
         beginSelectionIntent()
         setSelectedSessionId(null)
-        setSelectedSessionRuntime(null)
       }
       await refreshProjectsOnly()
       await refreshVisibleWindows([projectId])
@@ -1014,7 +982,6 @@ function WorkspaceShell() {
         beginSelectionIntent()
         pushNextUrlRef.current = true
         setSelectedRailContext(null)
-        setSelectedSessionRuntime(null)
         selection.selectProject(projectId)
       }}
       onSelectSession={(projectId, sessionId) => {
@@ -1086,7 +1053,7 @@ function WorkspaceShell() {
                           Failed to load project sessions: {selection.selectedProjectSessionsQuery.error instanceof Error ? selection.selectedProjectSessionsQuery.error.message : 'unknown error'}
                         </div>
                       ) : (
-                        <WorkspacePanel
+                        <SessionPane
                           chatHeader={
                             <header className="workspace-main-header workspace-panel-header">
                               <div className="project-title-block">
@@ -1164,7 +1131,7 @@ function WorkspaceShell() {
                           currentCwd={selectedSession?.currentCwd ?? selectedProject?.path ?? null}
                           transcriptSignal={transcriptSignal?.sessionId === selectedSessionId ? transcriptSignal.signal : null}
                           timelineControlSignal={timelineControlSignal?.sessionId === selectedSessionId ? timelineControlSignal.signal : null}
-                          timelineInstanceNonce={timelineInstanceNonce}
+                          restartNonce={selectedSessionId ? (restartNonces[selectedSessionId] ?? 0) : 0}
                           selectedSession={selectedSession}
                           selectedSessionId={selection.selectedSessionId}
                           setSelectedSessionId={selection.setSelectedSessionId}
@@ -1180,8 +1147,6 @@ function WorkspaceShell() {
                           refreshSessionLists={refreshVisibleWindows}
                           onSessionCreated={handleSessionCreated}
                           settings={settings}
-                          sessionRuntime={selectedSessionRuntime}
-                          projectDirectoryUnavailable={selectedProjectId !== null && unavailableProjectId === selectedProjectId}
                           onForkSession={handleForkSession}
                           onNotify={setToast}
                         />

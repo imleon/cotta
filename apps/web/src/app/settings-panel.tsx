@@ -14,7 +14,7 @@ import {
 } from '@cotta/shared'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
-import { fetchBuildInfo, fetchGitHubConfig, fetchProviders, pollProviderConnect, refreshModelCatalog, saveGitHubConfig, saveSettings, setActiveProvider, startProviderConnect } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { DEFAULT_TURN_OPTION, effortLabel, ModelIcon, PERMISSION_MODE_OPTIONS } from './turn-option-controls'
 
 const SETTINGS_MODEL_CATALOG_QUERY_KEY = ['settings-model-catalog'] as const
@@ -89,8 +89,9 @@ function PermissionShieldIcon({ name }: { name: PermissionMode }) {
  * session. `children` is the default model/effort picker, folded into this section.
  */
 function ProvidersSection({ children }: { children: ReactNode }) {
+  const api = useMachineApi()
   const queryClient = useQueryClient()
-  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: fetchProviders, retry: false })
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: api.fetchProviders, retry: false })
   const [flow, setFlow] = useState<{ id: string; flowId: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number } | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -101,13 +102,14 @@ function ProvidersSection({ children }: { children: ReactNode }) {
     let timer: number
     const poll = async () => {
       try {
-        const response = await pollProviderConnect(flow.id, flow.flowId)
+        const response = await api.pollProviderConnect(flow.id, flow.flowId)
         if (stopped) return
         if (response.status === 'authorized') {
           setFlow(null)
           await queryClient.invalidateQueries({ queryKey: ['providers'] })
           // A fresh connection may make the backend's catalog available; refresh so model menus fill.
-          refreshModelCatalog(null)
+          api
+            .refreshModelCatalog(null)
             .then((settings) => queryClient.setQueryData(['settings'], settings))
             .catch(() => {})
           return
@@ -124,7 +126,7 @@ function ProvidersSection({ children }: { children: ReactNode }) {
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [flow, queryClient])
+  }, [flow, queryClient, api.refreshModelCatalog, api.pollProviderConnect])
 
   const providers = providersQuery.data?.providers ?? []
   const activeId = providersQuery.data?.activeId ?? null
@@ -133,14 +135,14 @@ function ProvidersSection({ children }: { children: ReactNode }) {
   async function selectProvider(id: string | null) {
     setError(null)
     try {
-      await setActiveProvider(id)
+      await api.setActiveProvider(id)
       await queryClient.invalidateQueries({ queryKey: ['providers'] })
       // Switching backend invalidates the stored default model/effort — the old model rarely exists in
       // the new backend's catalog. Reset to default so the user re-picks from the new catalog; persist
       // it before refreshing so the catalog refresh (which must run last, it is the only call that fills
       // the new catalog) reads the already-reset defaults.
-      await saveSettings({ defaultModel: DEFAULT_TURN_OPTION, defaultEffort: 'medium' })
-      const settings = await refreshModelCatalog(null)
+      await api.saveSettings({ defaultModel: DEFAULT_TURN_OPTION, defaultEffort: 'medium' })
+      const settings = await api.refreshModelCatalog(null)
       queryClient.setQueryData(['settings'], settings)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -151,7 +153,7 @@ function ProvidersSection({ children }: { children: ReactNode }) {
     setError(null)
     setConnecting(true)
     try {
-      setFlow({ id, ...(await startProviderConnect(id)) })
+      setFlow({ id, ...(await api.startProviderConnect(id)) })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -216,8 +218,9 @@ function ProvidersSection({ children }: { children: ReactNode }) {
 }
 
 export function SettingsPanel({ settings, authSession, onLogout }: { settings: AppSettings; authSession: AuthSessionResponse | undefined; onLogout: () => Promise<void> }) {
+  const api = useMachineApi()
   const queryClient = useQueryClient()
-  const buildInfo = useQuery({ queryKey: ['build-info'], queryFn: fetchBuildInfo, retry: false })
+  const buildInfo = useQuery({ queryKey: ['build-info'], queryFn: api.fetchBuildInfo, retry: false })
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode)
   const [model, setModel] = useState<ModelSelection | DefaultTurnOption>(settings.defaultModel ?? DEFAULT_TURN_OPTION)
   const [effort, setEffort] = useState<EffortLevel | DefaultTurnOption>(settings.defaultEffort ?? DEFAULT_TURN_OPTION)
@@ -264,7 +267,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
   const catalogQuery = useQuery({
     queryKey: SETTINGS_MODEL_CATALOG_QUERY_KEY,
     queryFn: async () => {
-      const response = await refreshModelCatalog(null)
+      const response = await api.refreshModelCatalog(null)
       queryClient.setQueryData(['settings'], response)
       return response
     },
@@ -332,7 +335,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
     setSaving(true)
     setStatus(null)
     try {
-      const response = await saveSettings(update)
+      const response = await api.saveSettings(update)
       queryClient.setQueryData(['settings'], response)
       setStatus({ message: 'Saved', tone: 'success' })
     } catch (error) {
@@ -342,7 +345,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
     }
   }
 
-  const githubConfigQuery = useQuery({ queryKey: ['github-config'], queryFn: fetchGitHubConfig, enabled: githubEditing, retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false })
+  const githubConfigQuery = useQuery({ queryKey: ['github-config'], queryFn: api.fetchGitHubConfig, enabled: githubEditing, retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false })
   useEffect(() => {
     if (githubEditing && githubConfigQuery.data) {
       setGithubAllowedUsers(githubConfigQuery.data.allowedUsers)
@@ -368,7 +371,7 @@ export function SettingsPanel({ settings, authSession, onLogout }: { settings: A
     setSaving(true)
     setGithubError(null)
     try {
-      await saveGitHubConfig({ allowedUsers: githubAllowedUsers.trim() })
+      await api.saveGitHubConfig({ allowedUsers: githubAllowedUsers.trim() })
       setGithubEditing(false)
       // When the allowed login changes the server revokes every session, so re-reading the shared auth
       // query drives the app back to the login gate; when it doesn't, the panel stays mounted and we must

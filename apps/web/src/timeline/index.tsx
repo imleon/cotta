@@ -13,17 +13,9 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import {
-  connectSessionEvents,
-  createShare,
-  fetchSessionRawMessages,
-  fetchSessionTimeline,
-  fetchSessionTimelineControl,
-  fetchTurnSubagentsTree,
-  fetchTurnSubagentTranscript,
-  TimelineSnapshotStaleError,
-} from '../api'
+import { type CottaApi, TimelineSnapshotStaleError } from '../api'
 import { sessionQueryKeys } from '../app/session-query-refresh'
+import { useMachineApi } from '../client/machine-scope'
 import {
   AssistantResponseFrameView,
   CliStaticSparkIcon,
@@ -141,10 +133,10 @@ export {
 } from './core'
 
 /** Creates (or reuses) a share for a turn and opens it in a new tab; opens the tab synchronously to dodge popup blockers. */
-async function openShareInNewTab(projectId: string, sessionId: string, turnId: string, onNotify?: (toast: ToastNotification) => void): Promise<void> {
+async function openShareInNewTab(api: Pick<CottaApi, 'createShare'>, projectId: string, sessionId: string, turnId: string, onNotify?: (toast: ToastNotification) => void): Promise<void> {
   const tab = window.open('about:blank', '_blank')
   try {
-    const { token } = await createShare({ projectId, sessionId, turnId })
+    const { token } = await api.createShare({ projectId, sessionId, turnId })
     const url = `${window.location.origin}/share/${token}`
     if (tab) tab.location.href = url
     else window.open(url, '_blank')
@@ -173,6 +165,7 @@ function useSessionTimelineData(
   onSearchAnchorStale: (() => void) | undefined,
   isTimelineAtBottom: () => boolean,
 ) {
+  const api = useMachineApi()
   const [turns, setTurns] = useState<TurnSummary[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
@@ -273,14 +266,14 @@ function useSessionTimelineData(
   const fetchCurrentTimeline = useCallback(async () => {
     const waitContext = waitContextForNextTimelineRef.current
     const pendingSubmissionUuid = provisionalSlashRef.current?.submissionUuid
-    const page = await fetchSessionTimeline(sessionId!, {
+    const page = await api.fetchSessionTimeline(sessionId!, {
       ...(searchAnchorTurnId ? { anchorTurnId: searchAnchorTurnId } : {}),
       ...(waitContext ? { waitContext } : {}),
       ...(pendingSubmissionUuid ? { pendingSubmissionUuid } : {}),
     })
     if (waitContext) waitContextForNextTimelineRef.current = false
     return page
-  }, [searchAnchorTurnId, sessionId])
+  }, [searchAnchorTurnId, sessionId, api.fetchSessionTimeline])
   const applyTimelineControlRefresh = useCallback(
     (page: SessionTimelineControlResponse) => {
       onTurnOptionsChangeRef.current?.(page.turnOptions)
@@ -446,7 +439,8 @@ function useSessionTimelineData(
     const version = timelineControlSignal.version
     const waitContext = waitContextForNextTimelineRef.current
     setControlError(null)
-    void fetchSessionTimelineControl(sessionId, waitContext ? { waitContext: true } : {})
+    void api
+      .fetchSessionTimelineControl(sessionId, waitContext ? { waitContext: true } : {})
       .then((page) => {
         if (controlRequestRef.current !== request) return
         if (waitContext) waitContextForNextTimelineRef.current = false
@@ -484,7 +478,8 @@ function useSessionTimelineData(
       controlTerminalRefetchSubmissionRef.current = null
       setControlTerminalRefetchSubmission(null)
     }
-    void fetchSessionTimeline(sessionId, { pendingSubmissionUuid: submissionUuid })
+    void api
+      .fetchSessionTimeline(sessionId, { pendingSubmissionUuid: submissionUuid })
       .then((page) => {
         const resolution = resolvePendingSubmission(page, submissionUuid, true)
         if (!isCurrent() || page.state.version !== targetVersion) {
@@ -516,7 +511,7 @@ function useSessionTimelineData(
     return () => {
       cancelled = true
     }
-  }, [applyTimelineFullRefresh, controlTerminalRefetchSubmission, materialize, sessionId])
+  }, [applyTimelineFullRefresh, controlTerminalRefetchSubmission, materialize, sessionId, api.fetchSessionTimeline])
 
   useEffect(() => {
     if (!transcriptSignal || !projectId || !sessionId || !historyEnabled || transcriptSignal.version === lastAppliedTimelineVersionRef.current) return
@@ -537,7 +532,7 @@ function useSessionTimelineData(
           const waitContext = waitContextForNextTimelineRef.current
           const fromTurnId = searchAnchorTurnId ? undefined : signal.source === 'snapshot' ? transcriptTurnsRef.current[0]?.primaryUserUuid : signal.reset ? undefined : signal.invalidateFromTurnId
           const pendingSubmissionUuid = provisionalSlashRef.current?.submissionUuid
-          const page = await fetchSessionTimeline(sessionId!, {
+          const page = await api.fetchSessionTimeline(sessionId!, {
             ...(searchAnchorTurnId ? { anchorTurnId: searchAnchorTurnId } : fromTurnId ? { fromTurnId } : {}),
             ...(waitContext ? { waitContext } : {}),
             ...(pendingSubmissionUuid ? { pendingSubmissionUuid } : {}),
@@ -604,12 +599,24 @@ function useSessionTimelineData(
       }
     }
     void drain()
-  }, [applyTimelineFullRefresh, historyEnabled, materialize, pendingPrimaryTurnUuid, projectId, searchAnchorScope, searchAnchorTurnId, sessionId, timeline.isFetching, transcriptSignal])
+  }, [
+    applyTimelineFullRefresh,
+    historyEnabled,
+    materialize,
+    pendingPrimaryTurnUuid,
+    projectId,
+    searchAnchorScope,
+    searchAnchorTurnId,
+    sessionId,
+    timeline.isFetching,
+    transcriptSignal,
+    api.fetchSessionTimeline,
+  ])
 
   useEffect(() => {
     if (!sessionId) return
     let active = true
-    const events = connectSessionEvents(sessionId)
+    const events = api.connectSessionEvents(sessionId)
     events.onmessage = (message) => {
       if (!active) return
       let raw: unknown
@@ -718,7 +725,7 @@ function useSessionTimelineData(
       active = false
       events.close()
     }
-  }, [searchAnchorTurnId, sessionId, timeline.refetch])
+  }, [searchAnchorTurnId, sessionId, timeline.refetch, api.connectSessionEvents])
 
   const loadOlder = useCallback(async (): Promise<boolean> => {
     if (!historyEnabled || !sessionId || !nextCursor || loadingOlder) return false
@@ -727,7 +734,7 @@ function useSessionTimelineData(
     setLoadingOlder(true)
     setOlderError(null)
     try {
-      const page = await fetchSessionTimeline(sessionId, { cursor: nextCursor })
+      const page = await api.fetchSessionTimeline(sessionId, { cursor: nextCursor })
       if (loadOlderRequestRef.current !== requestId) return false
       materialize(prependOlderTimelineTurns(transcriptTurnsRef.current, page.turns))
       setNextCursor(page.nextCursor)
@@ -749,7 +756,7 @@ function useSessionTimelineData(
     } finally {
       if (loadOlderRequestRef.current === requestId) setLoadingOlder(false)
     }
-  }, [historyEnabled, loadingOlder, materialize, nextCursor, searchAnchorScope, searchAnchorTurnId, sessionId, timeline])
+  }, [historyEnabled, loadingOlder, materialize, nextCursor, searchAnchorScope, searchAnchorTurnId, sessionId, timeline, api.fetchSessionTimeline])
 
   return {
     turns,
@@ -940,6 +947,7 @@ export function SessionTimeline({
   onNotify?: (toast: ToastNotification) => void
   sharingEnabled?: boolean
 }) {
+  const api = useMachineApi()
   const timelinePanelRef = useRef<HTMLElement | null>(null)
   const programmaticScrollRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
   const olderScrollAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
@@ -956,13 +964,13 @@ export function SessionTimeline({
   const awaitingResponseTurnIdRef = useRef<string | null>(pendingPrimaryTurnUuid)
   const rawMessages = useQuery({
     queryKey: ['session-raw-messages', sessionId, rawMessageSelection?.turnId],
-    queryFn: () => fetchSessionRawMessages(sessionId!, rawMessageSelection!.turnId),
+    queryFn: () => api.fetchSessionRawMessages(sessionId!, rawMessageSelection!.turnId),
     enabled: Boolean(sessionId && rawMessageSelection),
     retry: false,
   })
   const subagentTree = useQuery<TurnSubagentsTreeResponse>({
     queryKey: ['turn-subagents-tree', sessionId, subagentSelection?.turnId],
-    queryFn: () => fetchTurnSubagentsTree(sessionId!, subagentSelection!.turnId),
+    queryFn: () => api.fetchTurnSubagentsTree(sessionId!, subagentSelection!.turnId),
     enabled: Boolean(sessionId && subagentSelection),
     retry: false,
     refetchOnWindowFocus: false,
@@ -970,7 +978,7 @@ export function SessionTimeline({
   const selectedSubagent = subagentTree.data?.tree.find(({ agentId }) => agentId === subagentSelection?.selectedAgentId)
   const subagentTranscript = useQuery<TurnSubagentTranscriptResponse>({
     queryKey: ['turn-subagent-transcript', sessionId, subagentSelection?.turnId, subagentSelection?.selectedAgentId, selectedSubagent?.transcriptVersion],
-    queryFn: () => fetchTurnSubagentTranscript(sessionId!, subagentSelection!.turnId, subagentSelection!.selectedAgentId!),
+    queryFn: () => api.fetchTurnSubagentTranscript(sessionId!, subagentSelection!.turnId, subagentSelection!.selectedAgentId!),
     enabled: Boolean(sessionId && subagentSelection?.selectedAgentId && selectedSubagent),
     placeholderData: (previousData, previousQuery) =>
       previousQuery?.queryKey[1] === sessionId && previousQuery.queryKey[2] === subagentSelection?.turnId && previousQuery.queryKey[3] === subagentSelection?.selectedAgentId
@@ -1373,7 +1381,7 @@ export function SessionTimeline({
                       onForkSession={item.id === lastAssistantFrameId ? onForkSession : undefined}
                       onShare={
                         item.id === lastAssistantFrameId && sharingEnabled && turn.shareEligible && projectId && sessionId
-                          ? () => void openShareInNewTab(projectId, sessionId, turn.primaryUserUuid, onNotify)
+                          ? () => void openShareInNewTab(api, projectId, sessionId, turn.primaryUserUuid, onNotify)
                           : undefined
                       }
                       highlightedMessage={highlightedMessage}

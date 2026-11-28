@@ -19,7 +19,8 @@ import {
 import ReactMarkdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown'
 import Zoom from 'react-medium-image-zoom'
 import remarkGfm from 'remark-gfm'
-import { fetchAnonymousAsset, fetchLocalMessageImage, type LocalImageConfirmation, LocalImageHttpError } from '../api'
+import { fetchAnonymousAsset, type LocalImageConfirmation, LocalImageHttpError } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { type FileMutationResult, isRecord, type StructuredPatchHunk, shortText, type TimelineSource } from './core'
 import { highlightCode, resolveHighlightLanguage, tokenizeCode } from './highlight'
 
@@ -473,6 +474,7 @@ function MarkdownCode({ className, children }: ComponentPropsWithoutRef<'code'>)
 const markdownComponents = { a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, code: MarkdownCode }
 
 function LocalMarkdownImage({ src, alt, context }: { src: string; alt: string; context: LocalImageContext }) {
+  const api = useMachineApi()
   const pathname = localImageDestinationPathname(src)
   const path = pathname ? localImagePath(pathname, context.cwd) : src
   const lexicallyExternal = !pathname || !pathInsideProject(path, context.projectPath)
@@ -507,7 +509,7 @@ function LocalMarkdownImage({ src, alt, context }: { src: string; alt: string; c
       requested.current = true
       try {
         setBlob(
-          await fetchLocalMessageImage(
+          await api.fetchLocalMessageImage(
             context.sessionId,
             context.messageUuid,
             {
@@ -537,7 +539,7 @@ function LocalMarkdownImage({ src, alt, context }: { src: string; alt: string; c
         }
       }
     },
-    [confirmation, context.agentId, context.messageUuid, context.sessionId, src],
+    [confirmation, context.agentId, context.messageUuid, context.sessionId, src, api.fetchLocalMessageImage],
   )
 
   useEffect(() => {

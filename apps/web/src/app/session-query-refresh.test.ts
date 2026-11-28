@@ -8,10 +8,8 @@ const { fetchProjectsMock, queryProjectSessionsMock } = vi.hoisted(() => ({
   queryProjectSessionsMock: vi.fn(),
 }))
 
-vi.mock('../api', () => ({
-  fetchProjects: fetchProjectsMock,
-  queryProjectSessions: queryProjectSessionsMock,
-}))
+// The refresh helpers take the machine API explicitly; these fakes stand in for one machine.
+const api = { fetchProjects: fetchProjectsMock, queryProjectSessions: queryProjectSessionsMock }
 
 import {
   acknowledgeListRefresh,
@@ -285,7 +283,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    await refreshProjectSessionLists(queryClient, {
+    await refreshProjectSessionLists(queryClient, api, {
       selectedProjectId: 'p1',
       visibleProjectIds: ['p1'],
     })
@@ -325,7 +323,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    const outcomes = await refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p-old', selectedSessionId: 'selected' })
+    const outcomes = await refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p-old', selectedSessionId: 'selected' })
 
     const cached = queryClient.getQueryData<ProjectSessionsResponse>(sessionQueryKeys.projectSessionsDetail('p-old', 1))
     expect(cached?.sessions.map(({ id }) => id)).toEqual(['old'])
@@ -343,7 +341,7 @@ describe('refresh helpers', () => {
       nextCursor: null,
     })
 
-    await refreshProjectsWindow(queryClient)
+    await refreshProjectsWindow(queryClient, api)
 
     expect(fetchProjectsMock).toHaveBeenCalledWith(null, 1)
     expect(queryProjectSessionsMock).not.toHaveBeenCalled()
@@ -579,7 +577,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    await refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
+    await refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
 
     expect(queryProjectSessionsMock).toHaveBeenCalledWith([{ projectId: 'p1', limit: 10 }])
   })
@@ -602,7 +600,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    await refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
+    await refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
 
     expect(queryProjectSessionsMock).toHaveBeenCalledWith([{ projectId: 'p1', limit: 20 }])
   })
@@ -621,7 +619,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    await refreshVisibleProjectSessions(queryClient, {
+    await refreshVisibleProjectSessions(queryClient, api, {
       selectedProjectId: 'p-pinned',
       selectedSessionId: 's-pinned',
       visibleProjectIds: ['p-visible'],
@@ -643,7 +641,7 @@ describe('refresh helpers', () => {
     })
 
     await expect(
-      refreshVisibleProjectSessions(queryClient, {
+      refreshVisibleProjectSessions(queryClient, api, {
         selectedProjectId: 'p-old',
         selectedSessionId: 's1',
         selectedSessionProjectIds: ['p-new'],
@@ -691,7 +689,7 @@ describe('refresh helpers', () => {
     })
 
     await expect(
-      refreshVisibleProjectSessions(queryClient, {
+      refreshVisibleProjectSessions(queryClient, api, {
         selectedProjectId: 'p1',
         selectedSessionId: 's1',
         visibleProjectIds: ['p1'],
@@ -716,7 +714,7 @@ describe('refresh helpers', () => {
       nextCursor: 'opaque-new',
     })
 
-    await refreshProjectsWindow(queryClient)
+    await refreshProjectsWindow(queryClient, api)
 
     expect(queryClient.getQueryData(sessionQueryKeys.projects)).toEqual({
       pages: [
@@ -744,7 +742,7 @@ describe('refresh helpers', () => {
       nextCursor: 'p1',
     })
 
-    const refresh = refreshProjectsWindow(queryClient)
+    const refresh = refreshProjectsWindow(queryClient, api)
     queryClient.setQueryData(sessionQueryKeys.projects, {
       pages: [
         { projects: [{ id: 'p1', name: 'P1' }], hasMore: true, nextCursor: 'p1' },
@@ -832,7 +830,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    await refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', selectedSessionId: 's-old', visibleProjectIds: ['p1'] })
+    await refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', selectedSessionId: 's-old', visibleProjectIds: ['p1'] })
 
     expect(queryClient.getQueryData<ProjectSessionsResponse>(sessionQueryKeys.projectSessionsRailWindow('p1', 10))?.sessions.map(({ id }) => id)).toEqual(['s-new', 's-old'])
   })
@@ -858,7 +856,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    const refresh = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', selectedSessionId: 's1', visibleProjectIds: ['p1'] })
+    const refresh = refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', selectedSessionId: 's1', visibleProjectIds: ['p1'] })
     queryClient.setQueryData(sessionQueryKeys.projectSessionsRailWindow('p1', 2), {
       project: { id: 'p1', name: 'P1' },
       sessions: [session('s1', 'S1', 'p1'), session('s2', 'S2', 'p1')],
@@ -899,7 +897,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    const refresh = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
+    const refresh = refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
     queryClient.setQueryData(sessionQueryKeys.projectSessionsRailWindow('p1', 2), {
       project: { id: 'p1', name: 'P1' },
       sessions: [session('s1', 'S1', 'p1'), session('s2', 'S2', 'p1')],
@@ -929,8 +927,8 @@ describe('refresh helpers', () => {
         sessionsByProject: { p2: { sessions: [session('s2', 'S2', 'p2')], hasMore: false, nextCursor: null } },
       })
 
-    const first = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
-    const second = refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p2', visibleProjectIds: ['p2'] })
+    const first = refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
+    const second = refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p2', visibleProjectIds: ['p2'] })
     resolveP1!({ sessionsByProject: { p1: { sessions: [session('s1', 'S1', 'p1')], hasMore: false, nextCursor: null } } })
 
     const [firstOutcomes, secondOutcomes] = await Promise.all([first, second])
@@ -949,7 +947,7 @@ describe('refresh helpers', () => {
     queryClient.setQueryData(sessionQueryKeys.projectSessionsRailWindow('p1', 1), existing)
     queryProjectSessionsMock.mockRejectedValue(new Error('connection lost'))
 
-    await expect(refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })).rejects.toThrow('connection lost')
+    await expect(refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })).rejects.toThrow('connection lost')
 
     expect(queryClient.getQueryData(sessionQueryKeys.projectSessionsRailWindow('p1', 1))).toEqual(existing)
   })
@@ -973,7 +971,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    await refreshProjectSessionLists(queryClient, { selectedProjectId: 'p1', selectedSessionId: 's1', visibleProjectIds: ['p1'] })
+    await refreshProjectSessionLists(queryClient, api, { selectedProjectId: 'p1', selectedSessionId: 's1', visibleProjectIds: ['p1'] })
 
     expect(queryClient.getQueryData<ProjectSessionsResponse>(sessionQueryKeys.projectSessionsRailWindow('p1', 2))?.sessions.map((item) => item.id)).toEqual(['s1', 's3'])
   })
@@ -1010,7 +1008,7 @@ describe('refresh helpers', () => {
       },
     })
 
-    await refreshVisibleProjectSessions(queryClient, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
+    await refreshVisibleProjectSessions(queryClient, api, { selectedProjectId: 'p1', visibleProjectIds: ['p1'] })
 
     expect(queryProjectSessionsMock).toHaveBeenCalledWith([{ projectId: 'p1', limit: 2 }])
     expect(fetchProjectsMock).not.toHaveBeenCalled()

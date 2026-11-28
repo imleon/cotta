@@ -9,7 +9,7 @@ import type {
   ToolApprovalRequest,
 } from '@cotta/shared'
 import { type CSSProperties, type ReactNode, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from 'react'
-import { respondToQuestion, respondToToolApproval } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { authoritativeTurnPhase, CliStaticSparkIcon, SessionTaskList, SessionTimeline, type TimelineControlSignal, type TranscriptSignal, type TurnPhase } from '../timeline'
 import { PermissionApprovalCard } from './permission-approval'
 import { ExplorerPanel, type ProjectFileTabs } from './project-files'
@@ -100,6 +100,7 @@ export function WorkspacePanel({
   onForkSession: (projectId: string, sessionId: string, upToMessageId: string) => Promise<unknown>
   onNotify: (toast: ToastState) => void
 }) {
+  const api = useMachineApi()
   const [liveTurn, setLiveTurn] = useState<{ sessionId: string; userMessageUuid: string } | null>(null)
   const [pendingSubmission, setPendingSubmission] = useState<PendingSubmission | null>(null)
   const [latestTurnPhase, setLatestTurnPhase] = useState<{ sessionId: string; phase: TurnPhase | null } | null>(null)
@@ -148,7 +149,7 @@ export function WorkspacePanel({
     if (!timelineSessionId || answeringApprovalId === approval.requestId) return
     setAnsweringApprovalId(approval.requestId)
     try {
-      await respondToToolApproval(timelineSessionId, approval.requestId, decision)
+      await api.respondToToolApproval(timelineSessionId, approval.requestId, decision)
       refreshSessionListsForCurrentProject(projectId, timelineSessionId)
     } catch (error) {
       setAnsweringApprovalId((current) => (current === approval.requestId ? null : current))
@@ -208,7 +209,7 @@ export function WorkspacePanel({
       answeringApprovalIdRef.current = requestId
       setAnsweringApprovalId(requestId)
       try {
-        await respondToQuestion(timelineSessionId, requestId, decision)
+        await api.respondToQuestion(timelineSessionId, requestId, decision)
         answeredQuestionIdRef.current = requestId
         setAnsweredQuestionId(requestId)
       } catch (error) {
@@ -218,7 +219,7 @@ export function WorkspacePanel({
         setAnsweringApprovalId((current) => (current === requestId ? null : current))
       }
     },
-    [onNotify, timelineSessionId],
+    [onNotify, timelineSessionId, api.respondToQuestion],
   )
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset the answered marker whenever a different approval request is selected
   useEffect(() => {

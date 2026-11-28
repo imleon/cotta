@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { pollGitHubDeviceLogin, startGitHubDeviceLogin } from '../api'
 import logoUrl from '../assets/logo.svg'
+import { useMachineApi } from '../client/machine-scope'
 import { writeClipboard } from '../timeline/content'
 
 function GitHubMark() {
@@ -30,6 +30,7 @@ function CheckIcon() {
 }
 
 export function AccessRequired() {
+  const api = useMachineApi()
   const queryClient = useQueryClient()
   const [flow, setFlow] = useState<{ flowId: string; userCode: string; verificationUri: string; verificationUriComplete?: string; interval: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,7 +44,7 @@ export function AccessRequired() {
     let timer: number
     const poll = async () => {
       try {
-        const response = await pollGitHubDeviceLogin(flow.flowId)
+        const response = await api.pollGitHubDeviceLogin(flow.flowId)
         if (stopped) return
         if (response.status === 'authorized') {
           await queryClient.invalidateQueries({ queryKey: ['auth-session'] })
@@ -61,7 +62,7 @@ export function AccessRequired() {
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [flow, queryClient])
+  }, [flow, queryClient, api.pollGitHubDeviceLogin])
 
   useEffect(() => () => window.clearTimeout(copyTimer.current), [])
 
@@ -69,7 +70,7 @@ export function AccessRequired() {
     setError(null)
     setStarting(true)
     try {
-      setFlow(await startGitHubDeviceLogin())
+      setFlow(await api.startGitHubDeviceLogin())
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error))
     } finally {

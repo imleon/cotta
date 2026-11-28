@@ -1,7 +1,7 @@
 import type { ShareSummary } from '@cotta/shared'
 import { useQuery } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
-import { listShares, revokeShare } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { ProjectFolderIcon } from './session-history'
 
 function shareUrl(token: string): string {
@@ -22,13 +22,14 @@ function relativeAge(ms: number): string {
 type OpenTurn = (sessionId: string, turnId: string) => void
 
 function ShareRow({ share, onRevoked, onOpenTurn }: { share: ShareSummary; onRevoked: (token: string) => void; onOpenTurn: OpenTurn }) {
+  const api = useMachineApi()
   const dialogRef = useRef<HTMLDialogElement | null>(null)
   const [revoking, setRevoking] = useState(false)
 
   async function confirmRevoke() {
     setRevoking(true)
     try {
-      await revokeShare(share.token)
+      await api.revokeShare(share.token)
       dialogRef.current?.close()
       onRevoked(share.token)
     } finally {
@@ -104,6 +105,7 @@ function ShareRow({ share, onRevoked, onOpenTurn }: { share: ShareSummary; onRev
 }
 
 export function ShareManagementPanel({ onOpenTurn, sharingEnabled }: { onOpenTurn: OpenTurn; sharingEnabled: boolean }) {
+  const api = useMachineApi()
   const [cursor, setCursor] = useState<string | null>(null)
   const [items, setItems] = useState<ShareSummary[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -112,7 +114,7 @@ export function ShareManagementPanel({ onOpenTurn, sharingEnabled }: { onOpenTur
   useQuery({
     queryKey: ['shares', cursor],
     queryFn: async () => {
-      const page = await listShares(cursor)
+      const page = await api.listShares(cursor)
       setItems((prev) => (cursor === null ? page.shares : [...prev, ...page.shares.filter((s) => !prev.some((p) => p.token === s.token))]))
       setNextCursor(page.nextCursor)
       setLoaded(true)

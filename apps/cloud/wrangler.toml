@@ -1,0 +1,15 @@
+# Cotta cloud backend (stage 2: accounts, machine registration, heartbeat, machine directory).
+# Local only for now: `npm run dev --workspace @cotta/cloud` applies migrations to a local D1 and serves on :8787.
+name = "cotta-cloud"
+main = "src/worker.ts"
+compatibility_date = "2026-11-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cotta-cloud"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

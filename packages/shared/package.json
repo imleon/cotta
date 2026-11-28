@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./cloud-protocol": {
+      "types": "./dist/cloud-protocol.d.ts",
+      "default": "./dist/cloud-protocol.js"
     }
   },
   "scripts": {

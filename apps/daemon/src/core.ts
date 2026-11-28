@@ -1,7 +1,8 @@
 import { createClaudeCodeApi, projectIdFromPath, projectPathFromId } from './claude-code-api.js'
 import { createClaudeSessionRegistry } from './claude-session-registry.js'
 import { ClientAuthenticator } from './client-auth.js'
-import { assertNoLegacyDatabase } from './cotta-home.js'
+import { readMachineRecord, startCloudHeartbeat } from './cloud-registration.js'
+import { assertNoLegacyDatabase, cottaVersion } from './cotta-home.js'
 import { createCottaDatabase } from './database.js'
 import { loadDetailTokenKey } from './detail-token.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
@@ -211,6 +212,10 @@ export async function createCottaCore(options: CreateCottaCoreOptions = {}) {
   const machineIdentity = loadOrCreateMachineIdentity()
   const clientAuthenticator = new ClientAuthenticator(new TrustedClientStore(cottaDb), machineIdentity)
   console.log(`Machine identity ${machineIdentity.fingerprint}`)
+  // Unregistered machines still run locally; registering (`cotta register`) turns on cloud presence at the next start.
+  const machineRecord = readMachineRecord()
+  const stopCloudHeartbeat = machineRecord ? startCloudHeartbeat({ identity: machineIdentity, record: machineRecord, version: cottaVersion() }) : null
+  if (!machineRecord) console.log('Machine is not registered with the cloud yet; run cotta register.')
   const sessionContextUsageStore = new SessionContextUsageStore(cottaDb)
   const sessionPinStore = new SessionPinStore(cottaDb)
   const turnMetaStore = new TurnMetaTranscriptStore(cottaDb, { settingsStore })
@@ -390,6 +395,7 @@ export async function createCottaCore(options: CreateCottaCoreOptions = {}) {
     },
     /** Releases every owned resource in the established order. Idempotent: later calls share the first close. */
     close(): Promise<void> {
+      stopCloudHeartbeat?.()
       closing ??= closeServerResources(resources)
       return closing
     },

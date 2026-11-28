@@ -1,0 +1,21 @@
+{
+  "name": "@cotta/cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm --prefix ../.. run build --workspace @cotta/shared && wrangler d1 migrations apply cotta-cloud --local && wrangler dev",
+    "test": "vitest run src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cotta/shared": "*",
+    "hono": "^4.13.8",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261112.1",
+    "typescript": "^5.7.0",
+    "wrangler": "4.161.0"
+  }
+}

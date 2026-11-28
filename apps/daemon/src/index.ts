@@ -10,13 +10,14 @@ import { type CottaAuth, createAuth, noopAuth } from './auth.js'
 import { forceCloseOwnedClaudeProcesses } from './claude-cli/query.js'
 import { type ClaudeCodeApi, createClaudeCodeApi } from './claude-code-api.js'
 import type { createClaudeSessionRegistry } from './claude-session-registry.js'
-import { acquireServerLock, serverUrl, writePidRecord } from './cotta-home.js'
 import { createCottaCore, createSessionMutationTarget } from './core.js'
+import { acquireServerLock, serverUrl, writePidRecord } from './cotta-home.js'
 import { type IndexChangeInput, IndexChangeNotifier } from './index-change-notifier.js'
 import { LiveTurnManager } from './live-turn-manager.js'
 import { defaultModelCatalogProvider, type ModelCatalogProvider } from './model-catalog.js'
 import { type ModelProvider, registerProviderRoutes } from './model-provider.js'
 import { ProjectFilesWatcherRegistry } from './project-files-watcher-registry.js'
+import type { RequestLedger } from './request-ledger.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerProjectFileRoutes } from './routes/project-files.js'
 import {
@@ -83,6 +84,7 @@ type CreateAppOptions = {
   remoteBotProjectExists?: RemoteBotProjectExists
   detailTokenKey?: Buffer
   shareStore?: ShareStore
+  requestLedger?: RequestLedger
   webRoot?: string
   providerAllowlist?: Map<string, ModelProvider>
 }
@@ -195,6 +197,7 @@ export function createApp(input: CreateAppInput): Hono {
     sessionSearchReady,
     detailTokenKey: input.detailTokenKey,
     shareStore: input.shareStore,
+    requestLedger: input.requestLedger,
   }
   registerProjectRoutes(app, projectRoutesInput)
   registerShareRoutes(app, projectRoutesInput, auth)

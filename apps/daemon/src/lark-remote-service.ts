@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AskUserQuestionDecisionRequest, ProjectSummary, SessionSummary, SessionTimelineResponse, ToolApprovalDecisionRequest, ToolApprovalRequest } from '@cotta/shared'
+import { answerPermission, answerQuestion } from './answer-request.js'
 import type { SessionMessage } from './claude-cli/types.js'
 import { decodeLarkCardAction, type LarkCardAction } from './lark-card-action.js'
 import { askUserQuestionList, type LarkTurnReply, projectLarkResultCard, projectLarkSessionCard, projectLarkTurnCard, projectLarkTurnMessages, type QuestionNav } from './lark-card-projection.js'
@@ -327,9 +328,9 @@ export class LarkRemoteService {
         : undefined
     const answered =
       pending.toolName === 'AskUserQuestion'
-        ? decision && this.readInput.liveTurnManager.respondToQuestion?.(action.sessionId, action.requestId, decision)
-        : this.readInput.liveTurnManager.respondToPermission?.(action.sessionId, action.requestId, permissionDecision(action))
-    if (answered?.status !== 'answered') return answered?.status === 'invalid_update' ? { ok: false, reason: 'invalid_action' } : stale
+        ? decision && answerQuestion(this.readInput, action.sessionId, action.requestId, decision)
+        : answerPermission(this.readInput, action.sessionId, action.requestId, permissionDecision(action))
+    if (answered?.status !== 'answered' && answered?.status !== 'already_answered') return answered?.status === 'invalid_update' ? { ok: false, reason: 'invalid_action' } : stale
     return { ok: true, callback: { toast: { type: 'success', content: 'Response submitted.' } } }
   }
 

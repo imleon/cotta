@@ -1895,7 +1895,7 @@ describe('project session routes', () => {
     })
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ ok: true })
+    expect(await response.json()).toEqual({ ok: true, status: 'answered' })
     expect(answer).toHaveBeenCalledWith('session-live', 'req-1', { decision: 'allow' })
   })
 
@@ -1927,7 +1927,7 @@ describe('project session routes', () => {
     })
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ ok: true })
+    expect(await response.json()).toEqual({ ok: true, status: 'answered' })
     expect(answer).toHaveBeenCalledWith('session-live', 'req-1', decision)
   })
 
@@ -1996,7 +1996,7 @@ describe('project session routes', () => {
     })
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ ok: true })
+    expect(await response.json()).toEqual({ ok: true, status: 'answered' })
     expect(turnOptionsStore.getSessionTurnOptions('session-newest')).toBeNull()
     expect(publishChange).not.toHaveBeenCalled()
   })

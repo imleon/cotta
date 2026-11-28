@@ -1989,7 +1989,8 @@ export const askUserQuestionDecisionRequestSchema = z.discriminatedUnion('behavi
 ])
 export type AskUserQuestionDecisionRequest = z.infer<typeof askUserQuestionDecisionRequestSchema>
 
-export const toolApprovalDecisionResponseSchema = z.object({ ok: z.literal(true) })
+/** `already_answered`: a retry of an answer the daemon already applied with the same decision; nothing was re-applied. */
+export const toolApprovalDecisionResponseSchema = z.object({ ok: z.literal(true), status: z.enum(['answered', 'already_answered']).optional() })
 export type ToolApprovalDecisionResponse = z.infer<typeof toolApprovalDecisionResponseSchema>
 
 export const sessionRuntimeResponseSchema = z.object({
@@ -2017,6 +2018,27 @@ export const createTurnResponseSchema = z.object({
   projectId: z.string(),
   sessionId: z.string(),
   userMessageUuid: z.string(),
+  /** Present when this submission was already accepted earlier: the original result is returned and nothing ran again. */
+  replayed: z.literal(true).optional(),
 })
 
 export type CreateTurnResponse = z.infer<typeof createTurnResponseSchema>
+
+/** Interrupt targets one turn: a retry that arrives after that turn ended must not stop a newer one. */
+export const interruptTurnRequestSchema = z.strictObject({ userMessageUuid: z.string().uuid().optional() })
+export type InterruptTurnRequest = z.infer<typeof interruptTurnRequestSchema>
+
+/**
+ * Reconciliation answer for a submission whose acknowledgement was lost. `not_found` means the daemon has no evidence the
+ * submission arrived, so resending the same `userMessageUuid` is safe; `accepted` means it arrived but its outcome is not
+ * known in memory (for example after a daemon restart) and the timeline is the source of truth.
+ */
+export const turnSubmissionStatusSchema = z.enum(['running', 'waiting', 'completed', 'accepted', 'not_found'])
+export type TurnSubmissionStatus = z.infer<typeof turnSubmissionStatusSchema>
+export const turnSubmissionStatusResponseSchema = z.object({
+  sessionId: z.string(),
+  userMessageUuid: z.string(),
+  status: turnSubmissionStatusSchema,
+  outcome: z.enum(['success', 'error']).optional(),
+})
+export type TurnSubmissionStatusResponse = z.infer<typeof turnSubmissionStatusResponseSchema>

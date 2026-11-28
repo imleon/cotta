@@ -6,8 +6,8 @@ import {
   authSessionResponseSchema,
   type BuildInfoResponse,
   buildInfoResponseSchema,
-  type CreateRemoteBotRequest,
   type ComposerImage,
+  type CreateRemoteBotRequest,
   type CreateShareResponse,
   type CreateTurnResponse,
   createShareResponseSchema,
@@ -88,6 +88,7 @@ import {
   type TurnOptionsUpdateRequest,
   type TurnSubagentsTreeResponse,
   type TurnSubagentTranscriptResponse,
+  type TurnSubmissionStatusResponse,
   tokenUsageDailyResponseSchema,
   tokenUsageResponseSchema,
   toolApprovalDecisionRequestSchema,
@@ -95,6 +96,7 @@ import {
   turnOptionsUpdateRequestSchema,
   turnSubagentsTreeResponseSchema,
   turnSubagentTranscriptResponseSchema,
+  turnSubmissionStatusResponseSchema,
   type UpdateRemoteBotRequest,
 } from '@cotta/shared'
 import { type CottaTransport, sameOriginTransport } from './client/transport'
@@ -492,6 +494,7 @@ export function createCottaApi(transport: CottaTransport) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(decision),
     })
+    if (response.status === 409) throw new Error('This request was already answered with a different decision.')
     if (!response.ok) throw new Error(`Permission response failed: ${response.status}`)
     return toolApprovalDecisionResponseSchema.parse(await response.json())
   }
@@ -503,6 +506,7 @@ export function createCottaApi(transport: CottaTransport) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(decision),
     })
+    if (response.status === 409) throw new Error('This question was already answered differently.')
     if (!response.ok) throw new Error(`Question response failed: ${response.status}`)
     return toolApprovalDecisionResponseSchema.parse(await response.json())
   }
@@ -644,9 +648,21 @@ export function createCottaApi(transport: CottaTransport) {
     return createTurnResponseSchema.parse(await response.json())
   }
 
-  async function interruptTurn(sessionId: string): Promise<void> {
-    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, { method: 'POST' })
+  /** Interrupts `userMessageUuid` only while it is still the running turn, so a late retry cannot stop a newer one. */
+  async function interruptTurn(sessionId: string, userMessageUuid: string): Promise<void> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userMessageUuid }),
+    })
     if (!response.ok) throw new Error(`Interrupt failed: ${response.status}`)
+  }
+
+  /** What the daemon knows about a submission whose acknowledgement was lost; `not_found` means resending is safe. */
+  async function fetchTurnSubmissionStatus(sessionId: string, userMessageUuid: string): Promise<TurnSubmissionStatusResponse> {
+    const response = await transport.fetch(`/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(userMessageUuid)}`)
+    if (!response.ok) throw new Error(`Submission status failed: ${response.status}`)
+    return turnSubmissionStatusResponseSchema.parse(await response.json())
   }
 
   /** Live run-state and timeline events for one session. The caller owns the stream and must close it. */
@@ -689,6 +705,7 @@ export function createCottaApi(transport: CottaTransport) {
   }
   return {
     createTurn,
+    fetchTurnSubmissionStatus,
     interruptTurn,
     connectSessionEvents,
     connectProjectFileEvents,
@@ -764,6 +781,7 @@ export const cottaApi: CottaApi = createCottaApi(sameOriginTransport)
 
 export const {
   createTurn,
+  fetchTurnSubmissionStatus,
   interruptTurn,
   connectSessionEvents,
   connectProjectFileEvents,

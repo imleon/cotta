@@ -818,9 +818,11 @@ export class LiveTurnManager {
     }
   }
 
-  async interrupt(sessionId: string): Promise<boolean> {
+  /** Interrupts the running turn; when `userMessageUuid` is given, only if that is the turn still running. */
+  async interrupt(sessionId: string, userMessageUuid?: string): Promise<boolean> {
     const runtime = this.runtimes.get(sessionId)
     if (!runtime?.currentUserMessageUuid || runtime.closed || runtime.stale) return false
+    if (userMessageUuid !== undefined && runtime.currentUserMessageUuid !== userMessageUuid) return false
     await runtime.query.interrupt()
     return true
   }

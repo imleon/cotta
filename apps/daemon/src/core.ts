@@ -10,6 +10,7 @@ import { loadProviderAllowlist, resolveActiveProvider } from './model-provider.j
 import { ProjectFilesWatcherRegistry } from './project-files-watcher-registry.js'
 import { RawTranscriptCoordinator } from './raw-transcript-coordinator.js'
 import { RemoteBotManager } from './remote-bot-manager.js'
+import { RequestLedger } from './request-ledger.js'
 import { sessionActivity, sessionActivityVersion } from './routes/project-routes-shared.js'
 import { createRemoteBotStore } from './routes/remote-bot-routes.js'
 import { SessionContextUsageStore } from './session-context-usage-store.js'
@@ -202,6 +203,8 @@ export async function createCottaCore(options: CreateCottaCoreOptions = {}) {
   const detailTokenKey = loadDetailTokenKey(settingsStore)
   const shareStore = new ShareStore(cottaDb)
   const turnOptionsStore = new TurnOptionsStore(cottaDb)
+  const requestLedger = new RequestLedger(cottaDb)
+  requestLedger.prune()
   const sessionContextUsageStore = new SessionContextUsageStore(cottaDb)
   const sessionPinStore = new SessionPinStore(cottaDb)
   const turnMetaStore = new TurnMetaTranscriptStore(cottaDb, { settingsStore })
@@ -322,6 +325,7 @@ export async function createCottaCore(options: CreateCottaCoreOptions = {}) {
     sessionWatcherRegistry,
     detailTokenKey,
     shareStore,
+    requestLedger,
   }
   const remoteBotStore = createRemoteBotStore(cottaDb)
   const remoteBotManager = new RemoteBotManager(remoteBotStore, projectRoutesInput)

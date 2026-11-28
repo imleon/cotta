@@ -24,7 +24,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import type { CSSProperties, Dispatch, SetStateAction } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CreateTurnHttpError, createTurn, interruptTurn, refreshProjects, saveTurnOptions } from '../api'
+import { CreateTurnHttpError, createTurn, fetchTurnSubmissionStatus, interruptTurn, refreshProjects, saveTurnOptions } from '../api'
 import { type SubmitState, submitStateFor, type TurnPhase } from '../timeline'
 import { composerActionMode, composerControlLabel, composerSessionBusy, composerSubmitBlocked, UNKNOWN_SUBMISSION_RECOVERY_MS } from './composer-core'
 import { sessionQueryKeys } from './session-query-refresh'
@@ -542,13 +542,7 @@ export function TurnComposer({
     setSubmitting(true)
     setSubmitError(null)
     setPendingTurn(pendingSubmission(targetProjectId, text, submittedImages, targetSessionId, userMessageUuid))
-    try {
-      const effectiveEffort = selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION
-      if (existingSessionId) {
-        const save = turnOptionsSaveRef.current
-        if (save?.key === existingSessionId) await save.promise
-      } else if (composerManuallyChangedRef.current) await saveTurnOptions(targetSessionId, { permissionMode, model, effort: effectiveEffort === DEFAULT_TURN_OPTION ? null : effectiveEffort })
-      const response = await createTurn(targetProjectId, existingSessionId, targetSessionId, text, submittedImages, userMessageUuid)
+    const accepted = (response: { projectId: string; sessionId: string }) => {
       setInputText('')
       imagesRef.current = []
       setImages([])
@@ -557,11 +551,26 @@ export function TurnComposer({
       if (submittedInCurrentScope && !existingSessionId) onSessionCreated(response.projectId, response.sessionId)
       void refreshProjects(response.projectId)
       refreshSessionLists(response.projectId, response.sessionId)
+    }
+    try {
+      const effectiveEffort = selectedModel?.supportsEffort ? effort : DEFAULT_TURN_OPTION
+      if (existingSessionId) {
+        const save = turnOptionsSaveRef.current
+        if (save?.key === existingSessionId) await save.promise
+      } else if (composerManuallyChangedRef.current) await saveTurnOptions(targetSessionId, { permissionMode, model, effort: effectiveEffort === DEFAULT_TURN_OPTION ? null : effectiveEffort })
+      accepted(await createTurn(targetProjectId, existingSessionId, targetSessionId, text, submittedImages, userMessageUuid))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (error instanceof CreateTurnHttpError) {
+      // The acknowledgement may have been lost after the daemon accepted the turn: ask before deciding it failed.
+      const reconciled = error instanceof CreateTurnHttpError ? null : await fetchTurnSubmissionStatus(targetSessionId, userMessageUuid).catch(() => null)
+      if (reconciled && reconciled.status !== 'not_found') {
+        accepted({ projectId: targetProjectId, sessionId: targetSessionId })
+        return
+      }
+      if (error instanceof CreateTurnHttpError || reconciled?.status === 'not_found') {
         setPendingTurn((current) => (current?.submissionUuid === userMessageUuid ? null : current))
         if (composerScopeRef.current === submitScope && !existingSessionId) setSelectedSessionId(null)
+        if (reconciled && composerScopeRef.current === submitScope) setSubmitError(`The message did not reach the server. You can send it again. ${message}`)
       } else {
         setUnknownSubmission({
           userMessageUuid,
@@ -582,7 +591,7 @@ export function TurnComposer({
     setInterrupting(true)
     setSubmitError(null)
     try {
-      await interruptTurn(liveSessionId)
+      await interruptTurn(liveSessionId, liveUserMessageUuid)
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
       setInterrupting(false)

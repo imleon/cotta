@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { databasePath } from './cotta-home.js'
 
-const SCHEMA_VERSION = 45
+const SCHEMA_VERSION = 46
 
 /** On-disk root for a share's frozen image assets, co-located with the database file. */
 export function shareAssetsRoot(token: string): string {
@@ -349,6 +349,21 @@ function createSessionSearchTables(db: DatabaseSync): void {
   `)
 }
 
+/** Durable write receipts for idempotent client requests (turn submit, permission and question answers); pruned after a retention window. */
+function createRequestReceiptTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE request_receipts (
+      kind TEXT NOT NULL CHECK (kind IN ('turn', 'permission', 'question')),
+      request_key TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      result_json TEXT NOT NULL CHECK (json_valid(result_json)),
+      created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+      PRIMARY KEY (kind, request_key)
+    );
+    CREATE INDEX request_receipts_by_created ON request_receipts(created_at_ms);
+  `)
+}
+
 function initializeSchema(db: DatabaseSync): void {
   const version = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
   if (version === SCHEMA_VERSION) return
@@ -365,10 +380,12 @@ function initializeSchema(db: DatabaseSync): void {
       createSessionSearchTables(db)
       createRemoteBotTables(db)
       createShareTables(db)
+      createRequestReceiptTables(db)
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
-    } else if (version === 43 || version === 44) {
+    } else if (version === 43 || version === 44 || version === 45) {
       if (version === 43) createShareTables(db)
-      db.exec('ALTER TABLE session_index ADD COLUMN pre_plan_permission_mode TEXT')
+      if (version <= 44) db.exec('ALTER TABLE session_index ADD COLUMN pre_plan_permission_mode TEXT')
+      createRequestReceiptTables(db)
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
     } else
       throw new Error(

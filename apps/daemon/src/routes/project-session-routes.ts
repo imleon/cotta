@@ -7,6 +7,7 @@ import {
   deleteSessionResponseSchema,
   forkSessionRequestSchema,
   forkSessionResponseSchema,
+  interruptTurnRequestSchema,
   renameSessionRequestSchema,
   renameSessionResponseSchema,
   restartSessionRuntimeResponseSchema,
@@ -17,15 +18,18 @@ import {
   toolApprovalDecisionRequestSchema,
   toolApprovalDecisionResponseSchema,
   turnOptionsUpdateRequestSchema,
+  turnSubmissionStatusResponseSchema,
 } from '@cotta/shared'
 import type { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
+import { answerPermission, answerQuestion } from '../answer-request.js'
 import { isActiveCliSessionMetadata } from '../claude-session-registry.js'
 import { shareAssetsRoot } from '../database.js'
 import { ProjectDirectoryUnavailableError, SessionDeletingError, SessionExternallyOwnedError, SessionProjectMismatchError, SessionTurnInProgressError } from '../live-turn-manager.js'
+import { RequestIdConflictError } from '../request-ledger.js'
 import { TranscriptUnavailableError } from '../session-raw-transcript-cache.js'
 import { SessionTranscriptMutationError } from '../session-transcript-mutations.js'
-import { SubmitTurnError, submitTurn } from '../submit-turn.js'
+import { SubmitTurnError, submitTurn, turnSubmissionStatus } from '../submit-turn.js'
 import { normalizeModelEffortSelection, persistedTurnOptions, readSettings, resolveTurnOptions, validateTurnOptions } from '../turn-options.js'
 import { locateSession, type ProjectRoutesInput, resolveSessionProject, type SessionMetadata } from './project-routes-shared.js'
 
@@ -74,6 +78,7 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       if (error instanceof SessionExternallyOwnedError) return c.json({ error: 'session_externally_owned' }, 409)
       if (error instanceof SessionTurnInProgressError) return c.json({ error: 'session_turn_in_progress' }, 409)
       if (error instanceof SessionDeletingError) return c.json({ error: 'session_deleting' }, 409)
+      if (error instanceof RequestIdConflictError) return c.json({ error: 'request_id_conflict' }, 409)
       console.error('sessions:create failed', error)
       return c.json({ error: 'session_create_failed' }, 500)
     }
@@ -94,8 +99,18 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
       if (error instanceof SessionExternallyOwnedError) return c.json({ error: 'session_externally_owned' }, 409)
       if (error instanceof SessionTurnInProgressError) return c.json({ error: 'session_turn_in_progress' }, 409)
       if (error instanceof SessionDeletingError) return c.json({ error: 'session_deleting' }, 409)
+      if (error instanceof RequestIdConflictError) return c.json({ error: 'request_id_conflict' }, 409)
       console.error('turns:create failed', error)
       return c.json({ error: 'turn_create_failed' }, 500)
+    }
+  })
+
+  app.get('/api/sessions/:sessionId/turns/:userMessageUuid', (c) => {
+    try {
+      return c.json(turnSubmissionStatusResponseSchema.parse(turnSubmissionStatus(input, c.req.param('sessionId'), c.req.param('userMessageUuid'))))
+    } catch (error) {
+      console.error('turns:status failed', error)
+      return c.json({ error: 'turn_status_failed' }, 500)
     }
   })
 
@@ -397,13 +412,21 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
     }
   })
 
-  async function interruptSession(sessionId: string) {
-    return { interrupted: await input.liveTurnManager.interrupt(sessionId) }
-  }
-
   app.post('/api/sessions/:sessionId/interrupt', async (c) => {
     try {
-      return c.json(await interruptSession(c.req.param('sessionId')))
+      // The body is optional: older clients interrupt whatever is running.
+      const raw = (await c.req.text()).trim()
+      let body: unknown = {}
+      if (raw) {
+        try {
+          body = JSON.parse(raw)
+        } catch {
+          return c.json({ error: 'invalid_interrupt_request' }, 400)
+        }
+      }
+      const parsed = interruptTurnRequestSchema.safeParse(body)
+      if (!parsed.success) return c.json({ error: 'invalid_interrupt_request' }, 400)
+      return c.json({ interrupted: await input.liveTurnManager.interrupt(c.req.param('sessionId'), parsed.data.userMessageUuid) })
     } catch (error) {
       console.error('session:interrupt failed', error)
       return c.json({ error: 'session_interrupt_failed' }, 500)
@@ -412,13 +435,14 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
 
   app.post('/api/sessions/:sessionId/permissions/:requestId', async (c) => {
     try {
-      if (!input.liveTurnManager.respondToPermission) return c.json({ error: 'permissions_unavailable' }, 503)
       const parsed = toolApprovalDecisionRequestSchema.safeParse(await c.req.json().catch(() => null))
       if (!parsed.success) return c.json({ error: 'invalid_permission_decision' }, 400)
-      const result = input.liveTurnManager.respondToPermission(c.req.param('sessionId'), c.req.param('requestId'), parsed.data)
-      if (!result) return c.json({ error: 'permission_request_not_found' }, 404)
+      const result = answerPermission(input, c.req.param('sessionId'), c.req.param('requestId'), parsed.data)
+      if (!result) return c.json({ error: 'permissions_unavailable' }, 503)
+      if (result.status === 'not_found') return c.json({ error: 'permission_request_not_found' }, 404)
       if (result.status === 'invalid_update') return c.json({ error: 'invalid_permission_update' }, 400)
-      return c.json(toolApprovalDecisionResponseSchema.parse({ ok: true }))
+      if (result.status === 'conflict') return c.json({ error: 'permission_already_answered', decision: result.decision }, 409)
+      return c.json(toolApprovalDecisionResponseSchema.parse({ ok: true, status: result.status }))
     } catch (error) {
       console.error('session:permission failed', error)
       return c.json({ error: 'session_permission_failed' }, 500)
@@ -427,12 +451,13 @@ export function registerProjectSessionRoutes(app: Hono, input: ProjectRoutesInpu
 
   app.post('/api/sessions/:sessionId/questions/:requestId', async (c) => {
     try {
-      if (!input.liveTurnManager.respondToQuestion) return c.json({ error: 'questions_unavailable' }, 503)
       const parsed = askUserQuestionDecisionRequestSchema.safeParse(await c.req.json().catch(() => null))
       if (!parsed.success) return c.json({ error: 'invalid_question_decision' }, 400)
-      const result = input.liveTurnManager.respondToQuestion(c.req.param('sessionId'), c.req.param('requestId'), parsed.data)
-      if (!result) return c.json({ error: 'question_request_not_found' }, 404)
-      return c.json(toolApprovalDecisionResponseSchema.parse({ ok: true }))
+      const result = answerQuestion(input, c.req.param('sessionId'), c.req.param('requestId'), parsed.data)
+      if (!result) return c.json({ error: 'questions_unavailable' }, 503)
+      if (result.status === 'not_found' || result.status === 'invalid_update') return c.json({ error: 'question_request_not_found' }, 404)
+      if (result.status === 'conflict') return c.json({ error: 'question_already_answered', decision: result.decision }, 409)
+      return c.json(toolApprovalDecisionResponseSchema.parse({ ok: true, status: result.status }))
     } catch (error) {
       console.error('session:question failed', error)
       return c.json({ error: 'session_question_failed' }, 500)

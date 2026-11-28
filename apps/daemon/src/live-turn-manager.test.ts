@@ -884,6 +884,20 @@ describe('LiveTurnManager', () => {
     await expect(approval).resolves.toEqual({ behavior: 'allow', toolUseID: 'tool-1' })
   })
 
+  it('interrupts only the targeted turn when the caller names one', async () => {
+    const interrupt = vi.fn().mockResolvedValue(undefined)
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt, { interrupt }))
+    const manager = new LiveTurnManager()
+    const projectId = Buffer.from('/repo/a').toString('base64url')
+
+    await manager.startTurn({ projectId, sessionId: 'session-1', resume: true, text: 'hello', userMessageUuid: 'user-2', permissionMode: 'default' })
+
+    await expect(manager.interrupt('session-1', 'user-1')).resolves.toBe(false)
+    expect(interrupt).not.toHaveBeenCalled()
+    await expect(manager.interrupt('session-1', 'user-2')).resolves.toBe(true)
+    expect(interrupt).toHaveBeenCalledTimes(1)
+  })
+
   it('publishes a run-state-changed event when entering and leaving requires_action', async () => {
     queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => pendingQuery(prompt))
     const manager = new LiveTurnManager()

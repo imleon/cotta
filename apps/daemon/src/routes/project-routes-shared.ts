@@ -15,6 +15,7 @@ import { type CliSessionMetadata, isActiveCliSessionMetadata, isBackgroundKind }
 import type { IndexChangeInput, IndexChangeNotifier } from '../index-change-notifier.js'
 import type { LiveTurnManager } from '../live-turn-manager.js'
 import type { ModelCatalogProvider } from '../model-catalog.js'
+import type { RequestLedger } from '../request-ledger.js'
 import type { SessionContextUsageStore } from '../session-context-usage-store.js'
 import type { SessionPinStore } from '../session-pin-store.js'
 import type { RawTimelineWindow } from '../session-raw-transcript-cache.js'
@@ -119,6 +120,8 @@ export type ProjectRoutesInput = {
   sessionSearchReady?: ProjectRoutesSessionSearchReady
   detailTokenKey?: Buffer
   shareStore?: ShareStore
+  /** Write-request receipts and in-flight dedupe; absent only in narrow unit tests. */
+  requestLedger?: RequestLedger
 }
 
 export function locateSession(input: ProjectRoutesInput, sessionId: string): IndexedSession | null {

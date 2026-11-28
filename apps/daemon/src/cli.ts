@@ -30,6 +30,7 @@ Commands:
   status                                           Show whether the server is running
   identity                                         Show this machine's identity fingerprint
   clients list|approve|revoke                      Manage clients trusted to use this machine
+  register [--cloud <url>] [--name <name>]         Register this machine to your Cotta cloud account
   uninstall [-y|--yes]                             Stop, delete ~/.cotta, and remove the npm package
   help                                             Show this help
 
@@ -37,7 +38,7 @@ Options:
   -v, --version   Print the version
   -h, --help      Show this help
 
-Environment: HOST, PORT, COTTA_DB_PATH (default ~/.cotta/cotta.sqlite)`
+Environment: HOST, PORT, COTTA_DB_PATH (default ~/.cotta/cotta.sqlite), COTTA_CLOUD_URL`
 
 const START_TIMEOUT_MS = 60_000
 const STOP_TIMEOUT_MS = 5_000
@@ -252,6 +253,8 @@ export async function main(argv: string[]): Promise<number> {
       'reconfigure-github': { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
       all: { type: 'boolean', short: 'a' },
+      cloud: { type: 'string' },
+      name: { type: 'string' },
       version: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -275,6 +278,10 @@ export async function main(argv: string[]): Promise<number> {
       return uninstall(values.yes ?? false)
     case 'identity':
       return (await import('./cli-clients.js')).identityCommand(console)
+    case 'register': {
+      const [{ registerMachine, cloudUrl }, { loadOrCreateMachineIdentity }] = await Promise.all([import('./cloud-registration.js'), import('./machine-identity.js')])
+      return registerMachine({ identity: loadOrCreateMachineIdentity(), cloudUrl: cloudUrl(values.cloud), name: values.name, io: { log: console.log, error: console.error, sleep } })
+    }
     case 'clients':
       return (await import('./cli-clients.js')).clientsCommand(positionals.slice(1), { yes: values.yes ?? false, all: values.all ?? false }, { log: console.log, error: console.error, confirm })
     case undefined:

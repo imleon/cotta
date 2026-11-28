@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cotta · Machines</title>
+    <style>
+      :root { color-scheme: light dark; --fg: #1f1d1a; --muted: #6b665f; --bg: #f6f5f3; --card: #fff; --line: #e4e1dc; --accent: #b85c38; }
+      @media (prefers-color-scheme: dark) { :root { --fg: #ece9e4; --muted: #a39d95; --bg: #191817; --card: #232120; --line: #3a3735; } }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+      main { max-width: 560px; margin: 48px auto; padding: 0 16px; }
+      section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+      h1 { font-size: 20px; margin: 0 0 16px; }
+      h2 { font-size: 15px; margin: 0 0 12px; }
+      .muted { color: var(--muted); }
+      code, .mono { font-family: ui-monospace, monospace; }
+      .code { font-size: 22px; letter-spacing: 2px; }
+      button { font: inherit; border: 0; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: #fff; cursor: pointer; }
+      button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+      input { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--fg); width: 12em; text-transform: uppercase; }
+      ul { list-style: none; padding: 0; margin: 0; }
+      li { padding: 10px 0; border-top: 1px solid var(--line); }
+      li:first-child { border-top: 0; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .error { color: #b3261e; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Cotta machines</h1>
+
+      <section id="signed-out" hidden>
+        <h2>Sign in</h2>
+        <p class="muted">Sign in with GitHub to register machines to your account.</p>
+        <button id="sign-in" type="button">Sign in with GitHub</button>
+        <div id="github-code" hidden>
+          <p>Open <a id="github-link" href="https://github.com/login/device" target="_blank" rel="noopener">github.com/login/device</a> and enter:</p>
+          <p class="code mono" id="github-user-code"></p>
+          <p class="muted">Waiting for GitHub…</p>
+        </div>
+      </section>
+
+      <section id="approve" hidden>
+        <h2>Register a machine</h2>
+        <p class="muted">Enter the code printed by <code>cotta register</code> on the machine.</p>
+        <div class="row">
+          <input id="code-input" autocomplete="off" placeholder="XXXX-XXXX" maxlength="9" />
+          <button id="lookup" type="button">Continue</button>
+        </div>
+        <div id="confirm" hidden>
+          <p>Machine <strong id="confirm-name"></strong> (<span id="confirm-platform"></span>)</p>
+          <p class="muted">Check that the machine shows this fingerprint (<code>cotta identity</code>):</p>
+          <p class="mono" id="confirm-fingerprint"></p>
+          <button id="approve-button" type="button">Register to my account</button>
+        </div>
+        <p id="approve-message"></p>
+      </section>
+
+      <section id="machines" hidden>
+        <div class="row" style="justify-content: space-between">
+          <h2>Your machines</h2>
+          <span class="muted">Signed in as <span id="login"></span> · <button id="sign-out" class="secondary" type="button">Sign out</button></span>
+        </div>
+        <ul id="machine-list"></ul>
+      </section>
+    </main>
+    <script type="module">
+      const $ = (id) => document.getElementById(id)
+      const post = (path, body) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+      const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+
+      async function signIn() {
+        $('sign-in').disabled = true
+        const flow = await (await post('/v1/auth/github/start')).json()
+        $('github-link').href = flow.verificationUri
+        $('github-user-code').textContent = flow.userCode
+        $('github-code').hidden = false
+        for (;;) {
+          await sleep(flow.pollIntervalMs)
+          const result = await (await post('/v1/auth/github/poll', { flowId: flow.flowId })).json()
+          if (result.status === 'approved') return start()
+          if (result.status !== 'pending') {
+            $('github-code').hidden = true
+            $('sign-in').disabled = false
+            return
+          }
+        }
+      }
+
+      async function lookup() {
+        $('approve-message').textContent = ''
+        $('confirm').hidden = true
+        const code = $('code-input').value.trim()
+        const response = await fetch(`/v1/machines/registrations/lookup/${encodeURIComponent(code)}`)
+        if (!response.ok) {
+          $('approve-message').textContent = 'No pending registration with this code. Codes expire after 15 minutes.'
+          $('approve-message').className = 'error'
+          return
+        }
+        const registration = await response.json()
+        $('confirm-name').textContent = registration.name
+        $('confirm-platform').textContent = registration.platform
+        $('confirm-fingerprint').textContent = registration.fingerprint
+        $('confirm').hidden = registration.status !== 'pending'
+        if (registration.status !== 'pending') $('approve-message').textContent = 'This machine is already registered.'
+      }
+
+      async function approve() {
+        const response = await post('/v1/machines/registrations/approve', { userCode: $('code-input').value.trim() })
+        $('confirm').hidden = true
+        $('approve-message').className = response.ok ? '' : 'error'
+        $('approve-message').textContent = response.ok ? 'Registered. The machine finishes setup on its own.' : 'Registration failed. Start again with cotta register.'
+        await listMachines()
+      }
+
+      async function listMachines() {
+        const { machines } = await (await fetch('/v1/machines')).json()
+        const list = $('machine-list')
+        list.replaceChildren()
+        if (!machines.length) {
+          const empty = document.createElement('li')
+          empty.className = 'muted'
+          empty.textContent = 'No machines yet.'
+          list.append(empty)
+        }
+        for (const machine of machines) {
+          const item = document.createElement('li')
+          const title = document.createElement('div')
+          title.textContent = `${machine.name} · ${machine.platform} · ${machine.online ? 'online' : 'offline'}`
+          const detail = document.createElement('div')
+          detail.className = 'muted mono'
+          detail.textContent = machine.fingerprint
+          item.append(title, detail)
+          list.append(item)
+        }
+      }
+
+      async function start() {
+        const session = await fetch('/v1/auth/session')
+        const signedIn = session.ok
+        $('signed-out').hidden = signedIn
+        $('approve').hidden = !signedIn
+        $('machines').hidden = !signedIn
+        if (!signedIn) return
+        $('login').textContent = (await session.json()).account.githubLogin
+        const code = new URLSearchParams(location.search).get('code')
+        if (code) {
+          $('code-input').value = code
+          await lookup()
+        }
+        await listMachines()
+      }
+
+      $('sign-in').addEventListener('click', () => signIn().catch(() => ($('sign-in').disabled = false)))
+      $('lookup').addEventListener('click', () => lookup())
+      $('approve-button').addEventListener('click', () => approve())
+      $('sign-out').addEventListener('click', async () => {
+        await post('/v1/auth/logout')
+        await start()
+      })
+      start()
+    </script>
+  </body>
+</html>

@@ -13,10 +13,11 @@
     "dev:web": "npm run build --workspace @cotta/shared && npm run dev --workspace @cotta/web -- --host 0.0.0.0",
     "build": "npm run build --workspace @cotta/shared && npm run build --workspace cotta && npm run build --workspace @cotta/web",
     "test": "npm run build --workspace @cotta/shared && npm run test --workspaces --if-present",
-    "typecheck": "npm run build --workspace @cotta/shared && npm run typecheck --workspace @cotta/shared && npm run typecheck --workspace cotta && npm run typecheck --workspace @cotta/web",
+    "typecheck": "npm run build --workspace @cotta/shared && npm run typecheck --workspace @cotta/shared && npm run typecheck --workspace cotta && npm run typecheck --workspace @cotta/web && npm run typecheck --workspace @cotta/cloud",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format . --write",
-    "format:check": "biome format ."
+    "format:check": "biome format .",
+    "dev:cloud": "npm run dev --workspace @cotta/cloud"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.11",

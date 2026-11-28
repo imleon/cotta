@@ -19,3 +19,4 @@ mcp/
 .gitignore
 icon.html
 docs/
+.wrangler/

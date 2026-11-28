@@ -15,7 +15,7 @@ export function cottaVersion(): string {
 export function cottaGitCommit(): string | null {
   try {
     const git = (...args: string[]) => execFileSync('git', ['rev-parse', ...args], { cwd: packageRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-    return git('--show-prefix') === 'apps/server/' ? git('--short', 'HEAD') || null : null
+    return git('--show-prefix') === 'apps/daemon/' ? git('--short', 'HEAD') || null : null
   } catch {
     return null
   }

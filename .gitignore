@@ -4,8 +4,8 @@ CLAUDE.md
 settings.json
 node_modules/
 dist/
-apps/server/web/
-apps/server/LICENSE
+apps/daemon/web/
+apps/daemon/LICENSE
 data/
 .env
 *.log

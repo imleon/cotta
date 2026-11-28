@@ -98,7 +98,7 @@ afterEach(() => {
 })
 
 describe('terminal visibility', () => {
-  it('keeps the terminal open when selecting a session and closes it explicitly', async () => {
+  it('opens the machine terminal from ?terminal=1, keeps it while selecting a session, and closes its tab', async () => {
     window.history.replaceState(null, '', '/?terminal=1&view=details#turn')
     render(app)
     await screen.findByRole('button', { name: 'Close terminal' })
@@ -108,18 +108,14 @@ describe('terminal visibility', () => {
     expect(mocks.selectSession).toHaveBeenCalledExactlyOnceWith('project', 'session')
     expect(screen.getByRole('button', { name: 'Close terminal' })).toBeTruthy()
     expect(window.location.pathname).toBe('/')
-    expect(window.location.search).toBe('?terminal=1&view=details')
     expect(window.location.hash).toBe('#turn')
 
     fireEvent.click(screen.getByRole('button', { name: 'Close terminal' }))
 
     expect(screen.queryByRole('button', { name: 'Close terminal' })).toBeNull()
-    expect(window.location.pathname).toBe('/')
-    expect(window.location.search).toBe('?view=details')
-    expect(window.location.hash).toBe('#turn')
+    expect(screen.queryByRole('tab', { name: 'Terminal' })).toBeNull()
   })
-
-  it('toggles Terminal from its sidebar control and follows popstate', async () => {
+  it('toggles the machine terminal from its sidebar control as a tools tab, without touching the URL', async () => {
     window.history.replaceState(null, '', '/')
     render(app)
     await screen.findByRole('button', { name: 'Submit rename' })
@@ -127,21 +123,16 @@ describe('terminal visibility', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
 
     expect(await screen.findByRole('button', { name: 'Close terminal' })).toBeTruthy()
-    expect(window.location.pathname).toBe('/')
-    expect(window.location.search).toBe('?terminal=1')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
-
-    expect(screen.queryByRole('button', { name: 'Close terminal' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Terminal' }).getAttribute('aria-selected')).toBe('true')
     expect(window.location.search).toBe('')
+
+    // A second click hides the tools area; the terminal tab stays (mounted, hidden).
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
+    expect(screen.queryByRole('button', { name: 'Close terminal' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
     expect(await screen.findByRole('button', { name: 'Close terminal' })).toBeTruthy()
-
-    window.history.replaceState(null, '', '/')
-    fireEvent.popState(window)
-
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Close terminal' })).toBeNull())
+    expect(screen.getAllByRole('tab', { name: 'Terminal' })).toHaveLength(1)
   })
 
   it('does not show Terminal on a non-workspace route', async () => {

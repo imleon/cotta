@@ -13,17 +13,115 @@
   display: none;
 }
 
-.apps-view[data-tool-panel="terminal"][data-tool-layout="side"] {
-  grid-template-columns: minmax(320px, 1fr) 9px minmax(240px, var(--tool-panel-width, 420px));
+/* The workbench: main area (session panes) beside the collapsible tools area. */
+.apps-split {
+  min-width: 0;
+  min-height: 0;
 }
 
-.apps-view[data-tool-panel="terminal"][data-tool-layout="bottom"] {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(240px, 1fr) 9px minmax(160px, var(--tool-panel-height, 280px));
+.apps-main-panel,
+.apps-tools-panel {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
 }
 
-.apps-view[data-tool-resizing="true"] {
-  user-select: none;
+.apps-tools-content {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.apps-tools-content[hidden] {
+  display: none;
+}
+
+.layout-separator {
+  position: relative;
+  flex: 0 0 9px;
+  touch-action: none;
+}
+
+.layout-separator[data-separator="disabled"],
+.layout-separator[aria-disabled="true"] {
+  flex-basis: 0;
+}
+
+.layout-separator::after {
+  position: absolute;
+  inset: 0 4px;
+  background: transparent;
+  content: "";
+  transition: background-color var(--duration-fast, 120ms) ease;
+}
+
+.layout-separator:hover::after,
+.layout-separator:focus-visible::after,
+.layout-separator[data-separator="active"]::after {
+  background: var(--border-strong, var(--border-default));
+}
+
+.layout-split[data-direction="column"] > .layout-separator::after {
+  inset: 4px 0;
+}
+
+.tools-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  background: var(--surface-default);
+  box-shadow: var(--shadow-card);
+}
+
+.tools-tabbar {
+  display: flex;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-default);
+  padding: 4px 6px;
+}
+
+.tools-tab {
+  border: 0;
+  border-radius: var(--radius-md, 6px);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  padding: 4px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tools-tab:hover {
+  background: var(--surface-subtle);
+}
+
+.tools-tab[aria-selected="true"] {
+  background: var(--surface-selected);
+  color: var(--text-primary);
+}
+
+.tools-tab-body {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tools-tab-body[hidden] {
+  display: none;
+}
+
+.tools-tab-body > .terminal-panel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .workspace-group {
@@ -35,21 +133,6 @@
 
 .workspace-group > .workspace-panel {
   min-height: 0;
-}
-
-.apps-view[data-tool-layout="bottom"] .tool-panel-resize-handle {
-  width: auto;
-  height: 9px;
-  cursor: row-resize;
-}
-
-.apps-view[data-tool-layout="bottom"] .tool-panel-resize-handle::after {
-  top: 4px;
-  right: 0;
-  bottom: auto;
-  left: 0;
-  width: auto;
-  height: 1px;
 }
 
 .terminal-panel[hidden] {
@@ -65,24 +148,6 @@
   border-radius: var(--radius-xl);
   background: var(--surface-default);
   box-shadow: var(--shadow-card);
-}
-
-.tool-panel-resize-handle {
-  position: relative;
-  z-index: 2;
-  width: 9px;
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.tool-panel-resize-handle::after {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 4px;
-  width: 1px;
-  background: transparent;
-  content: "";
 }
 
 .workspace-panel {
@@ -121,7 +186,7 @@
 .workspace-main-panel {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(0, min(var(--workspace-explorer-width, 420px), calc(100% - 320px)));
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   gap: 0;
   overflow: hidden;
@@ -130,46 +195,6 @@
   background: transparent;
   padding: 0;
   box-shadow: none;
-}
-
-.workspace-main-panel[data-explorer-open="false"],
-.workspace-main-panel[data-explorer-layout="overlay"] {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.workspace-main-panel[data-explorer-layout="overlay"] .workspace-explorer-resize-handle {
-  display: none;
-}
-
-.workspace-main-panel[data-explorer-layout="overlay"] .workspace-explorer-pane {
-  position: absolute;
-  z-index: 30;
-  inset: 16px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-lg);
-}
-
-.workspace-explorer-resize-handle {
-  position: absolute;
-  z-index: 2;
-  top: 0;
-  bottom: 0;
-  right: min(var(--workspace-explorer-width, 420px), calc(100% - 320px));
-  width: 9px;
-  transform: translateX(50%);
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.workspace-explorer-resize-handle::after {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 4px;
-  width: 1px;
-  background: transparent;
-  content: "";
 }
 
 .workspace-chat-column {
@@ -227,10 +252,10 @@
 .workspace-explorer-pane {
   display: grid;
   grid-template-columns: minmax(380px, var(--project-file-preview-width, 1fr)) 5px minmax(180px, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid var(--border-default);
   background: var(--surface-default);
   overflow: hidden;
 }
@@ -262,7 +287,7 @@
 }
 .project-files-content {
   grid-column: 1 / -1;
-  grid-row: 2;
+  grid-row: 1;
   display: grid;
   min-width: 0;
   min-height: 0;
@@ -528,7 +553,7 @@
   display: grid;
   height: 100%;
   min-height: 0;
-  grid-template-rows: minmax(96px, var(--project-file-directory-height, 360px)) 5px minmax(96px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 .project-file-context-bar {
   display: grid;
@@ -559,14 +584,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-file-directory {
-  grid-row: 1;
-}
-.project-file-section-resizer {
-  grid-row: 2;
-}
+.project-file-directory,
 .project-file-changes {
-  grid-row: 3;
+  grid-row: 1;
 }
 .project-file-directory,
 .project-file-changes {
@@ -580,10 +600,6 @@
 .project-file-changes > .project-file-state {
   min-height: 0;
   overflow: auto;
-}
-.project-file-section-resizer {
-  cursor: row-resize;
-  background: linear-gradient(to bottom, transparent 0 2px, var(--border-default) 2px 3px, color-mix(in srgb, var(--surface-selected) 45%, transparent) 3px 100%);
 }
 .project-file-changes {
   display: grid;

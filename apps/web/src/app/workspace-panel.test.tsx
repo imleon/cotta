@@ -2,7 +2,7 @@
 
 import type { AppSettings, SessionSummary, SessionTimelineResponse } from '@cotta/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -104,13 +104,8 @@ describe('WorkspacePanel', () => {
         <WorkspacePanel
           chatHeader={null}
           githubLogin={null}
-          explorerOpen={false}
-          explorerPaneWidth={null}
-          onExplorerPaneWidthChange={vi.fn()}
-          onExplorerOpenChange={vi.fn()}
           projectId="project-1"
           projectName="Project"
-          currentCwd={null}
           transcriptSignal={null}
           selectedSession={{ id: 'session-1' } as SessionSummary}
           selectedSessionId="session-1"
@@ -167,13 +162,8 @@ describe('WorkspacePanel', () => {
         <WorkspacePanel
           chatHeader={null}
           githubLogin={null}
-          explorerOpen={false}
-          explorerPaneWidth={null}
-          onExplorerPaneWidthChange={vi.fn()}
-          onExplorerOpenChange={vi.fn()}
           projectId="project-2"
           projectName="Other"
-          currentCwd={null}
           transcriptSignal={null}
           selectedSession={{ id: 'session-2' } as SessionSummary}
           selectedSessionId="session-2"
@@ -243,13 +233,8 @@ describe('WorkspacePanel', () => {
         <WorkspacePanel
           chatHeader={null}
           githubLogin={null}
-          explorerOpen={false}
-          explorerPaneWidth={null}
-          onExplorerPaneWidthChange={vi.fn()}
-          onExplorerOpenChange={vi.fn()}
           projectId="project-1"
           projectName="Project"
-          currentCwd={null}
           transcriptSignal={null}
           selectedSession={{ id: 'session-2' } as SessionSummary}
           selectedSessionId="session-2"
@@ -265,33 +250,6 @@ describe('WorkspacePanel', () => {
       </QueryClientProvider>,
     )
     await waitFor(() => expect(screen.getByLabelText('Session tasks').textContent).toBe('Second task'))
-  })
-
-  it('expands the explorer pane when the file preview reaches its minimum', () => {
-    const onExplorerPaneWidthChange = vi.fn()
-    const { container } = renderWorkspacePanel({ explorerOpen: true, explorerPaneWidth: 565, onExplorerPaneWidthChange })
-    const workspace = container.querySelector<HTMLElement>('.workspace-main-panel')!
-    vi.spyOn(workspace, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 1000, width: 1000 } as DOMRect)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Resize file preview' }))
-
-    expect(onExplorerPaneWidthChange).toHaveBeenCalledWith(680)
-  })
-
-  it('closes Files after dragging below the close threshold', async () => {
-    const onExplorerOpenChange = vi.fn()
-    const onExplorerPaneWidthChange = vi.fn()
-    const { container } = renderWorkspacePanel({ explorerOpen: true, explorerPaneWidth: 565, onExplorerOpenChange, onExplorerPaneWidthChange })
-    const workspace = container.querySelector<HTMLElement>('.workspace-main-panel')!
-    vi.spyOn(workspace, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 1000, width: 1000 } as DOMRect)
-
-    const handle = screen.getByLabelText('Resize explorer pane')
-    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, isPrimary: true, clientX: 435 })
-    fireEvent.pointerMove(window, { pointerId: 1, clientX: 800 })
-    fireEvent.pointerUp(window, { pointerId: 1, clientX: 800 })
-
-    expect(onExplorerOpenChange).toHaveBeenCalledWith(false)
-    expect(onExplorerPaneWidthChange).toHaveBeenCalledWith(565)
   })
 
   it('jumps to latest before submitting from an anchored search result', async () => {

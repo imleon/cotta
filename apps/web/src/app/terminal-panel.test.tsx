@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchProjectFile, ProjectFileHttpError } from '../api'
-import { ExplorerPanel, type ProjectFileTabs } from './project-files'
+import { ExplorerPanel, type ExplorerSection, type ProjectFileTabs } from './project-files'
 import { TerminalPanel } from './terminal-panel'
 
 const terminalMocks = vi.hoisted(() => ({
@@ -120,7 +120,7 @@ async function establishTerminal() {
   return { socket: terminalMocks.sockets.at(-1)!, terminal: terminalMocks.terminals.at(-1)! }
 }
 
-function renderPane(openFiles: ProjectFileTabs, onOpenFilesChange = vi.fn(), currentCwd: string | null = null) {
+function renderPane(openFiles: ProjectFileTabs, onOpenFilesChange = vi.fn(), currentCwd: string | null = null, section: ExplorerSection = 'files') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
@@ -133,7 +133,8 @@ function renderPane(openFiles: ProjectFileTabs, onOpenFilesChange = vi.fn(), cur
         previewWidth={null}
         onPreviewLayoutChange={vi.fn()}
         onFilesLayoutChange={vi.fn()}
-        onClose={vi.fn()}
+        section={section}
+        active
       />
     </QueryClientProvider>,
   )
@@ -192,48 +193,17 @@ describe('project file tabs', () => {
     )
   })
 
-  it('keeps Directory height non-negative in a short pane', async () => {
+  it('shows the worktree in Files and the branch in Changes from git data', async () => {
     renderPane({ project: { tabs: [], selectedPath: null } })
-    const sections = await waitFor(() => {
-      const element = document.querySelector<HTMLElement>('.project-file-sections')
-      expect(element).toBeTruthy()
-      return element!
-    })
-    vi.spyOn(sections, 'getBoundingClientRect').mockReturnValue({ top: 0, height: 100 } as DOMRect)
-    const handle = screen.getByRole('separator', { name: 'Resize Directory and Changes' })
-    Object.assign(handle, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() })
-
-    fireEvent.pointerDown(handle, { pointerId: 1 })
-    fireEvent.pointerMove(window, { pointerId: 1, clientY: 0 })
-
-    expect(sections.style.getPropertyValue('--project-file-directory-height')).toBe('96px')
-  })
-
-  it('stops resizing Directory after pointer cancellation', async () => {
-    renderPane({ project: { tabs: [], selectedPath: null } })
-    const sections = await waitFor(() => {
-      const element = document.querySelector<HTMLElement>('.project-file-sections')
-      expect(element).toBeTruthy()
-      return element!
-    })
-    vi.spyOn(sections, 'getBoundingClientRect').mockReturnValue({ top: 0, height: 500 } as DOMRect)
-    const handle = screen.getByRole('separator', { name: 'Resize Directory and Changes' })
-    Object.assign(handle, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() })
-
-    fireEvent.pointerDown(handle, { pointerId: 1 })
-    fireEvent.pointerMove(window, { pointerId: 1, clientY: 200 })
-    fireEvent.pointerCancel(window, { pointerId: 1 })
-    fireEvent.pointerMove(window, { pointerId: 1, clientY: 300 })
-
-    expect(sections.style.getPropertyValue('--project-file-directory-height')).toBe('200px')
-  })
-
-  it('shows the Explorer header and files context from git polling data', async () => {
-    renderPane({ project: { tabs: [], selectedPath: null } })
-
-    expect(screen.getByText('Explorer')).toBeTruthy()
-    expect(await screen.findByLabelText('Branch: main')).toBeTruthy()
+    expect(screen.getByLabelText('Project files')).toBeTruthy()
     expect(await screen.findByLabelText('Worktree: cotta-worktree')).toBeTruthy()
+    expect(screen.queryByText('Changes')).toBeNull()
+    cleanup()
+
+    renderPane({ project: { tabs: [], selectedPath: null } }, vi.fn(), null, 'changes')
+    expect(screen.getByLabelText('Project changes')).toBeTruthy()
+    expect(await screen.findByLabelText('Branch: main')).toBeTruthy()
+    expect(screen.queryByText('Directory')).toBeNull()
   })
 
   it('shows Bubblewrap as a warning when it is missing', async () => {

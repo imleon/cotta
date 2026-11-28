@@ -1,7 +1,8 @@
 import { type AppSettings, appSettingsSchema, type ListVersionsEvent, type ProjectSessionSearchMatch, type ProjectSessionSearchResult } from '@cotta/shared'
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels'
 import { PaginationCursorStaleError, TimelineSnapshotStaleError } from './api'
 import { AccessRequired } from './app/access-required'
 import { AgentsPage } from './app/agents-page'
@@ -27,7 +28,7 @@ import {
   sessionLocationFromPath,
   terminalOpenFromLocation,
 } from './app/app-layout'
-import { appsLayout, TOOL_PANEL_MIN_HEIGHT, TOOL_PANEL_MIN_WIDTH, type ToolLayout, terminalHeightMax, terminalWidthMax } from './app/apps-layout'
+import { appsLayout, MAIN_AREA_MIN_WIDTH, TOOLS_AREA_MIN_WIDTH } from './app/apps-layout'
 import { ProjectListSkeleton, ProjectSessionRail, useProjectSessionSelection, WorktreeBadge } from './app/session-history'
 import { SessionPane } from './app/session-pane'
 import {
@@ -50,13 +51,12 @@ import { SessionSearchDialog } from './app/session-search-dialog'
 import { SettingsPanel } from './app/settings-panel'
 import { ShareManagementPanel } from './app/share-management-panel'
 import { faviconHref, tabStatus } from './app/tab-status'
-import { TerminalPanel } from './app/terminal-panel'
+import { ToolsArea } from './app/tools-area'
 import type { ToastState } from './app/turn-composer'
-import { WORKSPACE_EXPLORER_DEFAULT_WIDTH } from './app/workspace-explorer-layout'
 import { WorkspacePaneToggleIcon } from './app/workspace-panel'
 import { SAME_ORIGIN_MACHINE_ID, useMachineApi } from './client/machine-scope'
 import { AreaView } from './layout/area-view'
-import { createArea } from './layout/layout-model'
+import { type Area, activateTab, addTab, createArea, focusedPane, panes } from './layout/layout-model'
 import type { TimelineControlSignal, TranscriptSignal } from './timeline'
 import 'react-medium-image-zoom/dist/styles.css'
 import './styles.css'
@@ -82,11 +82,18 @@ type SearchSelection = { kind: 'metadata'; result: ProjectSessionSearchResult } 
 
 type SearchTarget = { kind: 'message'; turnId: string; messageUuid: string; blockIndex?: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number }
 
+/** Files and Changes always; the machine terminal when the page was opened with `?terminal=1`. */
+function initialToolsArea(withTerminal: boolean): Area {
+  const files = createArea('tools', { kind: 'files', id: 'files' })
+  const withChanges = addTab(files, files.focusedPaneId, { kind: 'changes', id: 'changes' }) ?? files
+  const area = activateTab(withChanges, withChanges.focusedPaneId, 'files')
+  return withTerminal ? (addTab(area, area.focusedPaneId, { kind: 'terminal', id: 'machine-terminal', machineId: SAME_ORIGIN_MACHINE_ID, cwd: null }) ?? area) : area
+}
+
 function WorkspaceShell() {
   const api = useMachineApi()
   const queryClient = useQueryClient()
   const [activeAppNav, setActiveAppNav] = useState<AppNavKey>(appNavKeyFromPath)
-  const [terminalOpen, setTerminalOpen] = useState(terminalOpenFromLocation)
   const [terminalConnected, setTerminalConnected] = useState(false)
   const settingsQuery = useQuery({
     queryKey: ['settings'],
@@ -103,11 +110,11 @@ function WorkspaceShell() {
   const { selectedProjectId, selectedSessionId, clearSelection, selectProject, selectSession: selectSessionOwner, setSelectedSessionId } = selection
   const [sidebarWidth, setSidebarWidth] = useState(APP_SIDEBAR_DEFAULT_WIDTH)
   const [sidebarResizing, setSidebarResizing] = useState(false)
-  const [terminalWidth, setTerminalWidth] = useState(420)
-  const [terminalHeight, setTerminalHeight] = useState(280)
-  const [terminalLayout, setTerminalLayout] = useState<ToolLayout>('side')
   const [shellSize, setShellSize] = useState({ width: 0, height: 0 })
-  const [terminalResizing, setTerminalResizing] = useState(false)
+  // Tools area (Files, Changes, the machine terminal). It collapses rather than unmounts, so its tabs keep their state.
+  const [toolsOpen, setToolsOpen] = useState(terminalOpenFromLocation)
+  const [toolsArea, setToolsArea] = useState<Area>(() => initialToolsArea(terminalOpenFromLocation()))
+  const toolsPanelRef = usePanelRef()
   const [projectChoiceOpen, setProjectChoiceOpen] = useState(false)
   const [refreshingLists, setRefreshingLists] = useState(false)
   const [listUpdatesReconnecting, setListUpdatesReconnecting] = useState(false)
@@ -142,12 +149,9 @@ function WorkspaceShell() {
   const [highlightedRailSession, setHighlightedRailSession] = useState<{ projectId: string; sessionId: string } | null>(null)
   const [selectedRailContext, setSelectedRailContext] = useState<{ project: ProjectSessionSearchResult['project']; session: ProjectSessionSearchResult['session'] } | null>(null)
   const [highlightedRailSeen, setHighlightedRailSeen] = useState(false)
-  const [explorerOpen, setExplorerOpen] = useState(false)
-  const [explorerPaneWidth, setExplorerPaneWidth] = useState<number | null>(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
   const [visibleSessionStates, setVisibleSessionStates] = useState<Record<string, { generation: number; loading: boolean; error: boolean }>>({})
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>([])
   const sidebarWidthRef = useRef(APP_SIDEBAR_DEFAULT_WIDTH)
-  const terminalWidthRef = useRef(420)
   const appLayoutRef = useRef<HTMLDivElement | null>(null)
   const lastExpandedSidebarWidthRef = useRef(APP_SIDEBAR_DEFAULT_WIDTH)
   const pendingSessionRequestRef = useRef(0)
@@ -176,7 +180,6 @@ function WorkspaceShell() {
     function syncLocation() {
       const nav = appNavKeyFromPath()
       setActiveAppNav(nav)
-      setTerminalOpen(terminalOpenFromLocation())
       if (nav === 'chat') void applyLocationSessionRef.current(sessionLocationFromPath())
     }
     window.addEventListener('popstate', syncLocation)
@@ -198,19 +201,6 @@ function WorkspaceShell() {
     history[push ? 'pushState' : 'replaceState'](state, '', `${currentChatPath}${window.location.search}`)
   })
   useEffect(() => {
-    if (!workspaceActive || !terminalOpen || shellSize.width <= 0) return
-    setTerminalLayout(
-      appsLayout({
-        shellWidth: shellSize.width,
-        requestedSidebarWidth: sidebarWidth,
-        explorerOpen,
-        toolOpen: true,
-        requestedToolWidth: terminalWidth,
-      }).toolLayout,
-    )
-  }, [explorerOpen, shellSize.width, sidebarWidth, terminalOpen, terminalWidth, workspaceActive])
-
-  useEffect(() => {
     if (activeAppNav !== 'settings' || window.location.hash !== '#settings-account-heading') return
     requestAnimationFrame(() => document.getElementById('settings-account-heading')?.scrollIntoView({ block: 'start' }))
   }, [activeAppNav])
@@ -218,7 +208,6 @@ function WorkspaceShell() {
     if (nextNav === 'chat') beginNewConversation()
     history.pushState(null, '', appNavPath(nextNav))
     setActiveAppNav(nextNav)
-    setTerminalOpen(false)
   }
 
   async function handleLogout() {
@@ -244,24 +233,22 @@ function WorkspaceShell() {
     setActiveAppNav('chat')
   }
 
+  /** The machine terminal is a single tools tab; opening it again just shows it. */
   function openTerminal() {
-    const search = new URLSearchParams(window.location.search)
-    search.set('terminal', '1')
-    history.pushState(null, '', `${currentChatPath}?${search}`)
     setActiveAppNav('chat')
-    setTerminalOpen(true)
+    setToolsArea((current) => {
+      const existing = panes(current.root)
+        .flatMap((pane) => pane.tabs.map((tab) => ({ pane, tab })))
+        .find(({ tab }) => tab.kind === 'terminal')
+      if (existing) return activateTab({ ...current, focusedPaneId: existing.pane.id }, existing.pane.id, existing.tab.id)
+      return addTab(current, current.focusedPaneId, { kind: 'terminal', id: 'machine-terminal', machineId: SAME_ORIGIN_MACHINE_ID, cwd: null }) ?? current
+    })
+    setToolsOpen(true)
   }
 
   function toggleTerminal() {
-    if (terminalOpen) closeTerminal()
+    if (terminalShown) setToolsOpen(false)
     else openTerminal()
-  }
-
-  function closeTerminal() {
-    const search = new URLSearchParams(window.location.search)
-    search.delete('terminal')
-    history.pushState(null, '', `${window.location.pathname}${search.size ? `?${search}` : ''}${window.location.hash}`)
-    setTerminalOpen(false)
   }
 
   function closeSearch(cancelSelection = true) {
@@ -272,7 +259,6 @@ function WorkspaceShell() {
 
   function openStats() {
     showChat()
-    setExplorerOpen(false)
     beginNewConversation()
   }
 
@@ -342,10 +328,6 @@ function WorkspaceShell() {
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidth
   }, [sidebarWidth])
-
-  useEffect(() => {
-    terminalWidthRef.current = terminalWidth
-  }, [terminalWidth])
 
   useEffect(() => {
     const appLayout = appLayoutRef.current
@@ -453,60 +435,6 @@ function WorkspaceShell() {
     window.addEventListener('pointercancel', handlePointerCancel)
   }
 
-  function beginTerminalResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!event.isPrimary || event.button !== 0) return
-    const appLayout = appLayoutRef.current
-    if (!appLayout) return
-    event.preventDefault()
-    const handle = event.currentTarget
-    const pointerId = event.pointerId
-    const startX = event.clientX
-    const startY = event.clientY
-    const startWidth = terminalWidthRef.current
-    const startHeight = terminalHeight
-    const bounds = appLayout.getBoundingClientRect()
-    setTerminalResizing(true)
-    handle.setPointerCapture?.(pointerId)
-
-    function handlePointerMove(moveEvent: PointerEvent) {
-      if (moveEvent.pointerId !== pointerId) return
-      if (terminalLayout === 'bottom') {
-        const maxHeight = terminalHeightMax(bounds.height) ?? terminalHeight
-        setTerminalHeight(Math.min(maxHeight, Math.max(TOOL_PANEL_MIN_HEIGHT, startHeight + startY - moveEvent.clientY)))
-        return
-      }
-      const appsWidth = appsLayout({ shellWidth: bounds.width, requestedSidebarWidth: sidebarWidthRef.current, explorerOpen, toolOpen: true, requestedToolWidth: terminalWidthRef.current }).appsWidth
-      const maxWidth = terminalWidthMax(appsWidth, explorerOpen)
-      const nextWidth = Math.min(maxWidth, Math.max(TOOL_PANEL_MIN_WIDTH, startWidth + startX - moveEvent.clientX))
-      terminalWidthRef.current = nextWidth
-      setTerminalWidth(nextWidth)
-    }
-
-    function finishResize() {
-      setTerminalResizing(false)
-      try {
-        handle.releasePointerCapture?.(pointerId)
-      } catch {
-        // ignore pointer capture release errors
-      }
-      window.removeEventListener('pointermove', handlePointerMove)
-      window.removeEventListener('pointerup', handlePointerUp)
-      window.removeEventListener('pointercancel', handlePointerCancel)
-    }
-
-    function handlePointerUp(upEvent: PointerEvent) {
-      if (upEvent.pointerId === pointerId) finishResize()
-    }
-
-    function handlePointerCancel(cancelEvent: PointerEvent) {
-      if (cancelEvent.pointerId === pointerId) finishResize()
-    }
-
-    window.addEventListener('pointermove', handlePointerMove)
-    window.addEventListener('pointerup', handlePointerUp)
-    window.addEventListener('pointercancel', handlePointerCancel)
-  }
-
   function expandAppSidebar() {
     const nextWidth = lastExpandedSidebarWidthRef.current > APP_SIDEBAR_COLLAPSE_WIDTH ? lastExpandedSidebarWidthRef.current : APP_SIDEBAR_DEFAULT_WIDTH
     sidebarWidthRef.current = nextWidth
@@ -528,21 +456,15 @@ function WorkspaceShell() {
     } catch {}
   }
 
-  const terminalVisible = workspaceActive && terminalOpen
-  const {
-    sidebarWidth: effectiveSidebarWidth,
-    appsWidth,
-    toolWidth: effectiveTerminalWidth,
-  } = appsLayout({
+  const toolsActiveTab = focusedPane(toolsArea).tabs.find((tab) => tab.id === focusedPane(toolsArea).activeTabId)
+  const terminalShown = workspaceActive && toolsOpen && toolsActiveTab?.kind === 'terminal'
+  const { sidebarWidth: effectiveSidebarWidth } = appsLayout({
     shellWidth: shellSize.width,
     requestedSidebarWidth: sidebarWidth,
-    explorerOpen,
-    toolOpen: terminalVisible,
-    requestedToolWidth: terminalWidth,
+    toolsOpen: workspaceActive && toolsOpen,
     minimumAppsWidth: workspaceActive ? undefined : 0,
   })
   const sidebarCollapsed = effectiveSidebarWidth <= APP_SIDEBAR_COLLAPSE_WIDTH
-  const effectiveTerminalHeight = Math.min(terminalHeight, terminalHeightMax(shellSize.height) ?? terminalHeight)
   const detail = selection.selectedProjectSessionsQuery.data
   // Derive loaded projects live so renames / worktree changes reach the header immediately; detail
   // remains the selected-project context when that project is outside the normal project pages.
@@ -572,6 +494,12 @@ function WorkspaceShell() {
     if (!selectedProjectId || !selectedSessionId || !selectedSessionAvailable) return
     beginSelectionIntent()
   }, [selectedProjectId, selectedSessionAvailable, selectedSessionId, beginSelectionIntent])
+  useEffect(() => {
+    const panel = toolsPanelRef.current
+    if (!panel) return
+    if (toolsOpen && panel.isCollapsed()) panel.expand()
+    if (!toolsOpen && !panel.isCollapsed()) panel.collapse()
+  }, [toolsOpen, toolsPanelRef])
   const reconcileSelection = useCallback(
     (selectionSnapshot: { intentId: number; projectId: string | null; sessionId: string | null }, outcomes: Map<string, ProjectRefreshResult>) => {
       if (pendingSessionRequestRef.current !== selectionSnapshot.intentId || selectedProjectId !== selectionSnapshot.projectId || selectedSessionId !== selectionSnapshot.sessionId) return
@@ -942,7 +870,6 @@ function WorkspaceShell() {
   function handleOpenAccount() {
     history.pushState(null, '', `${appNavPath('settings')}#settings-account-heading`)
     setActiveAppNav('settings')
-    setTerminalOpen(false)
     requestAnimationFrame(() => document.getElementById('settings-account-heading')?.scrollIntoView({ block: 'start' }))
   }
 
@@ -1009,7 +936,7 @@ function WorkspaceShell() {
       sidebar={
         <AppSidebar
           activeAppNav={activeAppNav}
-          terminalOpen={terminalOpen}
+          terminalOpen={terminalShown}
           terminalConnected={terminalConnected}
           authSession={authSession.data}
           createMenu={
@@ -1032,145 +959,142 @@ function WorkspaceShell() {
       onSidebarResizeStart={beginSidebarResize}
     >
       <div className="app-main">
-        <section
-          className="apps-view"
-          hidden={!workspaceActive}
-          data-tool-panel={terminalVisible ? 'terminal' : undefined}
-          data-tool-layout={terminalLayout}
-          data-tool-resizing={terminalResizing ? 'true' : 'false'}
-          style={{ '--tool-panel-width': `${effectiveTerminalWidth}px`, '--tool-panel-height': `${effectiveTerminalHeight}px` } as CSSProperties}
-        >
-          <section className="workspace-group">
-            <AreaView
-              area={mainArea}
-              onSplitSizesChange={() => {}}
-              renderPane={() => (
-                <section className="workspace-panel">
-                  <div className="workspace-main-pane">
-                    <div className="workspace-main-content">
-                      {selection.selectedProjectSessionsQuery.isError ? (
-                        <div className="panel error workspace-panel-error">
-                          Failed to load project sessions: {selection.selectedProjectSessionsQuery.error instanceof Error ? selection.selectedProjectSessionsQuery.error.message : 'unknown error'}
-                        </div>
-                      ) : (
-                        <SessionPane
-                          chatHeader={
-                            <header className="workspace-main-header workspace-panel-header">
-                              <div className="project-title-block">
-                                <button
-                                  className="workspace-pane-toggle workspace-sidebar-toggle"
-                                  type="button"
-                                  onClick={toggleAppSidebar}
-                                  aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                                  aria-expanded={!sidebarCollapsed}
-                                  aria-controls="app-sidebar"
-                                  title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                                >
-                                  <WorkspacePaneToggleIcon expanded={!sidebarCollapsed} />
-                                </button>
-                                <div className="project-title-text">
-                                  <div
-                                    className="project-session-title"
-                                    title={selectedSession ? `${workspaceTitle} / ${selectedSession.title}` : workspaceTitle || undefined}
-                                    data-has-project={selectedProjectId ? 'true' : 'false'}
-                                    data-has-session={selectedSession ? 'true' : 'false'}
-                                    data-has-worktree={selectedProject?.worktreeName ? 'true' : 'false'}
-                                  >
-                                    {selectedProjectId ? (
-                                      <svg viewBox="0 0 640 640" className="project-card-folder-icon" aria-hidden="true" data-icon="FolderOutlined">
-                                        <path
-                                          d="M129.5 464 179.5 304h379.4l-50 160H129.5zM320.2 512H509c21 0 39.6-13.6 45.8-33.7l50-160c9.7-30.9-13.3-62.3-45.9-62.3H179.6c-21 0-39.6 13.6-45.8 33.7L112.2 358.4V160c0-8.8 7.2-16 16-16h138.7c3.5 0 6.8 1.1 9.6 3.2l38.4 28.8c13.8 10.4 30.7 16 48 16h117.3c8.8 0 16 7.2 16 16h48c0-35.3-28.7-64-64-64H362.9c-6.9 0-13.7-2.2-19.2-6.4l-38.4-28.8C294.2 100.5 280.8 96 266.9 96H128.2c-35.3 0-64 28.7-64 64v288c0 35.3 28.7 64 64 64h192z"
-                                          fill="currentColor"
-                                        />
-                                      </svg>
-                                    ) : null}
-                                    <span className="project-name">{workspaceTitle}</span>
-                                    {selectedProject?.worktreeName ? <WorktreeBadge name={selectedProject.worktreeName} /> : null}
-                                    {selectedSession ? (
-                                      <span className="project-session-identity">
-                                        <span className="project-session-separator" aria-hidden="true">
-                                          /
-                                        </span>
-                                        <span className="project-session-name">{selectedSession.title}</span>
-                                      </span>
-                                    ) : null}
+        <section className="apps-view" hidden={!workspaceActive}>
+          <Group orientation="horizontal" className="apps-split">
+            <Panel id="workbench-main" minSize={MAIN_AREA_MIN_WIDTH} className="apps-main-panel">
+              <section className="workspace-group">
+                <AreaView
+                  area={mainArea}
+                  onSplitSizesChange={() => {}}
+                  renderPane={() => (
+                    <section className="workspace-panel">
+                      <div className="workspace-main-pane">
+                        <div className="workspace-main-content">
+                          {selection.selectedProjectSessionsQuery.isError ? (
+                            <div className="panel error workspace-panel-error">
+                              Failed to load project sessions: {selection.selectedProjectSessionsQuery.error instanceof Error ? selection.selectedProjectSessionsQuery.error.message : 'unknown error'}
+                            </div>
+                          ) : (
+                            <SessionPane
+                              chatHeader={
+                                <header className="workspace-main-header workspace-panel-header">
+                                  <div className="project-title-block">
+                                    <button
+                                      className="workspace-pane-toggle workspace-sidebar-toggle"
+                                      type="button"
+                                      onClick={toggleAppSidebar}
+                                      aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                                      aria-expanded={!sidebarCollapsed}
+                                      aria-controls="app-sidebar"
+                                      title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                                    >
+                                      <WorkspacePaneToggleIcon expanded={!sidebarCollapsed} />
+                                    </button>
+                                    <div className="project-title-text">
+                                      <div
+                                        className="project-session-title"
+                                        title={selectedSession ? `${workspaceTitle} / ${selectedSession.title}` : workspaceTitle || undefined}
+                                        data-has-project={selectedProjectId ? 'true' : 'false'}
+                                        data-has-session={selectedSession ? 'true' : 'false'}
+                                        data-has-worktree={selectedProject?.worktreeName ? 'true' : 'false'}
+                                      >
+                                        {selectedProjectId ? (
+                                          <svg viewBox="0 0 640 640" className="project-card-folder-icon" aria-hidden="true" data-icon="FolderOutlined">
+                                            <path
+                                              d="M129.5 464 179.5 304h379.4l-50 160H129.5zM320.2 512H509c21 0 39.6-13.6 45.8-33.7l50-160c9.7-30.9-13.3-62.3-45.9-62.3H179.6c-21 0-39.6 13.6-45.8 33.7L112.2 358.4V160c0-8.8 7.2-16 16-16h138.7c3.5 0 6.8 1.1 9.6 3.2l38.4 28.8c13.8 10.4 30.7 16 48 16h117.3c8.8 0 16 7.2 16 16h48c0-35.3-28.7-64-64-64H362.9c-6.9 0-13.7-2.2-19.2-6.4l-38.4-28.8C294.2 100.5 280.8 96 266.9 96H128.2c-35.3 0-64 28.7-64 64v288c0 35.3 28.7 64 64 64h192z"
+                                              fill="currentColor"
+                                            />
+                                          </svg>
+                                        ) : null}
+                                        <span className="project-name">{workspaceTitle}</span>
+                                        {selectedProject?.worktreeName ? <WorktreeBadge name={selectedProject.worktreeName} /> : null}
+                                        {selectedSession ? (
+                                          <span className="project-session-identity">
+                                            <span className="project-session-separator" aria-hidden="true">
+                                              /
+                                            </span>
+                                            <span className="project-session-name">{selectedSession.title}</span>
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    </div>
                                   </div>
-                                </div>
-                              </div>
-                              <div className="project-meta-lines">
-                                <button
-                                  className="workspace-pane-toggle workspace-explorer-toggle"
-                                  type="button"
-                                  onClick={() =>
-                                    setExplorerOpen((open) => {
-                                      setExplorerPaneWidth(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
-                                      return !open
-                                    })
-                                  }
-                                  aria-label={explorerOpen ? 'Collapse explorer' : 'Expand explorer'}
-                                  aria-expanded={explorerOpen}
-                                  aria-controls="workspace-explorer-pane"
-                                  title={explorerOpen ? 'Collapse explorer' : 'Expand explorer'}
-                                >
-                                  <WorkspacePaneToggleIcon expanded={explorerOpen} />
-                                </button>
-                              </div>
-                            </header>
-                          }
-                          githubLogin={authSession.data?.authenticated ? (authSession.data.user?.login ?? null) : null}
-                          explorerOpen={explorerOpen}
-                          explorerPaneWidth={explorerPaneWidth}
-                          onExplorerPaneWidthChange={setExplorerPaneWidth}
-                          onExplorerOpenChange={(open) => {
-                            setExplorerOpen(open)
-                            if (open) setExplorerPaneWidth(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
-                          }}
-                          projectId={selection.selectedProjectId}
-                          projectName={selectedProject?.name}
-                          projectPath={selectedProject?.path ?? null}
-                          currentCwd={selectedSession?.currentCwd ?? selectedProject?.path ?? null}
-                          transcriptSignal={transcriptSignal?.sessionId === selectedSessionId ? transcriptSignal.signal : null}
-                          timelineControlSignal={timelineControlSignal?.sessionId === selectedSessionId ? timelineControlSignal.signal : null}
-                          restartNonce={selectedSessionId ? (restartNonces[selectedSessionId] ?? 0) : 0}
-                          selectedSession={selectedSession}
-                          selectedSessionId={selection.selectedSessionId}
-                          setSelectedSessionId={selection.setSelectedSessionId}
-                          searchAnchorTurnId={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.anchorTurnId : null}
-                          searchTarget={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.target : null}
-                          onSearchTargetHandled={() => setSearchNavigation((current) => (current ? { ...current, target: null } : current))}
-                          onJumpToLatest={() => {
-                            if (!selection.selectedSessionId) return
-                            const queryNonce = searchQueryNonceRef.current + 1
-                            searchQueryNonceRef.current = queryNonce
-                            setSearchNavigation({ sessionId: selection.selectedSessionId, anchorTurnId: null, target: { kind: 'jump-latest', queryNonce } })
-                          }}
-                          refreshSessionLists={refreshVisibleWindows}
-                          onSessionCreated={handleSessionCreated}
-                          settings={settings}
-                          onForkSession={handleForkSession}
-                          onNotify={setToast}
-                        />
-                      )}
-                    </div>
-                  </div>
-                </section>
-              )}
-            />
-          </section>
-          {terminalVisible ? (
-            // biome-ignore lint/a11y/useSemanticElements: pointer-driven resize handle; <hr> cannot carry the drag affordance
-            <div
-              className="tool-panel-resize-handle"
-              role="separator"
-              aria-label={terminalLayout === 'bottom' ? 'Resize terminal height' : 'Resize terminal panel'}
-              aria-orientation={terminalLayout === 'bottom' ? 'horizontal' : 'vertical'}
-              aria-valuemin={terminalLayout === 'bottom' ? TOOL_PANEL_MIN_HEIGHT : TOOL_PANEL_MIN_WIDTH}
-              aria-valuemax={terminalLayout === 'bottom' ? (terminalHeightMax(shellSize.height) ?? terminalHeight) : terminalWidthMax(appsWidth, explorerOpen)}
-              aria-valuenow={terminalLayout === 'bottom' ? effectiveTerminalHeight : effectiveTerminalWidth}
-              onPointerDown={beginTerminalResize}
-            />
-          ) : null}
-          <TerminalPanel className="tool-panel terminal-panel" open={terminalVisible} onClose={closeTerminal} onConnectedChange={setTerminalConnected} />
+                                  <div className="project-meta-lines">
+                                    <button
+                                      className="workspace-pane-toggle workspace-explorer-toggle"
+                                      type="button"
+                                      onClick={() => setToolsOpen((open) => !open)}
+                                      aria-label={toolsOpen ? 'Collapse tools' : 'Expand tools'}
+                                      aria-expanded={toolsOpen}
+                                      aria-controls="workbench-tools"
+                                      title={toolsOpen ? 'Collapse tools' : 'Expand tools'}
+                                    >
+                                      <WorkspacePaneToggleIcon expanded={toolsOpen} />
+                                    </button>
+                                  </div>
+                                </header>
+                              }
+                              githubLogin={authSession.data?.authenticated ? (authSession.data.user?.login ?? null) : null}
+                              projectId={selection.selectedProjectId}
+                              projectName={selectedProject?.name}
+                              projectPath={selectedProject?.path ?? null}
+                              transcriptSignal={transcriptSignal?.sessionId === selectedSessionId ? transcriptSignal.signal : null}
+                              timelineControlSignal={timelineControlSignal?.sessionId === selectedSessionId ? timelineControlSignal.signal : null}
+                              restartNonce={selectedSessionId ? (restartNonces[selectedSessionId] ?? 0) : 0}
+                              selectedSession={selectedSession}
+                              selectedSessionId={selection.selectedSessionId}
+                              setSelectedSessionId={selection.setSelectedSessionId}
+                              searchAnchorTurnId={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.anchorTurnId : null}
+                              searchTarget={searchNavigation?.sessionId === selection.selectedSessionId ? searchNavigation.target : null}
+                              onSearchTargetHandled={() => setSearchNavigation((current) => (current ? { ...current, target: null } : current))}
+                              onJumpToLatest={() => {
+                                if (!selection.selectedSessionId) return
+                                const queryNonce = searchQueryNonceRef.current + 1
+                                searchQueryNonceRef.current = queryNonce
+                                setSearchNavigation({ sessionId: selection.selectedSessionId, anchorTurnId: null, target: { kind: 'jump-latest', queryNonce } })
+                              }}
+                              refreshSessionLists={refreshVisibleWindows}
+                              onSessionCreated={handleSessionCreated}
+                              settings={settings}
+                              onForkSession={handleForkSession}
+                              onNotify={setToast}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </section>
+                  )}
+                />
+              </section>
+            </Panel>
+            <Separator className="layout-separator apps-tools-separator" disabled={!toolsOpen} />
+            <Panel
+              id="workbench-tools"
+              panelRef={toolsPanelRef}
+              collapsible
+              collapsedSize={0}
+              minSize={TOOLS_AREA_MIN_WIDTH}
+              defaultSize="38"
+              className="apps-tools-panel"
+              onResize={(size) => {
+                // Dragging the separator past the minimum collapses the area; keep the toggle in step with it.
+                if (size.inPixels === 0 && toolsOpen) setToolsOpen(false)
+              }}
+            >
+              <div className="apps-tools-content" hidden={!toolsOpen}>
+                <ToolsArea
+                  area={toolsArea}
+                  onAreaChange={(next) => {
+                    if (next) setToolsArea(next)
+                    else setToolsOpen(false)
+                  }}
+                  visible={workspaceActive && toolsOpen}
+                  project={{ projectId: selectedProjectId, projectName: selectedProject?.name, currentCwd: selectedSession?.currentCwd ?? selectedProject?.path ?? null }}
+                  onTerminalConnectedChange={setTerminalConnected}
+                />
+              </div>
+            </Panel>
+          </Group>
         </section>
         <section className="app-route-view" hidden={workspaceActive}>
           {activeAppNav === 'agents' ? (

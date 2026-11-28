@@ -8,23 +8,12 @@ import type {
   ToolApprovalDecisionRequest,
   ToolApprovalRequest,
 } from '@cotta/shared'
-import { type CSSProperties, type ReactNode, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useMachineApi } from '../client/machine-scope'
 import { authoritativeTurnPhase, CliStaticSparkIcon, SessionTaskList, SessionTimeline, type TimelineControlSignal, type TranscriptSignal, type TurnPhase } from '../timeline'
 import { PermissionApprovalCard } from './permission-approval'
-import { ExplorerPanel, type ProjectFileTabs } from './project-files'
-import { clampProjectFilePreviewWidth, resizeProjectFilesPane } from './project-files-layout'
 import { ComposerLottieButton, type PendingSubmission, type ToastState, TurnComposer } from './turn-composer'
 import { UsageOverview } from './usage-overview'
-import {
-  clampWorkspaceExplorerWidth,
-  WORKSPACE_EXPLORER_CLOSE_WIDTH,
-  WORKSPACE_EXPLORER_DEFAULT_WIDTH,
-  WORKSPACE_EXPLORER_MIN_WIDTH,
-  workspaceExplorerLayout,
-  workspaceExplorerWidthMax,
-} from './workspace-explorer-layout'
-
 export function WorkspacePaneToggleIcon({ expanded }: { expanded: boolean }) {
   return expanded ? (
     <svg viewBox="0 0 24 24" aria-hidden="true" data-icon="SideExpandOutlined">
@@ -46,14 +35,9 @@ export function WorkspacePaneToggleIcon({ expanded }: { expanded: boolean }) {
 export function WorkspacePanel({
   chatHeader,
   githubLogin,
-  explorerOpen,
-  explorerPaneWidth,
-  onExplorerPaneWidthChange,
-  onExplorerOpenChange,
   projectId,
   projectName,
   projectPath,
-  currentCwd,
   transcriptSignal,
   timelineControlSignal,
   timelineInstanceNonce,
@@ -74,14 +58,9 @@ export function WorkspacePanel({
 }: {
   chatHeader: ReactNode
   githubLogin: string | null
-  explorerOpen: boolean
-  explorerPaneWidth: number | null
-  onExplorerPaneWidthChange: (width: number | null) => void
-  onExplorerOpenChange: (open: boolean) => void
   projectId: string | null
   projectName: string | undefined
   projectPath?: string | null
-  currentCwd: string | null
   transcriptSignal: TranscriptSignal | null
   timelineControlSignal?: TimelineControlSignal | null
   timelineInstanceNonce?: number
@@ -113,24 +92,6 @@ export function WorkspacePanel({
   const [pendingPermission, setPendingPermission] = useState<{ sessionId: string; value: SessionTimelineResponse['pendingPermission'] } | null>(null)
   const [activity, setActivity] = useState<{ sessionId: string; value: SessionTimelineResponse['activity'] } | null>(null)
   const [tasks, setTasks] = useState<{ sessionId: string; value: RawSessionTask[] | null } | null>(null)
-  const [explorerPaneResizing, setExplorerPaneResizing] = useState(false)
-  const [filesLayout, setFilesLayout] = useState<{ paneWidth: number; previewWidth: number } | null>(null)
-  const [outerFilesPreviewWidth, setOuterFilesPreviewWidth] = useState<number | null>(null)
-  const [openFiles, setOpenFiles] = useState<ProjectFileTabs>({})
-  const [workspaceWidth, setWorkspaceWidth] = useState(0)
-  const workspaceRef = useRef<HTMLElement | null>(null)
-
-  useEffect(() => {
-    const workspace = workspaceRef.current
-    if (!workspace) return
-    const update = () => setWorkspaceWidth(workspace.getBoundingClientRect().width)
-    update()
-    if (!('ResizeObserver' in window)) return
-    const observer = new ResizeObserver(update)
-    observer.observe(workspace)
-    return () => observer.disconnect()
-  }, [])
-
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset live session state whenever the project changes
   useEffect(() => {
     setLatestTurnPhase(null)
@@ -233,93 +194,8 @@ export function WorkspacePanel({
     if (!selectedSessionId && selectedPending && selectedSession) setSelectedSessionId(selectedPending.sessionId)
   }, [selectedPending, selectedSession, selectedSessionId, setSelectedSessionId])
 
-  function beginExplorerPaneResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!event.isPrimary || event.button !== 0) return
-    const workspace = workspaceRef.current
-    if (!workspace) return
-    event.preventDefault()
-    const handle = event.currentTarget
-    const pointerId = event.pointerId
-    const bounds = workspace.getBoundingClientRect()
-    let proposedWidth = bounds.right - event.clientX
-    const initialFilesLayout = filesLayout
-    const updateWidth = (requestedWidth: number) => {
-      if (initialFilesLayout) {
-        const layout = resizeProjectFilesPane({
-          paneWidth: initialFilesLayout.paneWidth,
-          previewWidth: initialFilesLayout.previewWidth,
-          requestedPaneWidth: Math.min(workspaceExplorerWidthMax(bounds.width), requestedWidth),
-        })
-        setFilesLayout(layout)
-        setOuterFilesPreviewWidth(layout.previewWidth)
-        onExplorerPaneWidthChange(layout.paneWidth)
-        return
-      }
-      onExplorerPaneWidthChange(requestedWidth <= WORKSPACE_EXPLORER_CLOSE_WIDTH ? 0 : clampWorkspaceExplorerWidth(requestedWidth, bounds.width))
-    }
-    setExplorerPaneResizing(true)
-    handle.setPointerCapture?.(pointerId)
-
-    function handlePointerMove(moveEvent: PointerEvent) {
-      if (moveEvent.pointerId !== pointerId) return
-      proposedWidth = bounds.right - moveEvent.clientX
-      updateWidth(proposedWidth)
-    }
-
-    function finishResize(collapse: boolean) {
-      setExplorerPaneResizing(false)
-      try {
-        handle.releasePointerCapture?.(pointerId)
-      } catch {
-        // ignore pointer capture release errors
-      }
-      window.removeEventListener('pointermove', handlePointerMove)
-      window.removeEventListener('pointerup', handlePointerUp)
-      window.removeEventListener('pointercancel', handlePointerCancel)
-      if (collapse && proposedWidth <= WORKSPACE_EXPLORER_CLOSE_WIDTH) {
-        onExplorerOpenChange(false)
-        onExplorerPaneWidthChange(WORKSPACE_EXPLORER_DEFAULT_WIDTH)
-      } else {
-        updateWidth(proposedWidth)
-      }
-    }
-
-    function handlePointerUp(upEvent: PointerEvent) {
-      if (upEvent.pointerId === pointerId) finishResize(true)
-    }
-
-    function handlePointerCancel(cancelEvent: PointerEvent) {
-      if (cancelEvent.pointerId === pointerId) finishResize(false)
-    }
-
-    window.addEventListener('pointermove', handlePointerMove)
-    window.addEventListener('pointerup', handlePointerUp)
-    window.addEventListener('pointercancel', handlePointerCancel)
-  }
-
-  const explorerLayout = workspaceExplorerLayout(workspaceWidth)
-  const handlePreviewLayoutChange = (requestedLayout: { paneWidth: number; previewWidth: number }) => {
-    const workspaceWidth = workspaceRef.current?.getBoundingClientRect().width
-    if (!workspaceWidth || workspaceExplorerLayout(workspaceWidth) !== 'side') {
-      setOuterFilesPreviewWidth(clampProjectFilePreviewWidth(requestedLayout.previewWidth, filesLayout?.paneWidth ?? requestedLayout.paneWidth))
-      return
-    }
-    const paneWidth = clampWorkspaceExplorerWidth(requestedLayout.paneWidth, workspaceWidth)
-    const previewWidth = clampProjectFilePreviewWidth(requestedLayout.previewWidth, paneWidth)
-    setFilesLayout({ paneWidth, previewWidth })
-    setOuterFilesPreviewWidth(previewWidth)
-    onExplorerPaneWidthChange(paneWidth)
-  }
-
   return (
-    <section
-      ref={workspaceRef}
-      className="detail-panel workspace-main-panel"
-      data-explorer-open={explorerOpen}
-      data-explorer-layout={explorerLayout}
-      data-explorer-resizing={explorerPaneResizing ? 'true' : 'false'}
-      style={explorerPaneWidth === null ? undefined : ({ '--workspace-explorer-width': `${explorerPaneWidth}px` } as CSSProperties)}
-    >
+    <section className="detail-panel workspace-main-panel">
       <div className="workspace-chat-column">
         <div className="workspace-chat-header">{chatHeader}</div>
         <div className="workspace-timeline">
@@ -409,32 +285,6 @@ export function WorkspacePanel({
           />
         </div>
       </div>
-      {explorerOpen ? (
-        // biome-ignore lint/a11y/useSemanticElements: pointer-driven resize handle; <hr> cannot carry the drag affordance
-        <div
-          className="workspace-explorer-resize-handle"
-          role="separator"
-          aria-label="Resize explorer pane"
-          aria-orientation="vertical"
-          aria-valuemin={WORKSPACE_EXPLORER_MIN_WIDTH}
-          aria-valuemax={workspaceRef.current ? workspaceExplorerWidthMax(workspaceRef.current.getBoundingClientRect().width) : undefined}
-          aria-valuenow={explorerPaneWidth ?? undefined}
-          onPointerDown={beginExplorerPaneResize}
-        />
-      ) : null}
-      {explorerOpen ? (
-        <ExplorerPanel
-          projectId={projectId}
-          projectName={projectName}
-          currentCwd={currentCwd}
-          openFiles={openFiles}
-          onOpenFilesChange={setOpenFiles}
-          previewWidth={outerFilesPreviewWidth}
-          onPreviewLayoutChange={handlePreviewLayoutChange}
-          onFilesLayoutChange={setFilesLayout}
-          onClose={() => onExplorerOpenChange(false)}
-        />
-      ) : null}
     </section>
   )
 }

@@ -43,7 +43,7 @@ function FileIcon() {
   )
 }
 
-function ExplorerIcon() {
+export function ExplorerIcon() {
   return (
     <svg viewBox="0 0 17 17" className="project-file-entry-icon" focusable="false" aria-hidden="true">
       <path
@@ -191,6 +191,8 @@ function ProjectFileTree({
   onRefreshDirectory,
   onToggle,
   onSelectFile,
+  section,
+  active,
 }: {
   projectId: string
   projectName?: string
@@ -201,45 +203,20 @@ function ProjectFileTree({
   onRefreshDirectory: () => Promise<void>
   onToggle: (path: string) => void
   onSelectFile: (entry: ProjectFileEntry) => void
+  section: ExplorerSection
+  /** Hidden tabs keep their state but stop polling. */
+  active: boolean
 }) {
   const api = useMachineApi()
-  const [directoryHeight, setDirectoryHeight] = useState(360)
   const [refreshingDirectory, setRefreshingDirectory] = useState(false)
-  const sectionsRef = useRef<HTMLDivElement>(null)
-  const root = useQuery({ queryKey: ['project-files', projectId, ''], queryFn: () => api.fetchProjectFiles(projectId), retry: false })
+  const root = useQuery({ queryKey: ['project-files', projectId, ''], queryFn: () => api.fetchProjectFiles(projectId), retry: false, enabled: section === 'files' })
   const git = useQuery({
     queryKey: ['project-files-git', projectId],
     queryFn: () => api.fetchProjectFilesGit(projectId),
     retry: false,
-    refetchInterval: 3_000,
+    refetchInterval: active && section === 'changes' ? 3_000 : false,
     refetchIntervalInBackground: false,
   })
-  const resizeDirectorySections = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const host = sectionsRef.current
-    if (!host) return
-    const handle = event.currentTarget
-    const pointerId = event.pointerId
-    handle.setPointerCapture(pointerId)
-    const move = (pointerEvent: PointerEvent) => {
-      if (pointerEvent.pointerId !== pointerId) return
-      const rect = host.getBoundingClientRect()
-      setDirectoryHeight(Math.min(Math.max(96, pointerEvent.clientY - rect.top), Math.max(96, rect.height - 96)))
-    }
-    const finish = (finishEvent: PointerEvent) => {
-      if (finishEvent.pointerId !== pointerId) return
-      try {
-        handle.releasePointerCapture(pointerId)
-      } catch {
-        // pointer cancellation can release capture before this handler runs.
-      }
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', finish)
-      window.removeEventListener('pointercancel', finish)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', finish)
-    window.addEventListener('pointercancel', finish)
-  }
   const refreshDirectory = async () => {
     setRefreshingDirectory(true)
     try {
@@ -248,8 +225,8 @@ function ProjectFileTree({
       setRefreshingDirectory(false)
     }
   }
-  if (root.isLoading) return <div className="project-file-state">Loading files…</div>
-  if (root.isError)
+  if (section === 'files' && root.isLoading) return <div className="project-file-state">Loading files…</div>
+  if (section === 'files' && root.isError)
     return (
       <div className="project-file-state">
         {root.error instanceof ProjectFileHttpError && root.error.status === 404 ? 'Project directory is no longer available. ' : ''}
@@ -259,59 +236,60 @@ function ProjectFileTree({
       </div>
     )
   return (
-    <div ref={sectionsRef} className="project-file-sections" style={{ '--project-file-directory-height': `${directoryHeight}px` } as CSSProperties}>
-      <section className="project-file-directory">
-        <div className="project-file-section-header">
-          <div className="project-file-section-heading">
-            <strong className="project-file-section-title">Directory</strong>
-            <ProjectFileContextBar branch={null} worktree={git.data?.available ? git.data.worktree : null} />
-          </div>
-          <button
-            type="button"
-            className="project-file-section-refresh"
-            onClick={() => void refreshDirectory()}
-            disabled={refreshingDirectory}
-            aria-busy={refreshingDirectory}
-            aria-label="Refresh directory"
-            title="Refresh directory"
-          >
-            {refreshingDirectory ? <span className="turn-spinner" aria-hidden="true" /> : <RefreshIcon />}
-          </button>
-        </div>
-        <ul className="project-file-tree-list project-file-tree-root">
-          <li>
-            <button type="button" className="project-file-row" aria-expanded={rootExpanded} onClick={() => onRootExpandedChange(!rootExpanded)}>
-              <span className="project-card-chevron" aria-hidden="true">
-                <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false" aria-hidden="true">
-                  <path d="M4 2.5 8 6 4 9.5" />
-                </svg>
-              </span>
-              <span aria-hidden="true">
-                <ProjectFolderIcon open={rootExpanded} />
-              </span>
-              <ProjectRootLabel cwd={currentCwd} projectName={projectName} />
-              <span aria-hidden="true" />
+    <div className="project-file-sections" data-section={section}>
+      {section === 'files' ? (
+        <section className="project-file-directory">
+          <div className="project-file-section-header">
+            <div className="project-file-section-heading">
+              <strong className="project-file-section-title">Directory</strong>
+              <ProjectFileContextBar branch={null} worktree={git.data?.available ? git.data.worktree : null} />
+            </div>
+            <button
+              type="button"
+              className="project-file-section-refresh"
+              onClick={() => void refreshDirectory()}
+              disabled={refreshingDirectory}
+              aria-busy={refreshingDirectory}
+              aria-label="Refresh directory"
+              title="Refresh directory"
+            >
+              {refreshingDirectory ? <span className="turn-spinner" aria-hidden="true" /> : <RefreshIcon />}
             </button>
-            {rootExpanded ? (
-              <ul className="project-file-tree-list">
-                {root.data?.entries.map((entry) =>
-                  entry.type === 'directory' ? (
-                    <DirectoryNode key={entry.path} projectId={projectId} entry={entry} expandedPaths={expandedPaths} onToggle={onToggle} onSelectFile={onSelectFile} />
-                  ) : (
-                    <FileNode key={entry.path} entry={entry} onSelectFile={onSelectFile} />
-                  ),
-                )}
-                {root.data?.entries.length === 0 ? <li className="project-file-state">No files</li> : null}
-                {root.data?.truncated ? <li className="project-file-state">Only the first 1,000 entries are shown.</li> : null}
-                {root.data?.gitStatusTruncated ? <li className="project-file-status">Git status may be incomplete.</li> : null}
-              </ul>
-            ) : null}
-          </li>
-        </ul>
-      </section>
-      {/* biome-ignore lint/a11y/useSemanticElements: pointer-driven resize handle; <hr> cannot carry the drag affordance */}
-      <div className="project-file-section-resizer" role="separator" aria-label="Resize Directory and Changes" onPointerDown={resizeDirectorySections} />
-      {git.data ? (
+          </div>
+          <ul className="project-file-tree-list project-file-tree-root">
+            <li>
+              <button type="button" className="project-file-row" aria-expanded={rootExpanded} onClick={() => onRootExpandedChange(!rootExpanded)}>
+                <span className="project-card-chevron" aria-hidden="true">
+                  <svg viewBox="0 0 12 12" className="project-card-chevron-icon" focusable="false" aria-hidden="true">
+                    <path d="M4 2.5 8 6 4 9.5" />
+                  </svg>
+                </span>
+                <span aria-hidden="true">
+                  <ProjectFolderIcon open={rootExpanded} />
+                </span>
+                <ProjectRootLabel cwd={currentCwd} projectName={projectName} />
+                <span aria-hidden="true" />
+              </button>
+              {rootExpanded ? (
+                <ul className="project-file-tree-list">
+                  {root.data?.entries.map((entry) =>
+                    entry.type === 'directory' ? (
+                      <DirectoryNode key={entry.path} projectId={projectId} entry={entry} expandedPaths={expandedPaths} onToggle={onToggle} onSelectFile={onSelectFile} />
+                    ) : (
+                      <FileNode key={entry.path} entry={entry} onSelectFile={onSelectFile} />
+                    ),
+                  )}
+                  {root.data?.entries.length === 0 ? <li className="project-file-state">No files</li> : null}
+                  {root.data?.truncated ? <li className="project-file-state">Only the first 1,000 entries are shown.</li> : null}
+                  {root.data?.gitStatusTruncated ? <li className="project-file-status">Git status may be incomplete.</li> : null}
+                </ul>
+              ) : null}
+            </li>
+          </ul>
+        </section>
+      ) : null}
+      {section === 'changes' && git.isLoading ? <div className="project-file-state">Loading changes…</div> : null}
+      {section === 'changes' && git.data ? (
         <section className="project-file-changes">
           <div className="project-file-section-header">
             <div className="project-file-section-heading">
@@ -367,6 +345,8 @@ function ProjectFileTree({
 }
 
 type PreviewMode = 'Markdown' | 'Json' | 'Source' | 'Diff' | 'Image' | 'Binary'
+
+export type ExplorerSection = 'files' | 'changes'
 
 export function binaryFileError(error: unknown): boolean {
   return error instanceof ProjectFileHttpError && (error.code === 'file_not_text' || error.code === 'unsupported_file_type')
@@ -598,7 +578,8 @@ export function ExplorerPanel({
   previewWidth: controlledPreviewWidth,
   onPreviewLayoutChange,
   onFilesLayoutChange,
-  onClose,
+  section,
+  active,
 }: {
   projectId: string | null
   projectName?: string
@@ -608,7 +589,10 @@ export function ExplorerPanel({
   previewWidth: number | null
   onPreviewLayoutChange: (layout: { paneWidth: number; previewWidth: number }) => void
   onFilesLayoutChange: (layout: { paneWidth: number; previewWidth: number } | null) => void
-  onClose: () => void
+  /** Files shows the directory tree, Changes the working-tree changes; both share the project's open-file tabs. */
+  section: ExplorerSection
+  /** Hidden tabs keep their state but drop their file-change subscription and polling. */
+  active: boolean
 }) {
   const api = useMachineApi()
   const queryClient = useQueryClient()
@@ -702,7 +686,7 @@ export function ExplorerPanel({
     if (breadcrumbRef.current) breadcrumbRef.current.scrollLeft = breadcrumbRef.current.scrollWidth
   }, [state.selectedPath])
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId || !active) return
     const params = new URLSearchParams()
     for (const path of expandedPathsKey.split('\0')) if (path) params.append('path', path)
     if (state.selectedPath) params.set('file', state.selectedPath)
@@ -723,7 +707,7 @@ export function ExplorerPanel({
       void queryClient.invalidateQueries({ queryKey: ['project-file-image', projectId] })
     }
     return () => source.close()
-  }, [expandedPathsKey, projectId, queryClient, state.selectedPath, api.connectProjectFileEvents])
+  }, [active, expandedPathsKey, projectId, queryClient, state.selectedPath, api.connectProjectFileEvents])
   const hasPreview = Boolean(projectId)
   useEffect(() => {
     const pane = paneRef.current
@@ -747,22 +731,13 @@ export function ExplorerPanel({
   return (
     <aside
       ref={paneRef}
-      id="workspace-explorer-pane"
+      id={`tools-${section}`}
       className="workspace-explorer-pane"
-      aria-label="Project explorer"
+      aria-label={section === 'files' ? 'Project files' : 'Project changes'}
       data-has-preview={hasPreview}
       data-narrow={narrow}
       style={resolvedPreviewWidth === null ? undefined : ({ '--project-file-preview-width': `${resolvedPreviewWidth}px` } as CSSProperties)}
     >
-      <header className="project-files-header workspace-panel-header">
-        <div className="project-files-header-title">
-          <ExplorerIcon />
-          Explorer
-        </div>
-        <button type="button" className="workspace-pane-toggle" onClick={onClose} aria-label="Close explorer">
-          ×
-        </button>
-      </header>
       {!projectId ? (
         <div className="project-file-state" role="tabpanel">
           Select a project to browse files.
@@ -857,6 +832,8 @@ export function ExplorerPanel({
               onRefreshDirectory={refreshDirectory}
               onToggle={toggleExpandedPath}
               onSelectFile={selectFile}
+              section={section}
+              active={active}
             />
           </div>
         </div>

@@ -1,7 +1,8 @@
 import type { ProjectSessionsResponse, ProjectSummary, SessionPin, SessionSummary } from '@cotta/shared'
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { type FormEvent, type UIEvent as ReactUIEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { fetchProjectSessions, fetchProjects, PaginationCursorStaleError, queryProjectSessions } from '../api'
+import { PaginationCursorStaleError } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { formatAge } from '../format-age'
 import { sessionQueryKeys } from './session-query-refresh'
 
@@ -508,13 +509,14 @@ function ProjectSessionList({
   onSessionCursorStale: (projectId: string) => void
   onHighlightedSessionSeen?: () => void
 } & SessionActionCallbacks) {
+  const api = useMachineApi()
   const [displayLimit, setDisplayLimit] = useState(RAIL_SESSION_PAGE_SIZE)
   const sessionsRef = useRef<HTMLDivElement | null>(null)
   const loadMoreScrollTopRef = useRef<number | null>(null)
   const seenHighlightedSessionIdRef = useRef<string | null>(null)
   const query = useQuery({
     queryKey: sessionQueryKeys.projectSessionsRailWindow(project.id, displayLimit),
-    queryFn: () => fetchProjectSessions(project.id, null, displayLimit),
+    queryFn: () => api.fetchProjectSessions(project.id, null, displayLimit),
     placeholderData: keepPreviousData,
     retry: false,
     refetchInterval: false,
@@ -955,13 +957,14 @@ export function ProjectSessionRail({
 }
 
 export function useProjectSessionSelection({ sessionLimit = 10, selectInitialProject = true, enabled = true }: { sessionLimit?: number; selectInitialProject?: boolean; enabled?: boolean } = {}) {
+  const api = useMachineApi()
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [shouldSelectInitialProject, setShouldSelectInitialProject] = useState(selectInitialProject)
   const projectsQuery = useInfiniteQuery({
     queryKey: sessionQueryKeys.projects,
     initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => fetchProjects(pageParam, 20),
+    queryFn: ({ pageParam }) => api.fetchProjects(pageParam, 20),
     getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextCursor : undefined),
     retry: false,
     refetchInterval: false,
@@ -971,7 +974,7 @@ export function useProjectSessionSelection({ sessionLimit = 10, selectInitialPro
   const selectedProjectSessionsQuery = useQuery({
     queryKey: sessionQueryKeys.projectSessionsDetail(selectedProjectId, sessionLimit, selectedSessionId),
     queryFn: async (): Promise<ProjectSessionsResponse & { selectedSessionDetail?: SessionSummary | null }> => {
-      const response = await queryProjectSessions([{ projectId: selectedProjectId!, limit: sessionLimit, ...(selectedSessionId ? { selectedSessionId } : {}) }])
+      const response = await api.queryProjectSessions([{ projectId: selectedProjectId!, limit: sessionLimit, ...(selectedSessionId ? { selectedSessionId } : {}) }])
       const window = response.sessionsByProject[selectedProjectId!]
       return {
         project: window?.project ?? projectList.find((project) => project.id === selectedProjectId) ?? { id: selectedProjectId!, name: selectedProjectId! },

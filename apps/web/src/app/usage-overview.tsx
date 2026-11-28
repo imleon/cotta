@@ -2,7 +2,7 @@ import type { TokenUsageDay, TokenUsageRange } from '@cotta/shared'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { fetchDailyUsage, fetchUsage, refreshUsage } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 
 const ranges: Array<{ value: TokenUsageRange; label: string; accessibleLabel: string }> = [
   { value: 'today', label: 'Today', accessibleLabel: 'Today' },
@@ -400,6 +400,7 @@ function ActivityHeatmap({ values, loading, error, refreshError, onRetry }: { va
 }
 
 export function UsageOverview({ timeZone }: { timeZone: string }) {
+  const api = useMachineApi()
   const [range, setRange] = useState<TokenUsageRange>('30d')
   const [, setNow] = useState(Date.now)
   const today = usageBoundary(timeZone)
@@ -412,10 +413,10 @@ export function UsageOverview({ timeZone }: { timeZone: string }) {
       window.removeEventListener('focus', refreshBoundary)
     }
   }, [])
-  const summaryQuery = useQuery({ queryKey: ['usage', range, timeZone, today], queryFn: () => fetchUsage(range, timeZone), retry: false, refetchOnMount: false })
-  const calendarQuery = useQuery({ queryKey: ['usage-daily', calendarDayCount, timeZone, today], queryFn: () => fetchDailyUsage(calendarDayCount, timeZone), retry: false, refetchOnMount: false })
+  const summaryQuery = useQuery({ queryKey: ['usage', range, timeZone, today], queryFn: () => api.fetchUsage(range, timeZone), retry: false, refetchOnMount: false })
+  const calendarQuery = useQuery({ queryKey: ['usage-daily', calendarDayCount, timeZone, today], queryFn: () => api.fetchDailyUsage(calendarDayCount, timeZone), retry: false, refetchOnMount: false })
   const refreshMutation = useMutation({
-    mutationFn: refreshUsage,
+    mutationFn: api.refreshUsage,
     onSuccess: async () => {
       await Promise.allSettled([summaryQuery.refetch(), calendarQuery.refetch()])
     },

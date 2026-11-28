@@ -1,6 +1,6 @@
 import type { ListVersionsEvent, ProjectSessionSearchResponse, ProjectSessionsQueryResponse, ProjectSessionsResponse, ProjectSessionsWindow, ProjectsResponse, SessionSummary } from '@cotta/shared'
 import type { InfiniteData, QueryClient } from '@tanstack/react-query'
-import { fetchProjects, queryProjectSessions } from '../api'
+import type { CottaApi } from '../api'
 import type { TimelineControlSignal, TranscriptSignal } from '../timeline/core'
 
 export const sessionQueryKeys = {
@@ -150,11 +150,12 @@ function stableProjectIds(projectIds: Iterable<string | null | undefined>): stri
   return [...new Set([...projectIds].filter((projectId): projectId is string => Boolean(projectId)))].sort()
 }
 
-export async function refreshProjectsWindow(queryClient: QueryClient): Promise<RefreshOutcome> {
+/** Re-fetches the loaded project window from the machine whose cache `queryClient` is. */
+export async function refreshProjectsWindow(queryClient: QueryClient, api: Pick<CottaApi, 'fetchProjects'>): Promise<RefreshOutcome> {
   const generation = nextRefreshGeneration(projectRefreshGenerations, queryClient)
   const current = queryClient.getQueryData<InfiniteData<ProjectsResponse, string | null>>(sessionQueryKeys.projects)
   const loadedCount = current?.pages.reduce((sum, page) => sum + page.projects.length, 0) ?? 20
-  const latest = await fetchProjects(null, Math.max(1, loadedCount))
+  const latest = await api.fetchProjects(null, Math.max(1, loadedCount))
   if (projectRefreshGenerations.get(queryClient) !== generation) return 'skipped'
   const nextCurrent = queryClient.getQueryData<InfiniteData<ProjectsResponse, string | null>>(sessionQueryKeys.projects)
   const nextLoadedCount = nextCurrent?.pages.reduce((sum, page) => sum + page.projects.length, 0) ?? loadedCount
@@ -292,6 +293,7 @@ export function removeProjectSessionFromCache(queryClient: QueryClient, projectI
 
 export async function refreshVisibleProjectSessions(
   queryClient: QueryClient,
+  api: Pick<CottaApi, 'queryProjectSessions'>,
   input: { selectedProjectId: string | null; selectedSessionId?: string | null; selectedSessionProjectIds?: string[]; visibleProjectIds?: string[] },
 ): Promise<Map<string, ProjectRefreshResult>> {
   const selectedSessionProjectIds = new Set(input.selectedSessionProjectIds ?? [])
@@ -303,7 +305,7 @@ export async function refreshVisibleProjectSessions(
     queryClient,
     requests.map(({ projectId }) => projectId),
   )
-  const response = await queryProjectSessions(requests)
+  const response = await api.queryProjectSessions(requests)
   const currentGenerations = sessionRefreshGenerations.get(queryClient)
   const outcomes = new Map<string, ProjectRefreshResult>()
   for (const { projectId, limit } of requests) {
@@ -337,9 +339,10 @@ export async function refreshVisibleProjectSessions(
 
 export async function refreshProjectSessionLists(
   queryClient: QueryClient,
+  api: Pick<CottaApi, 'fetchProjects' | 'queryProjectSessions'>,
   input: { selectedProjectId: string | null; selectedSessionId?: string | null; selectedSessionProjectIds?: string[]; visibleProjectIds?: string[] },
 ): Promise<{ projects: RefreshOutcome; sessions: Map<string, ProjectRefreshResult> }> {
-  const projects = await refreshProjectsWindow(queryClient)
-  const sessions = await refreshVisibleProjectSessions(queryClient, input)
+  const projects = await refreshProjectsWindow(queryClient, api)
+  const sessions = await refreshVisibleProjectSessions(queryClient, api, input)
   return { projects, sessions }
 }

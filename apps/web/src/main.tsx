@@ -2,27 +2,7 @@ import { type AppSettings, appSettingsSchema, type ListVersionsEvent, type Proje
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import {
-  connectListVersions,
-  deleteSession,
-  ensureSessionRuntime,
-  fetchAuthSession,
-  fetchSessionPins,
-  fetchSessionProject,
-  fetchSessionTimeline,
-  fetchSettings,
-  forkSession,
-  logout,
-  PaginationCursorStaleError,
-  queryProjectSessions,
-  refreshModelCatalog,
-  refreshProjects,
-  renameSession,
-  restartSessionRuntime,
-  SessionRuntimeHttpError,
-  setSessionPinned,
-  TimelineSnapshotStaleError,
-} from './api'
+import { PaginationCursorStaleError, SessionRuntimeHttpError, TimelineSnapshotStaleError } from './api'
 import { AccessRequired } from './app/access-required'
 import { AgentsPage } from './app/agents-page'
 import { AnonTurnDetail } from './app/anon-turn-detail'
@@ -73,6 +53,7 @@ import { TerminalPanel } from './app/terminal-panel'
 import type { ToastState } from './app/turn-composer'
 import { WORKSPACE_EXPLORER_DEFAULT_WIDTH } from './app/workspace-explorer-layout'
 import { WorkspacePanel, WorkspacePaneToggleIcon } from './app/workspace-panel'
+import { useMachineApi } from './client/machine-scope'
 import type { TimelineControlSignal, TranscriptSignal } from './timeline'
 import 'react-medium-image-zoom/dist/styles.css'
 import './styles.css'
@@ -99,17 +80,18 @@ type SearchSelection = { kind: 'metadata'; result: ProjectSessionSearchResult } 
 type SearchTarget = { kind: 'message'; turnId: string; messageUuid: string; blockIndex?: number; queryNonce: number } | { kind: 'jump-latest'; queryNonce: number }
 
 function WorkspaceShell() {
+  const api = useMachineApi()
   const queryClient = useQueryClient()
   const [activeAppNav, setActiveAppNav] = useState<AppNavKey>(appNavKeyFromPath)
   const [terminalOpen, setTerminalOpen] = useState(terminalOpenFromLocation)
   const [terminalConnected, setTerminalConnected] = useState(false)
   const settingsQuery = useQuery({
     queryKey: ['settings'],
-    queryFn: fetchSettings,
+    queryFn: api.fetchSettings,
     retry: false,
   })
-  const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
-  const sessionPins = useQuery({ queryKey: sessionQueryKeys.sessionPins, queryFn: fetchSessionPins, retry: false })
+  const authSession = useQuery({ queryKey: ['auth-session'], queryFn: api.fetchAuthSession, retry: false })
+  const sessionPins = useQuery({ queryKey: sessionQueryKeys.sessionPins, queryFn: api.fetchSessionPins, retry: false })
   const settings: AppSettings = settingsQuery.data?.settings ?? appSettingsSchema.parse({})
   const catalogMissing = settingsQuery.isSuccess && !settings.modelCatalog
   const authed = Boolean(authSession.data?.authenticated)
@@ -139,7 +121,8 @@ function WorkspaceShell() {
   useEffect(() => {
     if (!authed || !catalogMissing) return
     let cancelled = false
-    refreshModelCatalog(null)
+    api
+      .refreshModelCatalog(null)
       .then((response) => {
         if (!cancelled) queryClient.setQueryData(['settings'], response)
       })
@@ -151,7 +134,7 @@ function WorkspaceShell() {
     return () => {
       cancelled = true
     }
-  }, [authed, catalogMissing, queryClient])
+  }, [authed, catalogMissing, queryClient, api.refreshModelCatalog])
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchNavigation, setSearchNavigation] = useState<{ sessionId: string; anchorTurnId: string | null; target: SearchTarget | null } | null>(null)
   const [highlightedRailSession, setHighlightedRailSession] = useState<{ projectId: string; sessionId: string } | null>(null)
@@ -231,7 +214,7 @@ function WorkspaceShell() {
   }
 
   async function handleLogout() {
-    await logout()
+    await api.logout()
     await authSession.refetch()
   }
 
@@ -324,7 +307,7 @@ function WorkspaceShell() {
 
   async function handleForkSession(projectId: string, sessionId: string, upToMessageId?: string) {
     try {
-      const fork = await forkSession(projectId, sessionId, upToMessageId)
+      const fork = await api.forkSession(projectId, sessionId, upToMessageId)
       setHighlightedRailSession(fork)
       setHighlightedRailSeen(false)
       await refreshProjectsOnly()
@@ -589,7 +572,8 @@ function WorkspaceShell() {
       setSelectedSessionRuntime(null)
       return
     }
-    void ensureSessionRuntime(selectedSessionId)
+    void api
+      .ensureSessionRuntime(selectedSessionId)
       .then((runtime) => {
         if (pendingSessionRequestRef.current !== requestId) return
         setSelectedSessionRuntime(runtime)
@@ -643,7 +627,7 @@ function WorkspaceShell() {
         ...Object.fromEntries(targetProjectIds.map((projectId) => [projectId, { generation: generations[projectId], loading: true, error: false }])),
       }))
       try {
-        const outcomes = await refreshVisibleProjectSessions(queryClient, {
+        const outcomes = await refreshVisibleProjectSessions(queryClient, api, {
           selectedProjectId: selectionSnapshot.projectId,
           selectedSessionId: selectionSnapshot.sessionId,
           selectedSessionProjectIds,
@@ -681,15 +665,15 @@ function WorkspaceShell() {
         return new Map<string, ProjectRefreshResult>()
       }
     },
-    [queryClient, reconcileSelection, selectSessionOwner, selectedProjectId, selectedSessionId, visibleProjectIds, beginSelectionIntent],
+    [queryClient, reconcileSelection, selectSessionOwner, selectedProjectId, selectedSessionId, visibleProjectIds, beginSelectionIntent, api],
   )
 
   const refreshProjectsOnly = useCallback(async () => {
     const attempted = listVersionStateRef.current
-    const outcome = await refreshProjectsWindow(queryClient)
+    const outcome = await refreshProjectsWindow(queryClient, api)
     acknowledgeListRefresh(listVersionStateRef.current, attempted, { projects: outcome })
     return outcome
-  }, [queryClient])
+  }, [queryClient, api])
 
   function handleSelectSession(projectId: string, sessionId: string) {
     beginSelectionIntent()
@@ -747,7 +731,7 @@ function WorkspaceShell() {
     }
     urlResolvingIntentRef.current = intentId
     try {
-      const resolved = await fetchSessionProject(location.sessionId)
+      const resolved = await api.fetchSessionProject(location.sessionId)
       if (pendingSessionRequestRef.current !== intentId) return
       if (!resolved) {
         setToast({ message: 'Session is no longer available.', tone: 'error' })
@@ -768,7 +752,7 @@ function WorkspaceShell() {
     const sessionId = searchSelection.result.session.id
     let detail: ProjectSessionSearchResult['session'] | undefined
     try {
-      const detailResponse = await queryProjectSessions([{ projectId: searchSelection.result.project.id, limit: 1, selectedSessionId: sessionId }])
+      const detailResponse = await api.queryProjectSessions([{ projectId: searchSelection.result.project.id, limit: 1, selectedSessionId: sessionId }])
       if (pendingSessionRequestRef.current !== intentId) return
       const selectedWindow = Object.values(detailResponse.sessionsByProject).find((window) => window.selectedSessionDetail?.id === sessionId)
       detail = selectedWindow?.selectedSessionDetail ?? undefined
@@ -791,7 +775,7 @@ function WorkspaceShell() {
       }
       const { locator } = searchSelection.match
       if (!locator) return
-      const page = await fetchSessionTimeline(sessionId, { anchorTurnId: locator.turnId })
+      const page = await api.fetchSessionTimeline(sessionId, { anchorTurnId: locator.turnId })
       if (pendingSessionRequestRef.current !== intentId) return
       queryClient.setQueryData(sessionQueryKeys.sessionTimeline(sessionId, locator.turnId), page)
       const turn = page.turns.find((item) => item.primaryUserUuid === locator.turnId)
@@ -838,7 +822,7 @@ function WorkspaceShell() {
 
   async function handlePinSession(sessionId: string, pinned: boolean) {
     try {
-      await setSessionPinned(sessionId, pinned)
+      await api.setSessionPinned(sessionId, pinned)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setToast({ message: `Failed to ${pinned ? 'pin' : 'unpin'} session: ${message}`, tone: 'error' })
@@ -852,7 +836,7 @@ function WorkspaceShell() {
     const intentId = beginSelectionIntent()
     const projectId = selectedProjectId
     try {
-      const result = await restartSessionRuntime(sessionId)
+      const result = await api.restartSessionRuntime(sessionId)
       if (pendingSessionRequestRef.current !== intentId || selectedSessionId !== sessionId) return
       setSelectedSessionRuntime(null)
       setTimelineInstanceNonce((current) => current + 1)
@@ -869,7 +853,7 @@ function WorkspaceShell() {
 
   async function handleDeleteSession(projectId: string, sessionId: string, confirmationSessionId: string) {
     try {
-      await deleteSession(projectId, sessionId, confirmationSessionId)
+      await api.deleteSession(projectId, sessionId, confirmationSessionId)
       removeProjectSessionFromCache(queryClient, projectId, sessionId)
       await resetSessionSearchCache(queryClient)
       if (selectedSessionId === sessionId) {
@@ -890,7 +874,7 @@ function WorkspaceShell() {
 
   async function handleRenameSession(projectId: string, sessionId: string, title: string) {
     try {
-      await renameSession(projectId, sessionId, title)
+      await api.renameSession(projectId, sessionId, title)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setToast({ message: `Failed to rename session: ${message}`, tone: 'error' })
@@ -912,7 +896,7 @@ function WorkspaceShell() {
   }
 
   useEffect(() => {
-    const events = connectListVersions(
+    const events = api.connectListVersions(
       (event: ListVersionsEvent) => {
         setListUpdatesReconnecting(false)
         const plan = planListVersionEvent(listVersionStateRef.current, event, { selectedProjectId, selectedSessionId, visibleProjectIds })
@@ -940,7 +924,7 @@ function WorkspaceShell() {
       selectedProjectId && selectedSessionId ? { projectId: selectedProjectId, sessionId: selectedSessionId } : null,
     )
     return () => events.close()
-  }, [queryClient, refreshProjectsOnly, refreshVisibleWindows, selectedProjectId, selectedSessionId, visibleProjectIds, sessionPins.refetch])
+  }, [queryClient, refreshProjectsOnly, refreshVisibleWindows, selectedProjectId, selectedSessionId, visibleProjectIds, sessionPins.refetch, api.connectListVersions])
 
   useEffect(() => {
     if (visibleProjectIds.length === 0) return
@@ -969,7 +953,7 @@ function WorkspaceShell() {
     setRefreshingLists(true)
     const attempted = listVersionStateRef.current
     try {
-      await refreshProjects(selection.selectedProjectId)
+      await api.refreshProjects(selection.selectedProjectId)
       await refreshProjectsOnly()
       await sessionPins.refetch()
       const sessions = await refreshVisibleWindows()
@@ -1009,7 +993,7 @@ function WorkspaceShell() {
         void selection.projectsQuery
           .fetchNextPage({ throwOnError: true })
           .catch((error) => {
-            if (error instanceof PaginationCursorStaleError) return refreshProjectsWindow(queryClient)
+            if (error instanceof PaginationCursorStaleError) return refreshProjectsWindow(queryClient, api)
           })
           .finally(() => {
             projectLoadMoreInFlightRef.current = false
@@ -1256,7 +1240,8 @@ function WorkspaceShell() {
 }
 
 function AuthenticatedApp() {
-  const authSession = useQuery({ queryKey: ['auth-session'], queryFn: fetchAuthSession, retry: false })
+  const api = useMachineApi()
+  const authSession = useQuery({ queryKey: ['auth-session'], queryFn: api.fetchAuthSession, retry: false })
   const session = authSession.data
   const authenticated = Boolean(session?.authenticated)
 

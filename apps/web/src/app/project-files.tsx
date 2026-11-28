@@ -2,7 +2,8 @@ import { type ProjectFileEntry, type ProjectFileResponse, type ProjectGitWorktre
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Zoom from 'react-medium-image-zoom'
-import { connectProjectFileEvents, fetchProjectFile, fetchProjectFileDiff, fetchProjectFileImage, fetchProjectFiles, fetchProjectFilesGit, ProjectFileHttpError } from '../api'
+import { ProjectFileHttpError } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { fileLanguage, MarkdownContent, TimelineCodeActions, TimelineCodeContent, TimelineDiffContent, timelineDiffCopyValue } from '../timeline/content'
 import { PROJECT_FILE_PREVIEW_MIN_WIDTH, PROJECT_FILES_PANE_MIN_WIDTH, projectFilePreviewWidthMax, resizeProjectFilePreview } from './project-files-layout'
 import { ProjectFolderIcon, WorktreeIcon } from './session-history'
@@ -66,8 +67,9 @@ function DirectoryNode({
   onToggle: (path: string) => void
   onSelectFile: (entry: ProjectFileEntry) => void
 }) {
+  const api = useMachineApi()
   const expanded = expandedPaths.has(entry.path)
-  const children = useQuery({ queryKey: ['project-files', projectId, entry.path], queryFn: () => fetchProjectFiles(projectId, entry.path), enabled: expanded, retry: false })
+  const children = useQuery({ queryKey: ['project-files', projectId, entry.path], queryFn: () => api.fetchProjectFiles(projectId, entry.path), enabled: expanded, retry: false })
   return (
     <li>
       <button type="button" className="project-file-row" data-git-status={entry.gitStatus} aria-expanded={expanded} onClick={() => onToggle(entry.path)}>
@@ -200,13 +202,14 @@ function ProjectFileTree({
   onToggle: (path: string) => void
   onSelectFile: (entry: ProjectFileEntry) => void
 }) {
+  const api = useMachineApi()
   const [directoryHeight, setDirectoryHeight] = useState(360)
   const [refreshingDirectory, setRefreshingDirectory] = useState(false)
   const sectionsRef = useRef<HTMLDivElement>(null)
-  const root = useQuery({ queryKey: ['project-files', projectId, ''], queryFn: () => fetchProjectFiles(projectId), retry: false })
+  const root = useQuery({ queryKey: ['project-files', projectId, ''], queryFn: () => api.fetchProjectFiles(projectId), retry: false })
   const git = useQuery({
     queryKey: ['project-files-git', projectId],
-    queryFn: () => fetchProjectFilesGit(projectId),
+    queryFn: () => api.fetchProjectFilesGit(projectId),
     retry: false,
     refetchInterval: 3_000,
     refetchIntervalInBackground: false,
@@ -472,9 +475,10 @@ function FilePreview({
   onAvailable?: () => void
   onRetry: () => void
 }) {
+  const api = useMachineApi()
   const { path } = entry
   const language = projectFileLanguage(path)
-  const image = useQuery({ queryKey: ['project-file-image', projectId, path], queryFn: () => fetchProjectFileImage(projectId, path), enabled: language === 'image', retry: false })
+  const image = useQuery({ queryKey: ['project-file-image', projectId, path], queryFn: () => api.fetchProjectFileImage(projectId, path), enabled: language === 'image', retry: false })
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [imageDimensions, setImageDimensions] = useState<string | null>(null)
   const [sourceWrapped, setSourceWrapped] = useState(false)
@@ -495,7 +499,7 @@ function FilePreview({
   useEffect(() => {
     if (image.isSuccess && !image.isFetching) onAvailable?.()
   }, [image.isFetching, image.isSuccess, onAvailable])
-  const diff = useQuery({ queryKey: ['project-file-diff', projectId, path], queryFn: () => fetchProjectFileDiff(projectId, path), enabled: mode === 'Diff' || missing, retry: false })
+  const diff = useQuery({ queryKey: ['project-file-diff', projectId, path], queryFn: () => api.fetchProjectFileDiff(projectId, path), enabled: mode === 'Diff' || missing, retry: false })
   const formatted = file && language === 'json' ? jsonPreviewContent(file.content) : null
   return (
     <section className="project-file-preview">
@@ -606,6 +610,7 @@ export function ExplorerPanel({
   onFilesLayoutChange: (layout: { paneWidth: number; previewWidth: number } | null) => void
   onClose: () => void
 }) {
+  const api = useMachineApi()
   const queryClient = useQueryClient()
   const paneRef = useRef<HTMLElement>(null)
   const tabsRef = useRef<HTMLElement>(null)
@@ -620,7 +625,7 @@ export function ExplorerPanel({
   const selectedLanguage = state.selectedPath ? projectFileLanguage(state.selectedPath) : null
   const selectedFile = useQuery({
     queryKey: ['project-file', projectId, state.selectedPath],
-    queryFn: () => fetchProjectFile(projectId!, state.selectedPath!),
+    queryFn: () => api.fetchProjectFile(projectId!, state.selectedPath!),
     enabled: Boolean(projectId && state.selectedPath && selectedLanguage !== 'image'),
     retry: false,
   })
@@ -701,7 +706,7 @@ export function ExplorerPanel({
     const params = new URLSearchParams()
     for (const path of expandedPathsKey.split('\0')) if (path) params.append('path', path)
     if (state.selectedPath) params.set('file', state.selectedPath)
-    const source = connectProjectFileEvents(projectId, params)
+    const source = api.connectProjectFileEvents(projectId, params)
     source.onmessage = (event) => {
       let contentOnly = false
       try {
@@ -718,7 +723,7 @@ export function ExplorerPanel({
       void queryClient.invalidateQueries({ queryKey: ['project-file-image', projectId] })
     }
     return () => source.close()
-  }, [expandedPathsKey, projectId, queryClient, state.selectedPath])
+  }, [expandedPathsKey, projectId, queryClient, state.selectedPath, api.connectProjectFileEvents])
   const hasPreview = Boolean(projectId)
   useEffect(() => {
     const pane = paneRef.current

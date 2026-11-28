@@ -1,7 +1,7 @@
 import type { ProjectSessionSearchMatch, ProjectSessionSearchResult } from '@cotta/shared'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { searchProjectSessions } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { formatAge } from '../format-age'
 import { ProjectFolderIcon } from './session-history'
 
@@ -80,6 +80,7 @@ function flattenResults(results: ProjectSessionSearchResult[]): FlattenedItem[] 
 }
 
 export function SessionSearchDialog({ open, onClose, onSelect }: { open: boolean; onClose: () => void; onSelect: (selection: SearchSelection) => void | Promise<void> }) {
+  const api = useMachineApi()
   const dialogRef = useRef<HTMLDialogElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listboxId = useId()
@@ -89,7 +90,7 @@ export function SessionSearchDialog({ open, onClose, onSelect }: { open: boolean
   const queryReady = userVisibleLength(trimmedQuery) >= 2
   const search = useInfiniteQuery({
     queryKey: ['session-search', trimmedQuery],
-    queryFn: ({ pageParam }) => searchProjectSessions(trimmedQuery, pageParam),
+    queryFn: ({ pageParam }) => api.searchProjectSessions(trimmedQuery, pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextCursor : null),
     enabled: open && queryReady,

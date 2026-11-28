@@ -1,7 +1,8 @@
 import type { RemoteBot } from '@cotta/shared'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { bindRemoteBot, createRemoteBot, deleteRemoteBot, fetchProjects, fetchRemoteBots, resolveRemoteBot, unpairRemoteBot, updateRemoteBot } from '../api'
+import type { CottaApi } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 
 type ToastState = { message: string; tone: 'success' | 'error' }
 type BotDraft = Pick<RemoteBot, 'platform' | 'appId' | 'allProjects' | 'projectIds' | 'enabled'> & { appSecret: string }
@@ -19,11 +20,11 @@ function draftFromBot(bot: RemoteBot): BotDraft {
   return { platform: bot.platform, appId: bot.appId, appSecret: '', allProjects: bot.allProjects, projectIds: bot.projectIds, enabled: bot.enabled }
 }
 
-async function fetchAllProjects() {
+async function fetchAllProjects(api: Pick<CottaApi, 'fetchProjects'>) {
   const projects = []
   let cursor: string | null = null
   do {
-    const page = await fetchProjects(cursor, 100)
+    const page = await api.fetchProjects(cursor, 100)
     projects.push(...page.projects)
     cursor = page.hasMore ? page.nextCursor : null
   } while (cursor)
@@ -31,9 +32,10 @@ async function fetchAllProjects() {
 }
 
 export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => void }) {
+  const api = useMachineApi()
   const queryClient = useQueryClient()
-  const bots = useQuery({ queryKey: ['remote-bots'], queryFn: fetchRemoteBots, retry: false, refetchInterval: 10_000 })
-  const projects = useQuery({ queryKey: ['projects', 'remote-bots'], queryFn: fetchAllProjects, retry: false })
+  const bots = useQuery({ queryKey: ['remote-bots'], queryFn: api.fetchRemoteBots, retry: false, refetchInterval: 10_000 })
+  const projects = useQuery({ queryKey: ['projects', 'remote-bots'], queryFn: () => fetchAllProjects(api), retry: false })
   const [selectedBotId, setSelectedBotId] = useState<string | null | undefined>(undefined)
   const [draft, setDraft] = useState<BotDraft>(EMPTY_DRAFT)
   const [chatId, setChatId] = useState('')
@@ -92,7 +94,7 @@ export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => v
       return
     }
     await run(async () => {
-      const response = selectedBotId ? await updateRemoteBot(selectedBotId, { ...draft }) : await createRemoteBot({ ...draft })
+      const response = selectedBotId ? await api.updateRemoteBot(selectedBotId, { ...draft }) : await api.createRemoteBot({ ...draft })
       await queryClient.invalidateQueries({ queryKey: ['remote-bots'] })
       setSelectedBotId(response.bot.botId)
       setDraft(draftFromBot(response.bot))
@@ -105,7 +107,7 @@ export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => v
     if (!selectedBotId || !window.confirm('Delete this bot? Existing cards will stop working.')) return
     const deletedId = selectedBotId
     await run(async () => {
-      await deleteRemoteBot(deletedId)
+      await api.deleteRemoteBot(deletedId)
       const next = bots.data?.bots.find((bot) => bot.botId !== deletedId)
       setSelectedBotId(next?.botId ?? null)
       setDraft(next ? draftFromBot(next) : EMPTY_DRAFT)
@@ -119,7 +121,7 @@ export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => v
     if (!selectedBotId || !chatId.trim() || preview) return
     const botId = selectedBotId
     try {
-      setPreview(await resolveRemoteBot(botId, chatId.trim()))
+      setPreview(await api.resolveRemoteBot(botId, chatId.trim()))
     } catch (error) {
       setStatus({ message: error instanceof Error ? error.message : String(error), tone: 'error' })
     }
@@ -129,7 +131,7 @@ export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => v
     if (!selectedBotId || !chatId.trim()) return
     const botId = selectedBotId
     await run(async () => {
-      const response = await bindRemoteBot(botId, chatId.trim())
+      const response = await api.bindRemoteBot(botId, chatId.trim())
       await queryClient.invalidateQueries({ queryKey: ['remote-bots'] })
       setDraft(draftFromBot(response.bot))
       setChatId('')
@@ -140,7 +142,7 @@ export function AgentsPage({ setStatus }: { setStatus: (status: ToastState) => v
   async function unpair() {
     if (!selectedBotId) return
     await run(async () => {
-      await unpairRemoteBot(selectedBotId)
+      await api.unpairRemoteBot(selectedBotId)
       setChatId('')
       setPreview(null)
       await queryClient.invalidateQueries({ queryKey: ['remote-bots'] })

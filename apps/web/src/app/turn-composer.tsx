@@ -24,7 +24,8 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import type { CSSProperties, Dispatch, SetStateAction } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CreateTurnHttpError, createTurn, fetchTurnSubmissionStatus, interruptTurn, refreshProjects, saveTurnOptions } from '../api'
+import { CreateTurnHttpError } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 import { type SubmitState, submitStateFor, type TurnPhase } from '../timeline'
 import { composerActionMode, composerControlLabel, composerSessionBusy, composerSubmitBlocked, UNKNOWN_SUBMISSION_RECOVERY_MS } from './composer-core'
 import { sessionQueryKeys } from './session-query-refresh'
@@ -260,6 +261,7 @@ export function TurnComposer({
   onBeforeSubmit?: () => void
   onNotify: (toast: ToastState) => void
 }) {
+  const api = useMachineApi()
   const [inputText, setInputText] = useState('')
   const [images, setImages] = useState<ComposerImage[]>([])
   const imagesRef = useRef<ComposerImage[]>([])
@@ -549,7 +551,7 @@ export function TurnComposer({
       const submittedInCurrentScope = composerScopeRef.current === submitScope
       setPendingTurn((current) => (current?.submissionUuid === userMessageUuid ? (submittedInCurrentScope ? { ...current, phase: 'submitted' } : null) : current))
       if (submittedInCurrentScope && !existingSessionId) onSessionCreated(response.projectId, response.sessionId)
-      void refreshProjects(response.projectId)
+      void api.refreshProjects(response.projectId)
       refreshSessionLists(response.projectId, response.sessionId)
     }
     try {
@@ -557,12 +559,12 @@ export function TurnComposer({
       if (existingSessionId) {
         const save = turnOptionsSaveRef.current
         if (save?.key === existingSessionId) await save.promise
-      } else if (composerManuallyChangedRef.current) await saveTurnOptions(targetSessionId, { permissionMode, model, effort: effectiveEffort === DEFAULT_TURN_OPTION ? null : effectiveEffort })
-      accepted(await createTurn(targetProjectId, existingSessionId, targetSessionId, text, submittedImages, userMessageUuid))
+      } else if (composerManuallyChangedRef.current) await api.saveTurnOptions(targetSessionId, { permissionMode, model, effort: effectiveEffort === DEFAULT_TURN_OPTION ? null : effectiveEffort })
+      accepted(await api.createTurn(targetProjectId, existingSessionId, targetSessionId, text, submittedImages, userMessageUuid))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       // The acknowledgement may have been lost after the daemon accepted the turn: ask before deciding it failed.
-      const reconciled = error instanceof CreateTurnHttpError ? null : await fetchTurnSubmissionStatus(targetSessionId, userMessageUuid).catch(() => null)
+      const reconciled = error instanceof CreateTurnHttpError ? null : await api.fetchTurnSubmissionStatus(targetSessionId, userMessageUuid).catch(() => null)
       if (reconciled && reconciled.status !== 'not_found') {
         accepted({ projectId: targetProjectId, sessionId: targetSessionId })
         return
@@ -591,7 +593,7 @@ export function TurnComposer({
     setInterrupting(true)
     setSubmitError(null)
     try {
-      await interruptTurn(liveSessionId, liveUserMessageUuid)
+      await api.interruptTurn(liveSessionId, liveUserMessageUuid)
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
       setInterrupting(false)
@@ -602,7 +604,7 @@ export function TurnComposer({
     if (!targetSessionId) return
     const key = targetSessionId
     const scope = composerScopeKey
-    const save = (turnOptionsSaveRef.current?.key === key ? turnOptionsSaveRef.current.promise.catch(() => {}) : Promise.resolve()).then(() => saveTurnOptions(targetSessionId, update))
+    const save = (turnOptionsSaveRef.current?.key === key ? turnOptionsSaveRef.current.promise.catch(() => {}) : Promise.resolve()).then(() => api.saveTurnOptions(targetSessionId, update))
     turnOptionsSaveRef.current = { key, promise: save }
     void save.then(
       async () => {

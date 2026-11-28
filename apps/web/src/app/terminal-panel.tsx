@@ -1,7 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { connectTerminal, fetchTerminalAvailability, terminateTerminal } from '../api'
+import { useMachineApi } from '../client/machine-scope'
 
 const TERMINAL_RESIZE_DEBOUNCE_MS = 100
 
@@ -16,6 +16,7 @@ type TerminalPanelProps = {
 }
 
 export function TerminalPanel({ className, open = true, onClose, onConnectedChange }: TerminalPanelProps) {
+  const api = useMachineApi()
   const hostRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<((closeSocket?: boolean) => void) | null>(null)
   const openRef = useRef(open)
@@ -137,7 +138,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
     const createSocket = () => {
       if (disposed || socket || !layoutReady) return
       resize()
-      socket = connectTerminal()
+      socket = api.connectTerminal()
       socket.binaryType = 'arraybuffer'
       socket.onopen = () => {
         if (disposed) return
@@ -203,7 +204,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
   const terminate = async () => {
     setTerminating(true)
     try {
-      await terminateTerminal()
+      await api.terminateTerminal()
       cleanupConnection(false)
       setConnection('idle')
       setStatus('Terminal exited.')
@@ -218,7 +219,8 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
   useEffect(() => {
     if (!open) return
     let cancelled = false
-    void fetchTerminalAvailability()
+    void api
+      .fetchTerminalAvailability()
       .then((available) => {
         if (!cancelled) {
           setBubblewrapAvailability(available ? 'available' : 'missing')
@@ -230,7 +232,7 @@ export function TerminalPanel({ className, open = true, onClose, onConnectedChan
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [open, api.fetchTerminalAvailability])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: unmount-only teardown. cleanupConnection is redefined every render; adding it would tear down the connection on every render. It reads cleanupRef.current, so the mount-time closure still cleans up the live socket.
   useEffect(() => () => cleanupConnection(), [])
